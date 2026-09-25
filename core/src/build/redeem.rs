@@ -489,9 +489,13 @@ pub async fn broadcast(
     } else {
         gate::Path::Release
     };
-    let (tx, validation) = gate::confirm(validator, path, &p.raw, |op| {
-        wallet.store.utxo_class(op).ok().flatten()
-    })
+    let (tx, validation) = gate::confirm_burning(
+        validator,
+        path,
+        &p.raw,
+        |op| wallet.store.utxo_class(op).ok().flatten(),
+        p.burn_cents as i64,
+    )
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
     mint::send(client, &p.raw, &p.txid).await?;

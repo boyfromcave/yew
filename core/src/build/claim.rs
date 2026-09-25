@@ -268,9 +268,13 @@ pub async fn finish(
     )?;
     let raw = tx.serialize()?;
     let txid = tx.txid()?;
-    let (_, validation) = gate::confirm(validator, gate::Path::Claim(vault_out), &raw, |op| {
-        wallet.store.utxo_class(op).ok().flatten()
-    })
+    let (_, validation) = gate::confirm_burning(
+        validator,
+        gate::Path::Claim(vault_out),
+        &raw,
+        |op| wallet.store.utxo_class(op).ok().flatten(),
+        plan.burn_cents,
+    )
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
     mint::send(client, &raw, &txid).await?;

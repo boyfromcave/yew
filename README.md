@@ -172,6 +172,25 @@ terms are equal at the default fee.
   `R` is the index tip; the bundle is for `outpointSelector(vault)` (txid internal bytes ‖ vout
   LE32). The wallet's YED must cover `mintedCents` before the carrier is funded; the BURN stage
   (a sub-dollar remainder) is allowed on redeem and claim, never on a transfer.
+- **A redeem or claim burns by design, and the remote gate knows how much.** The W2 remote rule
+  `burned == 0` refused the first devnet redeem (`valid, ok, burned 10000`): `gate::accept` now
+  takes the *planned* burn — `0` on every path but redeem and claim, where `confirm_burning`
+  passes the plan's `burn_cents` (the debt plus any sub-dollar remainder). Any other burn, more
+  or less, is still refused with the node's numbers.
+- **Plan §8.6 (open question 6) — answered on the devnet, no node change needed.** After
+  `importprivkey <ownerWIF> … true` on node 5, `yed_listvaults` lists the yew-minted vault,
+  `yed_getbalance` counts the address's YED, `yed_redeem` before `lockHeight` is refused
+  `vault-locked: the vault is locked until height N (tip T)`, and at `lockHeight` node 5's
+  `yed_redeem` builds, signs and broadcasts the owner-path redeem (`burnedCents 10000`,
+  `collateralOut 950009000`); the yew side then sees the vault `CLOSED` at the next sync.
+  The node recognises the vault by the owner pubkey, exactly as the question hoped.
+- **Lightwalletd plan Q6 (the armed carrier path) and §8.7, as seen on the wire.** The claim's
+  carrier scriptSig on the devnet is 373 bytes: `OP_PUSHDATA1` (0x4c) of the 226-byte bundle
+  (three attestations), the DER signature, then the carrier redeem script; the node accepted
+  every carrier spend (mint, resumed mint, claim) with verdict `ok` and the lapsed carrier's
+  sweep too. Nothing in the light path needed the node's wallet.
+- **Devnet funding comes from a pool node.** Node 0's YEC is what its own mints and the W2
+  acceptance left (a few YEC); the acceptance funds its wallet from node 2 (mature coinbase).
 - **Sweeping is explicit.** The sync loop marks a row `LAPSED`; `mint_sweep` builds the
   one-input sweep (`CARRIER_VALUE − FEE_ZAT` to a fresh change key) and `yew-cli sync` runs it
   for every lapsed row. The node answers `ok` to the sweep's dry run (a non-Yellowback
@@ -284,7 +303,31 @@ by walking up to `repos.yaml`, so it works from a git worktree too):
 scripts/devnet-w4.sh test     # YEW_DEVNET=1 cargo test -p yew-core --test devnet -- --ignored w4_
 ```
 
-`w4_mint_resume_lapse_redeem_import_and_claim` (W4_EVIDENCE)
+`w4_mint_resume_lapse_redeem_import_and_claim` (2026-09-25, 271 s): wallet A is funded 40 YEC
+from pool node 2 (node 0 holds only a few YEC after its own mints); `mint_estimate` of $100.00
+for 48 blocks answers collateral 10 YEC, fee 0.5 YEC, attestor fee 0.125 YEC, bundle seqs
+`[0, 1, 2]`, affordable; `mint_start` funds a `scripthash` carrier of `CARRIER_VALUE` and
+`mint_finish` before its block is refused `WrongState`; after one pool block the sync advances
+the row to `CARRIER_CONFIRMED` and lists the `CARRIER` UTXO, `mint_finish` sends the MINT
+(verdict `ok`, type `mint`, the carrier at `vin[last]`), the $100 is PENDING_TOKEN until the
+next block, then TOKEN, the row is `DONE`, `vaults` lists the vault `ACTIVE` with the node's
+`lockHeight`/`claimHeight`, the `VAULT` UTXO is synthesised, the carrier is gone, the node
+holds our bytes and the history row reads `minted $100.00`. A second mint is started, the
+wallet dropped and reopened from the file (`CARRIER_SENT` survives), synced and finished
+(`ok`). Its owner key goes to node 5 by `importprivkey … true` (plan §8.6). A third mint is
+left unfinished: a bundle with one flipped signature byte is refused `bundle-refused:
+signature …` (the intact one verifies), the pools mine past `R + REF_WINDOW`, the sync marks
+the row `LAPSED`, `mint_finish` is refused, `mint_sweep` returns `CARRIER_VALUE − FEE_ZAT`
+(verdict `ok`, type `none`) and the row ends `SWEPT`. Vault 1 is redeemed at `lockHeight`
+(`nLockTime = lockHeight`, `nExpiryHeight = R + REF_WINDOW`, verdict `ok` path `owner`,
+`burned 10000`), the vault is `CLOSED`, 9.50009 YEC of collateral returns as YEC and the row
+reads `redeemed, burned $100.00`. The liquidator: node 0 sends A $100, `price --shock=-80%`,
+pool blocks until `ListClaimable` names node 0's oldest ACTIVE vault (claimHeight 327, path
+`a`, `pClaim` $10, claimant 9.37499 YEC), `claim` funds the carrier, `mint_finish` sends the
+claim (`nLockTime = claimHeight`, the vault at `vin[0]`, the carrier last, verdict `ok` path
+`claim` type `redeem`), the node marks the vault `CLAIMED` with our txid, A's YED falls by
+the debt and its YEC grows by the collateral. The devnet is left at `price 50` (the windows
+refill as the pools mine).
 
 `scripts/devnet-w1.sh` runs a private regtest devnet so the default one is never touched:
 `YELLOWBACK_DEVNET_DIR=~/yb-devnet-w1`, `YELLOWBACK_DEVNET_PORTSEED=57`, `lightwalletd-dd` on

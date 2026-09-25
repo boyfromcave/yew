@@ -13,8 +13,10 @@
 //!    payload matches the path (none on the YEC, carrier and sweep paths; exactly one TRANSFER,
 //!    MINT or REDEEM on the others, the transfer path spending at least one token).
 //! 2. **Remote** (client contract rule 4, lightwalletd plan §5): `ValidateRawTransaction` on the
-//!    same bytes, refused unless `valid && verdict == "ok" && burned == 0 && !wouldBeRejected`.
-//!    The refusal carries the node's verdict text. When the server offers no Yellowback service
+//!    same bytes, refused unless `valid && verdict == "ok" && burned == <the planned burn> &&
+//!    !wouldBeRejected` — the planned burn is 0 on every path but redeem and claim, which burn
+//!    the debt (plus a sub-dollar remainder) by design. The refusal carries the node's verdict
+//!    text. When the server offers no Yellowback service
 //!    ([`Validator::Absent`], contract rule 1) the YED path is refused outright and the YEC path
 //!    proceeds on the local layer alone: without `GetAddressTokens` nothing is class `TOKEN`,
 //!    every `TOKEN_VALUE` output is `HELD`, and the local layer already refuses all of them.
@@ -276,9 +278,11 @@ pub fn check(
     Ok(tx)
 }
 
-/// The remote layer's rule on a [`Validation`] (contract rule 4, D-W-5).
-pub fn accept(v: &Validation) -> Result<(), GateError> {
-    if v.valid && v.verdict == "ok" && v.burned == 0 && !v.would_be_rejected {
+/// The remote layer's rule on a [`Validation`] (contract rule 4, D-W-5): `burned` must equal
+/// `planned_burn` — zero everywhere but on a redeem or claim, whose plan states the debt it
+/// burns (W4: a redeem the node answered `ok, burned 10000` was refused by the `== 0` rule).
+pub fn accept(v: &Validation, planned_burn: i64) -> Result<(), GateError> {
+    if v.valid && v.verdict == "ok" && v.burned == planned_burn && !v.would_be_rejected {
         Ok(())
     } else {
         Err(GateError::Refused {
@@ -323,13 +327,24 @@ impl Validator {
     }
 }
 
-/// `confirm`: both layers on `raw`. Returns the parsed transaction and the node's validation
-/// (`None` only on the YEC path against a server without Yellowback).
+/// `confirm`: both layers on `raw`, no burn planned. Returns the parsed transaction and the
+/// node's validation (`None` only on the YEC path against a server without Yellowback).
 pub async fn confirm(
     validator: &mut Validator,
     path: Path,
     raw: &[u8],
     class_of: impl Fn(&OutPoint) -> Option<UtxoClass>,
+) -> Result<(Transaction, Option<Validation>), GateError> {
+    confirm_burning(validator, path, raw, class_of, 0).await
+}
+
+/// [`confirm`] for a redeem or claim: the node's `burned` must equal `planned_burn` cents.
+pub async fn confirm_burning(
+    validator: &mut Validator,
+    path: Path,
+    raw: &[u8],
+    class_of: impl Fn(&OutPoint) -> Option<UtxoClass>,
+    planned_burn: i64,
 ) -> Result<(Transaction, Option<Validation>), GateError> {
     let tx = check(path, raw, class_of)?;
     let client = match validator {
@@ -346,7 +361,7 @@ pub async fn confirm(
         .validate_raw(raw.to_vec())
         .await
         .map_err(|e| GateError::Validate(e.to_string()))?;
-    accept(&v)?;
+    accept(&v, planned_burn)?;
     Ok((tx, Some(v)))
 }
 
@@ -609,7 +624,16 @@ mod tests {
             fee_zat: 0,
             payee: String::new(),
         };
-        assert!(accept(&ok).is_ok());
+        assert!(accept(&ok, 0).is_ok());
+        // A redeem burns what its plan says, no more, no less.
+        let redeem = Validation {
+            burned: 10_000,
+            tx_type: "redeem".into(),
+            ..ok.clone()
+        };
+        assert!(accept(&redeem, 10_000).is_ok());
+        assert!(accept(&redeem, 0).is_err());
+        assert!(accept(&redeem, 9_999).is_err());
         for bad in [
             Validation {
                 valid: false,
@@ -628,7 +652,7 @@ mod tests {
                 ..ok.clone()
             },
         ] {
-            let e = accept(&bad).unwrap_err();
+            let e = accept(&bad, 0).unwrap_err();
             assert!(matches!(e, GateError::Refused { .. }), "{e}");
             assert!(e.to_string().contains("verdict"));
         }

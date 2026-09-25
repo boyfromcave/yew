@@ -958,14 +958,15 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     let a_path = dir.join("a.sqlite").to_string_lossy().to_string();
 
     // 0. Fund A as several coins (a two-step spends one and its change is unconfirmed for a
-    //    block; role plan F-3), then sync.
+    //    block; role plan F-3), then sync. The YEC comes from pool node 2 (mature coinbase):
+    //    node 0's YEC is what the W2 acceptance and its own mints left, a few YEC.
     let addr = a.receive_address(true).unwrap();
     for amount in ["15", "10", "8", "5"] {
-        let t = dn.node(0, &["sendtoaddress", &addr.address_s, amount]);
+        let t = dn.node(2, &["sendtoaddress", &addr.address_s, amount]);
         assert_eq!(t.len(), 64, "{t}");
     }
     let addr2 = a.receive_address(true).unwrap();
-    let t = dn.node(0, &["sendtoaddress", &addr2.address_s, "2"]);
+    let t = dn.node(2, &["sendtoaddress", &addr2.address_s, "2"]);
     confirm(&dn, &mut c, &t).await;
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     assert_eq!(r.yec.0 + r.yec.1, 40 * 100_000_000, "{r:?}");
