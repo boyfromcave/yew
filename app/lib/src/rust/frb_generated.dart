@@ -69,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 1836313511;
+  int get rustContentHash => 216656029;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -89,9 +89,9 @@ abstract class RustLibApi extends BaseApi {
 
   void crateApiCheckSeedWords({required String seedWords});
 
-  Future<SendResult> crateApiClaim({required String vaultTxid});
+  Future<MintStatus> crateApiClaim({required String vaultTxid});
 
-  Future<List<VaultSummary>> crateApiClaimable();
+  Future<List<ClaimableItem>> crateApiClaimable();
 
   String crateApiCoreVersion();
 
@@ -130,14 +130,18 @@ abstract class RustLibApi extends BaseApi {
     required int lockBlocks,
   });
 
-  Future<MintState> crateApiMintFinish({required String mintId});
+  Future<MintStatus> crateApiMintFinish({required PlatformInt64 mintId});
 
-  Future<MintState> crateApiMintStart({
+  Future<MintStatus> crateApiMintStart({
     required PlatformInt64 cents,
     required int lockBlocks,
   });
 
-  Future<MintState> crateApiMintSweep({required String mintId});
+  Future<MintStatus> crateApiMintStatus({required PlatformInt64 mintId});
+
+  Future<MintStatus> crateApiMintSweep({required PlatformInt64 mintId});
+
+  Future<List<MintStatus>> crateApiMints();
 
   Future<ServerProbe> crateApiProbeServer({
     required String server,
@@ -147,7 +151,7 @@ abstract class RustLibApi extends BaseApi {
 
   Future<AddressPair> crateApiReceiveAddress({required bool fresh});
 
-  Future<SendResult> crateApiRedeem({required String vaultTxid});
+  Future<RedeemResult> crateApiRedeem({required String vaultTxid});
 
   Future<SendResult> crateApiSendYecConfirm({required String previewId});
 
@@ -301,7 +305,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
-  Future<SendResult> crateApiClaim({required String vaultTxid}) {
+  Future<MintStatus> crateApiClaim({required String vaultTxid}) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
@@ -315,7 +319,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_send_result,
+          decodeSuccessData: sse_decode_mint_status,
           decodeErrorData: sse_decode_yew_error,
         ),
         constMeta: kCrateApiClaimConstMeta,
@@ -329,7 +333,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "claim", argNames: ["vaultTxid"]);
 
   @override
-  Future<List<VaultSummary>> crateApiClaimable() {
+  Future<List<ClaimableItem>> crateApiClaimable() {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
@@ -342,7 +346,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_list_vault_summary,
+          decodeSuccessData: sse_decode_list_claimable_item,
           decodeErrorData: sse_decode_yew_error,
         ),
         constMeta: kCrateApiClaimableConstMeta,
@@ -667,12 +671,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
-  Future<MintState> crateApiMintFinish({required String mintId}) {
+  Future<MintStatus> crateApiMintFinish({required PlatformInt64 mintId}) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_String(mintId, serializer);
+          sse_encode_i_64(mintId, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -681,7 +685,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_mint_state,
+          decodeSuccessData: sse_decode_mint_status,
           decodeErrorData: sse_decode_yew_error,
         ),
         constMeta: kCrateApiMintFinishConstMeta,
@@ -695,7 +699,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "mint_finish", argNames: ["mintId"]);
 
   @override
-  Future<MintState> crateApiMintStart({
+  Future<MintStatus> crateApiMintStart({
     required PlatformInt64 cents,
     required int lockBlocks,
   }) {
@@ -713,7 +717,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_mint_state,
+          decodeSuccessData: sse_decode_mint_status,
           decodeErrorData: sse_decode_yew_error,
         ),
         constMeta: kCrateApiMintStartConstMeta,
@@ -729,12 +733,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
-  Future<MintState> crateApiMintSweep({required String mintId}) {
+  Future<MintStatus> crateApiMintStatus({required PlatformInt64 mintId}) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_String(mintId, serializer);
+          sse_encode_i_64(mintId, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -743,7 +747,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_mint_state,
+          decodeSuccessData: sse_decode_mint_status,
+          decodeErrorData: sse_decode_yew_error,
+        ),
+        constMeta: kCrateApiMintStatusConstMeta,
+        argValues: [mintId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiMintStatusConstMeta =>
+      const TaskConstMeta(debugName: "mint_status", argNames: ["mintId"]);
+
+  @override
+  Future<MintStatus> crateApiMintSweep({required PlatformInt64 mintId}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_i_64(mintId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 20,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_mint_status,
           decodeErrorData: sse_decode_yew_error,
         ),
         constMeta: kCrateApiMintSweepConstMeta,
@@ -755,6 +787,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiMintSweepConstMeta =>
       const TaskConstMeta(debugName: "mint_sweep", argNames: ["mintId"]);
+
+  @override
+  Future<List<MintStatus>> crateApiMints() {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 21,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_mint_status,
+          decodeErrorData: sse_decode_yew_error,
+        ),
+        constMeta: kCrateApiMintsConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiMintsConstMeta =>
+      const TaskConstMeta(debugName: "mints", argNames: []);
 
   @override
   Future<ServerProbe> crateApiProbeServer({
@@ -772,7 +831,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 22,
             port: port_,
           );
         },
@@ -802,7 +861,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 21,
+            funcId: 23,
             port: port_,
           );
         },
@@ -821,7 +880,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "receive_address", argNames: ["fresh"]);
 
   @override
-  Future<SendResult> crateApiRedeem({required String vaultTxid}) {
+  Future<RedeemResult> crateApiRedeem({required String vaultTxid}) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
@@ -830,12 +889,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 24,
             port: port_,
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_send_result,
+          decodeSuccessData: sse_decode_redeem_result,
           decodeErrorData: sse_decode_yew_error,
         ),
         constMeta: kCrateApiRedeemConstMeta,
@@ -858,7 +917,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 23,
+            funcId: 25,
             port: port_,
           );
         },
@@ -894,7 +953,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 24,
+            funcId: 26,
             port: port_,
           );
         },
@@ -924,7 +983,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 25,
+            funcId: 27,
             port: port_,
           );
         },
@@ -956,7 +1015,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 26,
+            funcId: 28,
             port: port_,
           );
         },
@@ -990,7 +1049,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 27,
+            funcId: 29,
             port: port_,
           );
         },
@@ -1019,7 +1078,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 28,
+            funcId: 30,
             port: port_,
           );
         },
@@ -1049,7 +1108,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 29,
+              funcId: 31,
               port: port_,
             );
           },
@@ -1091,7 +1150,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 32,
             port: port_,
           );
         },
@@ -1129,7 +1188,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_network_id(network, serializer);
           sse_encode_String(address, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 31)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 33)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_address_check,
@@ -1156,7 +1215,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 34,
             port: port_,
           );
         },
@@ -1252,6 +1311,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ClaimableItem dco_decode_claimable_item(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    return ClaimableItem(
+      vaultTxid: dco_decode_String(arr[0]),
+      ownerAddress: dco_decode_String(arr[1]),
+      cents: dco_decode_i_64(arr[2]),
+      collateralZat: dco_decode_i_64(arr[3]),
+      claimHeight: dco_decode_i_64(arr[4]),
+      claimPath: dco_decode_String(arr[5]),
+      pClaimMicroUsd: dco_decode_i_64(arr[6]),
+      feeZat: dco_decode_i_64(arr[7]),
+      attestFeeZat: dco_decode_i_64(arr[8]),
+      residualZat: dco_decode_i_64(arr[9]),
+      claimantZat: dco_decode_i_64(arr[10]),
+    );
+  }
+
+  @protected
   Created dco_decode_created(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -1339,9 +1419,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<ClaimableItem> dco_decode_list_claimable_item(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_claimable_item).toList();
+  }
+
+  @protected
   List<HistoryItem> dco_decode_list_history_item(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_history_item).toList();
+  }
+
+  @protected
+  List<MintStatus> dco_decode_list_mint_status(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_mint_status).toList();
+  }
+
+  @protected
+  Uint32List dco_decode_list_prim_u_32_strict(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as Uint32List;
   }
 
   @protected
@@ -1366,23 +1464,66 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MintEstimate dco_decode_mint_estimate(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    if (arr.length != 20)
+      throw Exception('unexpected arr length: expect 20 but see ${arr.length}');
     return MintEstimate(
       cents: dco_decode_i_64(arr[0]),
-      collateralZat: dco_decode_i_64(arr[1]),
+      lockBlocks: dco_decode_u_32(arr[1]),
+      termClass: dco_decode_String(arr[2]),
+      refHeight: dco_decode_i_64(arr[3]),
+      lockHeight: dco_decode_i_64(arr[4]),
+      claimHeight: dco_decode_i_64(arr[5]),
+      expiryHeight: dco_decode_i_64(arr[6]),
+      requiredZat: dco_decode_i_64(arr[7]),
+      collateralZat: dco_decode_i_64(arr[8]),
+      feeZat: dco_decode_i_64(arr[9]),
+      attestFeeZat: dco_decode_i_64(arr[10]),
+      carrierZat: dco_decode_i_64(arr[11]),
+      tokenZat: dco_decode_i_64(arr[12]),
+      networkFeeZat: dco_decode_i_64(arr[13]),
+      totalZat: dco_decode_i_64(arr[14]),
+      availableZat: dco_decode_i_64(arr[15]),
+      affordable: dco_decode_bool(arr[16]),
+      pMintMicroUsd: dco_decode_opt_box_autoadd_i_64(arr[17]),
+      armed: dco_decode_bool(arr[18]),
+      bundleSeqs: dco_decode_list_prim_u_32_strict(arr[19]),
     );
   }
 
   @protected
-  MintState dco_decode_mint_state(dynamic raw) {
+  MintStatus dco_decode_mint_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
-    return MintState(
-      mintId: dco_decode_String(arr[0]),
-      state: dco_decode_String(arr[1]),
+    if (arr.length != 27)
+      throw Exception('unexpected arr length: expect 27 but see ${arr.length}');
+    return MintStatus(
+      mintId: dco_decode_i_64(arr[0]),
+      kind: dco_decode_String(arr[1]),
+      state: dco_decode_String(arr[2]),
+      createdHeight: dco_decode_i_64(arr[3]),
+      cents: dco_decode_i_64(arr[4]),
+      lockBlocks: dco_decode_u_32(arr[5]),
+      termClass: dco_decode_String(arr[6]),
+      refHeight: dco_decode_i_64(arr[7]),
+      lockHeight: dco_decode_i_64(arr[8]),
+      claimHeight: dco_decode_i_64(arr[9]),
+      expiryHeight: dco_decode_i_64(arr[10]),
+      collateralZat: dco_decode_i_64(arr[11]),
+      feeZat: dco_decode_i_64(arr[12]),
+      attestFeeZat: dco_decode_i_64(arr[13]),
+      residualZat: dco_decode_i_64(arr[14]),
+      bundleSeqs: dco_decode_String(arr[15]),
+      carrierTxid: dco_decode_String(arr[16]),
+      mainTxid: dco_decode_String(arr[17]),
+      sweepTxid: dco_decode_String(arr[18]),
+      vaultTxid: dco_decode_String(arr[19]),
+      tip: dco_decode_i_64(arr[20]),
+      inProgress: dco_decode_bool(arr[21]),
+      windowOpen: dco_decode_bool(arr[22]),
+      blocksLeft: dco_decode_i_64(arr[23]),
+      canFinish: dco_decode_bool(arr[24]),
+      canSweep: dco_decode_bool(arr[25]),
+      note: dco_decode_String(arr[26]),
     );
   }
 
@@ -1413,6 +1554,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return Recipient(
       address: dco_decode_String(arr[0]),
       cents: dco_decode_i_64(arr[1]),
+    );
+  }
+
+  @protected
+  RedeemResult dco_decode_redeem_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    return RedeemResult(
+      txid: dco_decode_String(arr[0]),
+      verdict: dco_decode_String(arr[1]),
+      kind: dco_decode_String(arr[2]),
+      burnCents: dco_decode_i_64(arr[3]),
+      extraBurnCents: dco_decode_i_64(arr[4]),
+      changeCents: dco_decode_i_64(arr[5]),
+      feeZat: dco_decode_i_64(arr[6]),
+      collateralZat: dco_decode_i_64(arr[7]),
+      collateralAddress: dco_decode_String(arr[8]),
+      lockTime: dco_decode_i_64(arr[9]),
+      expiryHeight: dco_decode_i_64(arr[10]),
     );
   }
 
@@ -1509,14 +1671,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   VaultSummary dco_decode_vault_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 20)
+      throw Exception('unexpected arr length: expect 20 but see ${arr.length}');
     return VaultSummary(
       vaultTxid: dco_decode_String(arr[0]),
-      cents: dco_decode_i_64(arr[1]),
-      collateralZat: dco_decode_i_64(arr[2]),
-      lockHeight: dco_decode_i_64(arr[3]),
-      status: dco_decode_String(arr[4]),
+      status: dco_decode_String(arr[1]),
+      ownerAddress: dco_decode_String(arr[2]),
+      termClass: dco_decode_String(arr[3]),
+      cents: dco_decode_i_64(arr[4]),
+      collateralZat: dco_decode_i_64(arr[5]),
+      lockHeight: dco_decode_i_64(arr[6]),
+      claimHeight: dco_decode_i_64(arr[7]),
+      mintHeight: dco_decode_i_64(arr[8]),
+      tip: dco_decode_i_64(arr[9]),
+      open: dco_decode_bool(arr[10]),
+      redeemable: dco_decode_bool(arr[11]),
+      blocksUntilRedeem: dco_decode_i_64(arr[12]),
+      releasable: dco_decode_bool(arr[13]),
+      claimable: dco_decode_bool(arr[14]),
+      underwaterAtMicroUsd: dco_decode_i_64(arr[15]),
+      underwater: dco_decode_bool(arr[16]),
+      closeHeight: dco_decode_i_64(arr[17]),
+      closingTxid: dco_decode_String(arr[18]),
+      voidReason: dco_decode_String(arr[19]),
     );
   }
 
@@ -1696,6 +1873,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  ClaimableItem sse_decode_claimable_item(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_vaultTxid = sse_decode_String(deserializer);
+    var var_ownerAddress = sse_decode_String(deserializer);
+    var var_cents = sse_decode_i_64(deserializer);
+    var var_collateralZat = sse_decode_i_64(deserializer);
+    var var_claimHeight = sse_decode_i_64(deserializer);
+    var var_claimPath = sse_decode_String(deserializer);
+    var var_pClaimMicroUsd = sse_decode_i_64(deserializer);
+    var var_feeZat = sse_decode_i_64(deserializer);
+    var var_attestFeeZat = sse_decode_i_64(deserializer);
+    var var_residualZat = sse_decode_i_64(deserializer);
+    var var_claimantZat = sse_decode_i_64(deserializer);
+    return ClaimableItem(
+      vaultTxid: var_vaultTxid,
+      ownerAddress: var_ownerAddress,
+      cents: var_cents,
+      collateralZat: var_collateralZat,
+      claimHeight: var_claimHeight,
+      claimPath: var_claimPath,
+      pClaimMicroUsd: var_pClaimMicroUsd,
+      feeZat: var_feeZat,
+      attestFeeZat: var_attestFeeZat,
+      residualZat: var_residualZat,
+      claimantZat: var_claimantZat,
+    );
+  }
+
+  @protected
   Created sse_decode_created(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_walletId = sse_decode_String(deserializer);
@@ -1797,6 +2003,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<ClaimableItem> sse_decode_list_claimable_item(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <ClaimableItem>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_claimable_item(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   List<HistoryItem> sse_decode_list_history_item(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -1806,6 +2026,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       ans_.add(sse_decode_history_item(deserializer));
     }
     return ans_;
+  }
+
+  @protected
+  List<MintStatus> sse_decode_list_mint_status(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <MintStatus>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_mint_status(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  Uint32List sse_decode_list_prim_u_32_strict(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var len_ = sse_decode_i_32(deserializer);
+    return deserializer.buffer.getUint32List(len_);
   }
 
   @protected
@@ -1845,16 +2084,108 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MintEstimate sse_decode_mint_estimate(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_cents = sse_decode_i_64(deserializer);
+    var var_lockBlocks = sse_decode_u_32(deserializer);
+    var var_termClass = sse_decode_String(deserializer);
+    var var_refHeight = sse_decode_i_64(deserializer);
+    var var_lockHeight = sse_decode_i_64(deserializer);
+    var var_claimHeight = sse_decode_i_64(deserializer);
+    var var_expiryHeight = sse_decode_i_64(deserializer);
+    var var_requiredZat = sse_decode_i_64(deserializer);
     var var_collateralZat = sse_decode_i_64(deserializer);
-    return MintEstimate(cents: var_cents, collateralZat: var_collateralZat);
+    var var_feeZat = sse_decode_i_64(deserializer);
+    var var_attestFeeZat = sse_decode_i_64(deserializer);
+    var var_carrierZat = sse_decode_i_64(deserializer);
+    var var_tokenZat = sse_decode_i_64(deserializer);
+    var var_networkFeeZat = sse_decode_i_64(deserializer);
+    var var_totalZat = sse_decode_i_64(deserializer);
+    var var_availableZat = sse_decode_i_64(deserializer);
+    var var_affordable = sse_decode_bool(deserializer);
+    var var_pMintMicroUsd = sse_decode_opt_box_autoadd_i_64(deserializer);
+    var var_armed = sse_decode_bool(deserializer);
+    var var_bundleSeqs = sse_decode_list_prim_u_32_strict(deserializer);
+    return MintEstimate(
+      cents: var_cents,
+      lockBlocks: var_lockBlocks,
+      termClass: var_termClass,
+      refHeight: var_refHeight,
+      lockHeight: var_lockHeight,
+      claimHeight: var_claimHeight,
+      expiryHeight: var_expiryHeight,
+      requiredZat: var_requiredZat,
+      collateralZat: var_collateralZat,
+      feeZat: var_feeZat,
+      attestFeeZat: var_attestFeeZat,
+      carrierZat: var_carrierZat,
+      tokenZat: var_tokenZat,
+      networkFeeZat: var_networkFeeZat,
+      totalZat: var_totalZat,
+      availableZat: var_availableZat,
+      affordable: var_affordable,
+      pMintMicroUsd: var_pMintMicroUsd,
+      armed: var_armed,
+      bundleSeqs: var_bundleSeqs,
+    );
   }
 
   @protected
-  MintState sse_decode_mint_state(SseDeserializer deserializer) {
+  MintStatus sse_decode_mint_status(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_mintId = sse_decode_String(deserializer);
+    var var_mintId = sse_decode_i_64(deserializer);
+    var var_kind = sse_decode_String(deserializer);
     var var_state = sse_decode_String(deserializer);
-    return MintState(mintId: var_mintId, state: var_state);
+    var var_createdHeight = sse_decode_i_64(deserializer);
+    var var_cents = sse_decode_i_64(deserializer);
+    var var_lockBlocks = sse_decode_u_32(deserializer);
+    var var_termClass = sse_decode_String(deserializer);
+    var var_refHeight = sse_decode_i_64(deserializer);
+    var var_lockHeight = sse_decode_i_64(deserializer);
+    var var_claimHeight = sse_decode_i_64(deserializer);
+    var var_expiryHeight = sse_decode_i_64(deserializer);
+    var var_collateralZat = sse_decode_i_64(deserializer);
+    var var_feeZat = sse_decode_i_64(deserializer);
+    var var_attestFeeZat = sse_decode_i_64(deserializer);
+    var var_residualZat = sse_decode_i_64(deserializer);
+    var var_bundleSeqs = sse_decode_String(deserializer);
+    var var_carrierTxid = sse_decode_String(deserializer);
+    var var_mainTxid = sse_decode_String(deserializer);
+    var var_sweepTxid = sse_decode_String(deserializer);
+    var var_vaultTxid = sse_decode_String(deserializer);
+    var var_tip = sse_decode_i_64(deserializer);
+    var var_inProgress = sse_decode_bool(deserializer);
+    var var_windowOpen = sse_decode_bool(deserializer);
+    var var_blocksLeft = sse_decode_i_64(deserializer);
+    var var_canFinish = sse_decode_bool(deserializer);
+    var var_canSweep = sse_decode_bool(deserializer);
+    var var_note = sse_decode_String(deserializer);
+    return MintStatus(
+      mintId: var_mintId,
+      kind: var_kind,
+      state: var_state,
+      createdHeight: var_createdHeight,
+      cents: var_cents,
+      lockBlocks: var_lockBlocks,
+      termClass: var_termClass,
+      refHeight: var_refHeight,
+      lockHeight: var_lockHeight,
+      claimHeight: var_claimHeight,
+      expiryHeight: var_expiryHeight,
+      collateralZat: var_collateralZat,
+      feeZat: var_feeZat,
+      attestFeeZat: var_attestFeeZat,
+      residualZat: var_residualZat,
+      bundleSeqs: var_bundleSeqs,
+      carrierTxid: var_carrierTxid,
+      mainTxid: var_mainTxid,
+      sweepTxid: var_sweepTxid,
+      vaultTxid: var_vaultTxid,
+      tip: var_tip,
+      inProgress: var_inProgress,
+      windowOpen: var_windowOpen,
+      blocksLeft: var_blocksLeft,
+      canFinish: var_canFinish,
+      canSweep: var_canSweep,
+      note: var_note,
+    );
   }
 
   @protected
@@ -1892,6 +2223,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_address = sse_decode_String(deserializer);
     var var_cents = sse_decode_i_64(deserializer);
     return Recipient(address: var_address, cents: var_cents);
+  }
+
+  @protected
+  RedeemResult sse_decode_redeem_result(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_txid = sse_decode_String(deserializer);
+    var var_verdict = sse_decode_String(deserializer);
+    var var_kind = sse_decode_String(deserializer);
+    var var_burnCents = sse_decode_i_64(deserializer);
+    var var_extraBurnCents = sse_decode_i_64(deserializer);
+    var var_changeCents = sse_decode_i_64(deserializer);
+    var var_feeZat = sse_decode_i_64(deserializer);
+    var var_collateralZat = sse_decode_i_64(deserializer);
+    var var_collateralAddress = sse_decode_String(deserializer);
+    var var_lockTime = sse_decode_i_64(deserializer);
+    var var_expiryHeight = sse_decode_i_64(deserializer);
+    return RedeemResult(
+      txid: var_txid,
+      verdict: var_verdict,
+      kind: var_kind,
+      burnCents: var_burnCents,
+      extraBurnCents: var_extraBurnCents,
+      changeCents: var_changeCents,
+      feeZat: var_feeZat,
+      collateralZat: var_collateralZat,
+      collateralAddress: var_collateralAddress,
+      lockTime: var_lockTime,
+      expiryHeight: var_expiryHeight,
+    );
   }
 
   @protected
@@ -1997,16 +2357,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   VaultSummary sse_decode_vault_summary(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_vaultTxid = sse_decode_String(deserializer);
+    var var_status = sse_decode_String(deserializer);
+    var var_ownerAddress = sse_decode_String(deserializer);
+    var var_termClass = sse_decode_String(deserializer);
     var var_cents = sse_decode_i_64(deserializer);
     var var_collateralZat = sse_decode_i_64(deserializer);
     var var_lockHeight = sse_decode_i_64(deserializer);
-    var var_status = sse_decode_String(deserializer);
+    var var_claimHeight = sse_decode_i_64(deserializer);
+    var var_mintHeight = sse_decode_i_64(deserializer);
+    var var_tip = sse_decode_i_64(deserializer);
+    var var_open = sse_decode_bool(deserializer);
+    var var_redeemable = sse_decode_bool(deserializer);
+    var var_blocksUntilRedeem = sse_decode_i_64(deserializer);
+    var var_releasable = sse_decode_bool(deserializer);
+    var var_claimable = sse_decode_bool(deserializer);
+    var var_underwaterAtMicroUsd = sse_decode_i_64(deserializer);
+    var var_underwater = sse_decode_bool(deserializer);
+    var var_closeHeight = sse_decode_i_64(deserializer);
+    var var_closingTxid = sse_decode_String(deserializer);
+    var var_voidReason = sse_decode_String(deserializer);
     return VaultSummary(
       vaultTxid: var_vaultTxid,
+      status: var_status,
+      ownerAddress: var_ownerAddress,
+      termClass: var_termClass,
       cents: var_cents,
       collateralZat: var_collateralZat,
       lockHeight: var_lockHeight,
-      status: var_status,
+      claimHeight: var_claimHeight,
+      mintHeight: var_mintHeight,
+      tip: var_tip,
+      open: var_open,
+      redeemable: var_redeemable,
+      blocksUntilRedeem: var_blocksUntilRedeem,
+      releasable: var_releasable,
+      claimable: var_claimable,
+      underwaterAtMicroUsd: var_underwaterAtMicroUsd,
+      underwater: var_underwater,
+      closeHeight: var_closeHeight,
+      closingTxid: var_closingTxid,
+      voidReason: var_voidReason,
     );
   }
 
@@ -2194,6 +2584,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_claimable_item(ClaimableItem self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.vaultTxid, serializer);
+    sse_encode_String(self.ownerAddress, serializer);
+    sse_encode_i_64(self.cents, serializer);
+    sse_encode_i_64(self.collateralZat, serializer);
+    sse_encode_i_64(self.claimHeight, serializer);
+    sse_encode_String(self.claimPath, serializer);
+    sse_encode_i_64(self.pClaimMicroUsd, serializer);
+    sse_encode_i_64(self.feeZat, serializer);
+    sse_encode_i_64(self.attestFeeZat, serializer);
+    sse_encode_i_64(self.residualZat, serializer);
+    sse_encode_i_64(self.claimantZat, serializer);
+  }
+
+  @protected
   void sse_encode_created(Created self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.walletId, serializer);
@@ -2267,6 +2673,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_claimable_item(
+    List<ClaimableItem> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_claimable_item(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_history_item(
     List<HistoryItem> self,
     SseSerializer serializer,
@@ -2276,6 +2694,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     for (final item in self) {
       sse_encode_history_item(item, serializer);
     }
+  }
+
+  @protected
+  void sse_encode_list_mint_status(
+    List<MintStatus> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_mint_status(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_prim_u_32_strict(
+    Uint32List self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    serializer.buffer.putUint32List(self);
   }
 
   @protected
@@ -2316,14 +2756,57 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_mint_estimate(MintEstimate self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_64(self.cents, serializer);
+    sse_encode_u_32(self.lockBlocks, serializer);
+    sse_encode_String(self.termClass, serializer);
+    sse_encode_i_64(self.refHeight, serializer);
+    sse_encode_i_64(self.lockHeight, serializer);
+    sse_encode_i_64(self.claimHeight, serializer);
+    sse_encode_i_64(self.expiryHeight, serializer);
+    sse_encode_i_64(self.requiredZat, serializer);
     sse_encode_i_64(self.collateralZat, serializer);
+    sse_encode_i_64(self.feeZat, serializer);
+    sse_encode_i_64(self.attestFeeZat, serializer);
+    sse_encode_i_64(self.carrierZat, serializer);
+    sse_encode_i_64(self.tokenZat, serializer);
+    sse_encode_i_64(self.networkFeeZat, serializer);
+    sse_encode_i_64(self.totalZat, serializer);
+    sse_encode_i_64(self.availableZat, serializer);
+    sse_encode_bool(self.affordable, serializer);
+    sse_encode_opt_box_autoadd_i_64(self.pMintMicroUsd, serializer);
+    sse_encode_bool(self.armed, serializer);
+    sse_encode_list_prim_u_32_strict(self.bundleSeqs, serializer);
   }
 
   @protected
-  void sse_encode_mint_state(MintState self, SseSerializer serializer) {
+  void sse_encode_mint_status(MintStatus self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.mintId, serializer);
+    sse_encode_i_64(self.mintId, serializer);
+    sse_encode_String(self.kind, serializer);
     sse_encode_String(self.state, serializer);
+    sse_encode_i_64(self.createdHeight, serializer);
+    sse_encode_i_64(self.cents, serializer);
+    sse_encode_u_32(self.lockBlocks, serializer);
+    sse_encode_String(self.termClass, serializer);
+    sse_encode_i_64(self.refHeight, serializer);
+    sse_encode_i_64(self.lockHeight, serializer);
+    sse_encode_i_64(self.claimHeight, serializer);
+    sse_encode_i_64(self.expiryHeight, serializer);
+    sse_encode_i_64(self.collateralZat, serializer);
+    sse_encode_i_64(self.feeZat, serializer);
+    sse_encode_i_64(self.attestFeeZat, serializer);
+    sse_encode_i_64(self.residualZat, serializer);
+    sse_encode_String(self.bundleSeqs, serializer);
+    sse_encode_String(self.carrierTxid, serializer);
+    sse_encode_String(self.mainTxid, serializer);
+    sse_encode_String(self.sweepTxid, serializer);
+    sse_encode_String(self.vaultTxid, serializer);
+    sse_encode_i_64(self.tip, serializer);
+    sse_encode_bool(self.inProgress, serializer);
+    sse_encode_bool(self.windowOpen, serializer);
+    sse_encode_i_64(self.blocksLeft, serializer);
+    sse_encode_bool(self.canFinish, serializer);
+    sse_encode_bool(self.canSweep, serializer);
+    sse_encode_String(self.note, serializer);
   }
 
   @protected
@@ -2360,6 +2843,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.address, serializer);
     sse_encode_i_64(self.cents, serializer);
+  }
+
+  @protected
+  void sse_encode_redeem_result(RedeemResult self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.txid, serializer);
+    sse_encode_String(self.verdict, serializer);
+    sse_encode_String(self.kind, serializer);
+    sse_encode_i_64(self.burnCents, serializer);
+    sse_encode_i_64(self.extraBurnCents, serializer);
+    sse_encode_i_64(self.changeCents, serializer);
+    sse_encode_i_64(self.feeZat, serializer);
+    sse_encode_i_64(self.collateralZat, serializer);
+    sse_encode_String(self.collateralAddress, serializer);
+    sse_encode_i_64(self.lockTime, serializer);
+    sse_encode_i_64(self.expiryHeight, serializer);
   }
 
   @protected
@@ -2434,10 +2933,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_vault_summary(VaultSummary self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.vaultTxid, serializer);
+    sse_encode_String(self.status, serializer);
+    sse_encode_String(self.ownerAddress, serializer);
+    sse_encode_String(self.termClass, serializer);
     sse_encode_i_64(self.cents, serializer);
     sse_encode_i_64(self.collateralZat, serializer);
     sse_encode_i_64(self.lockHeight, serializer);
-    sse_encode_String(self.status, serializer);
+    sse_encode_i_64(self.claimHeight, serializer);
+    sse_encode_i_64(self.mintHeight, serializer);
+    sse_encode_i_64(self.tip, serializer);
+    sse_encode_bool(self.open, serializer);
+    sse_encode_bool(self.redeemable, serializer);
+    sse_encode_i_64(self.blocksUntilRedeem, serializer);
+    sse_encode_bool(self.releasable, serializer);
+    sse_encode_bool(self.claimable, serializer);
+    sse_encode_i_64(self.underwaterAtMicroUsd, serializer);
+    sse_encode_bool(self.underwater, serializer);
+    sse_encode_i_64(self.closeHeight, serializer);
+    sse_encode_String(self.closingTxid, serializer);
+    sse_encode_String(self.voidReason, serializer);
   }
 
   @protected

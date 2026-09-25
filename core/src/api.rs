@@ -14,8 +14,11 @@
 //!   `Send`, which is why the calls are not `async fn` themselves.
 //! - Every `*_confirm` goes through `gate::confirm` inside the core's `broadcast` (D-W-5);
 //!   nothing here builds a transaction and nothing here can skip the gate.
-//! - `mint_*`, `vaults`, `redeem`, `claimable`, `claim` are Phase W4 and return
-//!   [`ErrorKind::NotYetImplemented`].
+//! - `mint_*`, `vaults`, `redeem`, `claimable`, `claim` (Phase W4) drive the core's two-step
+//!   state machine and the vault builders exactly as `yew-cli` does: sync first, then the
+//!   step with the sync's `tip` / `branch_id`; every broadcast runs both gate layers inside
+//!   the core. The rows come back as [`MintStatus`] (the `mints` table, plan §5.3) so a
+//!   screen reopened mid-mint renders the state the file holds.
 //!
 //! `yew-cli` (`core/cli/src/main.rs`) is the other driver of the same core; the two agree on
 //! every step (connect → probe → sync → build → broadcast).
@@ -80,7 +83,7 @@ pub enum ErrorKind {
     Locked,
     /// A wallet is already open ([`lock`] first).
     AlreadyOpen,
-    /// A Phase W4 call.
+    /// A call the core does not offer yet (none in W4; kept for the app's exhaustive match).
     NotYetImplemented,
     /// The broadcast gate refused (the node's verdict is in `message`, D-W-5).
     Gate,
@@ -128,17 +131,11 @@ impl YewError {
     fn locked() -> YewError {
         YewError::new(ErrorKind::Locked, "The wallet is locked. Unlock it first.")
     }
-
-    fn not_yet(feature: &str) -> YewError {
-        YewError::new(
-            ErrorKind::NotYetImplemented,
-            format!("{feature} arrives with the Yellowback screens (Phase W4)."),
-        )
-    }
 }
 
 impl From<WalletError> for YewError {
     fn from(e: WalletError) -> YewError {
+        let text = e.to_string();
         match e {
             WalletError::Gate(g) => YewError::new(ErrorKind::Gate, gate_message(&g)),
             WalletError::Net(n) => YewError::from(n),
@@ -146,6 +143,10 @@ impl From<WalletError> for YewError {
             WalletError::Transfer(t) => YewError::new(ErrorKind::Refused, t.to_string()),
             WalletError::Key(k) => YewError::new(ErrorKind::Input, k.to_string()),
             WalletError::Other(m) => YewError::new(ErrorKind::Refused, m),
+            WalletError::Mint(crate::build::mint::MintError::Unaffordable { .. }) => {
+                YewError::new(ErrorKind::NeedYecForFees, text)
+            }
+            WalletError::Mint(m) => YewError::new(ErrorKind::Refused, m.to_string()),
             other => YewError::new(ErrorKind::Other, other.to_string()),
         }
     }
@@ -471,37 +472,210 @@ pub struct SyncEvent {
     pub yellowback_usable: bool,
 }
 
-/// Placeholder for the W4 mint estimate.
+/// [`mint_estimate`]: what the Mint screen shows before anything is signed (plan §5.3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MintEstimate {
     /// Cents to mint.
     pub cents: i64,
-    /// Required YEC collateral, zat.
+    /// The lock in blocks.
+    pub lock_blocks: u32,
+    /// The term class letter (`A`, `B`, `C`).
+    pub term_class: String,
+    /// `R`, the reference height the two transactions cite.
+    pub ref_height: i64,
+    /// `R + lockBlocks`: when the owner may redeem.
+    pub lock_height: i64,
+    /// `lockHeight + GRACE`: when a liquidator may claim.
+    pub claim_height: i64,
+    /// `R + REF_WINDOW`: the carrier and the MINT expire here.
+    pub expiry_height: i64,
+    /// `requiredZat` as the node reports it.
+    pub required_zat: i64,
+    /// The collateral the MINT will lock (rounded as `BuildMint` does).
     pub collateral_zat: i64,
+    /// The enforcement fee, zat (0 under FEE-0).
+    pub fee_zat: i64,
+    /// The attestor fee, zat (0 under AFEE-0).
+    pub attest_fee_zat: i64,
+    /// `CARRIER_VALUE`, zat.
+    pub carrier_zat: i64,
+    /// `TOKEN_VALUE` for the new YED output, zat.
+    pub token_zat: i64,
+    /// The two network fees, zat.
+    pub network_fee_zat: i64,
+    /// Everything the two steps need from YEC, zat.
+    pub total_zat: i64,
+    /// Spendable `YEC` + `FEE_RESERVE`, zat.
+    pub available_zat: i64,
+    /// `available_zat >= total_zat`.
+    pub affordable: bool,
+    /// `pMint` at `R`, micro-USD per YEC; `None` when undefined.
+    pub p_mint_micro_usd: Option<i64>,
+    /// `armed` at `R`.
+    pub armed: bool,
+    /// The attestor `seq`s the bundle would carry.
+    pub bundle_seqs: Vec<u32>,
 }
 
-/// Placeholder for the W4 mint state.
+/// One `mints` row (plan §5.3, README "the two-step state machine is a table"): a mint or a
+/// claim from the moment its carrier is broadcast. `state` is the stored name
+/// (`CARRIER_SENT`, `CARRIER_CONFIRMED`, `MAIN_SENT`, `DONE`, `LAPSED`, `SWEEP_SENT`, `SWEPT`,
+/// `FAILED`). Heights are judged against `tip`, the last height the wallet synced to.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MintState {
-    /// The mint id.
-    pub mint_id: String,
-    /// The state name.
+pub struct MintStatus {
+    /// The row id.
+    pub mint_id: i64,
+    /// `mint` or `claim`.
+    pub kind: String,
+    /// The stored state name.
     pub state: String,
+    /// The tip when the carrier was broadcast.
+    pub created_height: i64,
+    /// Cents minted (mint) or the debt burned (claim).
+    pub cents: i64,
+    /// `lockBlocks` (mint).
+    pub lock_blocks: u32,
+    /// The term class letter.
+    pub term_class: String,
+    /// `R`.
+    pub ref_height: i64,
+    /// The vault's `lockHeight`.
+    pub lock_height: i64,
+    /// The vault's `claimHeight`.
+    pub claim_height: i64,
+    /// `R + REF_WINDOW`.
+    pub expiry_height: i64,
+    /// The collateral, zat.
+    pub collateral_zat: i64,
+    /// The enforcement fee, zat.
+    pub fee_zat: i64,
+    /// The attestor fee, zat.
+    pub attest_fee_zat: i64,
+    /// A claim's residual to the vault owner, zat.
+    pub residual_zat: i64,
+    /// The bundle's `seq`s as `"0,1,2"`.
+    pub bundle_seqs: String,
+    /// The carrier funding txid (display form).
+    pub carrier_txid: String,
+    /// The MINT / CLAIM txid, empty until `MAIN_SENT`.
+    pub main_txid: String,
+    /// The sweep txid, empty until `SWEEP_SENT`.
+    pub sweep_txid: String,
+    /// A claim's vault txid, empty for a mint.
+    pub vault_txid: String,
+    /// The last synced height the flags below were judged at.
+    pub tip: i64,
+    /// `CARRIER_SENT`, `CARRIER_CONFIRMED` or `MAIN_SENT`: still moving.
+    pub in_progress: bool,
+    /// The node would still accept the main transaction (`CheckExpiry` at `tip`).
+    pub window_open: bool,
+    /// Blocks until the window closes (0 when closed).
+    pub blocks_left: i64,
+    /// `CARRIER_CONFIRMED` with the window open: [`mint_finish`] may be called.
+    pub can_finish: bool,
+    /// `LAPSED`: [`mint_sweep`] may be called.
+    pub can_sweep: bool,
+    /// Why the row failed or lapsed, for the screen.
+    pub note: String,
 }
 
-/// Placeholder for a W4 vault.
+/// One own vault as `GetVault` last reported it (the Yellowback screen, plan §5.3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VaultSummary {
-    /// The vault txid.
+    /// The mint txid (the vault outpoint is `txid:0`).
     pub vault_txid: String,
-    /// Cents minted.
+    /// `ACTIVE`, `VOID`, `CLOSED`, `CLAIMED`.
+    pub status: String,
+    /// The owner address, `ye…` form (an own key).
+    pub owner_address: String,
+    /// The term class letter.
+    pub term_class: String,
+    /// Cents minted (the debt).
     pub cents: i64,
     /// Collateral, zat.
     pub collateral_zat: i64,
-    /// Lock height.
+    /// `lockHeight`.
     pub lock_height: i64,
-    /// The status.
-    pub status: String,
+    /// `claimHeight`.
+    pub claim_height: i64,
+    /// `mintHeight`.
+    pub mint_height: i64,
+    /// The last synced height the flags below were judged at.
+    pub tip: i64,
+    /// `ACTIVE` or `VOID`: still spendable by its owner.
+    pub open: bool,
+    /// `ACTIVE` and `tip >= lockHeight`: [`redeem`] builds the owner-path REDEEM.
+    pub redeemable: bool,
+    /// Blocks until `lockHeight` (0 once reached).
+    pub blocks_until_redeem: i64,
+    /// `VOID`: [`redeem`] releases the collateral without a payload.
+    pub releasable: bool,
+    /// `claimable` as the node judged it at its tip (a liquidator may take it).
+    pub claimable: bool,
+    /// `underwaterAt`, micro-USD per YEC (0 when undefined).
+    pub underwater_at_micro_usd: i64,
+    /// The last sync's `pMint` is at or below `underwaterAt`: the warning.
+    pub underwater: bool,
+    /// `closeHeight`, 0 while open.
+    pub close_height: i64,
+    /// `closingTxid`, empty while open.
+    pub closing_txid: String,
+    /// `voidReason`, empty unless VOID.
+    pub void_reason: String,
+}
+
+/// One `ListClaimable` row (the liquidator persona, plan §5.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimableItem {
+    /// The vault's mint txid.
+    pub vault_txid: String,
+    /// The owner, `ye…`.
+    pub owner_address: String,
+    /// The debt to burn, cents (the wallet must hold at least this).
+    pub cents: i64,
+    /// The collateral, zat.
+    pub collateral_zat: i64,
+    /// `claimHeight`.
+    pub claim_height: i64,
+    /// `a` (underwater at `pClaim`) or `b` (notice + emergency price).
+    pub claim_path: String,
+    /// `pClaim` at the node's tip, micro-USD per YEC.
+    pub p_claim_micro_usd: i64,
+    /// The enforcement fee, zat.
+    pub fee_zat: i64,
+    /// The attestor fee, zat.
+    pub attest_fee_zat: i64,
+    /// RED-5's residual to the owner, zat.
+    pub residual_zat: i64,
+    /// What the claimant keeps, zat.
+    pub claimant_zat: i64,
+}
+
+/// The result of [`redeem`]: the REDEEM (or the release of a VOID vault) was broadcast.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RedeemResult {
+    /// The txid, display form.
+    pub txid: String,
+    /// The node's verdict on the broadcast bytes.
+    pub verdict: String,
+    /// `redeem` (ACTIVE) or `release` (VOID).
+    pub kind: String,
+    /// Cents burned (the debt plus any sub-dollar remainder).
+    pub burn_cents: i64,
+    /// The sub-dollar remainder burned on top of the debt.
+    pub extra_burn_cents: i64,
+    /// YED change, cents.
+    pub change_cents: i64,
+    /// The enforcement fee, zat.
+    pub fee_zat: i64,
+    /// The collateral returned, zat.
+    pub collateral_zat: i64,
+    /// The own address it returns to.
+    pub collateral_address: String,
+    /// `nLockTime` (= `lockHeight`).
+    pub lock_time: i64,
+    /// `nExpiryHeight`.
+    pub expiry_height: i64,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1319,52 +1493,357 @@ pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
     }
 }
 
-// ---- Phase W4 stubs -------------------------------------------------------------------------
+// ---- Phase W4: the two-step mint / claim, the vaults ------------------------------------------
 
-/// W4: the mint estimate.
+fn parse_txid(s: &str) -> Result<[u8; 32], YewError> {
+    crate::tx::txid_from_hex(s.trim()).map_err(|m| YewError::new(ErrorKind::Input, m))
+}
+
+fn hex_or_empty(txid: &[u8; 32]) -> String {
+    if *txid == [0; 32] {
+        String::new()
+    } else {
+        txid_hex(txid)
+    }
+}
+
+fn mint_status_of(m: &crate::store::MintRow, tip: u64) -> MintStatus {
+    use crate::store::MintState as S;
+    let open = crate::build::mint::window_open(tip, m.expiry_height);
+    let blocks_left = (m.expiry_height as i64)
+        .saturating_sub(tip as i64 + 1 + params::TX_EXPIRING_SOON_THRESHOLD as i64)
+        .max(0);
+    MintStatus {
+        mint_id: m.id,
+        kind: m.kind.as_str().into(),
+        state: m.state.as_str().into(),
+        created_height: m.created_height as i64,
+        cents: m.cents as i64,
+        lock_blocks: m.lock_blocks,
+        term_class: m.term_class.clone(),
+        ref_height: m.ref_height as i64,
+        lock_height: m.lock_height as i64,
+        claim_height: m.claim_height as i64,
+        expiry_height: m.expiry_height as i64,
+        collateral_zat: m.collateral_zat,
+        fee_zat: m.fee_zat,
+        attest_fee_zat: m.attest_fee_zat,
+        residual_zat: m.residual_zat,
+        bundle_seqs: m.bundle_seqs.clone(),
+        carrier_txid: hex_or_empty(&m.carrier_txid),
+        main_txid: hex_or_empty(&m.main_txid),
+        sweep_txid: hex_or_empty(&m.sweep_txid),
+        vault_txid: hex_or_empty(&m.vault_txid),
+        tip: tip as i64,
+        in_progress: matches!(m.state, S::CarrierSent | S::CarrierConfirmed | S::MainSent),
+        window_open: open,
+        blocks_left,
+        can_finish: m.state == S::CarrierConfirmed && open,
+        can_sweep: m.state == S::Lapsed,
+        note: m.note.clone(),
+    }
+}
+
+fn vault_summary(
+    v: &crate::store::VaultRow,
+    tip: u64,
+    price: Option<i64>,
+    network: Network,
+) -> VaultSummary {
+    let active = v.status == "ACTIVE";
+    let void = v.status == "VOID";
+    VaultSummary {
+        vault_txid: txid_hex(&v.txid),
+        status: v.status.clone(),
+        owner_address: keys::encode_yellowback(network, &v.owner_hash160),
+        term_class: v.term_class.clone(),
+        cents: v.minted_cents as i64,
+        collateral_zat: v.collateral_zat,
+        lock_height: v.lock_height as i64,
+        claim_height: v.claim_height as i64,
+        mint_height: v.mint_height as i64,
+        tip: tip as i64,
+        open: v.is_open(),
+        redeemable: active && tip >= v.lock_height as u64,
+        blocks_until_redeem: (v.lock_height as i64 - tip as i64).max(0),
+        releasable: void,
+        claimable: v.claimable,
+        underwater_at_micro_usd: v.underwater_at,
+        underwater: v.is_open()
+            && v.underwater_at > 0
+            && price.is_some_and(|p| p > 0 && p <= v.underwater_at),
+        close_height: v.close_height as i64,
+        closing_txid: v.closing_txid.clone(),
+        void_reason: v.void_reason.clone(),
+    }
+}
+
+fn store_err(e: crate::store::StoreError) -> YewError {
+    YewError::new(ErrorKind::Other, e.to_string())
+}
+
+/// The last synced height (what the store's rows are judged against without a network call).
+fn synced_tip(o: &Open) -> Result<u64, YewError> {
+    o.wallet
+        .store
+        .meta_u64("last_synced_height")
+        .map_err(store_err)
+}
+
+fn row_status(o: &Open, id: i64) -> Result<MintStatus, YewError> {
+    let m = o
+        .wallet
+        .store
+        .mint(id)
+        .map_err(store_err)?
+        .ok_or_else(|| YewError::new(ErrorKind::Input, format!("no mint with id {id}")))?;
+    Ok(mint_status_of(&m, synced_tip(o)?))
+}
+
+/// The mint estimate (after a sync): collateral, fees, heights, term class, attestor seqs.
+/// Nothing is signed.
 pub fn mint_estimate(cents: i64, lock_blocks: u32) -> Result<MintEstimate, YewError> {
-    let _ = (cents, lock_blocks);
-    Err(YewError::not_yet("Minting"))
+    with_open_async(|o| {
+        Box::pin(async move {
+            if cents <= 0 {
+                return Err(YewError::new(
+                    ErrorKind::Input,
+                    "Enter an amount in dollars to mint.",
+                ));
+            }
+            o.sync().await?;
+            let Open { wallet, conn, .. } = o;
+            let conn = conn.as_mut().expect("connected");
+            let e = wallet
+                .mint_estimate(&mut conn.validator, cents as u64, lock_blocks)
+                .await?;
+            Ok(MintEstimate {
+                cents: e.cents as i64,
+                lock_blocks: e.lock_blocks,
+                term_class: e.term_class.clone(),
+                ref_height: e.ref_height as i64,
+                lock_height: e.lock_height as i64,
+                claim_height: e.claim_height as i64,
+                expiry_height: e.ref_height as i64 + params::REF_WINDOW as i64,
+                required_zat: e.required_zat,
+                collateral_zat: e.collateral_zat,
+                fee_zat: e.fee_zat,
+                attest_fee_zat: e.attest_fee_zat,
+                carrier_zat: params::CARRIER_VALUE,
+                token_zat: params::TOKEN_VALUE,
+                network_fee_zat: 2 * params::FEE_ZAT,
+                total_zat: e.total_zat,
+                available_zat: e.available_zat,
+                affordable: e.affordable(),
+                p_mint_micro_usd: if e.p_mint > 0 { Some(e.p_mint) } else { None },
+                armed: e.armed,
+                bundle_seqs: e.bundle_seqs.iter().map(|s| *s as u32).collect(),
+            })
+        })
+    })
 }
 
-/// W4: start a mint (the carrier step).
-pub fn mint_start(cents: i64, lock_blocks: u32) -> Result<MintState, YewError> {
-    let _ = (cents, lock_blocks);
-    Err(YewError::not_yet("Minting"))
+/// Start a mint (after a sync): verify the bundle, fund the carrier through the gate, record
+/// the row. Returns the row (`CARRIER_SENT`); [`mint_finish`] sends the MINT once a sync has
+/// seen the carrier confirm.
+pub fn mint_start(cents: i64, lock_blocks: u32) -> Result<MintStatus, YewError> {
+    with_open_async(|o| {
+        Box::pin(async move {
+            if cents <= 0 {
+                return Err(YewError::new(
+                    ErrorKind::Input,
+                    "Enter an amount in dollars to mint.",
+                ));
+            }
+            let r = o.sync().await?;
+            let id = {
+                let Open { wallet, conn, .. } = &mut *o;
+                let conn = conn.as_mut().expect("connected");
+                wallet
+                    .mint_start(
+                        &mut conn.compact,
+                        &mut conn.validator,
+                        cents as u64,
+                        lock_blocks,
+                        r.tip,
+                        r.branch_id,
+                    )
+                    .await?
+            };
+            row_status(o, id)
+        })
+    })
 }
 
-/// W4: finish a mint (the main transaction).
-pub fn mint_finish(mint_id: String) -> Result<MintState, YewError> {
-    let _ = mint_id;
-    Err(YewError::not_yet("Minting"))
+/// One row of the two-step table (no network; heights judged at the last synced height).
+pub fn mint_status(mint_id: i64) -> Result<MintStatus, YewError> {
+    with_open(|o| row_status(o, mint_id))
 }
 
-/// W4: sweep a lapsed carrier.
-pub fn mint_sweep(mint_id: String) -> Result<MintState, YewError> {
-    let _ = mint_id;
-    Err(YewError::not_yet("Minting"))
+/// Every two-step row (mints and claims), oldest first (no network).
+pub fn mints() -> Result<Vec<MintStatus>, YewError> {
+    with_open(|o| {
+        let tip = synced_tip(o)?;
+        Ok(o.wallet
+            .mints()?
+            .iter()
+            .map(|m| mint_status_of(m, tip))
+            .collect())
+    })
 }
 
-/// W4: the vaults this wallet owns.
+/// Send the MINT (or, for a claim row, the CLAIM) over the confirmed carrier (after a sync;
+/// both gate layers). The row must be `CARRIER_CONFIRMED` with the window open; a lapsed
+/// row is refused with `carrier-lapsed`. Returns the row (`MAIN_SENT`).
+pub fn mint_finish(mint_id: i64) -> Result<MintStatus, YewError> {
+    with_open_async(|o| {
+        Box::pin(async move {
+            let r = o.sync().await?;
+            {
+                let Open { wallet, conn, .. } = &mut *o;
+                let conn = conn.as_mut().expect("connected");
+                wallet
+                    .mint_finish(
+                        &mut conn.compact,
+                        &mut conn.validator,
+                        mint_id,
+                        r.tip,
+                        r.branch_id,
+                    )
+                    .await?;
+            }
+            row_status(o, mint_id)
+        })
+    })
+}
+
+/// Sweep the carrier of a `LAPSED` row (`CARRIER_VALUE − fee` back to the wallet; after a
+/// sync; both gate layers). Returns the row (`SWEEP_SENT`).
+pub fn mint_sweep(mint_id: i64) -> Result<MintStatus, YewError> {
+    with_open_async(|o| {
+        Box::pin(async move {
+            let r = o.sync().await?;
+            {
+                let Open { wallet, conn, .. } = &mut *o;
+                let conn = conn.as_mut().expect("connected");
+                wallet
+                    .mint_sweep(
+                        &mut conn.compact,
+                        &mut conn.validator,
+                        mint_id,
+                        r.tip,
+                        r.branch_id,
+                    )
+                    .await?;
+            }
+            row_status(o, mint_id)
+        })
+    })
+}
+
+/// The vaults this wallet owns, as the last sync left them (no network).
 pub fn vaults() -> Result<Vec<VaultSummary>, YewError> {
-    Err(YewError::not_yet("Vaults"))
+    with_open(|o| {
+        let tip = synced_tip(o)?;
+        let price = o.wallet.balances()?.price_micro_usd;
+        let network = o.wallet.network;
+        Ok(o.wallet
+            .vaults()?
+            .iter()
+            .map(|v| vault_summary(v, tip, price, network))
+            .collect())
+    })
 }
 
-/// W4: redeem a vault.
-pub fn redeem(vault_txid: String) -> Result<SendResult, YewError> {
-    let _ = vault_txid;
-    Err(YewError::not_yet("Redeeming"))
+/// Redeem an own `ACTIVE` vault at or past `lockHeight` (burning its debt from the wallet's
+/// YED), or release a `VOID` one (after a sync; both gate layers, the planned burn known to
+/// the remote layer).
+pub fn redeem(vault_txid: String) -> Result<RedeemResult, YewError> {
+    let txid = parse_txid(&vault_txid)?;
+    with_open_async(|o| {
+        Box::pin(async move {
+            let r = o.sync().await?;
+            let Open { wallet, conn, .. } = o;
+            let conn = conn.as_mut().expect("connected");
+            let (sent, v, p) = wallet
+                .redeem(
+                    &mut conn.compact,
+                    &mut conn.validator,
+                    &txid,
+                    r.tip,
+                    r.branch_id,
+                )
+                .await?;
+            Ok(RedeemResult {
+                txid: sent,
+                verdict: v.verdict,
+                kind: p.kind.into(),
+                burn_cents: p.burn_cents as i64,
+                extra_burn_cents: p.extra_burn_cents as i64,
+                change_cents: p.change_cents as i64,
+                fee_zat: p.fee_zat,
+                collateral_zat: p.collateral_out,
+                collateral_address: p.collateral_address,
+                lock_time: p.lock_time as i64,
+                expiry_height: p.expiry_height as i64,
+            })
+        })
+    })
 }
 
-/// W4: the claimable vaults.
-pub fn claimable() -> Result<Vec<VaultSummary>, YewError> {
-    Err(YewError::not_yet("Claiming"))
+/// `ListClaimable` at the node's tip (connects; the liquidator persona).
+pub fn claimable() -> Result<Vec<ClaimableItem>, YewError> {
+    with_open_async(|o| {
+        Box::pin(async move {
+            ensure_conn(o).await?;
+            let Open { wallet, conn, .. } = o;
+            let conn = conn.as_mut().expect("connected");
+            Ok(wallet
+                .claimable(&mut conn.validator)
+                .await?
+                .into_iter()
+                .map(|c| ClaimableItem {
+                    vault_txid: c.vault_txid,
+                    owner_address: c.owner_address,
+                    cents: c.minted_cents as i64,
+                    collateral_zat: c.collateral_zat,
+                    claim_height: c.claim_height as i64,
+                    claim_path: c.claim_path,
+                    p_claim_micro_usd: c.p_claim,
+                    fee_zat: c.fee_zat,
+                    attest_fee_zat: c.attest_fee_zat,
+                    residual_zat: c.residual_zat,
+                    claimant_zat: c.claimant_zat,
+                })
+                .collect())
+        })
+    })
 }
 
-/// W4: claim a vault.
-pub fn claim(vault_txid: String) -> Result<SendResult, YewError> {
-    let _ = vault_txid;
-    Err(YewError::not_yet("Claiming"))
+/// Start a claim of another wallet's claimable vault (after a sync): the bundle, the carrier
+/// through the gate, a row of kind `claim`. Returns the row; [`mint_finish`] sends the CLAIM
+/// once the carrier is confirmed.
+pub fn claim(vault_txid: String) -> Result<MintStatus, YewError> {
+    let txid = parse_txid(&vault_txid)?;
+    with_open_async(|o| {
+        Box::pin(async move {
+            let r = o.sync().await?;
+            let id = {
+                let Open { wallet, conn, .. } = &mut *o;
+                let conn = conn.as_mut().expect("connected");
+                wallet
+                    .claim(
+                        &mut conn.compact,
+                        &mut conn.validator,
+                        &txid,
+                        r.tip,
+                        r.branch_id,
+                    )
+                    .await?
+            };
+            row_status(o, id)
+        })
+    })
 }
 
 /// `N.NNNNNNNN` for zat (no unit).
@@ -1392,14 +1871,12 @@ mod tests {
         assert_eq!(balances().unwrap_err().kind, ErrorKind::Locked);
         assert_eq!(receive_address(false).unwrap_err().kind, ErrorKind::Locked);
         assert_eq!(history(0, 10).unwrap_err().kind, ErrorKind::Locked);
-        let e = mint_estimate(100, 10).unwrap_err();
-        assert_eq!(e.kind, ErrorKind::NotYetImplemented);
-        assert!(e.message.contains("W4"));
-        assert_eq!(vaults().unwrap_err().kind, ErrorKind::NotYetImplemented);
-        assert_eq!(
-            claim("x".into()).unwrap_err().kind,
-            ErrorKind::NotYetImplemented
-        );
+        assert_eq!(mint_estimate(100, 10).unwrap_err().kind, ErrorKind::Locked);
+        assert_eq!(vaults().unwrap_err().kind, ErrorKind::Locked);
+        assert_eq!(mints().unwrap_err().kind, ErrorKind::Locked);
+        // A malformed vault txid is refused before the wallet is looked at.
+        assert_eq!(claim("x".into()).unwrap_err().kind, ErrorKind::Input);
+        assert_eq!(redeem("zz".into()).unwrap_err().kind, ErrorKind::Input);
 
         // A plain connection is refused on mainnet before anything is opened.
         let e = unlock(
@@ -1460,6 +1937,11 @@ mod tests {
         assert!(!imported.covered_by_seed);
         assert_eq!(addresses().unwrap().len(), 41);
         assert!(history(0, 0).unwrap().rows.is_empty());
+        // W4, no network: an empty table, an empty vault list, an unknown row id.
+        assert!(mints().unwrap().is_empty());
+        assert!(vaults().unwrap().is_empty());
+        assert_eq!(mint_status(7).unwrap_err().kind, ErrorKind::Input);
+        assert_eq!(mint_estimate(0, 10).unwrap_err().kind, ErrorKind::Input);
         assert_eq!(
             send_yec_confirm("nope".into()).unwrap_err().kind,
             ErrorKind::PreviewExpired
@@ -1492,6 +1974,113 @@ mod tests {
         .unwrap_err();
         assert!(e.message.contains("another seed"), "{e}");
         lock();
+    }
+
+    #[test]
+    fn w4_rows_map_to_screen_flags() {
+        use crate::store::{MintKind, MintRow, MintState, VaultRow};
+        let row = MintRow {
+            id: 3,
+            kind: MintKind::Mint,
+            state: MintState::CarrierConfirmed,
+            created_height: 500,
+            cents: 25_000,
+            lock_blocks: 20,
+            term_class: "A".into(),
+            ref_height: 498,
+            lock_height: 518,
+            claim_height: 538,
+            collateral_zat: 950_000_000,
+            fee_zat: 1_000,
+            payee: String::new(),
+            attest_fee_zat: 0,
+            attest_payee: String::new(),
+            residual_zat: 0,
+            bundle: vec![],
+            bundle_seqs: "0,1".into(),
+            carrier_hash160: [1; 20],
+            owner_hash160: [2; 20],
+            carrier_txid: [0xab; 32],
+            carrier_vout: 0,
+            main_txid: [0; 32],
+            sweep_txid: [0; 32],
+            expiry_height: 538,
+            vault_txid: [0; 32],
+            owner_pubkey: vec![],
+            note: String::new(),
+        };
+        // Window open at tip 500: 500 + 1 + 3 <= 538, 34 blocks left; finish allowed.
+        let s = mint_status_of(&row, 500);
+        assert_eq!(
+            (s.mint_id, s.kind.as_str(), s.state.as_str()),
+            (3, "mint", "CARRIER_CONFIRMED")
+        );
+        assert!(s.in_progress && s.window_open && s.can_finish && !s.can_sweep);
+        assert_eq!(s.blocks_left, 34);
+        assert_eq!(s.carrier_txid, txid_hex(&[0xab; 32]));
+        assert!(s.main_txid.is_empty() && s.vault_txid.is_empty());
+        // The window closes at 535 (`CheckExpiry`): no finish, nothing to sweep yet either
+        // (the sync loop marks the row LAPSED, the API never guesses).
+        let s = mint_status_of(&row, 535);
+        assert!(!s.window_open && !s.can_finish && s.blocks_left == 0 && !s.can_sweep);
+        let lapsed = MintRow {
+            state: MintState::Lapsed,
+            ..row.clone()
+        };
+        let s = mint_status_of(&lapsed, 540);
+        assert!(s.can_sweep && !s.in_progress);
+        let done = MintRow {
+            state: MintState::Done,
+            main_txid: [0xcd; 32],
+            ..row
+        };
+        let s = mint_status_of(&done, 540);
+        assert!(!s.in_progress && !s.can_finish && s.main_txid == txid_hex(&[0xcd; 32]));
+
+        let vault = VaultRow {
+            txid: [0xef; 32],
+            vout: 0,
+            status: "ACTIVE".into(),
+            owner_hash160: [2; 20],
+            owner_pubkey: [3; 33],
+            term_class: "A".into(),
+            lock_height: 518,
+            claim_height: 538,
+            collateral_zat: 950_000_000,
+            minted_cents: 25_000,
+            mint_height: 501,
+            claimable: false,
+            underwater_at: 400_000,
+            sweep_before: 0,
+            close_height: 0,
+            closing_txid: String::new(),
+            void_reason: String::new(),
+            updated_height: 510,
+        };
+        let v = vault_summary(&vault, 510, Some(520_000), Network::Regtest);
+        assert!(v.open && !v.redeemable && !v.releasable && !v.underwater);
+        assert_eq!(v.blocks_until_redeem, 8);
+        assert_eq!(v.cents, 25_000);
+        assert_eq!(
+            v.owner_address,
+            keys::encode_yellowback(Network::Regtest, &[2; 20])
+        );
+        let v = vault_summary(&vault, 518, Some(390_000), Network::Regtest);
+        assert!(v.redeemable && v.underwater && v.blocks_until_redeem == 0);
+        let void = VaultRow {
+            status: "VOID".into(),
+            void_reason: "abandoned".into(),
+            ..vault.clone()
+        };
+        let v = vault_summary(&void, 510, None, Network::Regtest);
+        assert!(v.open && v.releasable && !v.redeemable && !v.underwater);
+        let closed = VaultRow {
+            status: "CLOSED".into(),
+            close_height: 520,
+            ..vault
+        };
+        let v = vault_summary(&closed, 530, Some(100_000), Network::Regtest);
+        assert!(!v.open && !v.redeemable && !v.underwater && v.close_height == 520);
     }
 
     #[test]

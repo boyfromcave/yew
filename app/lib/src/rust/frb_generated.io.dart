@@ -46,6 +46,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
 
   @protected
+  ClaimableItem dco_decode_claimable_item(dynamic raw);
+
+  @protected
   Created dco_decode_created(dynamic raw);
 
   @protected
@@ -70,7 +73,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<AddressPair> dco_decode_list_address_pair(dynamic raw);
 
   @protected
+  List<ClaimableItem> dco_decode_list_claimable_item(dynamic raw);
+
+  @protected
   List<HistoryItem> dco_decode_list_history_item(dynamic raw);
+
+  @protected
+  List<MintStatus> dco_decode_list_mint_status(dynamic raw);
+
+  @protected
+  Uint32List dco_decode_list_prim_u_32_strict(dynamic raw);
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
@@ -85,7 +97,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MintEstimate dco_decode_mint_estimate(dynamic raw);
 
   @protected
-  MintState dco_decode_mint_state(dynamic raw);
+  MintStatus dco_decode_mint_status(dynamic raw);
 
   @protected
   NetworkId dco_decode_network_id(dynamic raw);
@@ -98,6 +110,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Recipient dco_decode_recipient(dynamic raw);
+
+  @protected
+  RedeemResult dco_decode_redeem_result(dynamic raw);
 
   @protected
   SendResult dco_decode_send_result(dynamic raw);
@@ -168,6 +183,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
+  ClaimableItem sse_decode_claimable_item(SseDeserializer deserializer);
+
+  @protected
   Created sse_decode_created(SseDeserializer deserializer);
 
   @protected
@@ -192,7 +210,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<AddressPair> sse_decode_list_address_pair(SseDeserializer deserializer);
 
   @protected
+  List<ClaimableItem> sse_decode_list_claimable_item(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<HistoryItem> sse_decode_list_history_item(SseDeserializer deserializer);
+
+  @protected
+  List<MintStatus> sse_decode_list_mint_status(SseDeserializer deserializer);
+
+  @protected
+  Uint32List sse_decode_list_prim_u_32_strict(SseDeserializer deserializer);
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
@@ -209,7 +238,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MintEstimate sse_decode_mint_estimate(SseDeserializer deserializer);
 
   @protected
-  MintState sse_decode_mint_state(SseDeserializer deserializer);
+  MintStatus sse_decode_mint_status(SseDeserializer deserializer);
 
   @protected
   NetworkId sse_decode_network_id(SseDeserializer deserializer);
@@ -222,6 +251,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Recipient sse_decode_recipient(SseDeserializer deserializer);
+
+  @protected
+  RedeemResult sse_decode_redeem_result(SseDeserializer deserializer);
 
   @protected
   SendResult sse_decode_send_result(SseDeserializer deserializer);
@@ -299,6 +331,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_claimable_item(ClaimableItem self, SseSerializer serializer);
+
+  @protected
   void sse_encode_created(Created self, SseSerializer serializer);
 
   @protected
@@ -326,8 +361,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_claimable_item(
+    List<ClaimableItem> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_history_item(
     List<HistoryItem> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_mint_status(
+    List<MintStatus> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_prim_u_32_strict(
+    Uint32List self,
     SseSerializer serializer,
   );
 
@@ -353,7 +406,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_mint_estimate(MintEstimate self, SseSerializer serializer);
 
   @protected
-  void sse_encode_mint_state(MintState self, SseSerializer serializer);
+  void sse_encode_mint_status(MintStatus self, SseSerializer serializer);
 
   @protected
   void sse_encode_network_id(NetworkId self, SseSerializer serializer);
@@ -369,6 +422,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_recipient(Recipient self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_redeem_result(RedeemResult self, SseSerializer serializer);
 
   @protected
   void sse_encode_send_result(SendResult self, SseSerializer serializer);
