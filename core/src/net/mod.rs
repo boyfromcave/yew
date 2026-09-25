@@ -23,14 +23,28 @@ pub use rpc::yellowback_streamer_client::YellowbackStreamerClient;
 pub use tls::{default_servers, DefaultServer, Server};
 pub use yellowback::{Availability, Token, Validation, YellowbackClient};
 
+/// An error's message followed by every source in its chain, `: `-joined.
+fn with_sources(e: &dyn std::error::Error) -> String {
+    let mut s = e.to_string();
+    let mut cur = e.source();
+    while let Some(src) = cur {
+        s.push_str(": ");
+        s.push_str(&src.to_string());
+        cur = src.source();
+    }
+    s
+}
+
 /// Network errors.
 #[derive(Debug, Error)]
 pub enum NetError {
     /// The endpoint could not be built.
     #[error("server config: {0}")]
     Config(String),
-    /// Transport (connect, TLS) failure.
-    #[error("transport: {0}")]
+    /// Transport (connect, TLS) failure. `tonic::transport::Error` displays as the bare
+    /// "transport error"; the cause (connection refused, TLS, DNS) is in its source chain, so the
+    /// message walks it (W6: the app shows this verbatim).
+    #[error("transport: {}", with_sources(.0))]
     Transport(#[from] tonic::transport::Error),
     /// A gRPC status from the server.
     #[error("rpc {}: {}", .0.code(), .0.message())]

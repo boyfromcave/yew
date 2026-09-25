@@ -1,0 +1,9 @@
+// YewCore.xcframework (scripts/build-core-ios.sh) is a static library the Runner never calls
+// from Swift, so the linker would drop every yew-core object: -force_load keeps them all and
+// flutter_rust_bridge resolves them from the app binary (ExternalLibrary.process, see
+// lib/api/rust_wallet_api.dart). One slice per SDK; DEAD_CODE_STRIPPING / STRIP_STYLE keep the
+// frbgen_* symbols in Release. Included by Debug.xcconfig and Release.xcconfig. (W6)
+OTHER_LDFLAGS[sdk=iphoneos*] = $(inherited) -force_load $(PROJECT_DIR)/Frameworks/YewCore.xcframework/ios-arm64/libyew_core.a
+OTHER_LDFLAGS[sdk=iphonesimulator*] = $(inherited) -force_load $(PROJECT_DIR)/Frameworks/YewCore.xcframework/ios-arm64-simulator/libyew_core.a
+DEAD_CODE_STRIPPING = NO
+STRIP_STYLE = non-global

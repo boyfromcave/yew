@@ -849,6 +849,10 @@ fn open_wallet(
     passphrase: &str,
     birthday: Option<u64>,
 ) -> Result<Wallet, YewError> {
+    // The app's private directory (`Application Support` on iOS) need not exist yet (W6).
+    std::fs::create_dir_all(data_dir).map_err(|e| {
+        YewError::new(ErrorKind::Other, format!("data directory {data_dir}: {e}"))
+    })?;
     let path = format!(
         "{}/yew-{}.sqlite",
         data_dir.trim_end_matches('/'),

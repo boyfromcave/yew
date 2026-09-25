@@ -1,5 +1,9 @@
 // The one real implementation of WalletApi: the generated flutter_rust_bridge functions
 // (src/rust/api.dart, from core/src/api.rs). Nothing else under lib/ calls the bridge.
+import 'dart:io' show Platform;
+
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart' show ExternalLibrary;
+
 import '../src/rust/api.dart' as rust;
 import '../src/rust/frb_generated.dart';
 import 'wallet_api.dart';
@@ -7,8 +11,12 @@ import 'wallet_api.dart';
 class RustWalletApi implements WalletApi {
   const RustWalletApi();
 
-  /// Load the core once, before `runApp`.
-  static Future<void> init() => RustLib.init();
+  /// Load the core once, before `runApp`. On iOS the core is a static library force-loaded
+  /// into the app binary (ios/Flutter/YewCore.xcconfig), so the symbols are looked up in the
+  /// process; Android and desktop load `libyew_core.so` / the default library by name.
+  static Future<void> init() => RustLib.init(
+    externalLibrary: Platform.isIOS ? ExternalLibrary.process(iKnowHowToUseIt: true) : null,
+  );
 
   @override
   List<DefaultEndpoint> defaultServers({required NetworkId network}) => rust.defaultServers(network: network);

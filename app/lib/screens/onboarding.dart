@@ -80,6 +80,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       _busy = true;
       _error = null;
     });
+    // The navigator, taken before the await: `createWallet` notifies the root, which replaces
+    // this screen with Home before the call returns (`mounted` is then false, and gating the
+    // push on it skipped the seed backup on the simulator, W6). The navigator outlives the route.
+    final nav = Navigator.of(context);
     try {
       if (_restoring) app.api.checkSeedWords(seedWords: _words.text);
       final birthday = _restoring ? int.tryParse(_birthday.text.trim()) : (_tip ?? int.tryParse(_birthday.text.trim()));
@@ -95,8 +99,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           biometrics: _biometrics,
         ),
       );
-      if (generated != null && mounted) {
-        await Navigator.of(context).push(
+      if (generated != null) {
+        await nav.push(
           MaterialPageRoute<void>(builder: (_) => SeedBackupScreen(words: generated, firstTime: true)),
         );
       }

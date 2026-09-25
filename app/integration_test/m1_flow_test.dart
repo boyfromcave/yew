@@ -24,6 +24,8 @@ import 'package:yew_app/app.dart';
 import 'package:yew_app/state/app_state.dart';
 import 'package:yew_app/state/secrets.dart';
 
+import 'device.dart';
+
 const fundWait = Duration(minutes: 3);
 
 String get devnetServer {
@@ -50,35 +52,34 @@ void main() {
     await tester.pumpAndSettle();
 
     // Onboarding: create, trust, regtest + plain against the devnet, finish, seed backup.
-    await tester.tap(find.byKey(const Key('create')));
+    await tapKey(tester, 'create');
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('trust-check')));
+    await tapKey(tester, 'trust-check');
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('next')));
+    await tapKey(tester, 'next');
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('network')));
+    await tapKey(tester, 'network');
     await tester.pumpAndSettle();
     await tester.tap(find.text('regtest').last);
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('server')), devnetServer);
-    await tester.tap(find.byKey(const Key('plain')));
+    await enterKey(tester, 'server', devnetServer);
+    await setSwitchKey(tester, 'plain', true);
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('probe')));
+    await tapKey(tester, 'probe');
     await tester.pumpAndSettle(const Duration(seconds: 2));
     expect(find.textContaining('Server ok'), findsOneWidget, reason: 'the devnet lightwalletd must be up on $devnetServer');
-    await tester.tap(find.byKey(const Key('next')));
+    await tapKey(tester, 'next');
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('finish')));
-    await tester.pumpAndSettle(const Duration(seconds: 2));
+    await tapKey(tester, 'finish');
+    await waitFor(tester, () => find.byKey(const Key('written')).evaluate().isNotEmpty);
     final seedWords = (await secrets.read('seed'))!;
-    await tester.tap(find.byKey(const Key('written')));
+    await tapKey(tester, 'written');
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('done')));
-    await tester.pumpAndSettle(const Duration(seconds: 5));
+    await tapKey(tester, 'done');
 
-    // Home synced to zero; the receive address in both forms.
-    expect(find.text('\$0.00'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('receive')));
+    // Home synced to zero (the first sync walks the devnet chain); the receive address in both forms.
+    await waitFor(tester, () => find.text('\$0.00').evaluate().isNotEmpty);
+    await tapKey(tester, 'receive');
     await tester.pumpAndSettle();
     final ye = state.receive!.ye;
     final s = state.receive!.s;
@@ -98,12 +99,15 @@ void main() {
       await tester.pumpAndSettle();
     }
     expect(find.text('\$50.00'), findsOneWidget);
-    expect(state.balances.yecReservedZat, greaterThan(0));
+    // One 1 YEC coin, larger than the whole reserve: never reserved (README, rules recorded in W1).
+    expect(state.balances.yecReservedZat, 0);
 
-    // A second wallet on the same device to receive the sends.
+    // A second wallet on the same device to receive the sends (the core holds one wallet at a
+    // time and refuses `createWallet` while one is open: lock A first).
+    await api.lock();
     final walletB = await api.createWallet(passphrase: '', birthday: null, network: NetworkId.regtest, server: devnetServer, plain: true, dataDir: '$dataDir/b')
         .then((c) async {
-      // The core holds one wallet at a time: note B's address, lock B, reopen A.
+      // Note B's address, lock B, reopen A.
       final addrB = c.addressYe;
       await api.lock();
       await api.unlock(seedWords: seedWords, passphrase: '', network: NetworkId.regtest, server: devnetServer, plain: true, dataDir: '$dataDir/a');
@@ -112,60 +116,86 @@ void main() {
     final (addrB, seedB) = walletB;
 
     // YEC send 0.1 to B: preview shows fee and change, confirm returns a txid.
-    await tester.tap(find.byKey(const Key('send')));
+    await tapKey(tester, 'send');
     await tester.pumpAndSettle();
     await tester.tap(find.text('YEC'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('address')), addrB);
-    await tester.enterText(find.byKey(const Key('amount')), '0.1');
-    await tester.tap(find.byKey(const Key('preview')));
+    await enterKey(tester, 'address', addrB);
+    await enterKey(tester, 'amount', '0.1');
+    await tapKey(tester, 'preview');
     await tester.pumpAndSettle(const Duration(seconds: 5));
-    expect(find.text('0.00001000 YEC'), findsOneWidget);
-    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await expectVisible(tester, find.text('0.00001000 YEC'));
+    await longPressKey(tester, 'slide-to-confirm');
     await tester.pumpAndSettle(const Duration(seconds: 5));
-    expect(find.byKey(const Key('txid')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('done')));
+    await expectVisible(tester, find.byKey(const Key('txid')));
+    await tapKey(tester, 'done');
     await tester.pumpAndSettle();
 
+    // The YEC change is unconfirmed until a block, and unconfirmed YEC does not pay a YED fee:
+    // the operator mines one pool block (the armed devnet has no heartbeat).
+    // ignore: avoid_print
+    print('YEW M1: mine a pool block (the YEC change must confirm before the YED send)');
+    final deadline1 = DateTime.now().add(fundWait);
+    await state.sync();
+    while (state.balances.yecZat == 0) {
+      expect(DateTime.now().isBefore(deadline1), isTrue, reason: 'mine a pool block on the devnet');
+      await Future<void>.delayed(const Duration(seconds: 10));
+      await state.sync();
+      await tester.pumpAndSettle();
+    }
+
     // YED send $12.34 to B: the dry-run verdict is ok; confirm; pending until a block.
-    await tester.tap(find.byKey(const Key('send')));
+    await tapKey(tester, 'send');
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('address')), addrB);
-    await tester.enterText(find.byKey(const Key('amount')), '12.34');
-    await tester.tap(find.byKey(const Key('preview')));
+    await enterKey(tester, 'address', addrB);
+    await enterKey(tester, 'amount', '12.34');
+    await tapKey(tester, 'preview');
     await tester.pumpAndSettle(const Duration(seconds: 5));
-    expect(find.text('verdict ok'), findsOneWidget);
-    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await expectVisible(tester, find.text('verdict ok'));
+    await longPressKey(tester, 'slide-to-confirm');
     await tester.pumpAndSettle(const Duration(seconds: 5));
-    expect(find.byKey(const Key('txid')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('done')));
+    await expectVisible(tester, find.byKey(const Key('txid')));
+    await tapKey(tester, 'done');
     await tester.pumpAndSettle();
     expect(state.balances.yedPendingCents, 3766, reason: 'the change is PENDING_TOKEN until a block');
 
-    // A malformed amount the node refuses (change-floor): the core's message, verbatim.
-    await tester.tap(find.byKey(const Key('send')));
+    // History shows the pending rows with local labels.
+    await tapKey(tester, 'tab-history');
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('address')), addrB);
-    await tester.enterText(find.byKey(const Key('amount')), '37.16');
-    await tester.tap(find.byKey(const Key('preview')));
+    await expectVisible(tester, find.textContaining('sending \$12.34'));
+
+    // A malformed amount the node refuses (change-floor): the core's message, verbatim. The
+    // $37.66 change must be confirmed first (unconfirmed YED is refused as insufficient-yed
+    // before the floor is checked): the operator mines one pool block.
+    // ignore: avoid_print
+    print('YEW M1: mine a pool block (the YED change must confirm before the change-floor check)');
+    final deadline2 = DateTime.now().add(fundWait);
+    while (state.balances.yedPendingCents != 0) {
+      expect(DateTime.now().isBefore(deadline2), isTrue, reason: 'mine a pool block on the devnet');
+      await Future<void>.delayed(const Duration(seconds: 10));
+      await state.sync();
+      await tester.pumpAndSettle();
+    }
+    await tapKey(tester, 'tab-home');
+    await tester.pumpAndSettle();
+    await tapKey(tester, 'send');
+    await tester.pumpAndSettle();
+    await enterKey(tester, 'address', addrB);
+    await enterKey(tester, 'amount', '37.16');
+    await tapKey(tester, 'preview');
     await tester.pumpAndSettle(const Duration(seconds: 5));
-    expect(find.textContaining('change-floor'), findsOneWidget);
+    await expectVisible(tester, find.textContaining('change-floor'));
     await tester.pageBack();
     await tester.pumpAndSettle();
 
-    // History shows the pending rows with local labels.
-    await tester.tap(find.byKey(const Key('tab-history')));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('sending \$12.34'), findsOneWidget);
-
-    // Restore B from its seed into a fresh directory: after a block and a sync it holds
-    // 0.1 YEC and $12.34 (the operator mines one pool block while this waits).
+    // Restore B from its seed into a fresh directory: after the block above and a sync it
+    // holds 0.1 YEC and $12.34.
     await api.lock();
     await api.unlock(seedWords: seedB, passphrase: '', network: NetworkId.regtest, server: devnetServer, plain: true, dataDir: '$dataDir/b2');
-    final deadline2 = DateTime.now().add(fundWait);
+    final deadline3 = DateTime.now().add(fundWait);
     var b = await api.balances();
     while (b.yedCents != 1234) {
-      expect(DateTime.now().isBefore(deadline2), isTrue, reason: 'mine a pool block on the devnet');
+      expect(DateTime.now().isBefore(deadline3), isTrue, reason: 'mine a pool block on the devnet');
       await Future<void>.delayed(const Duration(seconds: 10));
       await api.syncNow().drain<void>();
       b = await api.balances();

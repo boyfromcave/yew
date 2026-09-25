@@ -36,6 +36,8 @@ import 'package:yew_app/app.dart';
 import 'package:yew_app/state/app_state.dart';
 import 'package:yew_app/state/secrets.dart';
 
+import 'device.dart';
+
 const stepWait = Duration(minutes: 3);
 
 String get devnetServer {
@@ -87,19 +89,19 @@ void main() {
 
     // Onboarding as in the M1 flow (create, trust, regtest + plain, probe, finish, backup).
     for (final k in ['create', 'trust-check', 'next', 'network']) {
-      await tester.tap(find.byKey(Key(k)));
+      await tapKey(tester, k);
       await tester.pumpAndSettle();
     }
     await tester.tap(find.text('regtest').last);
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('server')), devnetServer);
-    await tester.tap(find.byKey(const Key('plain')));
+    await enterKey(tester, 'server', devnetServer);
+    await setSwitchKey(tester, 'plain', true);
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('probe')));
+    await tapKey(tester, 'probe');
     await tester.pumpAndSettle(const Duration(seconds: 2));
     expect(find.textContaining('Server ok'), findsOneWidget, reason: 'the W4 devnet lightwalletd must be up on $devnetServer');
     for (final k in ['next', 'finish', 'written', 'done']) {
-      await tester.tap(find.byKey(Key(k)));
+      await tapKey(tester, k);
       await tester.pumpAndSettle(const Duration(seconds: 2));
     }
     final wordsA = (await secretsA.read('seed'))!;
@@ -109,15 +111,15 @@ void main() {
     await waitFor(tester, state, 'the funding', () => state.balances.yecZat + state.balances.yecReservedZat >= 2000000000);
 
     // 2. Mint $25.00, class A, 48 blocks.
-    await tester.tap(find.byKey(const Key('tab-yellowback')));
+    await tapKey(tester, 'tab-yellowback');
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('mint')));
+    await tapKey(tester, 'mint');
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('amount')), '25');
-    await tester.tap(find.byKey(const Key('estimate')));
+    await enterKey(tester, 'amount', '25');
+    await tapKey(tester, 'estimate');
     await tester.pumpAndSettle(const Duration(seconds: 5));
     expect(find.text('class A · 48 blocks'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('start')));
+    await tapKey(tester, 'start');
     await tester.pumpAndSettle(const Duration(seconds: 5));
     expect(find.text('CARRIER_SENT'), findsOneWidget);
     final mint1 = state.mintsInProgress.single.mintId;
@@ -126,7 +128,7 @@ void main() {
     await tester.pumpAndSettle(const Duration(seconds: 5));
     expect(find.text('MAIN_SENT'), findsOneWidget);
     await waitFor(tester, state, 'mint $mint1 to confirm', () => state.mintById(mint1)!.state == 'DONE');
-    await tester.tap(find.byKey(const Key('done')));
+    await tapKey(tester, 'done');
     await tester.pumpAndSettle();
     expect(state.balances.yedCents, 2500);
     expect(state.vaults.where((v) => v.open).length, 1);
@@ -134,36 +136,36 @@ void main() {
     expect(find.byKey(Key('vault-${vault1.vaultTxid}')), findsOneWidget);
 
     // 3. Kill-and-resume: fund a second carrier, tear the app down, rebuild on the same directory.
-    await tester.tap(find.byKey(const Key('mint')));
+    await tapKey(tester, 'mint');
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('amount')), '5');
-    await tester.tap(find.byKey(const Key('estimate')));
+    await enterKey(tester, 'amount', '5');
+    await tapKey(tester, 'estimate');
     await tester.pumpAndSettle(const Duration(seconds: 5));
-    await tester.tap(find.byKey(const Key('start')));
+    await tapKey(tester, 'start');
     await tester.pumpAndSettle(const Duration(seconds: 5));
     final mint2 = state.mintsInProgress.single.mintId;
     await state.lock();
     await tester.pumpWidget(const SizedBox());
     state = await openWallet(tester, dir: '$base/a', secrets: secretsA);
     await tester.pumpAndSettle(const Duration(seconds: 5));
-    await tester.tap(find.byKey(const Key('tab-yellowback')));
+    await tapKey(tester, 'tab-yellowback');
     await tester.pumpAndSettle();
     expect(find.byKey(Key('mint-$mint2')), findsOneWidget, reason: 'the row persisted');
-    await tester.tap(find.byKey(Key('mint-$mint2')));
+    await tapKey(tester, 'mint-$mint2');
     await tester.pumpAndSettle();
     await waitFor(tester, state, 'mint $mint2 to finish after the restart', () => state.mintById(mint2)!.state == 'DONE');
-    await tester.tap(find.byKey(const Key('done')));
+    await tapKey(tester, 'done');
     await tester.pumpAndSettle();
     expect(state.balances.yedCents, 3000);
 
     // 4. Forced lapse: a third carrier, then the operator mines past R + REF_WINDOW (40 blocks)
     //    while the app does not sync (no progress screen open, no timer). Then sweep.
-    await tester.tap(find.byKey(const Key('mint')));
+    await tapKey(tester, 'mint');
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('amount')), '1');
-    await tester.tap(find.byKey(const Key('estimate')));
+    await enterKey(tester, 'amount', '1');
+    await tapKey(tester, 'estimate');
     await tester.pumpAndSettle(const Duration(seconds: 5));
-    await tester.tap(find.byKey(const Key('start')));
+    await tapKey(tester, 'start');
     await tester.pumpAndSettle(const Duration(seconds: 5));
     final mint3 = state.mintsInProgress.single.mintId;
     final expiry3 = state.mintById(mint3)!.expiryHeight;
@@ -173,24 +175,24 @@ void main() {
     await Future<void>.delayed(const Duration(seconds: 30));
     await waitFor(tester, state, 'mint $mint3 to lapse', () => state.mintById(mint3)!.state == 'LAPSED');
     expect(find.text('window closed, sweeping carrier'), findsOneWidget);
-    await tester.tap(find.byKey(Key('mint-$mint3')));
+    await tapKey(tester, 'mint-$mint3');
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('sweep')));
+    await tapKey(tester, 'sweep');
     await tester.pumpAndSettle(const Duration(seconds: 5));
     expect(find.text('SWEEP_SENT'), findsOneWidget);
     await waitFor(tester, state, 'the sweep to confirm', () => state.mintById(mint3)!.state == 'SWEPT');
-    await tester.tap(find.byKey(const Key('done')));
+    await tapKey(tester, 'done');
     await tester.pumpAndSettle();
 
     // 5. Redeem vault 1 after its lock (the lapse step mined most of the way there).
     await waitFor(tester, state, 'height ${vault1.lockHeight}', () => state.vaultByTxid(vault1.vaultTxid)!.redeemable);
-    await tester.tap(find.byKey(Key('vault-${vault1.vaultTxid}')));
+    await tapKey(tester, 'vault-${vault1.vaultTxid}');
     await tester.pumpAndSettle();
     expect(find.textContaining('Redeemable'), findsOneWidget);
-    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await longPressKey(tester, 'slide-to-confirm');
     await tester.pumpAndSettle(const Duration(seconds: 5));
     expect(find.text('Vault redeemed'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('done')));
+    await tapKey(tester, 'done');
     await tester.pumpAndSettle();
     await waitFor(tester, state, 'the redeem to confirm', () => state.vaultByTxid(vault1.vaultTxid)!.status == 'CLOSED');
     expect(state.balances.yedCents, 500);
@@ -202,30 +204,30 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     final stateB = await openWallet(tester, dir: '$base/b', secrets: secretsB);
     for (final k in ['create', 'trust-check', 'next', 'network']) {
-      await tester.tap(find.byKey(Key(k)));
+      await tapKey(tester, k);
       await tester.pumpAndSettle();
     }
     await tester.tap(find.text('regtest').last);
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('server')), devnetServer);
-    await tester.tap(find.byKey(const Key('plain')));
+    await enterKey(tester, 'server', devnetServer);
+    await setSwitchKey(tester, 'plain', true);
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('probe')));
+    await tapKey(tester, 'probe');
     await tester.pumpAndSettle(const Duration(seconds: 2));
     for (final k in ['next', 'finish', 'written', 'done']) {
-      await tester.tap(find.byKey(Key(k)));
+      await tapKey(tester, k);
       await tester.pumpAndSettle(const Duration(seconds: 2));
     }
     say('fund B with 20 YEC from node 2: ${stateB.receive!.s}');
     await waitFor(tester, stateB, 'B funded', () => stateB.balances.yecZat + stateB.balances.yecReservedZat >= 2000000000);
-    await tester.tap(find.byKey(const Key('tab-yellowback')));
+    await tapKey(tester, 'tab-yellowback');
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('mint')));
+    await tapKey(tester, 'mint');
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('amount')), '5');
-    await tester.tap(find.byKey(const Key('estimate')));
+    await enterKey(tester, 'amount', '5');
+    await tapKey(tester, 'estimate');
     await tester.pumpAndSettle(const Duration(seconds: 5));
-    await tester.tap(find.byKey(const Key('start')));
+    await tapKey(tester, 'start');
     await tester.pumpAndSettle(const Duration(seconds: 5));
     final mintB = stateB.mintsInProgress.single.mintId;
     await waitFor(tester, stateB, 'B\'s mint to confirm', () => stateB.mintById(mintB)!.state == 'DONE');
@@ -235,15 +237,15 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     state = await openWallet(tester, dir: '$base/a', secrets: secretsA, words: wordsA);
     await waitFor(tester, state, 'the shock', () => (state.balances.priceMicroUsd ?? 0) > 0 && state.balances.priceMicroUsd! <= 150000);
-    await tester.tap(find.byKey(const Key('tab-yellowback')));
+    await tapKey(tester, 'tab-yellowback');
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('claimable')));
+    await tapKey(tester, 'claimable');
     await tester.pumpAndSettle(const Duration(seconds: 5));
     expect(find.byKey(Key('claimable-$vaultB')), findsOneWidget, reason: 'B\'s vault is claimable after the shock');
-    await tester.tap(find.byKey(Key('claimable-$vaultB')));
+    await tapKey(tester, 'claimable-$vaultB');
     await tester.pumpAndSettle();
     final yecBefore = state.balances.yecZat + state.balances.yecReservedZat;
-    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await longPressKey(tester, 'slide-to-confirm');
     await tester.pumpAndSettle(const Duration(seconds: 5));
     expect(find.text('CARRIER_SENT'), findsOneWidget);
     final claimRow = state.mintsInProgress.single.mintId;
