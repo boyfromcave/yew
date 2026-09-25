@@ -1,0 +1,253 @@
+{
+ "network": "regtest",
+ "generated": {
+  "command": "vectors --out /private/tmp/claude-501/-Users-boy-projects-yellowback-workspace/1c1db2e8-7fe8-452d-99bc-71f6602eac3c/scratchpad/vectors --seed 1",
+  "seed": 1,
+  "height": 433,
+  "forkCommit": "6ec66eea0"
+ },
+ "yed_getinfo": {
+  "rpcversion": 3,
+  "enabled": true,
+  "network": "regtest",
+  "height": 433,
+  "blockhash": "01a9192bdebddbe799f8866cd69038f008c29886b952093cae6922edd83f576a",
+  "chainHeight": 433,
+  "startHeight": 1,
+  "healthy": true,
+  "unhealthyReason": "",
+  "enforcing": true,
+  "valveTripped": false,
+  "sunset": false,
+  "rejectedBlocks": 0,
+  "suppressedBlocks": 0,
+  "templatePolicy": "strict",
+  "abandoned": false,
+  "lockedOutputs": 7,
+  "protectedByIndex": true,
+  "rebuilt": false,
+  "activation": {
+   "status": "active",
+   "lockInHeight": 149,
+   "activateHeight": 213,
+   "signalCount": 64,
+   "window": 64
+  },
+  "attest": {
+   "status": "ARMED",
+   "triggerHeight": 242,
+   "armHeight": 250,
+   "seatedCount": 3,
+   "poolSize": 9,
+   "poolFresh": 3,
+   "carrierMode": "scriptsig",
+   "required": true,
+   "armed": true
+  },
+  "miner": {
+   "payoutAddress": null,
+   "signal": false,
+   "quoteKind": "none",
+   "quoteAgeSeconds": null,
+   "registered": false,
+   "eligible": false
+  },
+  "params": {
+   "startHeight": 1,
+   "enforceUntilHeight": 0,
+   "sigmaRefBps": 0,
+   "supplyCapBps": 0,
+   "refLag": 2,
+   "refWindow": 40,
+   "grace": 24,
+   "payeeWindow": 10,
+   "feeMinZat": 50000000,
+   "feeBps": 25,
+   "tokenValueZat": 10000,
+   "feeZat": 1000,
+   "valveBlocks": 6,
+   "abandonBlocks": 128,
+   "windows": {
+    "fast": 8,
+    "mid": 24,
+    "slow": 64,
+    "signal": 64
+   },
+   "minFill": {
+    "fast": 4,
+    "mid": 16,
+    "slow": 43
+   },
+   "classes": [
+    {
+     "class": "A",
+     "minBlocks": 48,
+     "maxBlocks": 96,
+     "baseRatioBps": 50000
+    },
+    {
+     "class": "B",
+     "minBlocks": 97,
+     "maxBlocks": 144,
+     "baseRatioBps": 40000
+    },
+    {
+     "class": "C",
+     "minBlocks": 145,
+     "maxBlocks": 240,
+     "baseRatioBps": 30000
+    }
+   ],
+   "globalRatioHaltBps": 25000,
+   "recapRatioBps": 50000,
+   "policy": {
+    "penaltyBlocks": 12,
+    "accuracyWindow": 24,
+    "tiltBps": 10000,
+    "preferredPayee": null,
+    "preferredAttestor": null
+   },
+   "attest": {
+    "payloadVersion": 3,
+    "armMin": 3,
+    "armDelay": 8,
+    "required": true,
+    "carrierMode": "scriptsig",
+    "nSlots": 5,
+    "mSelect": 2,
+    "kSlack": 1,
+    "bundleMax": 6,
+    "qLowBps": 3333,
+    "qHighBps": 6667,
+    "attestMaxAge": 8,
+    "pinWindow": 16,
+    "pinDeltaBps": 500,
+    "pinMinTags": 2,
+    "pinMinBundles": 2,
+    "divergeBpsAttest": 1500,
+    "emergencyRatioBps": 10500,
+    "emergencyPersist": 4,
+    "emergencyNoticeTtl": 64,
+    "residualMinZat": 100000,
+    "attestFeeBps": 2500,
+    "bondMinZat": 1000000000,
+    "bondMinLock": 200,
+    "bondMaturity": 8,
+    "ageCap": 64,
+    "foundingWindow": 16,
+    "dormancyBlocks": 16,
+    "dormancyMinBundles": 2,
+    "dormancyCheck": 4,
+    "carrierValueZat": 10000
+   }
+  }
+ },
+ "consensus": {
+  "chaintip": "19bd2d2f",
+  "nextblock": "19bd2d2f"
+ },
+ "upgrades": {
+  "5ba81b19": {
+   "name": "Overwinter",
+   "activationheight": 1,
+   "status": "active",
+   "info": "See https://z.cash/upgrade/overwinter/ for details."
+  },
+  "76b809bb": {
+   "name": "Sapling",
+   "activationheight": 1,
+   "status": "active",
+   "info": "See https://z.cash/upgrade/sapling/ for details."
+  },
+  "374d694f": {
+   "name": "Ycash",
+   "activationheight": 1,
+   "status": "active",
+   "info": "See https://y.cash for details."
+  },
+  "8e471bd6": {
+   "name": "Blossom",
+   "activationheight": 1,
+   "status": "active",
+   "info": "See https://z.cash/upgrade/blossom.html for details."
+  },
+  "66314da3": {
+   "name": "Heartwood",
+   "activationheight": 1,
+   "status": "active",
+   "info": "See https://z.cash/upgrade/heartwood/ for details."
+  },
+  "19bd2d2f": {
+   "name": "Canopy",
+   "activationheight": 1,
+   "status": "active",
+   "info": "See https://z.cash/upgrade/canopy/ for details."
+  }
+ },
+ "signingBranchId": "19bd2d2f",
+ "relayFee": "0.00000100",
+ "payTxFee": "0.00000000",
+ "txVersion": {
+  "header": "80000004",
+  "versionGroupId": "892f2085",
+  "nVersion": 4
+ },
+ "constants": {
+  "TOKEN_VALUE": 10000,
+  "CARRIER_VALUE": 10000,
+  "REF_WINDOW": 40,
+  "REF_LAG": 2,
+  "MIN_OUTPUT": 100,
+  "MAX_OUTPUT": 10000000,
+  "MIN_MINT": 10000,
+  "MAX_MINT": 1000000,
+  "YELLOWBACK_FEE": 1000,
+  "FEE_MIN": 50000000,
+  "FEE_BPS": 25,
+  "GRACE": 24,
+  "MAX_LOCK": 240,
+  "CLASS_RANGES": {
+   "A": [
+    48,
+    96,
+    50000
+   ],
+   "B": [
+    97,
+    144,
+    40000
+   ],
+   "C": [
+    145,
+    240,
+    30000
+   ]
+  }
+ },
+ "addressVersions": {
+  "mainnet": {
+   "pubkey": "1c28",
+   "script": "1c2c",
+   "secret": "80",
+   "yellowback": "1fe4",
+   "yellowbackPrefix": "ye",
+   "transparentPrefix": "s1"
+  },
+  "testnet": {
+   "pubkey": "1c95",
+   "script": "1c2a",
+   "secret": "ef",
+   "yellowback": "2007",
+   "yellowbackPrefix": "yt",
+   "transparentPrefix": "sm"
+  },
+  "regtest": {
+   "pubkey": "1c95",
+   "script": "1c2a",
+   "secret": "ef",
+   "yellowback": "2002",
+   "yellowbackPrefix": "yr",
+   "transparentPrefix": "sm"
+  }
+ }
+}

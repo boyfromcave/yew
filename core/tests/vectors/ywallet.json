@@ -1,0 +1,9 @@
+{
+ "pending": true,
+ "reason": "owner must capture from a Ywallet desktop build (plan D-W-7)",
+ "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+ "passphraseCases": ["", "yew"],
+ "derivationPath": "m/44'/347'/0'/0/0",
+ "expected": {"": {"address_s": null, "address_ye": null}, "yew": {"address_s": null, "address_ye": null}},
+ "ywalletVersion": null
+}
