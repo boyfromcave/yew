@@ -37,6 +37,7 @@ use yew_core::wallet::{dollars, Wallet};
 struct Opts {
     server: String,
     plain: bool,
+    ca_pem: Option<String>,
     wallet: String,
     network: Network,
     seed_file: Option<String>,
@@ -47,7 +48,7 @@ struct Opts {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: yew-cli [--server host:port] [--plain] [--wallet PATH] [--network N] \
+        "usage: yew-cli [--server host:port] [--plain] [--ca-pem PATH] [--wallet PATH] [--network N] \
          [--seed-file PATH] [--passphrase P] [--birthday H] <command>\n\
          commands: status | yed-info | price | address [--new] | balance | sync | coins\n\
          \x20         | send-yec <addr> <zat> [--all] | send-yed <addr> <cents> [<addr> <cents> ...]\n\
@@ -65,6 +66,7 @@ fn parse_opts() -> Opts {
     let mut o = Opts {
         server: "127.0.0.1:9067".into(),
         plain: false,
+        ca_pem: None,
         wallet: "yew-wallet.sqlite".into(),
         network: Network::Regtest,
         seed_file: None,
@@ -83,6 +85,13 @@ fn parse_opts() -> Opts {
         match a.as_str() {
             "--server" => o.server = value("--server"),
             "--plain" => o.plain = true,
+            "--ca-pem" => {
+                let p = value("--ca-pem");
+                o.ca_pem = Some(std::fs::read_to_string(&p).unwrap_or_else(|e| {
+                    eprintln!("cannot read --ca-pem {p}: {e}");
+                    exit(2)
+                }));
+            }
             "--wallet" => o.wallet = value("--wallet"),
             "--network" => {
                 let n = value("--network");
@@ -100,8 +109,8 @@ fn parse_opts() -> Opts {
             _ => o.rest.push(a),
         }
     }
-    if o.plain && o.network == Network::Mainnet {
-        eprintln!("--plain is refused on mainnet (plan §3.5: TLS required outside regtest)");
+    if o.plain && o.network != Network::Regtest {
+        eprintln!("--plain is refused outside regtest (plan §3.5: TLS required outside regtest)");
         exit(2);
     }
     o
@@ -137,10 +146,12 @@ fn open_wallet(o: &Opts) -> Wallet {
 /// Connect once: the T0 client and, over the same channel, the Yellowback validator
 /// (contract rule 1 probed here; `Absent` hides YED).
 async fn clients(o: &Opts) -> (CompactClient, Validator, Availability) {
-    let server = Server::parse(&o.server, o.plain).unwrap_or_else(|e| {
-        eprintln!("{e}");
-        exit(2)
-    });
+    let server = Server::parse_for(o.network, &o.server, o.plain)
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            exit(2)
+        })
+        .with_ca_pem(o.ca_pem.clone());
     let channel = server.connect().await.unwrap_or_else(|e| {
         eprintln!("cannot connect to {}: {e}", server.uri());
         exit(1)

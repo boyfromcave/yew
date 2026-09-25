@@ -18,7 +18,9 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 # tonic 0.14 moved its prost codec into `tonic-prost`; it is counted as part of tonic.
 [dependencies]
 secp256k1 = { version = "=0.33.1", features = ["recovery", "rand", "std"] }
-bip39 = { version = "=3.0.0", features = ["rand"] }
+# `zeroize`: the Mnemonic wipes its word indices on drop (W5 review S-1); the crate is already in
+# the tree through rustls, so the allow-list of plan §3.3 is unchanged.
+bip39 = { version = "=3.0.0", features = ["rand", "zeroize"] }
 hmac = "=0.13.0"
 sha2 = "=0.11.0"
 ripemd = "=0.2.0"

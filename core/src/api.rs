@@ -839,13 +839,7 @@ impl Open {
 }
 
 fn parse_server(server: &str, plain: bool, network: Network) -> Result<Server, YewError> {
-    if plain && network == Network::Mainnet {
-        return Err(YewError::new(
-            ErrorKind::Input,
-            "A plain (non-TLS) connection is refused on mainnet.",
-        ));
-    }
-    Server::parse(server, plain).map_err(|m| YewError::new(ErrorKind::Input, m))
+    Server::parse_for(network, server, plain).map_err(|m| YewError::new(ErrorKind::Input, m))
 }
 
 fn open_wallet(
@@ -860,7 +854,7 @@ fn open_wallet(
         data_dir.trim_end_matches('/'),
         network.chain_name()
     );
-    let words = mnemonic.split_whitespace().collect::<Vec<_>>().join(" ");
+    let words = keys::SecretString::new(mnemonic.split_whitespace().collect::<Vec<_>>().join(" "));
     Wallet::open(&path, network, &words, passphrase, birthday).map_err(|e| match e {
         WalletError::Key(k) => YewError::new(ErrorKind::Input, k.to_string()),
         other => YewError::new(ErrorKind::Other, other.to_string()),
@@ -871,10 +865,13 @@ fn open_wallet(
 // The surface
 // ---------------------------------------------------------------------------------------------
 
-/// Bridge initialisation hook (logging, panics as errors).
+/// Bridge initialisation hook: backtraces on panics (which the bridge turns into errors).
+/// Not `setup_default_user_utils()`: with the crate's default `log` feature that installs a
+/// Trace-level console logger, and every dependency's records (h2 frames, rustls handshakes,
+/// hosts) would go to logcat / os_log on a release build (W5 review A-2).
 #[frb(init)]
 pub fn init_app() {
-    flutter_rust_bridge::setup_default_user_utils();
+    flutter_rust_bridge::setup_backtrace();
 }
 
 /// The core's version.
@@ -893,9 +890,11 @@ pub fn generate_seed_words(words: u32) -> Result<String, YewError> {
 /// Check a mnemonic without opening anything.
 #[frb(sync)]
 pub fn check_seed_words(seed_words: String) -> Result<(), YewError> {
-    let words = seed_words.split_whitespace().collect::<Vec<_>>().join(" ");
+    let seed_words = keys::SecretString::new(seed_words);
+    let words =
+        keys::SecretString::new(seed_words.split_whitespace().collect::<Vec<_>>().join(" "));
     keys::seed_from_mnemonic(&words, "")
-        .map(|_| ())
+        .map(|mut seed| keys::wipe(&mut seed))
         .map_err(|e| YewError::new(ErrorKind::Input, e.to_string()))
 }
 
@@ -919,6 +918,28 @@ pub fn validate_address(network: NetworkId, address: String) -> AddressCheck {
             message: e.to_string(),
         },
     }
+}
+
+/// A default endpoint for a network (`docs/release.md` "Default endpoints"; the mainnet and
+/// testnet lists are empty until the owner supplies them, plan §8 Q4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefaultEndpoint {
+    /// `host:port`.
+    pub address: String,
+    /// Plain HTTP/2 (regtest only).
+    pub plain: bool,
+}
+
+/// The default endpoints the app offers for `network`, in order of preference (possibly none).
+#[frb(sync)]
+pub fn default_servers(network: NetworkId) -> Vec<DefaultEndpoint> {
+    crate::net::default_servers(network.to_network())
+        .iter()
+        .map(|d| DefaultEndpoint {
+            address: d.address.to_string(),
+            plain: d.plain,
+        })
+        .collect()
 }
 
 /// Probe a server before any wallet is open (Onboarding's default birthday, Settings' server
@@ -957,12 +978,15 @@ pub fn create_wallet(
 ) -> Result<Created, YewError> {
     let network = network.to_network();
     let server = parse_server(&server, plain, network)?;
+    // The bridge's `String`s are wiped when these guards drop (W5 review S-1); the generated
+    // mnemonic goes back to the app once, by value, and is the app's to store (D-W-6).
+    let passphrase = keys::SecretString::new(passphrase);
     let (words, generated) = match seed_words {
-        Some(w) => (w, None),
+        Some(w) => (keys::SecretString::new(w), None),
         None => {
             let w = keys::generate_mnemonic(12)
                 .map_err(|e| YewError::new(ErrorKind::Other, e.to_string()))?;
-            (w.clone(), Some(w))
+            (keys::SecretString::new(w.clone()), Some(w))
         }
     };
     runtime().block_on(async {
@@ -1007,6 +1031,8 @@ pub fn unlock(
 ) -> Result<String, YewError> {
     let network = network.to_network();
     let server = parse_server(&server, plain, network)?;
+    let seed_words = keys::SecretString::new(seed_words);
+    let passphrase = keys::SecretString::new(passphrase);
     runtime().block_on(async {
         let mut guard = WALLET.lock().await;
         if guard.is_some() {
@@ -1392,6 +1418,7 @@ pub fn export_wif(address: String) -> Result<WifExport, YewError> {
 /// `birthday` (the height to rescan from) lowers the wallet's scan floor so the next sync
 /// finds the key's history. The key is not covered by the seed backup.
 pub fn import_wif(wif: String, birthday: Option<i64>) -> Result<AddressPair, YewError> {
+    let wif = keys::SecretString::new(wif);
     with_open(|o| {
         let row = o.wallet.import_wif(wif.trim())?;
         if let Some(b) = birthday {
@@ -1878,6 +1905,17 @@ mod tests {
         assert_eq!(claim("x".into()).unwrap_err().kind, ErrorKind::Input);
         assert_eq!(redeem("zz".into()).unwrap_err().kind, ErrorKind::Input);
 
+        // Default endpoints: none for mainnet or testnet, the devnet for regtest (W5).
+        assert!(default_servers(NetworkId::Mainnet).is_empty());
+        assert!(default_servers(NetworkId::Testnet).is_empty());
+        assert!(default_servers(NetworkId::Regtest)[0].plain);
+        // A plain connection is refused on testnet too, before anything is opened.
+        assert_eq!(
+            probe_server("127.0.0.1:1".into(), true, NetworkId::Testnet)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Input
+        );
         // A plain connection is refused on mainnet before anything is opened.
         let e = unlock(
             PHRASE.into(),

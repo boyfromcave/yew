@@ -83,7 +83,17 @@ pub struct Wallet {
     pub store: Store,
     keyring: KeyRing,
     /// Wrapping key for imported secrets: `HMAC-SHA256("yew-wrap", seed)`.
-    wrap_secret: [u8; 32],
+    wrap_secret: WrapSecret,
+}
+
+/// The wrapping key, wiped on drop (`Wallet` itself stays `Drop`-free so a test can move its
+/// store out).
+struct WrapSecret([u8; 32]);
+
+impl Drop for WrapSecret {
+    fn drop(&mut self) {
+        keys::wipe(&mut self.0);
+    }
 }
 
 impl std::fmt::Debug for Wallet {
@@ -102,9 +112,13 @@ impl Wallet {
         passphrase: &str,
         birthday: Option<u64>,
     ) -> Result<Wallet, WalletError> {
-        let seed = keys::seed_from_mnemonic(mnemonic, passphrase)?;
-        let store = Store::open(path)?;
-        Wallet::from_parts(store, network, &seed, birthday)
+        let mut seed = keys::seed_from_mnemonic(mnemonic, passphrase)?;
+        let store = Store::open(path);
+        let w = store
+            .map_err(WalletError::from)
+            .and_then(|store| Wallet::from_parts(store, network, &seed, birthday));
+        keys::wipe(&mut seed);
+        w
     }
 
     /// Open over an existing store (tests use an in-memory one).
@@ -143,7 +157,7 @@ impl Wallet {
             use hmac::{Hmac, KeyInit, Mac};
             let mut m = Hmac::<sha2::Sha256>::new_from_slice(b"yew-wrap").expect("any key length");
             m.update(seed);
-            m.finalize().into_bytes().into()
+            WrapSecret(m.finalize().into_bytes().into())
         };
         let w = Wallet {
             network,
@@ -255,15 +269,17 @@ impl Wallet {
             .store
             .imported_key(hash160)?
             .ok_or_else(|| WalletError::Other("imported key missing from store".into()))?;
-        let secret = crate::store::wrap_key(&self.wrap_secret, hash160, &wrapped);
-        let sk = secp256k1::SecretKey::from_secret_bytes(
-            secret
-                .as_slice()
-                .try_into()
-                .map_err(|_| WalletError::Other("wrapped key length".into()))?,
-        )
-        .map_err(|_| WalletError::Other("wrapped key out of range".into()))?;
-        let k = AddressKey::from_secret(sk);
+        let mut secret = crate::store::wrap_key(&self.wrap_secret.0, hash160, &wrapped);
+        let sk = secret
+            .as_slice()
+            .try_into()
+            .map_err(|_| WalletError::Other("wrapped key length".into()))
+            .and_then(|b: [u8; 32]| {
+                secp256k1::SecretKey::from_secret_bytes(b)
+                    .map_err(|_| WalletError::Other("wrapped key out of range".into()))
+            });
+        keys::wipe(&mut secret);
+        let k = AddressKey::from_secret(sk?);
         if k.hash160 != *hash160 {
             return Err(WalletError::Other(
                 "imported key does not match its hash".into(),
@@ -287,8 +303,9 @@ impl Wallet {
     /// The key is *not* covered by the seed backup; the caller says so to the user.
     pub fn import_wif(&self, wif: &str) -> Result<AddressRow, WalletError> {
         let k = keys::decode_wif(self.network, wif)?;
-        let wrapped =
-            crate::store::wrap_key(&self.wrap_secret, &k.hash160, &k.secret.to_secret_bytes());
+        let mut secret = k.secret.to_secret_bytes();
+        let wrapped = crate::store::wrap_key(&self.wrap_secret.0, &k.hash160, &secret);
+        keys::wipe(&mut secret);
         self.store.insert_imported_key(&k.hash160, &wrapped)?;
         let row = AddressRow {
             chain: CHAIN_IMPORTED,

@@ -372,9 +372,23 @@ ALTER TABLE history ADD COLUMN labelled INTEGER NOT NULL DEFAULT 0;
 ";
 
 impl Store {
-    /// Open (or create) the database at `path` and ensure the schema.
+    /// Open (or create) the database at `path` and ensure the schema. On Unix the file is made
+    /// owner-only (`0600`; SQLite creates it `0644 & ~umask`, and its `-wal` / `-shm` files
+    /// inherit the mode) — the cache holds addresses, history and the wrapped imported keys
+    /// (W5 review, docs/security-review.md S-5).
     pub fn open(path: &str) -> Result<Store, StoreError> {
         let conn = Connection::open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(path) {
+                let mut perm = meta.permissions();
+                if perm.mode() & 0o077 != 0 {
+                    perm.set_mode(0o600);
+                    let _ = std::fs::set_permissions(path, perm);
+                }
+            }
+        }
         Store::init(conn)
     }
 
@@ -1271,6 +1285,31 @@ pub fn wrap_key(key: &[u8], nonce: &[u8], data: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("yew-store-perm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.sqlite");
+        let p = path.to_str().unwrap();
+        let s = Store::open(p).unwrap();
+        s.set_meta("network", "regtest").unwrap();
+        drop(s);
+        assert_eq!(
+            std::fs::metadata(p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // Reopening keeps it; a loosened file is tightened again.
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        drop(Store::open(p).unwrap());
+        assert_eq!(
+            std::fs::metadata(p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn schema_meta_addresses_utxos_locks_history() {

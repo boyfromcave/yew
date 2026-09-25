@@ -52,6 +52,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Created dco_decode_created(dynamic raw);
 
   @protected
+  DefaultEndpoint dco_decode_default_endpoint(dynamic raw);
+
+  @protected
   DryRun dco_decode_dry_run(dynamic raw);
 
   @protected
@@ -74,6 +77,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<ClaimableItem> dco_decode_list_claimable_item(dynamic raw);
+
+  @protected
+  List<DefaultEndpoint> dco_decode_list_default_endpoint(dynamic raw);
 
   @protected
   List<HistoryItem> dco_decode_list_history_item(dynamic raw);
@@ -189,6 +195,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Created sse_decode_created(SseDeserializer deserializer);
 
   @protected
+  DefaultEndpoint sse_decode_default_endpoint(SseDeserializer deserializer);
+
+  @protected
   DryRun sse_decode_dry_run(SseDeserializer deserializer);
 
   @protected
@@ -211,6 +220,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<ClaimableItem> sse_decode_list_claimable_item(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DefaultEndpoint> sse_decode_list_default_endpoint(
     SseDeserializer deserializer,
   );
 
@@ -337,6 +351,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_created(Created self, SseSerializer serializer);
 
   @protected
+  void sse_encode_default_endpoint(
+    DefaultEndpoint self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dry_run(DryRun self, SseSerializer serializer);
 
   @protected
@@ -363,6 +383,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_claimable_item(
     List<ClaimableItem> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_default_endpoint(
+    List<DefaultEndpoint> self,
     SseSerializer serializer,
   );
 

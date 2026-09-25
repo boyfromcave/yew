@@ -20,7 +20,7 @@ pub mod yellowback;
 pub use compact::{CompactClient, LightdInfo, Utxo as ServerUtxo};
 pub use rpc::compact_tx_streamer_client::CompactTxStreamerClient;
 pub use rpc::yellowback_streamer_client::YellowbackStreamerClient;
-pub use tls::Server;
+pub use tls::{default_servers, DefaultServer, Server};
 pub use yellowback::{Availability, Token, Validation, YellowbackClient};
 
 /// Network errors.

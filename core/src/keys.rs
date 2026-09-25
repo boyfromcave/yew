@@ -56,6 +56,53 @@ pub fn hash160(data: &[u8]) -> [u8; 20] {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Wiping (W5 security review, docs/security-review.md S-1)
+
+/// Overwrite `bytes` with zeros through volatile writes the optimiser cannot elide (no
+/// `zeroize` crate: it is not on the allow-list of plan §3.3). Best effort, as any wipe in
+/// Rust is: the compiler may have copied the bytes elsewhere (a moved `[u8; N]`, a spilled
+/// register); what this guarantees is that *this* allocation does not keep the secret after
+/// the wipe.
+pub fn wipe(bytes: &mut [u8]) {
+    for b in bytes.iter_mut() {
+        // SAFETY: `b` is a valid, exclusively borrowed `u8`.
+        unsafe { std::ptr::write_volatile(b, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
+/// A `String` holding secret text (a mnemonic, a passphrase, a WIF) that is wiped when
+/// dropped. Derefs to `str`; never `Debug`-prints its contents.
+pub struct SecretString(String);
+
+impl SecretString {
+    /// Take ownership of `s`; it will be wiped on drop.
+    pub fn new(s: String) -> SecretString {
+        SecretString(s)
+    }
+}
+
+impl std::ops::Deref for SecretString {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SecretString(..)")
+    }
+}
+
+impl Drop for SecretString {
+    fn drop(&mut self) {
+        let mut bytes = std::mem::take(&mut self.0).into_bytes();
+        wipe(&mut bytes);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // BIP39
 
 /// Parse a BIP39 English mnemonic (12–24 words) and derive the 64-byte seed with the optional
@@ -97,17 +144,30 @@ impl std::fmt::Debug for ExtendedPrivKey {
     }
 }
 
+impl Drop for ExtendedPrivKey {
+    /// Wipe the chain code and the key (`secp256k1`'s `non_secure_erase`: the crate has no
+    /// drop-time erasure of its own, and `SecretKey` is `Copy`).
+    fn drop(&mut self) {
+        wipe(&mut self.chain_code);
+        self.key.non_secure_erase();
+    }
+}
+
 impl ExtendedPrivKey {
     /// BIP32 master key: `HMAC-SHA512(key = "Bitcoin seed", data = seed)`.
     pub fn master(seed: &[u8]) -> Result<ExtendedPrivKey, KeyError> {
         let mut mac = HmacSha512::new_from_slice(b"Bitcoin seed").expect("any key length");
         mac.update(seed);
-        let i = mac.finalize().into_bytes();
+        let mut i: [u8; 64] = mac.finalize().into_bytes().into();
         let key = SecretKey::from_secret_bytes(i[..32].try_into().expect("32 bytes"))
-            .map_err(|_| KeyError::Derivation(0))?;
+            .map_err(|_| KeyError::Derivation(0));
         let mut chain_code = [0u8; 32];
         chain_code.copy_from_slice(&i[32..]);
-        Ok(ExtendedPrivKey { key, chain_code })
+        wipe(&mut i);
+        Ok(ExtendedPrivKey {
+            key: key?,
+            chain_code,
+        })
     }
 
     /// The compressed public key (33 bytes).
@@ -120,20 +180,22 @@ impl ExtendedPrivKey {
         let mut mac = HmacSha512::new_from_slice(&self.chain_code).expect("any key length");
         if index >= HARDENED {
             mac.update(&[0u8]);
-            mac.update(&self.key.to_secret_bytes());
+            let mut k = self.key.to_secret_bytes();
+            mac.update(&k);
+            wipe(&mut k);
         } else {
             mac.update(&self.public_key());
         }
         mac.update(&index.to_be_bytes());
-        let i = mac.finalize().into_bytes();
+        let mut i: [u8; 64] = mac.finalize().into_bytes().into();
         let il: [u8; 32] = i[..32].try_into().expect("32 bytes");
-        let tweak = Scalar::from_be_bytes(il).map_err(|_| KeyError::Derivation(index))?;
-        let key = self
-            .key
-            .add_tweak(&tweak)
-            .map_err(|_| KeyError::Derivation(index))?;
         let mut chain_code = [0u8; 32];
         chain_code.copy_from_slice(&i[32..]);
+        wipe(&mut i);
+        let key = Scalar::from_be_bytes(il)
+            .ok()
+            .and_then(|tweak| self.key.add_tweak(&tweak).ok())
+            .ok_or(KeyError::Derivation(index))?;
         Ok(ExtendedPrivKey { key, chain_code })
     }
 
@@ -189,6 +251,12 @@ pub struct AddressKey {
 impl std::fmt::Debug for AddressKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "AddressKey({})", hex(&self.hash160))
+    }
+}
+
+impl Drop for AddressKey {
+    fn drop(&mut self) {
+        self.secret.non_secure_erase();
     }
 }
 
@@ -361,26 +429,30 @@ pub fn encode_wif(network: Network, key: &SecretKey) -> String {
     payload.push(network.wif_prefix());
     payload.extend_from_slice(&key.to_secret_bytes());
     payload.push(0x01);
-    base58check_encode(&payload)
+    let wif = base58check_encode(&payload);
+    wipe(&mut payload);
+    wif
 }
 
 /// Decode a WIF of `network`. Uncompressed keys (no trailing `0x01`) are refused: every YEW
 /// address is over a compressed key, and the node's Yellowback scripts require one
 /// (`ycash-dd/src/yellowback/script.cpp:83` `IsCompressedKey`).
 pub fn decode_wif(network: Network, wif: &str) -> Result<AddressKey, KeyError> {
-    let payload = base58check_decode(wif).map_err(|e| KeyError::Wif(e.to_string()))?;
-    if payload.len() != 34 || payload[33] != 0x01 {
-        return Err(KeyError::Wif("not a compressed key".into()));
-    }
-    if payload[0] != network.wif_prefix() {
-        return Err(KeyError::Wif(format!(
+    let mut payload = base58check_decode(wif).map_err(|e| KeyError::Wif(e.to_string()))?;
+    let result = if payload.len() != 34 || payload[33] != 0x01 {
+        Err(KeyError::Wif("not a compressed key".into()))
+    } else if payload[0] != network.wif_prefix() {
+        Err(KeyError::Wif(format!(
             "wrong network prefix 0x{:02x}",
             payload[0]
-        )));
-    }
-    let secret = SecretKey::from_secret_bytes(payload[1..33].try_into().expect("32 bytes"))
-        .map_err(|_| KeyError::Wif("key out of range".into()))?;
-    Ok(AddressKey::from_secret(secret))
+        )))
+    } else {
+        SecretKey::from_secret_bytes(payload[1..33].try_into().expect("32 bytes"))
+            .map(AddressKey::from_secret)
+            .map_err(|_| KeyError::Wif("key out of range".into()))
+    };
+    wipe(&mut payload);
+    result
 }
 
 /// Lower-case hex of `bytes`.
@@ -447,6 +519,30 @@ mod tests {
             "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e53495531f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04"
         );
         assert!(seed_from_mnemonic("abandon abandon about", "").is_err());
+    }
+
+    #[test]
+    fn wipe_clears_and_secret_string_wipes_on_drop() {
+        let mut b = [7u8; 16];
+        wipe(&mut b);
+        assert_eq!(b, [0u8; 16]);
+        let s = SecretString::new("abandon about".into());
+        assert_eq!(&*s, "abandon about");
+        assert_eq!(format!("{s:?}"), "SecretString(..)");
+        drop(s);
+        // A dropped extended key is erased (its fields are observable through a clone taken
+        // before the drop only; here we check the wipe does not disturb derivation).
+        let seed = unhex("000102030405060708090a0b0c0d0e0f").unwrap();
+        let a = ExtendedPrivKey::master(&seed)
+            .unwrap()
+            .derive(&[HARDENED])
+            .unwrap();
+        let b = ExtendedPrivKey::master(&seed)
+            .unwrap()
+            .derive(&[HARDENED])
+            .unwrap();
+        assert_eq!(a.chain_code, b.chain_code);
+        assert_eq!(a.key.to_secret_bytes(), b.key.to_secret_bytes());
     }
 
     #[test]

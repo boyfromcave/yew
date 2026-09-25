@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 216656029;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 369674062;
 
 // Section: executor
 
@@ -311,6 +311,36 @@ fn wire__crate__api__create_wallet_impl(
                     std::result::Result::Ok(output_ok)
                 })())
             }
+        },
+    )
+}
+fn wire__crate__api__default_servers_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "default_servers",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_network = <crate::api::NetworkId>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let output_ok = Ok::<_, ()>(crate::api::default_servers(api_network))?;
+                std::result::Result::Ok(output_ok)
+            })())
         },
     )
 }
@@ -1324,6 +1354,18 @@ impl SseDecode for crate::api::Created {
     }
 }
 
+impl SseDecode for crate::api::DefaultEndpoint {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_address = <String>::sse_decode(deserializer);
+        let mut var_plain = <bool>::sse_decode(deserializer);
+        return crate::api::DefaultEndpoint {
+            address: var_address,
+            plain: var_plain,
+        };
+    }
+}
+
 impl SseDecode for crate::api::DryRun {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -1442,6 +1484,18 @@ impl SseDecode for Vec<crate::api::ClaimableItem> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::api::ClaimableItem>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::DefaultEndpoint> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::DefaultEndpoint>::sse_decode(deserializer));
         }
         return ans_;
     }
@@ -1997,29 +2051,29 @@ fn pde_ffi_dispatcher_primary_impl(
         5 => wire__crate__api__claim_impl(port, ptr, rust_vec_len, data_len),
         6 => wire__crate__api__claimable_impl(port, ptr, rust_vec_len, data_len),
         8 => wire__crate__api__create_wallet_impl(port, ptr, rust_vec_len, data_len),
-        9 => wire__crate__api__export_wif_impl(port, ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__history_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__import_wif_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__init_app_impl(port, ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__lock_impl(port, ptr, rust_vec_len, data_len),
-        16 => wire__crate__api__mint_estimate_impl(port, ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__mint_finish_impl(port, ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__mint_start_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__mint_status_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__mint_sweep_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__mints_impl(port, ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__probe_server_impl(port, ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__receive_address_impl(port, ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__redeem_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__send_yec_confirm_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__send_yec_preview_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__send_yed_confirm_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__send_yed_preview_impl(port, ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__set_server_impl(port, ptr, rust_vec_len, data_len),
-        30 => wire__crate__api__status_impl(port, ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__sync_now_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__unlock_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__vaults_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__export_wif_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__history_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__import_wif_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__init_app_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__lock_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__mint_estimate_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__mint_finish_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__mint_start_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__mint_status_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__mint_sweep_impl(port, ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__mints_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__probe_server_impl(port, ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__receive_address_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__redeem_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__send_yec_confirm_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__send_yec_preview_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__send_yed_confirm_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__send_yed_preview_impl(port, ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__set_server_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__status_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__sync_now_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__unlock_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__vaults_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2034,9 +2088,10 @@ fn pde_ffi_dispatcher_sync_impl(
     match func_id {
         4 => wire__crate__api__check_seed_words_impl(ptr, rust_vec_len, data_len),
         7 => wire__crate__api__core_version_impl(ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__generate_seed_words_impl(ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__is_unlocked_impl(ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__validate_address_impl(ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__default_servers_impl(ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__generate_seed_words_impl(ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__is_unlocked_impl(ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__validate_address_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2141,6 +2196,24 @@ impl flutter_rust_bridge::IntoDart for crate::api::Created {
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::Created {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::Created> for crate::api::Created {
     fn into_into_dart(self) -> crate::api::Created {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::DefaultEndpoint {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.address.into_into_dart().into_dart(),
+            self.plain.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::DefaultEndpoint {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::DefaultEndpoint>
+    for crate::api::DefaultEndpoint
+{
+    fn into_into_dart(self) -> crate::api::DefaultEndpoint {
         self
     }
 }
@@ -2696,6 +2769,14 @@ impl SseEncode for crate::api::Created {
     }
 }
 
+impl SseEncode for crate::api::DefaultEndpoint {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.address, serializer);
+        <bool>::sse_encode(self.plain, serializer);
+    }
+}
+
 impl SseEncode for crate::api::DryRun {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -2789,6 +2870,16 @@ impl SseEncode for Vec<crate::api::ClaimableItem> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::api::ClaimableItem>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::DefaultEndpoint> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::DefaultEndpoint>::sse_encode(item, serializer);
         }
     }
 }
