@@ -10,6 +10,7 @@ export '../src/rust/api.dart'
         Balances,
         ClaimableItem,
         Created,
+        DefaultEndpoint,
         DryRun,
         ErrorKind,
         HistoryItem,
@@ -32,6 +33,10 @@ export '../src/rust/api.dart'
         YewError;
 
 abstract class WalletApi {
+  /// The default endpoints for a network, in order (none for mainnet and testnet until the
+  /// owner supplies them: docs/release.md "Default endpoints").
+  List<DefaultEndpoint> defaultServers({required NetworkId network});
+
   Future<ServerProbe> probeServer({
     required String server,
     required bool plain,

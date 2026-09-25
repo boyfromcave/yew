@@ -2,6 +2,7 @@
 // device prompt). The words come from the keystore through AppState, never from the core.
 import 'package:flutter/material.dart';
 
+import '../state/screen_privacy.dart';
 import '../theme.dart';
 
 class SeedBackupScreen extends StatefulWidget {
@@ -16,6 +17,18 @@ class SeedBackupScreen extends StatefulWidget {
 
 class _SeedBackupScreenState extends State<SeedBackupScreen> {
   bool _written = false;
+
+  @override
+  void initState() {
+    super.initState();
+    setScreenSecure(true);
+  }
+
+  @override
+  void dispose() {
+    setScreenSecure(false);
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

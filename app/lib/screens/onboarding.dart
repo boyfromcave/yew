@@ -33,6 +33,19 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   NetworkId _network = NetworkId.mainnet;
   bool _plain = false;
 
+  /// Prefill the server from the core's default list for [_network] (empty ⇒ the user types
+  /// one; the field says so).
+  void _prefillServer() {
+    final defaults = AppScope.read(context).api.defaultServers(network: _network);
+    if (defaults.isEmpty) {
+      _server.clear();
+      _plain = false;
+    } else {
+      _server.text = defaults.first.address;
+      _plain = defaults.first.plain;
+    }
+  }
+
   @override
   void dispose() {
     for (final c in [_words, _passphrase, _birthday, _server]) {
@@ -220,7 +233,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 items: [for (final n in NetworkId.values) DropdownMenuItem(value: n, child: Text(n.name))],
                 onChanged: (n) => setState(() {
                   _network = n ?? _network;
-                  if (_network == NetworkId.mainnet) _plain = false;
+                  _prefillServer();
                 }),
               ),
               const SizedBox(height: 12),
@@ -228,9 +241,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 key: const Key('server'),
                 controller: _server,
                 autocorrect: false,
-                decoration: const InputDecoration(labelText: 'host:port'),
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(labelText: 'host:port', hintText: 'No default server: enter one you trust'),
               ),
-              if (_network != NetworkId.mainnet)
+              if (_network == NetworkId.regtest)
                 SwitchListTile(
                   key: const Key('plain'),
                   value: _plain,
@@ -248,7 +262,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               const SizedBox(height: 24),
               FilledButton(
                 key: const Key('next'),
-                onPressed: _busy ? null : () => setState(() => _step = _Step.finish),
+                onPressed: _busy || _server.text.trim().isEmpty ? null : () => setState(() => _step = _Step.finish),
                 child: const Text('Continue'),
               ),
             ],

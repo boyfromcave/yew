@@ -2,10 +2,16 @@
     <!-- YEW: the core's gRPC client (plan §3.5); biometrics (local_auth); the QR scanner adds CAMERA itself. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- allowBackup=false (W5 review, docs/security-review.md S-6): neither the keystore
+         ciphertext of the seed nor the core's SQLite cache is ever put into a device or cloud
+         backup; the recovery phrase is the only backup (D-W-6). -->
     <application
-        android:label="yew_app"
+        android:label="YEW"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules">
         <activity
             android:name=".MainActivity"
             android:exported="true"

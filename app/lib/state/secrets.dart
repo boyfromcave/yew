@@ -110,8 +110,10 @@ class WalletSettings {
     this.biometrics = false,
   });
 
-  /// The default endpoint until W5's list exists (plan §3.5, §8 Q4).
-  static const String defaultServer = 'lightwalletd.ycash.xyz:443';
+  /// No built-in endpoint: the list is the core's `default_servers(network)` (empty for
+  /// mainnet and testnet until the owner supplies it, docs/release.md "Default endpoints");
+  /// Onboarding prefills from it and otherwise asks.
+  static const String defaultServer = '';
 
   final String server;
   final bool plain;

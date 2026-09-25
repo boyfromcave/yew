@@ -1,4 +1,5 @@
-// Settings → Server (plan §3.5): one endpoint; TLS required outside regtest; probe before
+// Settings → Server (plan §3.5): one endpoint; TLS required outside regtest (the core refuses
+// plain on mainnet and testnet, the switch shows on regtest only); probe before
 // saving (contract rule 1: an unknown rpcversion is refused by the core).
 import 'package:flutter/material.dart';
 
@@ -70,7 +71,7 @@ class _ServerScreenState extends State<ServerScreen> {
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
     final c = yewColors(context);
-    final mainnet = app.settings.network == NetworkId.mainnet;
+    final regtest = app.settings.network == NetworkId.regtest;
     return Scaffold(
       appBar: AppBar(title: const Text('Server')),
       body: ListView(
@@ -85,7 +86,7 @@ class _ServerScreenState extends State<ServerScreen> {
             onChanged: (_) => setState(() => _ok = false),
             decoration: const InputDecoration(labelText: 'host:port'),
           ),
-          if (!mainnet)
+          if (regtest)
             SwitchListTile(
               key: const Key('plain'),
               value: _plain,

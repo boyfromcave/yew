@@ -11,6 +11,9 @@ class RustWalletApi implements WalletApi {
   static Future<void> init() => RustLib.init();
 
   @override
+  List<DefaultEndpoint> defaultServers({required NetworkId network}) => rust.defaultServers(network: network);
+
+  @override
   Future<ServerProbe> probeServer({
     required String server,
     required bool plain,

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../api/wallet_api.dart';
 import '../format.dart';
 import '../state/app_scope.dart';
+import '../state/screen_privacy.dart';
 import '../theme.dart';
 import '../widgets/address_qr.dart';
 
@@ -30,6 +31,7 @@ class _ExportKeyScreenState extends State<ExportKeyScreen> {
   @override
   void initState() {
     super.initState();
+    setScreenSecure(true);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final app = AppScope.read(context);
       try {
@@ -42,6 +44,12 @@ class _ExportKeyScreenState extends State<ExportKeyScreen> {
         setState(() => _error = messageOf(e));
       }
     });
+  }
+
+  @override
+  void dispose() {
+    setScreenSecure(false);
+    super.dispose();
   }
 
   Future<void> _reveal() async {
@@ -117,7 +125,14 @@ class _ImportKeyScreenState extends State<ImportKeyScreen> {
   AddressPair? _imported;
 
   @override
+  void initState() {
+    super.initState();
+    setScreenSecure(true);
+  }
+
+  @override
   void dispose() {
+    setScreenSecure(false);
     _wif.dispose();
     _birthday.dispose();
     super.dispose();

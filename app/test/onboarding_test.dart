@@ -22,13 +22,17 @@ void main() {
     await tester.tap(find.byKey(const Key('next')));
     await tester.pumpAndSettle();
 
-    // Server step: pick regtest + plain, probe fills the birthday with the tip.
+    // Server step: mainnet has no default endpoint (W5, docs/release.md), so Continue waits
+    // for a server; picking regtest prefills the core's default (127.0.0.1:9067, plain).
+    expect(tester.widget<FilledButton>(find.byKey(const Key('next'))).onPressed, isNull);
+    expect(find.byKey(const Key('plain')), findsNothing);
     await tester.tap(find.byKey(const Key('network')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('regtest').last);
     await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(find.byKey(const Key('server'))).controller!.text, '127.0.0.1:9067');
+    expect(tester.widget<SwitchListTile>(find.byKey(const Key('plain'))).value, isTrue);
     await tester.enterText(find.byKey(const Key('server')), '10.0.2.2:9267');
-    await tester.tap(find.byKey(const Key('plain')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('probe')));
     await tester.pumpAndSettle();
@@ -75,11 +79,14 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('next')));
     await tester.pumpAndSettle();
+    // Mainnet: no default server, the user names one (TLS; there is no plain switch).
+    await tester.enterText(find.byKey(const Key('server')), 'lwd.example.org:443');
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('next')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('finish')));
     await tester.pumpAndSettle();
-    expect(h.api.calls.any((c) => c.startsWith('create words=true birthday=120 mainnet')), isTrue);
+    expect(h.api.calls.any((c) => c.startsWith('create words=true birthday=120 mainnet lwd.example.org:443 plain=false')), isTrue);
     expect(find.text('Recovery phrase'), findsNothing);
     expect(find.byKey(const Key('send')), findsOneWidget);
   });
@@ -91,7 +98,13 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('words')), 'a b c d e f g h i j k l');
     await tester.pumpAndSettle();
-    for (final step in ['next', 'trust-check', 'next', 'next', 'finish']) {
+    for (final step in ['next', 'trust-check', 'next']) {
+      await tester.tap(find.byKey(Key(step)));
+      await tester.pumpAndSettle();
+    }
+    await tester.enterText(find.byKey(const Key('server')), 'lwd.example.org:443');
+    await tester.pumpAndSettle();
+    for (final step in ['next', 'finish']) {
       await tester.tap(find.byKey(Key(step)));
       await tester.pumpAndSettle();
     }

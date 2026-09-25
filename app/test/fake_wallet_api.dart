@@ -225,6 +225,12 @@ class FakeWalletApi implements WalletApi {
   }
 
   @override
+  List<DefaultEndpoint> defaultServers({required NetworkId network}) => switch (network) {
+    NetworkId.regtest => const [DefaultEndpoint(address: '127.0.0.1:9067', plain: true)],
+    _ => const [],
+  };
+
+  @override
   Future<ServerProbe> probeServer({required String server, required bool plain, required NetworkId network}) async {
     calls.add('probe $server $plain ${network.name}');
     return const ServerProbe(
