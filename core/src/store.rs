@@ -1,7 +1,10 @@
 //! Storage (D-W-6): the SQLite schema (wallet meta, addresses, utxos with class and cents,
-//! locks, history with labels, own outputs, own tokens, pending transactions, imported keys)
-//! and its queries. `rusqlite`, bundled. Schema v2 (W2) adds `utxos.cents`, the history label
-//! columns and `own_tokens`; a v1 file is migrated in place (`ALTER TABLE`, additive only).
+//! locks, history with labels, own outputs, own tokens, pending transactions, imported keys,
+//! and — W4 — the mint / claim state machine and the own-vault table) and its queries.
+//! `rusqlite`, bundled. Schema v2 (W2) adds `utxos.cents`, the history label columns and
+//! `own_tokens`; schema v3 (W4) adds the `mints` and `vaults` tables (plan §5.3: `Estimated →
+//! CarrierSent → CarrierConfirmed → MainSent → Done | Lapsed → Swept`, persisted so a killed
+//! app resumes). Every migration is additive (`ALTER TABLE` / `CREATE TABLE IF NOT EXISTS`).
 //!
 //! The database is a cache: deleting it and restoring from seed plus birthday rebuilds it.
 //! The seed is never here. Imported keys (D-W-11, "outside the HD tree") have to live
@@ -28,7 +31,7 @@ pub enum StoreError {
 }
 
 /// The schema version this build writes and reads.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// The `chain` column value of an imported key (D-W-11): outside the HD tree.
 pub const CHAIN_IMPORTED: u32 = 2;
@@ -99,6 +102,208 @@ pub struct LockRow {
 /// A broadcast transaction awaiting confirmation: `(txid, raw bytes, expiry height)`.
 pub type PendingTx = ([u8; 32], Vec<u8>, u64);
 
+/// The state of a two-step operation (plan §5.3). `Estimated` is never stored: a row exists
+/// from the carrier broadcast on. Translated from the wallet fork's in-memory flow
+/// (`yecwallet-dd/src/yellowbackcontroller.cpp:811-851` `awaitPending`: the carrier, one
+/// confirmation, the main transaction, the lapse when the chain passes `refHeight +
+/// REF_WINDOW`) into rows the sync loop advances.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MintState {
+    /// The carrier funding transaction was broadcast.
+    CarrierSent,
+    /// The carrier is confirmed; the main transaction can be built while the window is open.
+    CarrierConfirmed,
+    /// The main (MINT or CLAIM) transaction was broadcast.
+    MainSent,
+    /// The main transaction confirmed (its verdict is in `history`).
+    Done,
+    /// `refHeight + REF_WINDOW` passed without the main transaction confirming; the carrier is
+    /// unspent and sweepable.
+    Lapsed,
+    /// The sweep of the lapsed carrier was broadcast.
+    SweepSent,
+    /// The sweep confirmed: `CARRIER_VALUE − fee` is back in class `YEC`.
+    Swept,
+    /// The carrier never confirmed (its funding expired); nothing is on the chain.
+    Failed,
+}
+
+impl MintState {
+    /// The stored name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MintState::CarrierSent => "CARRIER_SENT",
+            MintState::CarrierConfirmed => "CARRIER_CONFIRMED",
+            MintState::MainSent => "MAIN_SENT",
+            MintState::Done => "DONE",
+            MintState::Lapsed => "LAPSED",
+            MintState::SweepSent => "SWEEP_SENT",
+            MintState::Swept => "SWEPT",
+            MintState::Failed => "FAILED",
+        }
+    }
+
+    /// From the stored name.
+    pub fn parse(s: &str) -> Option<MintState> {
+        Some(match s {
+            "CARRIER_SENT" => MintState::CarrierSent,
+            "CARRIER_CONFIRMED" => MintState::CarrierConfirmed,
+            "MAIN_SENT" => MintState::MainSent,
+            "DONE" => MintState::Done,
+            "LAPSED" => MintState::Lapsed,
+            "SWEEP_SENT" => MintState::SweepSent,
+            "SWEPT" => MintState::Swept,
+            "FAILED" => MintState::Failed,
+            _ => return None,
+        })
+    }
+
+    /// True while the sync loop still has something to do with the row.
+    pub fn in_flight(self) -> bool {
+        !matches!(self, MintState::Done | MintState::Swept | MintState::Failed)
+    }
+
+    /// True while the wallet holds an unspent carrier for the row (class `CARRIER`).
+    pub fn holds_carrier(self) -> bool {
+        matches!(
+            self,
+            MintState::CarrierConfirmed
+                | MintState::MainSent
+                | MintState::Lapsed
+                | MintState::SweepSent
+        )
+    }
+}
+
+/// What a two-step row is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MintKind {
+    /// A MINT (the owner persona).
+    Mint,
+    /// A CLAIM of another wallet's vault (the liquidator persona).
+    Claim,
+}
+
+impl MintKind {
+    /// The stored name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MintKind::Mint => "mint",
+            MintKind::Claim => "claim",
+        }
+    }
+}
+
+/// One row of `mints`: everything the carrier step fixed, so the main step and the sweep can
+/// be rebuilt from the file alone (D-W-6: a killed app resumes).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MintRow {
+    /// The row id (`mint_id` of the API).
+    pub id: i64,
+    /// MINT or CLAIM.
+    pub kind: MintKind,
+    /// The state.
+    pub state: MintState,
+    /// The tip when the carrier was broadcast.
+    pub created_height: u64,
+    /// The cents to mint (MINT) or the debt to burn (CLAIM, `mintedCents`).
+    pub cents: u64,
+    /// `lockBlocks` (MINT).
+    pub lock_blocks: u32,
+    /// The term class letter (`"A"`, `"B"`, `"C"`).
+    pub term_class: String,
+    /// `R`, the reference height of the carrier and the main transaction.
+    pub ref_height: u32,
+    /// The vault's `lockHeight`.
+    pub lock_height: u32,
+    /// The vault's `claimHeight`.
+    pub claim_height: u32,
+    /// The collateral (`requiredZat` rounded, or the claimed vault's `collateralZat`).
+    pub collateral_zat: i64,
+    /// The enforcement fee (`feeZat`), 0 under FEE-0.
+    pub fee_zat: i64,
+    /// The fee payee (`s…`), empty under FEE-0.
+    pub payee: String,
+    /// The attestor fee (`attestFeeZat`), 0 under AFEE-0.
+    pub attest_fee_zat: i64,
+    /// The attestor payee (`bondKeyAddress`, `s…`), empty under AFEE-0.
+    pub attest_payee: String,
+    /// The claim's residual to the owner (RED-5), 0 when none is due.
+    pub residual_zat: i64,
+    /// The bundle bytes committed by the carrier.
+    pub bundle: Vec<u8>,
+    /// The `seq`s the bundle carries, as `"0,1,2"`.
+    pub bundle_seqs: String,
+    /// The carrier key's hash (an own key; re-derived through `Wallet::key_for_hash`).
+    pub carrier_hash160: [u8; 20],
+    /// The owner key's hash (MINT: the vault owner and the token recipient; CLAIM: unused).
+    pub owner_hash160: [u8; 20],
+    /// The carrier funding txid.
+    pub carrier_txid: [u8; 32],
+    /// The carrier output index (0).
+    pub carrier_vout: u32,
+    /// The main transaction's txid, once broadcast (zero before).
+    pub main_txid: [u8; 32],
+    /// The sweep's txid, once broadcast (zero before).
+    pub sweep_txid: [u8; 32],
+    /// `refHeight + REF_WINDOW`: the expiry of the carrier and of the main transaction.
+    pub expiry_height: u32,
+    /// CLAIM: the vault's txid (zero for a MINT).
+    pub vault_txid: [u8; 32],
+    /// CLAIM: the vault's owner key (33 bytes), for the residual output and the vault script.
+    pub owner_pubkey: Vec<u8>,
+    /// Why the row failed or lapsed, for the screen.
+    pub note: String,
+}
+
+/// One row of `vaults`: an own vault as `GetVault` last reported it (plan §3.7 class VAULT).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VaultRow {
+    /// The mint txid (the vault outpoint is `txid:0`).
+    pub txid: [u8; 32],
+    /// The output index (0).
+    pub vout: u32,
+    /// `ACTIVE`, `VOID`, `CLOSED`, `CLAIMED`.
+    pub status: String,
+    /// The owner key hash (an own key).
+    pub owner_hash160: [u8; 20],
+    /// The owner's compressed public key.
+    pub owner_pubkey: [u8; 33],
+    /// The term class letter.
+    pub term_class: String,
+    /// `lockHeight`.
+    pub lock_height: u32,
+    /// `claimHeight`.
+    pub claim_height: u32,
+    /// `collateralZat`.
+    pub collateral_zat: i64,
+    /// `mintedCents`.
+    pub minted_cents: u64,
+    /// `mintHeight`.
+    pub mint_height: u64,
+    /// `claimable` as the node judges it at its tip.
+    pub claimable: bool,
+    /// `underwaterAt` (micro-USD per YEC), 0 when undefined.
+    pub underwater_at: i64,
+    /// `sweepBefore`, 0 when not applicable.
+    pub sweep_before: u64,
+    /// `closeHeight`, 0 while open.
+    pub close_height: u64,
+    /// `closingTxid` (display hex), empty while open.
+    pub closing_txid: String,
+    /// `voidReason`, empty unless VOID.
+    pub void_reason: String,
+    /// The tip at the last refresh.
+    pub updated_height: u64,
+}
+
+impl VaultRow {
+    /// True while the vault can still be spent by its owner (ACTIVE: REDEEM; VOID: release).
+    pub fn is_open(&self) -> bool {
+        self.status == "ACTIVE" || self.status == "VOID"
+    }
+}
+
 /// The open wallet database.
 pub struct Store {
     conn: Connection,
@@ -136,6 +341,24 @@ CREATE TABLE IF NOT EXISTS pending_txs (txid BLOB PRIMARY KEY, raw BLOB NOT NULL
 CREATE TABLE IF NOT EXISTS own_outputs (txid BLOB NOT NULL, n INTEGER NOT NULL, value INTEGER NOT NULL, hash160 BLOB NOT NULL, PRIMARY KEY (txid, n));
 CREATE TABLE IF NOT EXISTS own_tokens (txid BLOB NOT NULL, n INTEGER NOT NULL, cents INTEGER NOT NULL, PRIMARY KEY (txid, n));
 CREATE TABLE IF NOT EXISTS spent_tokens (spender BLOB NOT NULL, txid BLOB NOT NULL, n INTEGER NOT NULL, cents INTEGER NOT NULL, PRIMARY KEY (spender, txid, n));
+CREATE TABLE IF NOT EXISTS mints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, state TEXT NOT NULL,
+  created_height INTEGER NOT NULL, cents INTEGER NOT NULL, lock_blocks INTEGER NOT NULL,
+  term_class TEXT NOT NULL, ref_height INTEGER NOT NULL, lock_height INTEGER NOT NULL,
+  claim_height INTEGER NOT NULL, collateral_zat INTEGER NOT NULL, fee_zat INTEGER NOT NULL,
+  payee TEXT NOT NULL, attest_fee_zat INTEGER NOT NULL, attest_payee TEXT NOT NULL,
+  residual_zat INTEGER NOT NULL, bundle BLOB NOT NULL, bundle_seqs TEXT NOT NULL,
+  carrier_hash160 BLOB NOT NULL, owner_hash160 BLOB NOT NULL, carrier_txid BLOB NOT NULL,
+  carrier_vout INTEGER NOT NULL, main_txid BLOB NOT NULL, sweep_txid BLOB NOT NULL,
+  expiry_height INTEGER NOT NULL, vault_txid BLOB NOT NULL, owner_pubkey BLOB NOT NULL,
+  note TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS vaults (
+  txid BLOB PRIMARY KEY, vout INTEGER NOT NULL, status TEXT NOT NULL, owner_hash160 BLOB NOT NULL,
+  owner_pubkey BLOB NOT NULL, term_class TEXT NOT NULL, lock_height INTEGER NOT NULL,
+  claim_height INTEGER NOT NULL, collateral_zat INTEGER NOT NULL, minted_cents INTEGER NOT NULL,
+  mint_height INTEGER NOT NULL, claimable INTEGER NOT NULL, underwater_at INTEGER NOT NULL,
+  sweep_before INTEGER NOT NULL, close_height INTEGER NOT NULL, closing_txid TEXT NOT NULL,
+  void_reason TEXT NOT NULL, updated_height INTEGER NOT NULL);
 ";
 
 /// The additive v1 → v2 migration (W2).
@@ -181,6 +404,13 @@ impl Store {
             )?;
         }
         conn.execute_batch(SCHEMA)?;
+        // v2 → v3 (W4) is the two new tables SCHEMA just created: bump the version.
+        if matches!(existing.as_deref(), Some("1") | Some("2")) {
+            conn.execute(
+                "UPDATE meta SET value = '3' WHERE key = 'schema_version'",
+                [],
+            )?;
+        }
         let s = Store { conn };
         match s.meta("schema_version")? {
             None => s.set_meta("schema_version", &SCHEMA_VERSION.to_string())?,
@@ -739,6 +969,280 @@ impl Store {
         )?;
         Ok(())
     }
+
+    // ---- mints (the two-step state machine, W4)
+
+    /// Insert a new row (state `CarrierSent`); returns its id.
+    pub fn insert_mint(&self, m: &MintRow) -> Result<i64, StoreError> {
+        self.conn.execute(
+            "INSERT INTO mints (kind, state, created_height, cents, lock_blocks, term_class, ref_height, lock_height, claim_height,
+               collateral_zat, fee_zat, payee, attest_fee_zat, attest_payee, residual_zat, bundle, bundle_seqs, carrier_hash160,
+               owner_hash160, carrier_txid, carrier_vout, main_txid, sweep_txid, expiry_height, vault_txid, owner_pubkey, note)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+            params![
+                m.kind.as_str(), m.state.as_str(), m.created_height as i64, m.cents as i64, m.lock_blocks, m.term_class,
+                m.ref_height, m.lock_height, m.claim_height, m.collateral_zat, m.fee_zat, m.payee, m.attest_fee_zat,
+                m.attest_payee, m.residual_zat, m.bundle, m.bundle_seqs, m.carrier_hash160.as_slice(),
+                m.owner_hash160.as_slice(), m.carrier_txid.as_slice(), m.carrier_vout, m.main_txid.as_slice(),
+                m.sweep_txid.as_slice(), m.expiry_height, m.vault_txid.as_slice(), m.owner_pubkey, m.note
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Advance a row: state, the txid the step produced (main or sweep), and a note.
+    pub fn set_mint_state(
+        &self,
+        id: i64,
+        state: MintState,
+        main_txid: Option<&[u8; 32]>,
+        sweep_txid: Option<&[u8; 32]>,
+        note: &str,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE mints SET state = ?2, main_txid = COALESCE(?3, main_txid), sweep_txid = COALESCE(?4, sweep_txid), note = ?5 WHERE id = ?1",
+            params![
+                id,
+                state.as_str(),
+                main_txid.map(|t| t.as_slice()),
+                sweep_txid.map(|t| t.as_slice()),
+                note
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// One row.
+    pub fn mint(&self, id: i64) -> Result<Option<MintRow>, StoreError> {
+        Ok(self.mints()?.into_iter().find(|m| m.id == id))
+    }
+
+    /// Every row, oldest first.
+    pub fn mints(&self) -> Result<Vec<MintRow>, StoreError> {
+        let mut st = self.conn.prepare(
+            "SELECT id, kind, state, created_height, cents, lock_blocks, term_class, ref_height, lock_height, claim_height,
+               collateral_zat, fee_zat, payee, attest_fee_zat, attest_payee, residual_zat, bundle, bundle_seqs, carrier_hash160,
+               owner_hash160, carrier_txid, carrier_vout, main_txid, sweep_txid, expiry_height, vault_txid, owner_pubkey, note
+             FROM mints ORDER BY id",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok(MintRowRaw {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                state: r.get(2)?,
+                created_height: r.get(3)?,
+                cents: r.get(4)?,
+                lock_blocks: r.get(5)?,
+                term_class: r.get(6)?,
+                ref_height: r.get(7)?,
+                lock_height: r.get(8)?,
+                claim_height: r.get(9)?,
+                collateral_zat: r.get(10)?,
+                fee_zat: r.get(11)?,
+                payee: r.get(12)?,
+                attest_fee_zat: r.get(13)?,
+                attest_payee: r.get(14)?,
+                residual_zat: r.get(15)?,
+                bundle: r.get(16)?,
+                bundle_seqs: r.get(17)?,
+                carrier_hash160: r.get(18)?,
+                owner_hash160: r.get(19)?,
+                carrier_txid: r.get(20)?,
+                carrier_vout: r.get(21)?,
+                main_txid: r.get(22)?,
+                sweep_txid: r.get(23)?,
+                expiry_height: r.get(24)?,
+                vault_txid: r.get(25)?,
+                owner_pubkey: r.get(26)?,
+                note: r.get(27)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let r = row?;
+            out.push(MintRow {
+                id: r.id,
+                kind: match r.kind.as_str() {
+                    "mint" => MintKind::Mint,
+                    "claim" => MintKind::Claim,
+                    other => return Err(StoreError::Corrupt(format!("mint kind {other}"))),
+                },
+                state: MintState::parse(&r.state)
+                    .ok_or_else(|| StoreError::Corrupt(format!("mint state {}", r.state)))?,
+                created_height: r.created_height as u64,
+                cents: r.cents as u64,
+                lock_blocks: r.lock_blocks,
+                term_class: r.term_class,
+                ref_height: r.ref_height,
+                lock_height: r.lock_height,
+                claim_height: r.claim_height,
+                collateral_zat: r.collateral_zat,
+                fee_zat: r.fee_zat,
+                payee: r.payee,
+                attest_fee_zat: r.attest_fee_zat,
+                attest_payee: r.attest_payee,
+                residual_zat: r.residual_zat,
+                bundle: r.bundle,
+                bundle_seqs: r.bundle_seqs,
+                carrier_hash160: arr20(&r.carrier_hash160)?,
+                owner_hash160: arr20(&r.owner_hash160)?,
+                carrier_txid: arr32(&r.carrier_txid)?,
+                carrier_vout: r.carrier_vout,
+                main_txid: arr32(&r.main_txid)?,
+                sweep_txid: arr32(&r.sweep_txid)?,
+                expiry_height: r.expiry_height,
+                vault_txid: arr32(&r.vault_txid)?,
+                owner_pubkey: r.owner_pubkey,
+                note: r.note,
+            });
+        }
+        Ok(out)
+    }
+
+    // ---- vaults (own vaults as GetVault reports them, W4)
+
+    /// Insert or replace a vault row.
+    pub fn upsert_vault(&self, v: &VaultRow) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO vaults (txid, vout, status, owner_hash160, owner_pubkey, term_class, lock_height, claim_height,
+               collateral_zat, minted_cents, mint_height, claimable, underwater_at, sweep_before, close_height, closing_txid,
+               void_reason, updated_height)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            params![
+                v.txid.as_slice(), v.vout, v.status, v.owner_hash160.as_slice(), v.owner_pubkey.as_slice(), v.term_class,
+                v.lock_height, v.claim_height, v.collateral_zat, v.minted_cents as i64, v.mint_height as i64,
+                v.claimable as i64, v.underwater_at, v.sweep_before as i64, v.close_height as i64, v.closing_txid,
+                v.void_reason, v.updated_height as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// One vault by its mint txid.
+    pub fn vault(&self, txid: &[u8; 32]) -> Result<Option<VaultRow>, StoreError> {
+        Ok(self.vaults()?.into_iter().find(|v| v.txid == *txid))
+    }
+
+    /// Every vault, by mint height.
+    pub fn vaults(&self) -> Result<Vec<VaultRow>, StoreError> {
+        let mut st = self.conn.prepare(
+            "SELECT txid, vout, status, owner_hash160, owner_pubkey, term_class, lock_height, claim_height, collateral_zat,
+               minted_cents, mint_height, claimable, underwater_at, sweep_before, close_height, closing_txid, void_reason,
+               updated_height FROM vaults ORDER BY mint_height, txid",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok((
+                r.get::<_, Vec<u8>>(0)?,
+                r.get::<_, u32>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Vec<u8>>(3)?,
+                r.get::<_, Vec<u8>>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, u32>(6)?,
+                r.get::<_, u32>(7)?,
+                r.get::<_, i64>(8)?,
+                r.get::<_, i64>(9)?,
+                r.get::<_, i64>(10)?,
+                r.get::<_, i64>(11)?,
+                r.get::<_, i64>(12)?,
+                r.get::<_, i64>(13)?,
+                r.get::<_, i64>(14)?,
+                r.get::<_, String>(15)?,
+                r.get::<_, String>(16)?,
+                r.get::<_, i64>(17)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (
+                txid,
+                vout,
+                status,
+                oh,
+                opk,
+                term_class,
+                lock_height,
+                claim_height,
+                collateral_zat,
+                minted,
+                mint_height,
+                claimable,
+                underwater_at,
+                sweep_before,
+                close_height,
+                closing_txid,
+                void_reason,
+                updated,
+            ) = row?;
+            let owner_pubkey: [u8; 33] = opk
+                .as_slice()
+                .try_into()
+                .map_err(|_| StoreError::Corrupt("owner pubkey length".into()))?;
+            out.push(VaultRow {
+                txid: arr32(&txid)?,
+                vout,
+                status,
+                owner_hash160: arr20(&oh)?,
+                owner_pubkey,
+                term_class,
+                lock_height,
+                claim_height,
+                collateral_zat,
+                minted_cents: minted.max(0) as u64,
+                mint_height: mint_height.max(0) as u64,
+                claimable: claimable != 0,
+                underwater_at,
+                sweep_before: sweep_before.max(0) as u64,
+                close_height: close_height.max(0) as u64,
+                closing_txid,
+                void_reason,
+                updated_height: updated.max(0) as u64,
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// The raw column tuple of `mints`, before validation.
+struct MintRowRaw {
+    id: i64,
+    kind: String,
+    state: String,
+    created_height: i64,
+    cents: i64,
+    lock_blocks: u32,
+    term_class: String,
+    ref_height: u32,
+    lock_height: u32,
+    claim_height: u32,
+    collateral_zat: i64,
+    fee_zat: i64,
+    payee: String,
+    attest_fee_zat: i64,
+    attest_payee: String,
+    residual_zat: i64,
+    bundle: Vec<u8>,
+    bundle_seqs: String,
+    carrier_hash160: Vec<u8>,
+    owner_hash160: Vec<u8>,
+    carrier_txid: Vec<u8>,
+    carrier_vout: u32,
+    main_txid: Vec<u8>,
+    sweep_txid: Vec<u8>,
+    expiry_height: u32,
+    vault_txid: Vec<u8>,
+    owner_pubkey: Vec<u8>,
+    note: String,
+}
+
+fn arr32(v: &[u8]) -> Result<[u8; 32], StoreError> {
+    v.try_into()
+        .map_err(|_| StoreError::Corrupt("32-byte field length".into()))
+}
+
+fn arr20(v: &[u8]) -> Result<[u8; 20], StoreError> {
+    v.try_into()
+        .map_err(|_| StoreError::Corrupt("20-byte field length".into()))
 }
 
 /// Wrap or unwrap bytes under `key` with an HMAC-SHA256 counter keystream (XOR; symmetric).
@@ -771,7 +1275,7 @@ mod tests {
     #[test]
     fn schema_meta_addresses_utxos_locks_history() {
         let mut s = Store::open_in_memory().unwrap();
-        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("2"));
+        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("3"));
         s.set_meta("network", "regtest").unwrap();
         s.set_meta("network", "regtest").unwrap();
         assert_eq!(s.meta("network").unwrap().as_deref(), Some("regtest"));
@@ -899,7 +1403,8 @@ mod tests {
         )
         .unwrap();
         let s = Store::init(conn).unwrap();
-        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("2"));
+        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("3"));
+        assert!(s.mints().unwrap().is_empty() && s.vaults().unwrap().is_empty());
         assert!(s.utxos().unwrap().is_empty());
         let h = s.history().unwrap();
         assert_eq!(h.len(), 1);
@@ -914,5 +1419,102 @@ mod tests {
         assert_eq!(wrap_key(b"k", b"n1", &w), secret.to_vec());
         assert_ne!(wrap_key(b"k", b"n2", &w), secret.to_vec());
         assert_eq!(wrap_key(b"k", b"n", &[0u8; 100]).len(), 100);
+    }
+
+    #[test]
+    fn v2_file_gains_the_w4_tables_and_rows_round_trip() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO meta VALUES ('schema_version', '2');",
+        )
+        .unwrap();
+        let s = Store::init(conn).unwrap();
+        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("3"));
+        let m = MintRow {
+            id: 0,
+            kind: MintKind::Mint,
+            state: MintState::CarrierSent,
+            created_height: 480,
+            cents: 10_000,
+            lock_blocks: 48,
+            term_class: "A".into(),
+            ref_height: 478,
+            lock_height: 526,
+            claim_height: 550,
+            collateral_zat: 1_000_000_000,
+            fee_zat: 50_000_000,
+            payee: "smX".into(),
+            attest_fee_zat: 12_500_000,
+            attest_payee: "smY".into(),
+            residual_zat: 0,
+            bundle: vec![0x59, 0x41, 1, 0],
+            bundle_seqs: "0,1,2".into(),
+            carrier_hash160: [1; 20],
+            owner_hash160: [2; 20],
+            carrier_txid: [3; 32],
+            carrier_vout: 0,
+            main_txid: [0; 32],
+            sweep_txid: [0; 32],
+            expiry_height: 518,
+            vault_txid: [0; 32],
+            owner_pubkey: Vec::new(),
+            note: String::new(),
+        };
+        let id = s.insert_mint(&m).unwrap();
+        assert_eq!(id, 1);
+        assert_eq!(s.mint(1).unwrap().unwrap(), MintRow { id: 1, ..m.clone() });
+        s.set_mint_state(1, MintState::MainSent, Some(&[4; 32]), None, "sent")
+            .unwrap();
+        let got = s.mint(1).unwrap().unwrap();
+        assert_eq!(
+            (got.state, got.main_txid, got.note.as_str()),
+            (MintState::MainSent, [4; 32], "sent")
+        );
+        s.set_mint_state(1, MintState::Lapsed, None, Some(&[5; 32]), "")
+            .unwrap();
+        let got = s.mint(1).unwrap().unwrap();
+        assert_eq!((got.main_txid, got.sweep_txid), ([4; 32], [5; 32]));
+        assert!(MintState::Lapsed.in_flight() && !MintState::Swept.in_flight());
+        for st in [
+            MintState::CarrierSent,
+            MintState::Done,
+            MintState::Failed,
+            MintState::SweepSent,
+        ] {
+            assert_eq!(MintState::parse(st.as_str()), Some(st));
+        }
+        let v = VaultRow {
+            txid: [6; 32],
+            vout: 0,
+            status: "ACTIVE".into(),
+            owner_hash160: [2; 20],
+            owner_pubkey: [2; 33],
+            term_class: "A".into(),
+            lock_height: 526,
+            claim_height: 550,
+            collateral_zat: 1_000_000_000,
+            minted_cents: 10_000,
+            mint_height: 481,
+            claimable: false,
+            underwater_at: 11_000_000,
+            sweep_before: 0,
+            close_height: 0,
+            closing_txid: String::new(),
+            void_reason: String::new(),
+            updated_height: 490,
+        };
+        s.upsert_vault(&v).unwrap();
+        assert_eq!(s.vault(&[6; 32]).unwrap(), Some(v.clone()));
+        assert!(v.is_open());
+        s.upsert_vault(&VaultRow {
+            status: "CLOSED".into(),
+            close_height: 530,
+            ..v
+        })
+        .unwrap();
+        let got = s.vaults().unwrap();
+        assert_eq!(got.len(), 1);
+        assert!(!got[0].is_open() && got[0].close_height == 530);
     }
 }

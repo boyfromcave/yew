@@ -4,14 +4,19 @@
 //! Two layers, both mandatory:
 //!
 //! 1. **Local** ([`check`]), on the raw bytes about to be sent: every input is a known unspent
-//!    output of this wallet of a class the path may spend — the YEC path `YEC` / `FEE_RESERVE`
-//!    only, the YED transfer path `TOKEN` / `YEC` / `FEE_RESERVE` — never `PENDING_TOKEN`,
-//!    `VAULT`, `CARRIER`, `HELD`, `UNKNOWN_P2SH`, `FOREIGN` or unknown; transparent-only; the
-//!    YEC path carries no `OP_RETURN`, the transfer path carries exactly one that decodes as a
-//!    TRANSFER and spends at least one token.
+//!    output of this wallet of a class the path may spend — the YEC and carrier-funding paths
+//!    `YEC` / `FEE_RESERVE` only, the YED transfer path `TOKEN` / `YEC` / `FEE_RESERVE`, the
+//!    mint path those plus exactly one `CARRIER` at `vin[last]`, the redeem path the own
+//!    `VAULT` at `vin[0]` plus `TOKEN`s, the claim path the named foreign vault at `vin[0]`
+//!    plus `TOKEN`s and one `CARRIER` at `vin[last]`, the sweep path `CARRIER`s only — never
+//!    `PENDING_TOKEN`, `HELD`, `UNKNOWN_P2SH`, `FOREIGN` or unknown; transparent-only; the
+//!    payload matches the path (none on the YEC, carrier and sweep paths; exactly one TRANSFER,
+//!    MINT or REDEEM on the others, the transfer path spending at least one token).
 //! 2. **Remote** (client contract rule 4, lightwalletd plan §5): `ValidateRawTransaction` on the
-//!    same bytes, refused unless `valid && verdict == "ok" && burned == 0 && !wouldBeRejected`.
-//!    The refusal carries the node's verdict text. When the server offers no Yellowback service
+//!    same bytes, refused unless `valid && verdict == "ok" && burned == <the planned burn> &&
+//!    !wouldBeRejected` — the planned burn is 0 on every path but redeem and claim, which burn
+//!    the debt (plus a sub-dollar remainder) by design. The refusal carries the node's verdict
+//!    text. When the server offers no Yellowback service
 //!    ([`Validator::Absent`], contract rule 1) the YED path is refused outright and the YEC path
 //!    proceeds on the local layer alone: without `GetAddressTokens` nothing is class `TOKEN`,
 //!    every `TOKEN_VALUE` output is `HELD`, and the local layer already refuses all of them.
@@ -60,6 +65,18 @@ pub enum GateError {
     /// The transfer path spends no token.
     #[error("gate: a TRANSFER must spend at least one TOKEN input")]
     NoTokenInput,
+    /// The path needs a payload of one type and the transaction carries none of that type.
+    #[error("gate: the transaction carries no {0} payload")]
+    NoPayload(&'static str),
+    /// The path needs exactly one carrier input at `vin[last]`.
+    #[error("gate: the {0} path needs exactly one CARRIER input, as the last input")]
+    CarrierShape(&'static str),
+    /// The path needs the vault at `vin[0]`.
+    #[error("gate: the {0} path needs the vault {1} at vin[0]")]
+    VaultShape(&'static str, String),
+    /// The carrier-funding path pays `vout[0]` as something other than a P2SH carrier.
+    #[error("gate: the carrier path needs vout[0] = P2SH of CARRIER_VALUE")]
+    CarrierOutput,
     /// The server offers no Yellowback service, so nothing YED can be validated or sent.
     #[error("gate: the server offers no Yellowback service; YED cannot be sent through it")]
     YellowbackAbsent,
@@ -89,6 +106,18 @@ pub enum Path {
     Yec,
     /// A YED transfer (`build::yed_transfer`).
     YedTransfer,
+    /// The carrier funding transaction of a mint or claim (`build::mint::carrier_step`).
+    Carrier,
+    /// The MINT (`build::mint`).
+    Mint,
+    /// The owner-path REDEEM of an ACTIVE own vault (`build::redeem`).
+    Redeem,
+    /// The owner-path release of a VOID own vault: no payload, no burn (`build::redeem`).
+    Release,
+    /// The CLAIM of another wallet's vault, named here since it is not an own output.
+    Claim(OutPoint),
+    /// The sweep of lapsed carriers (`build::mint::sweep`).
+    Sweep,
 }
 
 impl Path {
@@ -96,14 +125,30 @@ impl Path {
         match self {
             Path::Yec => "YEC",
             Path::YedTransfer => "YED transfer",
+            Path::Carrier => "carrier",
+            Path::Mint => "mint",
+            Path::Redeem => "redeem",
+            Path::Release => "release",
+            Path::Claim(_) => "claim",
+            Path::Sweep => "sweep",
         }
     }
 
     fn allows(self, c: UtxoClass) -> bool {
         match self {
-            Path::Yec => c.yec_spendable(),
+            Path::Yec | Path::Carrier => c.yec_spendable(),
             Path::YedTransfer => c.transfer_spendable(),
+            Path::Mint => c.mint_spendable(),
+            Path::Redeem => c.redeem_spendable(),
+            Path::Release => c == UtxoClass::Vault,
+            Path::Claim(_) => c.claim_spendable(),
+            Path::Sweep => c == UtxoClass::Carrier,
         }
+    }
+
+    /// True when the path's YED side is the node's business (the remote layer is mandatory).
+    fn needs_yellowback(self) -> bool {
+        !matches!(self, Path::Yec)
     }
 }
 
@@ -122,12 +167,28 @@ pub fn check(
         return Err(GateError::NoInputs);
     }
     let mut tokens = 0;
-    for i in &tx.vin {
+    let mut carriers: Vec<usize> = Vec::new();
+    for (n, i) in tx.vin.iter().enumerate() {
+        // The claim path's vault is another wallet's output: it is named, never classified.
+        if let Path::Claim(vault) = path {
+            if n == 0 {
+                if i.prevout != vault {
+                    return Err(GateError::VaultShape(path.name(), vault.display()));
+                }
+                continue;
+            }
+        }
         match class_of(&i.prevout) {
             None => return Err(GateError::UnknownInput(i.prevout.display())),
             Some(c) if path.allows(c) => {
                 if c == UtxoClass::Token {
                     tokens += 1;
+                }
+                if c == UtxoClass::Carrier {
+                    carriers.push(n);
+                }
+                if c == UtxoClass::Vault && n != 0 {
+                    return Err(GateError::VaultShape(path.name(), i.prevout.display()));
                 }
             }
             Some(c) => {
@@ -139,14 +200,36 @@ pub fn check(
             }
         }
     }
+    let no_payload = |tx: &Transaction| -> Result<(), GateError> {
+        if let Some(i) = tx
+            .vout
+            .iter()
+            .position(|o| script::is_op_return(&o.script_pubkey))
+        {
+            return Err(GateError::PayloadOnYecPath(i));
+        }
+        Ok(())
+    };
+    let one_carrier_last = |name: &'static str| -> Result<(), GateError> {
+        if carriers.len() != 1 || carriers[0] != tx.vin.len() - 1 {
+            return Err(GateError::CarrierShape(name));
+        }
+        Ok(())
+    };
     match path {
-        Path::Yec => {
-            if let Some(i) = tx
+        Path::Yec => no_payload(&tx)?,
+        Path::Carrier => {
+            no_payload(&tx)?;
+            let ok = tx
                 .vout
-                .iter()
-                .position(|o| script::is_op_return(&o.script_pubkey))
-            {
-                return Err(GateError::PayloadOnYecPath(i));
+                .first()
+                .map(|o| {
+                    o.value == crate::params::CARRIER_VALUE
+                        && script::p2sh_hash(&o.script_pubkey).is_some()
+                })
+                .unwrap_or(false);
+            if !ok {
+                return Err(GateError::CarrierOutput);
             }
         }
         Path::YedTransfer => {
@@ -158,13 +241,48 @@ pub fn check(
                 return Err(GateError::NoTokenInput);
             }
         }
+        Path::Mint => {
+            match payload::find_payload(&tx) {
+                Some(fp) if matches!(fp.payload, Payload::Mint { .. }) => {}
+                _ => return Err(GateError::NoPayload("MINT")),
+            }
+            one_carrier_last("mint")?;
+        }
+        Path::Redeem | Path::Claim(_) => {
+            match payload::find_payload(&tx) {
+                Some(fp) if matches!(fp.payload, Payload::Redeem { .. }) => {}
+                _ => return Err(GateError::NoPayload("REDEEM")),
+            }
+            if path == Path::Redeem {
+                if class_of(&tx.vin[0].prevout) != Some(UtxoClass::Vault) {
+                    return Err(GateError::VaultShape("redeem", tx.vin[0].prevout.display()));
+                }
+                if !carriers.is_empty() {
+                    return Err(GateError::CarrierShape("redeem"));
+                }
+            } else {
+                one_carrier_last("claim")?;
+            }
+        }
+        Path::Release => {
+            no_payload(&tx)?;
+            if tx.vin.len() != 1 {
+                return Err(GateError::VaultShape(
+                    "release",
+                    tx.vin[0].prevout.display(),
+                ));
+            }
+        }
+        Path::Sweep => no_payload(&tx)?,
     }
     Ok(tx)
 }
 
-/// The remote layer's rule on a [`Validation`] (contract rule 4, D-W-5).
-pub fn accept(v: &Validation) -> Result<(), GateError> {
-    if v.valid && v.verdict == "ok" && v.burned == 0 && !v.would_be_rejected {
+/// The remote layer's rule on a [`Validation`] (contract rule 4, D-W-5): `burned` must equal
+/// `planned_burn` — zero everywhere but on a redeem or claim, whose plan states the debt it
+/// burns (W4: a redeem the node answered `ok, burned 10000` was refused by the `== 0` rule).
+pub fn accept(v: &Validation, planned_burn: i64) -> Result<(), GateError> {
+    if v.valid && v.verdict == "ok" && v.burned == planned_burn && !v.would_be_rejected {
         Ok(())
     } else {
         Err(GateError::Refused {
@@ -209,21 +327,33 @@ impl Validator {
     }
 }
 
-/// `confirm`: both layers on `raw`. Returns the parsed transaction and the node's validation
-/// (`None` only on the YEC path against a server without Yellowback).
+/// `confirm`: both layers on `raw`, no burn planned. Returns the parsed transaction and the
+/// node's validation (`None` only on the YEC path against a server without Yellowback).
 pub async fn confirm(
     validator: &mut Validator,
     path: Path,
     raw: &[u8],
     class_of: impl Fn(&OutPoint) -> Option<UtxoClass>,
 ) -> Result<(Transaction, Option<Validation>), GateError> {
+    confirm_burning(validator, path, raw, class_of, 0).await
+}
+
+/// [`confirm`] for a redeem or claim: the node's `burned` must equal `planned_burn` cents.
+pub async fn confirm_burning(
+    validator: &mut Validator,
+    path: Path,
+    raw: &[u8],
+    class_of: impl Fn(&OutPoint) -> Option<UtxoClass>,
+    planned_burn: i64,
+) -> Result<(Transaction, Option<Validation>), GateError> {
     let tx = check(path, raw, class_of)?;
     let client = match validator {
         Validator::Remote(c) => c,
         Validator::Absent => {
-            return match path {
-                Path::Yec => Ok((tx, None)),
-                Path::YedTransfer => Err(GateError::YellowbackAbsent),
+            return if path.needs_yellowback() {
+                Err(GateError::YellowbackAbsent)
+            } else {
+                Ok((tx, None))
             }
         }
     };
@@ -231,7 +361,7 @@ pub async fn confirm(
         .validate_raw(raw.to_vec())
         .await
         .map_err(|e| GateError::Validate(e.to_string()))?;
-    accept(&v)?;
+    accept(&v, planned_burn)?;
     Ok((tx, Some(v)))
 }
 
@@ -494,7 +624,16 @@ mod tests {
             fee_zat: 0,
             payee: String::new(),
         };
-        assert!(accept(&ok).is_ok());
+        assert!(accept(&ok, 0).is_ok());
+        // A redeem burns what its plan says, no more, no less.
+        let redeem = Validation {
+            burned: 10_000,
+            tx_type: "redeem".into(),
+            ..ok.clone()
+        };
+        assert!(accept(&redeem, 10_000).is_ok());
+        assert!(accept(&redeem, 0).is_err());
+        assert!(accept(&redeem, 9_999).is_err());
         for bad in [
             Validation {
                 valid: false,
@@ -513,9 +652,232 @@ mod tests {
                 ..ok.clone()
             },
         ] {
-            let e = accept(&bad).unwrap_err();
+            let e = accept(&bad, 0).unwrap_err();
             assert!(matches!(e, GateError::Refused { .. }), "{e}");
             assert!(e.to_string().contains("verdict"));
         }
+    }
+
+    #[test]
+    fn w4_paths_shapes() {
+        let vault = OutPoint {
+            txid: [0x11; 32],
+            n: 0,
+        };
+        let token = OutPoint {
+            txid: [0x22; 32],
+            n: 1,
+        };
+        let carrier = OutPoint {
+            txid: [0x33; 32],
+            n: 0,
+        };
+        let yec = OutPoint {
+            txid: [0x44; 32],
+            n: 2,
+        };
+        let foreign_vault = OutPoint {
+            txid: [0x55; 32],
+            n: 0,
+        };
+        let classes: HashMap<OutPoint, UtxoClass> = [
+            (vault, UtxoClass::Vault),
+            (token, UtxoClass::Token),
+            (carrier, UtxoClass::Carrier),
+            (yec, UtxoClass::Yec),
+        ]
+        .into_iter()
+        .collect();
+        let class = |op: &OutPoint| classes.get(op).copied();
+        let build = |inputs: &[OutPoint], payload: Option<Payload>, first_out: Option<TxOut>| {
+            let mut t = Transaction::new_v4();
+            for op in inputs {
+                t.vin.push(TxIn::new(*op));
+            }
+            t.vout.push(first_out.unwrap_or(TxOut {
+                value: 1,
+                script_pubkey: script::p2pkh_script(&[3; 20]),
+            }));
+            if let Some(p) = payload {
+                t.vout.push(TxOut {
+                    value: 0,
+                    script_pubkey: payload::payload_script(&encode(&p).unwrap()),
+                });
+            }
+            t.serialize().unwrap()
+        };
+        let mint_p = Payload::Mint {
+            term_class: 0,
+            cents: 10_000,
+            lock_height: 10,
+            ref_height: 5,
+            owner_key: [2; 33],
+            fee_vout: 0xff,
+            attest_fee_vout: 0xff,
+        };
+        let redeem_p = Payload::Redeem {
+            ref_height: 5,
+            fee_vout: 0xff,
+            attest_fee_vout: 0xff,
+            assignments: vec![],
+        };
+        // Mint: YEC then the carrier last, one MINT payload.
+        assert!(check(
+            Path::Mint,
+            &build(&[yec, carrier], Some(mint_p.clone()), None),
+            class
+        )
+        .is_ok());
+        assert_eq!(
+            check(
+                Path::Mint,
+                &build(&[carrier, yec], Some(mint_p.clone()), None),
+                class
+            )
+            .unwrap_err(),
+            GateError::CarrierShape("mint")
+        );
+        assert_eq!(
+            check(
+                Path::Mint,
+                &build(&[yec], Some(mint_p.clone()), None),
+                class
+            )
+            .unwrap_err(),
+            GateError::CarrierShape("mint")
+        );
+        assert_eq!(
+            check(
+                Path::Mint,
+                &build(&[yec, carrier], Some(redeem_p.clone()), None),
+                class
+            )
+            .unwrap_err(),
+            GateError::NoPayload("MINT")
+        );
+        assert!(matches!(
+            check(
+                Path::Mint,
+                &build(&[token, carrier], Some(mint_p.clone()), None),
+                class
+            )
+            .unwrap_err(),
+            GateError::ForbiddenInput { class: "TOKEN", .. }
+        ));
+        // Carrier funding: YEC inputs, vout[0] a P2SH of CARRIER_VALUE, no payload.
+        let p2sh = TxOut {
+            value: crate::params::CARRIER_VALUE,
+            script_pubkey: script::p2sh_script(&[9; 20]),
+        };
+        assert!(check(
+            Path::Carrier,
+            &build(&[yec], None, Some(p2sh.clone())),
+            class
+        )
+        .is_ok());
+        assert_eq!(
+            check(Path::Carrier, &build(&[yec], None, None), class).unwrap_err(),
+            GateError::CarrierOutput
+        );
+        assert!(matches!(
+            check(Path::Carrier, &build(&[carrier], None, Some(p2sh)), class).unwrap_err(),
+            GateError::ForbiddenInput {
+                class: "CARRIER",
+                ..
+            }
+        ));
+        // Redeem: the own vault first, tokens, a REDEEM payload, no carrier.
+        assert!(check(
+            Path::Redeem,
+            &build(&[vault, token], Some(redeem_p.clone()), None),
+            class
+        )
+        .is_ok());
+        assert!(matches!(
+            check(
+                Path::Redeem,
+                &build(&[token, vault], Some(redeem_p.clone()), None),
+                class
+            )
+            .unwrap_err(),
+            GateError::VaultShape("redeem", _)
+        ));
+        assert!(matches!(
+            check(
+                Path::Redeem,
+                &build(&[vault, token, carrier], Some(redeem_p.clone()), None),
+                class
+            )
+            .unwrap_err(),
+            GateError::ForbiddenInput {
+                class: "CARRIER",
+                ..
+            }
+        ));
+        assert!(matches!(
+            check(
+                Path::Redeem,
+                &build(&[vault, yec], Some(redeem_p.clone()), None),
+                class
+            )
+            .unwrap_err(),
+            GateError::ForbiddenInput { class: "YEC", .. }
+        ));
+        // Release: the vault alone, no payload.
+        assert!(check(Path::Release, &build(&[vault], None, None), class).is_ok());
+        assert!(check(Path::Release, &build(&[vault, token], None, None), class).is_err());
+        assert!(check(
+            Path::Release,
+            &build(&[vault], Some(redeem_p.clone()), None),
+            class
+        )
+        .is_err());
+        // Claim: the named foreign vault first, tokens, the carrier last.
+        let claim = Path::Claim(foreign_vault);
+        assert!(check(
+            claim,
+            &build(
+                &[foreign_vault, token, carrier],
+                Some(redeem_p.clone()),
+                None
+            ),
+            class
+        )
+        .is_ok());
+        assert!(matches!(
+            check(
+                claim,
+                &build(&[vault, token, carrier], Some(redeem_p.clone()), None),
+                class
+            )
+            .unwrap_err(),
+            GateError::VaultShape("claim", _)
+        ));
+        assert_eq!(
+            check(
+                claim,
+                &build(
+                    &[foreign_vault, carrier, token],
+                    Some(redeem_p.clone()),
+                    None
+                ),
+                class
+            )
+            .unwrap_err(),
+            GateError::CarrierShape("claim")
+        );
+        assert!(matches!(
+            check(
+                claim,
+                &build(&[foreign_vault, yec, carrier], Some(redeem_p), None),
+                class
+            )
+            .unwrap_err(),
+            GateError::ForbiddenInput { class: "YEC", .. }
+        ));
+        // Sweep: carriers only, no payload.
+        assert!(check(Path::Sweep, &build(&[carrier], None, None), class).is_ok());
+        assert!(check(Path::Sweep, &build(&[carrier, yec], None, None), class).is_err());
+        assert!(check(Path::Sweep, &build(&[carrier], Some(mint_p), None), class).is_err());
     }
 }

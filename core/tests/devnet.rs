@@ -14,8 +14,16 @@
 //! (`<workspace>/ycash-dd/contrib/yellowback/devnet/yellowback-devnet`), `YEW_DEVNET_PYTHON`
 //! (`<workspace>/.venv/bin/python`), where `<workspace>` is `yew/..`.
 //!
-//! Run: `YEW_DEVNET=1 cargo test -p yew-core --test devnet -- --ignored --nocapture [w1_|w2_]`.
+//! - `w4_mint_resume_lapse_redeem_import_and_claim` (plan §7 W4): the same armed devnet
+//!   (`scripts/devnet-w4.sh`): a full two-step mint from a YEW wallet; the wallet file closed
+//!   and reopened mid-mint (kill-and-resume); the owner key of a vault imported into node 5
+//!   (plan §8.6, open question 6); a mint left unfinished until its window lapses, then swept;
+//!   a bundle with one mutated signature refused; a redeem after `lockHeight`; a −80 % price
+//!   shock and the claim of node 0's vault by the YEW wallet (the liquidator persona).
+//!
+//! Run: `YEW_DEVNET=1 cargo test -p yew-core --test devnet -- --ignored --nocapture [w1_|w2_|w4_]`.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
@@ -50,6 +58,8 @@ fn env_or(k: &str, d: String) -> String {
 struct Devnet {
     dir: String,
     portseed: String,
+    /// The USD price every pool block re-quotes (`price N`), changed by a shock.
+    price: RefCell<String>,
 }
 
 impl Devnet {
@@ -58,6 +68,7 @@ impl Devnet {
         Devnet {
             dir: env_or("YELLOWBACK_DEVNET_DIR", format!("{home}/{dir_default}")),
             portseed: env_or("YELLOWBACK_DEVNET_PORTSEED", portseed_default.into()),
+            price: RefCell::new("50".into()),
         }
     }
 
@@ -96,6 +107,44 @@ impl Devnet {
             .to_string()
     }
 
+    /// `ycash-cli` on node `n`, returning the error text instead of panicking (probes whose
+    /// failure is a finding, not a defect).
+    fn node_try(&self, n: usize, args: &[&str]) -> String {
+        let py = env_or(
+            "YEW_DEVNET_PYTHON",
+            workspace()
+                .join(".venv/bin/python")
+                .to_string_lossy()
+                .into(),
+        );
+        let tool = env_or(
+            "YEW_DEVNET_TOOL",
+            workspace()
+                .join("ycash-dd/contrib/yellowback/devnet/yellowback-devnet")
+                .to_string_lossy()
+                .into(),
+        );
+        let ns = n.to_string();
+        let out = Command::new(&py)
+            .arg(&tool)
+            .args(["cli", "--node", &ns, "--"])
+            .args(args)
+            .env("YELLOWBACK_DEVNET_DIR", &self.dir)
+            .env("YELLOWBACK_DEVNET_PORTSEED", &self.portseed)
+            .output()
+            .unwrap();
+        let text = if out.status.success() {
+            String::from_utf8_lossy(&out.stdout).to_string()
+        } else {
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )
+        };
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
     /// `ycash-cli` on node `n` through the devnet tool.
     fn node(&self, n: usize, args: &[&str]) -> String {
         let ns = n.to_string();
@@ -116,7 +165,8 @@ impl Devnet {
     /// The tool syncs every node before returning.
     fn mine_pool(&self) -> u64 {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        self.run(&["price", "50"]);
+        let price = self.price.borrow().clone();
+        self.run(&["price", &price]);
         let pool = 2 + NEXT.fetch_add(1, Ordering::SeqCst) % 3;
         let out = self.run(&["mine", "1", &pool.to_string()]);
         out.rsplit("-> ").next().unwrap().trim().parse().unwrap()
@@ -832,5 +882,538 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
     let ra = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     assert_eq!(ra.yed.0, 5_000, "YED untouched by the YEC send");
     println!("W2 devnet acceptance ok: mint {mint_txid}, transfer {txid}, key round trip {back_txid}, {comparisons} estimatesend comparisons");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A pool block after `txid` reached the pools, then wait for lightwalletd. Returns the height.
+async fn confirm(dn: &Devnet, c: &mut CompactClient, txid: &str) -> u64 {
+    dn.wait_mempool(txid);
+    let h = dn.mine_pool();
+    wait_for_height(c, h).await
+}
+
+fn mint_state(w: &Wallet, id: i64) -> yew_core::store::MintState {
+    w.store.mint(id).unwrap().unwrap().state
+}
+
+#[tokio::test]
+#[ignore = "needs the ARMED regtest devnet (scripts/devnet-w4.sh) and YEW_DEVNET=1"]
+async fn w4_mint_resume_lapse_redeem_import_and_claim() {
+    use yew_core::build::mint::{self, window_open};
+    use yew_core::bundle;
+    use yew_core::params::{CARRIER_VALUE, REF_WINDOW};
+    use yew_core::store::MintState;
+    if std::env::var("YEW_DEVNET").ok().as_deref() != Some("1") {
+        eprintln!("YEW_DEVNET is not 1; skipping");
+        return;
+    }
+    let dn = Devnet::new("yb-devnet-w0c", "9");
+    let server =
+        Server::parse(&env_or("YEW_DEVNET_SERVER", "127.0.0.1:9267".into()), true).unwrap();
+    let channel = server.connect().await.expect("connect to lightwalletd");
+    let mut c = CompactClient::from_channel(channel.clone());
+    let info = c.lightd_info_for(Network::Regtest).await.unwrap();
+    let (mut v, availability) = Validator::detect(YellowbackClient::from_channel(channel))
+        .await
+        .expect("probe");
+    assert!(availability.usable(), "{availability:?}");
+    let (ref_lag, grace) = match &availability {
+        Availability::Present { info, .. } => {
+            let p = info.params.as_ref().unwrap();
+            (p.ref_lag as u32, p.grace as u32)
+        }
+        Availability::Absent => unreachable!(),
+    };
+    // Warm the price windows (as W2).
+    loop {
+        let yb = v.client_mut().unwrap();
+        let p = yb.price(0).await.unwrap();
+        let at_ref = yb
+            .price((p.height as u32).saturating_sub(ref_lag))
+            .await
+            .unwrap();
+        if p.p_mint > 0 && at_ref.p_mint > 0 {
+            break;
+        }
+        println!(
+            "warming the price windows: tip {:?}, ref {:?}",
+            p.fill, at_ref.fill
+        );
+        let h = dn.mine_pool();
+        wait_for_height(&mut c, h).await;
+    }
+    // The block hash the relay serves is the node's, in internal order (bundle verification).
+    let tip_now = c.latest_height().await.unwrap();
+    let node_hash = dn.node(0, &["getblockhash", &tip_now.to_string()]);
+    assert_eq!(
+        txid_hex(&c.block_hash(tip_now).await.unwrap()),
+        node_hash,
+        "GetBlock.hash reversed equals getblockhash"
+    );
+
+    let dir = std::env::temp_dir().join(format!("yew-devnet-w4-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let birthday = info.block_height.saturating_sub(1);
+    let (mut a, mnemonic) = fresh_wallet(&dir, "a", birthday);
+    let a_path = dir.join("a.sqlite").to_string_lossy().to_string();
+
+    // 0. Fund A as several coins (a two-step spends one and its change is unconfirmed for a
+    //    block; role plan F-3), then sync. The YEC comes from pool node 2 (mature coinbase):
+    //    node 0's YEC is what the W2 acceptance and its own mints left, a few YEC.
+    let addr = a.receive_address(true).unwrap();
+    for amount in ["15", "10", "8", "5"] {
+        let t = dn.node(2, &["sendtoaddress", &addr.address_s, amount]);
+        assert_eq!(t.len(), 64, "{t}");
+    }
+    let addr2 = a.receive_address(true).unwrap();
+    let t = dn.node(2, &["sendtoaddress", &addr2.address_s, "2"]);
+    confirm(&dn, &mut c, &t).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(r.yec.0 + r.yec.1, 40 * 100_000_000, "{r:?}");
+
+    // 1. The full two-step mint of $100.00 for 48 blocks.
+    let est = a.mint_estimate(&mut v, 10_000, 48).await.unwrap();
+    println!("estimate: {est:?}");
+    assert!(est.affordable() && est.armed && !est.bundle_seqs.is_empty());
+    assert_eq!(est.claim_height, est.lock_height + grace);
+    let id1 = a
+        .mint_start(&mut c, &mut v, 10_000, 48, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    let m1 = a.store.mint(id1).unwrap().unwrap();
+    assert_eq!(m1.state, MintState::CarrierSent);
+    assert_eq!(m1.expiry_height, m1.ref_height + REF_WINDOW);
+    assert!(
+        !m1.attest_payee.is_empty() && !m1.payee.is_empty(),
+        "{m1:?}"
+    );
+    let carrier1 = txid_hex(&m1.carrier_txid);
+    // The carrier is a P2SH of CARRIER_VALUE committing SHA256(bundle) on the node.
+    let raw_c = dn.node_json(0, &["getrawtransaction", &carrier1, "1"]);
+    assert_eq!(
+        raw_c["vout"][0]["valueZat"].as_i64().unwrap(),
+        CARRIER_VALUE
+    );
+    assert_eq!(
+        raw_c["vout"][0]["scriptPubKey"]["type"].as_str().unwrap(),
+        "scripthash"
+    );
+    // Finishing before the carrier confirmed is refused by state.
+    assert!(matches!(
+        a.mint_finish(&mut c, &mut v, id1, r.tip, r.branch_id)
+            .await
+            .unwrap_err(),
+        yew_core::wallet::WalletError::Mint(mint::MintError::WrongState { .. })
+    ));
+    confirm(&dn, &mut c, &carrier1).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert!(
+        r.mints_advanced
+            .contains(&(id1, MintState::CarrierConfirmed)),
+        "{r:?}"
+    );
+    let carrier_utxo = a
+        .store
+        .utxos()
+        .unwrap()
+        .into_iter()
+        .find(|u| u.class == UtxoClass::Carrier)
+        .expect("CARRIER class listed");
+    assert_eq!(
+        (carrier_utxo.value, txid_hex(&carrier_utxo.outpoint.txid)),
+        (CARRIER_VALUE, carrier1.clone())
+    );
+    let f1 = a
+        .mint_finish(&mut c, &mut v, id1, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            f1.validation.verdict.as_str(),
+            f1.validation.tx_type.as_str()
+        ),
+        ("ok", "mint")
+    );
+    assert_eq!(mint_state(&a, id1), MintState::MainSent);
+    let bal = a.balances().unwrap();
+    assert_eq!(
+        (bal.yed_cents, bal.yed_pending_cents),
+        (0, 10_000),
+        "PreLock: pending YED"
+    );
+    confirm(&dn, &mut c, &f1.txid).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert!(r.mints_advanced.contains(&(id1, MintState::Done)), "{r:?}");
+    assert_eq!(r.yed, (10_000, 0), "the minted YED is TOKEN: {r:?}");
+    let ti = v.client_mut().unwrap().tx_info(&f1.txid).await.unwrap();
+    assert_eq!((ti.r#type.as_str(), ti.verdict.as_str()), ("mint", "ok"));
+    assert_eq!(
+        dn.node(0, &["getrawtransaction", &f1.txid]),
+        keys::hex(&f1.raw),
+        "the node holds our bytes"
+    );
+    let vaults = a.vaults().unwrap();
+    assert_eq!(vaults.len(), 1, "{vaults:?}");
+    let v1 = vaults[0].clone();
+    assert_eq!(
+        (txid_hex(&v1.txid), v1.status.as_str(), v1.minted_cents),
+        (f1.txid.clone(), "ACTIVE", 10_000)
+    );
+    assert_eq!(
+        (v1.lock_height, v1.claim_height),
+        (m1.lock_height, m1.claim_height)
+    );
+    let utxos = a.store.utxos().unwrap();
+    assert!(
+        utxos
+            .iter()
+            .any(|u| u.class == UtxoClass::Vault && u.value == m1.collateral_zat),
+        "{utxos:?}"
+    );
+    assert!(
+        utxos.iter().all(|u| u.class != UtxoClass::Carrier),
+        "the carrier was spent"
+    );
+    let row = a
+        .store
+        .history_row(&txid_from_hex(&f1.txid).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (row.label.as_str(), row.yed_delta),
+        ("minted $100.00", 10_000)
+    );
+    println!(
+        "mint 1 done: {} vault {}:0 lock {} claim {}",
+        f1.txid, f1.txid, v1.lock_height, v1.claim_height
+    );
+
+    // 2. Kill-and-resume: start a second mint, drop the wallet, reopen the file, sync, finish.
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    let id2 = a
+        .mint_start(&mut c, &mut v, 10_000, 48, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    let carrier2 = txid_hex(&a.store.mint(id2).unwrap().unwrap().carrier_txid);
+    drop(a);
+    let mut a = Wallet::open(&a_path, Network::Regtest, &mnemonic, "", Some(birthday)).unwrap();
+    assert_eq!(
+        mint_state(&a, id2),
+        MintState::CarrierSent,
+        "the row survived the close"
+    );
+    confirm(&dn, &mut c, &carrier2).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(mint_state(&a, id2), MintState::CarrierConfirmed);
+    let f2 = a
+        .mint_finish(&mut c, &mut v, id2, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    assert_eq!(f2.validation.verdict, "ok");
+    confirm(&dn, &mut c, &f2.txid).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(mint_state(&a, id2), MintState::Done);
+    assert_eq!(r.yed, (20_000, 0), "{r:?}");
+    let v2 = a
+        .vaults()
+        .unwrap()
+        .into_iter()
+        .find(|x| txid_hex(&x.txid) == f2.txid)
+        .expect("vault 2");
+    println!("mint 2 (resumed) done: {} lock {}", f2.txid, v2.lock_height);
+
+    // 3. Plan §8.6 / open question 6: the owner key of vault 2 into node 5 with rescan.
+    let owner2_addr = keys::encode_yellowback(Network::Regtest, &v2.owner_hash160);
+    let wif2 = a.export_wif(&owner2_addr).unwrap();
+    dn.node(5, &["importprivkey", &wif2, "yew-vault-owner", "true"]);
+    let listed5 = dn.node_json(5, &["yed_listvaults"]);
+    let seen5 = listed5
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|x| x["txid"].as_str() == Some(&f2.txid));
+    let node5_yed = dn.node_json(5, &["yed_getbalance"])["confirmedCents"]
+        .as_u64()
+        .unwrap();
+    let early = dn.node_try(5, &["yed_redeem", &f2.txid]);
+    println!(
+        "Q6: node 5 after importprivkey: yed_listvaults lists vault 2 = {seen5} yed_getbalance {node5_yed} cents; yed_redeem before lockHeight -> {early}"
+    );
+
+    // 4. Forced lapse: a third mint left unfinished until refHeight + REF_WINDOW passes, then
+    //    swept. Meanwhile a bundle with one mutated signature is refused by bundle.rs.
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    let id3 = a
+        .mint_start(&mut c, &mut v, 10_000, 48, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    let m3 = a.store.mint(id3).unwrap().unwrap();
+    let mut mutated = m3.bundle.clone();
+    let off = bundle::HEADER_SIZE + 10 + 5;
+    mutated[off] ^= 0x01;
+    let refused = mint::verify_bundle(&mut c, v.client_mut().unwrap(), &mutated)
+        .await
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("bundle-refused: signature"),
+        "{refused}"
+    );
+    assert!(
+        mint::verify_bundle(&mut c, v.client_mut().unwrap(), &m3.bundle)
+            .await
+            .is_ok()
+    );
+    confirm(&dn, &mut c, &txid_hex(&m3.carrier_txid)).await;
+    let mut r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(mint_state(&a, id3), MintState::CarrierConfirmed);
+    while window_open(r.tip, m3.expiry_height) {
+        let h = dn.mine_pool();
+        wait_for_height(&mut c, h).await;
+        r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    }
+    assert_eq!(
+        mint_state(&a, id3),
+        MintState::Lapsed,
+        "{:?}",
+        a.store.mint(id3)
+    );
+    assert!(matches!(
+        a.mint_finish(&mut c, &mut v, id3, r.tip, r.branch_id)
+            .await
+            .unwrap_err(),
+        yew_core::wallet::WalletError::Mint(mint::MintError::WrongState { .. })
+    ));
+    let (yec_before, res_before) = (r.yec.0, r.yec.1);
+    let sw = a
+        .mint_sweep(&mut c, &mut v, id3, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    println!(
+        "sweep {} verdict {} type {:?}",
+        sw.txid, sw.validation.verdict, sw.validation.tx_type
+    );
+    assert_eq!(mint_state(&a, id3), MintState::SweepSent);
+    confirm(&dn, &mut c, &sw.txid).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(mint_state(&a, id3), MintState::Swept);
+    assert_eq!(
+        r.yec.0 + r.yec.1,
+        yec_before + res_before + CARRIER_VALUE - FEE_ZAT,
+        "the sweep returned CARRIER_VALUE − fee: {r:?}"
+    );
+    assert!(a
+        .store
+        .utxos()
+        .unwrap()
+        .iter()
+        .all(|u| u.class != UtxoClass::Carrier));
+
+    // 5. Redeem vault 1 after lockHeight (mine up to it on the pools).
+    let mut r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    while r.tip < v1.lock_height as u64 {
+        let h = dn.mine_pool();
+        wait_for_height(&mut c, h).await;
+        r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    }
+    let (sent, val, p) = a
+        .redeem(&mut c, &mut v, &v1.txid, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        (val.verdict.as_str(), val.path.as_str(), val.burned),
+        ("ok", "owner", 10_000)
+    );
+    assert_eq!(
+        (p.lock_time, p.burn_cents, p.change_cents),
+        (v1.lock_height, 10_000, 0)
+    );
+    assert_eq!(p.expiry_height, p.ref_height + REF_WINDOW);
+    assert!(p.fee_zat > 0 && !p.payee.is_empty());
+    confirm(&dn, &mut c, &sent).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    let v1_after = a.store.vault(&v1.txid).unwrap().unwrap();
+    assert_eq!(
+        (v1_after.status.as_str(), v1_after.closing_txid.as_str()),
+        ("CLOSED", sent.as_str())
+    );
+    assert_eq!(r.yed, (10_000, 0), "$100 burned, $100 left: {r:?}");
+    let row = a
+        .store
+        .history_row(&txid_from_hex(&sent).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.label, "redeemed, burned $100.00");
+    assert!(
+        a.store
+            .utxos()
+            .unwrap()
+            .iter()
+            .any(|u| u.class == UtxoClass::Yec && u.value == p.collateral_out),
+        "the collateral came back as YEC"
+    );
+    println!("redeem {sent}: collateral {} zat back", p.collateral_out);
+
+    // 5b. Open question 6, second half: node 5 redeems vault 2 with the imported key.
+    let mut r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    while r.tip < v2.lock_height as u64 {
+        let h = dn.mine_pool();
+        wait_for_height(&mut c, h).await;
+        r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    }
+    let node5_redeem = dn.node_try(5, &["yed_redeem", &f2.txid]);
+    println!("Q6: yed_redeem of vault 2 from node 5 after lockHeight -> {node5_redeem}");
+    let q6_ok = node5_redeem.contains("\"txid\"");
+    if q6_ok {
+        let t: Value = serde_json::from_str(&node5_redeem).unwrap();
+        confirm(&dn, &mut c, t["txid"].as_str().unwrap()).await;
+        let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+        let v2_after = a.store.vault(&v2.txid).unwrap().unwrap();
+        println!(
+            "Q6: vault 2 on the yew side is now {} ; A's YED {:?}",
+            v2_after.status, r.yed
+        );
+    }
+
+    // 6. The liquidator persona: node 0 sends $1,000 YED to A; a −80 % shock; mine past
+    //    node 0's vault's claimHeight until ListClaimable names it; claim it from A.
+    let target: Vec<Value> = dn
+        .node_json(0, &["yed_listvaults", "ACTIVE"])
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|x| x["ownerAddress"].as_str() != Some(&owner2_addr))
+        .cloned()
+        .collect();
+    let target = target
+        .iter()
+        .min_by_key(|x| x["claimHeight"].as_u64().unwrap())
+        .expect("node 0 has an ACTIVE vault");
+    let target_txid = target["txid"].as_str().unwrap().to_string();
+    let target_cents = target["mintedCents"].as_u64().unwrap();
+    let target_collateral = target["collateralZat"].as_i64().unwrap();
+    let target_claim_height = target["claimHeight"].as_u64().unwrap();
+    println!("claim target: {target_txid} ${:.2} collateral {target_collateral} claimHeight {target_claim_height}", target_cents as f64 / 100.0);
+    let a_addr = a.receive_address(true).unwrap();
+    let fund_yed = dn.node_json(
+        0,
+        &["yed_send", &a_addr.address_ye, &target_cents.to_string()],
+    );
+    confirm(&dn, &mut c, fund_yed["txid"].as_str().unwrap()).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert!(r.yed.0 >= target_cents, "{r:?}");
+    dn.run(&["price", "--shock=-80%"]);
+    *dn.price.borrow_mut() = "10".into();
+    let mut claimable = Vec::new();
+    let mut r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    let start = Instant::now();
+    while claimable
+        .iter()
+        .all(|x: &yew_core::build::claim::Claimable| x.vault_txid != target_txid)
+    {
+        assert!(
+            start.elapsed() < Duration::from_secs(900),
+            "the vault never became claimable"
+        );
+        let h = dn.mine_pool();
+        wait_for_height(&mut c, h).await;
+        r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+        claimable = a.claimable(&mut v).await.unwrap();
+        if r.tip % 10 == 0 {
+            let p = v.client_mut().unwrap().price(0).await.unwrap();
+            println!(
+                "tip {} pClaim {} aClaim {} claimable {:?}",
+                r.tip,
+                p.p_claim,
+                p.p_mint,
+                claimable.iter().map(|x| &x.vault_txid).collect::<Vec<_>>()
+            );
+        }
+    }
+    let entry = claimable
+        .iter()
+        .find(|x| x.vault_txid == target_txid)
+        .unwrap()
+        .clone();
+    println!("claimable: {entry:?}");
+    assert!(r.tip >= target_claim_height);
+    let target_id = txid_from_hex(&target_txid).unwrap();
+    let idc = a
+        .claim(&mut c, &mut v, &target_id, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    let mc = a.store.mint(idc).unwrap().unwrap();
+    assert_eq!(
+        (mc.kind, mc.cents, mc.collateral_zat),
+        (
+            yew_core::store::MintKind::Claim,
+            target_cents,
+            target_collateral
+        )
+    );
+    confirm(&dn, &mut c, &txid_hex(&mc.carrier_txid)).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(mint_state(&a, idc), MintState::CarrierConfirmed);
+    let (yed_before, yec_before) = (r.yed.0, r.yec.0 + r.yec.1);
+    let fc = a
+        .mint_finish(&mut c, &mut v, idc, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            fc.validation.verdict.as_str(),
+            fc.validation.path.as_str(),
+            fc.validation.tx_type.as_str()
+        ),
+        ("ok", "claim", "redeem")
+    );
+    assert_eq!(
+        fc.validation.burned,
+        target_cents as i64 + fc.validation.yed_in - fc.validation.yed_out - target_cents as i64
+    );
+    let (ctx, _) = Transaction::parse(&fc.raw).unwrap();
+    assert_eq!(ctx.lock_time as u64, target_claim_height);
+    assert_eq!(
+        ctx.vin[0].prevout,
+        OutPoint {
+            txid: target_id,
+            n: 0
+        }
+    );
+    assert!(script::parse_carrier_script_sig(&ctx.vin[ctx.vin.len() - 1].script_sig).is_some());
+    confirm(&dn, &mut c, &fc.txid).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(mint_state(&a, idc), MintState::Done);
+    let node_vault = dn.node_json(0, &["yed_getvault", &target_txid]);
+    assert_eq!(
+        node_vault["status"].as_str().unwrap(),
+        "CLAIMED",
+        "{node_vault}"
+    );
+    assert_eq!(node_vault["closingTxid"].as_str().unwrap(), fc.txid);
+    let ti = v.client_mut().unwrap().tx_info(&fc.txid).await.unwrap();
+    assert_eq!(
+        (ti.r#type.as_str(), ti.path.as_str(), ti.verdict.as_str()),
+        ("redeem", "claim", "ok")
+    );
+    assert!(
+        r.yed.0 < yed_before,
+        "the debt was burned: {yed_before} -> {}",
+        r.yed.0
+    );
+    assert!(
+        r.yec.0 + r.yec.1 > yec_before + target_collateral / 2,
+        "the collateral came to A: {yec_before} -> {}",
+        r.yec.0 + r.yec.1
+    );
+    let row = a
+        .store
+        .history_row(&txid_from_hex(&fc.txid).unwrap())
+        .unwrap()
+        .unwrap();
+    assert!(row.label.starts_with("claimed vault"), "{row:?}");
+    println!(
+        "W4 devnet acceptance ok: mint {} / resumed {} / lapsed+swept {} / redeem {sent} / claim {} (Q6 node-5 redeem ok = {q6_ok})",
+        f1.txid, f2.txid, sw.txid, fc.txid
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

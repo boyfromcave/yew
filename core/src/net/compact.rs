@@ -134,6 +134,30 @@ impl CompactClient {
             .height)
     }
 
+    /// `GetBlock(height)`: the block hash in internal (wire) byte order — what the node's
+    /// `uint256::begin()` gives and what `AttestMessage` hashes (`attest.h:19-22`);
+    /// lightwalletd's `CompactBlock.hash` is `GetEncodableHash`, little-endian wire order
+    /// (`lightwalletd-dd/parser/block.go:52-55`).
+    pub async fn block_hash(&mut self, height: u64) -> Result<[u8; 32], NetError> {
+        let b = self
+            .inner
+            .get_block(rpc::BlockId {
+                height,
+                hash: Vec::new(),
+            })
+            .await?
+            .into_inner();
+        let mut h = [0u8; 32];
+        if b.hash.len() != 32 {
+            return Err(NetError::Mismatch(format!(
+                "block {height}: hash of {} bytes",
+                b.hash.len()
+            )));
+        }
+        h.copy_from_slice(&b.hash);
+        Ok(h)
+    }
+
     /// `GetAddressUtxos` for `addresses` from `start_height`, paged by `maxEntries`. The proto
     /// has no cursor, so paging re-asks with a larger `maxEntries` until the reply is shorter
     /// than the page; the last page is the whole set.

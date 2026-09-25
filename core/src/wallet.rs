@@ -6,13 +6,16 @@ use std::collections::HashSet;
 
 use thiserror::Error;
 
+use crate::build::claim::{self, Claimable};
+use crate::build::mint::{self, Finished, MintError, MintEstimate};
+use crate::build::redeem::{self, RedeemPreview};
 use crate::build::yed_transfer::TransferError;
 use crate::coins::{self, CoinError, Utxo};
-use crate::gate::GateError;
+use crate::gate::{GateError, Validator};
 use crate::keys::{self, AddressKey, Chain, KeyError, KeyRing};
-use crate::net::NetError;
+use crate::net::{CompactClient, NetError, Validation};
 use crate::params::{Network, GAP_LIMIT};
-use crate::store::{AddressRow, Store, StoreError, CHAIN_IMPORTED};
+use crate::store::{AddressRow, MintRow, Store, StoreError, VaultRow, CHAIN_IMPORTED};
 use crate::tx::TxError;
 
 /// Any wallet-level error.
@@ -39,6 +42,9 @@ pub enum WalletError {
     /// A YED transfer could not be built (the node's identifiers).
     #[error(transparent)]
     Transfer(#[from] TransferError),
+    /// A mint / claim step could not proceed (W4).
+    #[error(transparent)]
+    Mint(#[from] MintError),
     /// Anything else, with a message.
     #[error("{0}")]
     Other(String),
@@ -326,6 +332,109 @@ impl Wallet {
             yed_pending_cents,
             price_micro_usd: if price > 0 { Some(price as i64) } else { None },
         })
+    }
+
+    // ---- Yellowback operations (plan §3.4, W4). Each takes the connected clients and the
+    // last sync's `tip` / `branch_id`; every broadcast runs both gate layers (D-W-5).
+
+    /// `mint_estimate(cents, lockBlocks)`: what the Mint screen shows; nothing is signed.
+    pub async fn mint_estimate(
+        &self,
+        validator: &mut Validator,
+        cents: u64,
+        lock_blocks: u32,
+    ) -> Result<MintEstimate, WalletError> {
+        let yb = validator.client_mut().ok_or(GateError::YellowbackAbsent)?;
+        mint::estimate(self, yb, cents, lock_blocks).await
+    }
+
+    /// `mint_start(...)`: bundle, carrier funding transaction, the `mints` row. Returns the
+    /// `mint_id` to pass to [`Wallet::mint_finish`] once a sync has seen the carrier confirm.
+    pub async fn mint_start(
+        &self,
+        client: &mut CompactClient,
+        validator: &mut Validator,
+        cents: u64,
+        lock_blocks: u32,
+        tip: u64,
+        branch_id: u32,
+    ) -> Result<i64, WalletError> {
+        mint::start(self, client, validator, cents, lock_blocks, tip, branch_id).await
+    }
+
+    /// `mint_finish(mintId)`: the MINT (or, for a claim row, the CLAIM) over the confirmed
+    /// carrier. The row must be `CarrierConfirmed` (the sync loop advances it).
+    pub async fn mint_finish(
+        &self,
+        client: &mut CompactClient,
+        validator: &mut Validator,
+        mint_id: i64,
+        tip: u64,
+        branch_id: u32,
+    ) -> Result<Finished, WalletError> {
+        mint::finish(self, client, validator, mint_id, tip, branch_id).await
+    }
+
+    /// `mint_sweep(mintId)`: reclaim the carrier of a lapsed row (`CARRIER_VALUE − fee`).
+    pub async fn mint_sweep(
+        &self,
+        client: &mut CompactClient,
+        validator: &mut Validator,
+        mint_id: i64,
+        tip: u64,
+        branch_id: u32,
+    ) -> Result<Finished, WalletError> {
+        mint::sweep(self, client, validator, mint_id, tip, branch_id).await
+    }
+
+    /// Every two-step row (mints and claims), oldest first: the progress the Mint screen shows.
+    pub fn mints(&self) -> Result<Vec<MintRow>, WalletError> {
+        Ok(self.store.mints()?)
+    }
+
+    /// `vaults()`: the own vaults as `GetVault` last reported them (the Yellowback screen).
+    pub fn vaults(&self) -> Result<Vec<VaultRow>, WalletError> {
+        Ok(self.store.vaults()?)
+    }
+
+    /// `redeem(vaultTxid)`: build and broadcast the owner-path spend of an own open vault at
+    /// or past `lockHeight` (a VOID vault is released). Returns the txid, the node's
+    /// validation and the preview that was sent.
+    pub async fn redeem(
+        &self,
+        client: &mut CompactClient,
+        validator: &mut Validator,
+        vault_txid: &[u8; 32],
+        tip: u64,
+        branch_id: u32,
+    ) -> Result<(String, Validation, RedeemPreview), WalletError> {
+        let yb = validator.client_mut().ok_or(GateError::YellowbackAbsent)?;
+        let p = redeem::build_redeem(self, yb, vault_txid, tip, branch_id).await?;
+        let (txid, v) = redeem::broadcast(self, client, validator, &p).await?;
+        Ok((txid, v, p))
+    }
+
+    /// `claimable()`: `ListClaimable` for the liquidator persona.
+    pub async fn claimable(
+        &self,
+        validator: &mut Validator,
+    ) -> Result<Vec<Claimable>, WalletError> {
+        let yb = validator.client_mut().ok_or(GateError::YellowbackAbsent)?;
+        claim::claimable(yb).await
+    }
+
+    /// `claim(vaultTxid)`: start the two-step claim (bundle, carrier funding transaction, the
+    /// `mints` row of kind `Claim`). Returns the row id; [`Wallet::mint_finish`] sends the
+    /// CLAIM once the carrier is confirmed.
+    pub async fn claim(
+        &self,
+        client: &mut CompactClient,
+        validator: &mut Validator,
+        vault_txid: &[u8; 32],
+        tip: u64,
+        branch_id: u32,
+    ) -> Result<i64, WalletError> {
+        claim::start(self, client, validator, vault_txid, tip, branch_id).await
     }
 
     /// The UTXOs that are not locked (the input set every builder selects from).

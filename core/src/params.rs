@@ -172,6 +172,21 @@ pub const TX_EXPIRY_DELTA: u32 = 40;
 /// `nSequence` of an input that does not opt into `nLockTime` (`0xFFFFFFFF`).
 pub const SEQUENCE_FINAL: u32 = 0xFFFF_FFFF;
 
+/// `nSequence` of a vault spend's `vin[0]` (`0xFFFFFFFE`: opts into `nLockTime`, spec §3.4;
+/// `ycash-dd/src/yellowback/txbuilder.cpp:61`).
+pub const SEQUENCE_LOCKTIME: u32 = 0xFFFF_FFFE;
+
+/// `TX_EXPIRING_SOON_THRESHOLD` (`ref/ycash/src/main.h:81`): the mempool refuses a transaction
+/// whose `nExpiryHeight < nextHeight + 3`, so a two-step window is open only while
+/// `tip + 1 + 3 <= refHeight + REF_WINDOW` (`txbuilder.cpp:316-321` `CheckExpiry`).
+pub const TX_EXPIRING_SOON_THRESHOLD: u32 = 3;
+
+/// `BPS`: basis points per unit.
+pub const BPS: i64 = 10_000;
+
+/// `COIN`: zatoshi per YEC.
+pub const COIN: i64 = 100_000_000;
+
 /// `SIGHASH_ALL`, the only hash type YEW signs with.
 pub const SIGHASH_ALL: u32 = 1;
 

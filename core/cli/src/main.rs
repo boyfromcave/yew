@@ -7,7 +7,16 @@
 //! commands: status | yed-info | price | address [--new] | balance | sync | coins
 //!           | send-yec <addr> <zat> [--all] | send-yed <addr> <cents> [<addr> <cents> ...]
 //!           | export-wif <addr> | import-wif <wif> | history | version
+//!           | mint-estimate <cents> <lockBlocks> | mint-start <cents> <lockBlocks>
+//!           | mint-status [<id>] | mint-finish <id> | mint-sweep <id>
+//!           | vaults | redeem <vaultTxid> | claimable | claim <vaultTxid>
 //! ```
+//!
+//! W4: `mint-start` funds the carrier and prints the mint id; after one block, `sync` (or any
+//! syncing command) advances the row to CARRIER_CONFIRMED and `mint-finish <id>` sends the
+//! MINT; `claim <vaultTxid>` starts the same two-step for another wallet's claimable vault and
+//! `mint-finish` sends the CLAIM. `sync` sweeps every LAPSED row it finds (`mint-sweep` does
+//! one by hand). Every broadcast runs both gate layers (D-W-5).
 //!
 //! No argument-parsing crate: the allow-list (plan §3.3) is the core's, and this binary keeps
 //! to the core's dependencies plus `tokio`. Every send goes through `gate::confirm` inside the
@@ -20,8 +29,9 @@ use yew_core::coins::UtxoClass;
 use yew_core::gate::Validator;
 use yew_core::net::{Availability, CompactClient, Server, YellowbackClient};
 use yew_core::params::Network;
+use yew_core::store::{MintRow, MintState};
 use yew_core::sync;
-use yew_core::tx::txid_hex;
+use yew_core::tx::{txid_from_hex, txid_hex};
 use yew_core::wallet::{dollars, Wallet};
 
 struct Opts {
@@ -42,6 +52,9 @@ fn usage() -> ! {
          commands: status | yed-info | price | address [--new] | balance | sync | coins\n\
          \x20         | send-yec <addr> <zat> [--all] | send-yed <addr> <cents> [<addr> <cents> ...]\n\
          \x20         | export-wif <addr> | import-wif <wif> | history | version\n\
+         \x20         | mint-estimate <cents> <lockBlocks> | mint-start <cents> <lockBlocks>\n\
+         \x20         | mint-status [<id>] | mint-finish <id> | mint-sweep <id>\n\
+         \x20         | vaults | redeem <vaultTxid> | claimable | claim <vaultTxid>\n\
          seed: --seed-file or the YEW_SEED environment variable (a BIP39 mnemonic);\n\
          passphrase: --passphrase or YEW_PASSPHRASE (default empty)."
     );
@@ -177,7 +190,43 @@ async fn synced(o: &Opts) -> (Wallet, CompactClient, Validator, sync::SyncReport
     let mut w = open_wallet(o);
     let (mut c, mut v, _) = clients(o).await;
     let r = fail(sync::sync(&mut w, &mut c, v.client_mut()).await);
+    for (id, state) in &r.mints_advanced {
+        println!("mint {id}: now {}", state.as_str());
+    }
     (w, c, v, r)
+}
+
+fn mint_line(m: &MintRow) -> String {
+    format!(
+        "{:>3} {:<5} {:<17} {} lock {} claim {} R {} expiry {} collateral {} zat fee {} attest {} carrier {}:{} main {} sweep {}{}",
+        m.id,
+        m.kind.as_str(),
+        m.state.as_str(),
+        dollars(m.cents as i64),
+        m.lock_height,
+        m.claim_height,
+        m.ref_height,
+        m.expiry_height,
+        m.collateral_zat,
+        m.fee_zat,
+        m.attest_fee_zat,
+        txid_hex(&m.carrier_txid),
+        m.carrier_vout,
+        if m.main_txid == [0; 32] { "-".into() } else { txid_hex(&m.main_txid) },
+        if m.sweep_txid == [0; 32] { "-".into() } else { txid_hex(&m.sweep_txid) },
+        if m.note.is_empty() { String::new() } else { format!(" ({})", m.note) }
+    )
+}
+
+fn parse_txid(s: &str) -> [u8; 32] {
+    txid_from_hex(s).unwrap_or_else(|e| {
+        eprintln!("bad txid {s}: {e}");
+        exit(2)
+    })
+}
+
+fn parse_id(s: Option<&String>) -> i64 {
+    s.and_then(|x| x.parse().ok()).unwrap_or_else(|| usage())
 }
 
 #[tokio::main]
@@ -365,7 +414,15 @@ async fn main() {
             }
         }
         "sync" => {
-            let (_, _, _, r) = synced(&o).await;
+            let (w, mut c, mut v, r) = synced(&o).await;
+            for m in fail(w.mints()) {
+                if m.state == MintState::Lapsed {
+                    match w.mint_sweep(&mut c, &mut v, m.id, r.tip, r.branch_id).await {
+                        Ok(f) => println!("mint {}: lapsed, sweep {} sent", m.id, f.txid),
+                        Err(e) => println!("mint {}: lapsed, sweep not sent: {e}", m.id),
+                    }
+                }
+            }
             println!(
                 "synced to {} (branch {:08x}): {} addresses, {} tx, {} utxos, {} tokens, {} labelled, {} locks released{}",
                 r.tip, r.branch_id, r.addresses, r.transactions, r.utxos, r.tokens, r.labelled, r.locks_released,
@@ -506,6 +563,140 @@ async fn main() {
                     if h.pending { " (unconfirmed)" } else { "" }
                 );
             }
+        }
+        "mint-estimate" => {
+            let (cents, lock) = match (o.rest.get(1), o.rest.get(2)) {
+                (Some(c), Some(l)) => (
+                    c.parse::<u64>().unwrap_or_else(|_| usage()),
+                    l.parse::<u32>().unwrap_or_else(|_| usage()),
+                ),
+                _ => usage(),
+            };
+            let (w, _, mut v, _) = synced(&o).await;
+            let e = fail(w.mint_estimate(&mut v, cents, lock).await);
+            println!(
+                "mint {} class {} R {} lock {} claim {} | required {} zat -> collateral {} zat, fee {} zat, attestor fee {} zat, carrier {} zat | total {} zat, available {} zat: {}",
+                dollars(e.cents as i64),
+                e.term_class,
+                e.ref_height,
+                e.lock_height,
+                e.claim_height,
+                e.required_zat,
+                e.collateral_zat,
+                e.fee_zat,
+                e.attest_fee_zat,
+                yew_core::params::CARRIER_VALUE,
+                e.total_zat,
+                e.available_zat,
+                if e.affordable() { "affordable" } else { "NOT affordable" }
+            );
+            println!(
+                "{} armed {} bundle seqs {:?}",
+                price_line(if e.p_mint > 0 { Some(e.p_mint) } else { None }),
+                e.armed,
+                e.bundle_seqs
+            );
+        }
+        "mint-start" => {
+            let (cents, lock) = match (o.rest.get(1), o.rest.get(2)) {
+                (Some(c), Some(l)) => (
+                    c.parse::<u64>().unwrap_or_else(|_| usage()),
+                    l.parse::<u32>().unwrap_or_else(|_| usage()),
+                ),
+                _ => usage(),
+            };
+            let (w, mut c, mut v, r) = synced(&o).await;
+            let id = fail(
+                w.mint_start(&mut c, &mut v, cents, lock, r.tip, r.branch_id)
+                    .await,
+            );
+            let m = fail(w.store.mint(id)).expect("row");
+            println!("mint {id} started: carrier {} sent (window closes at {}); after one block: sync, then mint-finish {id}", txid_hex(&m.carrier_txid), m.expiry_height);
+            println!("{}", mint_line(&m));
+        }
+        "mint-status" => {
+            let w = open_wallet(&o);
+            let want = o.rest.get(1).and_then(|x| x.parse::<i64>().ok());
+            for m in fail(w.mints()) {
+                if want.is_none_or(|id| id == m.id) {
+                    println!("{}", mint_line(&m));
+                }
+            }
+        }
+        "mint-finish" => {
+            let id = parse_id(o.rest.get(1));
+            let (w, mut c, mut v, r) = synced(&o).await;
+            let f = fail(w.mint_finish(&mut c, &mut v, id, r.tip, r.branch_id).await);
+            println!(
+                "mint {id}: sent {} (node dry run: verdict {} valid {} type {} path {:?} yedIn {} yedOut {} fee {})",
+                f.txid, f.validation.verdict, f.validation.valid, f.validation.tx_type, f.validation.path,
+                f.validation.yed_in, f.validation.yed_out, f.validation.fee_zat
+            );
+        }
+        "mint-sweep" => {
+            let id = parse_id(o.rest.get(1));
+            let (w, mut c, mut v, r) = synced(&o).await;
+            let f = fail(w.mint_sweep(&mut c, &mut v, id, r.tip, r.branch_id).await);
+            println!(
+                "mint {id}: sweep {} sent (verdict {})",
+                f.txid, f.validation.verdict
+            );
+        }
+        "vaults" => {
+            let (w, _, _, r) = synced(&o).await;
+            for v in fail(w.vaults()) {
+                println!(
+                    "{}:{} {:<7} class {} minted {} collateral {} zat lock {} claim {} owner {} claimable {} underwaterAt {}{}{}",
+                    txid_hex(&v.txid),
+                    v.vout,
+                    v.status,
+                    v.term_class,
+                    dollars(v.minted_cents as i64),
+                    v.collateral_zat,
+                    v.lock_height,
+                    v.claim_height,
+                    yew_core::keys::encode_yellowback(w.network, &v.owner_hash160),
+                    v.claimable,
+                    v.underwater_at,
+                    if v.close_height > 0 { format!(" closed at {} by {}", v.close_height, v.closing_txid) } else { String::new() },
+                    if v.is_open() && r.tip < v.lock_height as u64 { format!(" (redeemable in {} blocks)", v.lock_height as u64 - r.tip) } else if v.is_open() { " (REDEEMABLE)".into() } else { String::new() }
+                );
+            }
+        }
+        "redeem" => {
+            let txid = parse_txid(o.rest.get(1).unwrap_or_else(|| usage()));
+            let (w, mut c, mut v, r) = synced(&o).await;
+            let (sent, val, p) = fail(w.redeem(&mut c, &mut v, &txid, r.tip, r.branch_id).await);
+            println!(
+                "{} {}: burning {} ({} inputs, stage {}, extra {} cents, change {}), fee {} zat to {}, collateral {} zat to {}, lockTime {} expiry {}",
+                p.kind, sent, dollars(p.burn_cents as i64), p.yed_inputs.len(), p.stage.name(), p.extra_burn_cents,
+                dollars(p.change_cents as i64), p.fee_zat, p.payee, p.collateral_out, p.collateral_address, p.lock_time, p.expiry_height
+            );
+            println!(
+                "node dry run: verdict {} valid {} path {:?} burned {}",
+                val.verdict, val.valid, val.path, val.burned
+            );
+        }
+        "claimable" => {
+            let (w, _, mut v, _) = synced(&o).await;
+            for c in fail(w.claimable(&mut v).await) {
+                println!(
+                    "{} owner {} debt {} collateral {} zat claim {} clause {} pClaim {} fee {} attest {} residual {} -> claimant {} zat",
+                    c.vault_txid, c.owner_address, dollars(c.minted_cents as i64), c.collateral_zat, c.claim_height,
+                    c.claim_path, c.p_claim, c.fee_zat, c.attest_fee_zat, c.residual_zat, c.claimant_zat
+                );
+            }
+        }
+        "claim" => {
+            let txid = parse_txid(o.rest.get(1).unwrap_or_else(|| usage()));
+            let (w, mut c, mut v, r) = synced(&o).await;
+            let id = fail(w.claim(&mut c, &mut v, &txid, r.tip, r.branch_id).await);
+            let m = fail(w.store.mint(id)).expect("row");
+            println!(
+                "claim {id} started: carrier {} sent; after one block: sync, then mint-finish {id}",
+                txid_hex(&m.carrier_txid)
+            );
+            println!("{}", mint_line(&m));
         }
         other => {
             eprintln!("unknown command `{other}`");
