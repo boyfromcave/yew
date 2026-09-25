@@ -118,6 +118,65 @@ terms are equal at the default fee.
   `export-wif`, `yed_getbalance` grows by the address's cents, `yed_listunspent` lists the token,
   `yed_send` moves it.
 
+### Rules recorded in W4 (plan §3.7 VAULT / CARRIER, §4 rules 5 and 6, §5.3, §8.6, §8.7)
+
+- **The two-step state machine is a table, not a process.** A mint or claim is a `mints` row
+  (`schema v3`) from the moment its carrier is broadcast: `CARRIER_SENT → CARRIER_CONFIRMED →
+  MAIN_SENT → DONE`, or `→ LAPSED → SWEEP_SENT → SWEPT`, or `→ FAILED` (the carrier's own
+  funding expired unconfirmed). The row holds everything the main step needs (the bundle, the
+  carrier key hash, `R`, the fee and attestor payees, the vault facts for a claim), so a wallet
+  file closed mid-mint and reopened finishes from where it was. **Only the sync loop advances a
+  row**, from what the history scan saw (the carrier confirmed, the main transaction confirmed,
+  the window `R + REF_WINDOW` closed, the sweep confirmed); the app's steps (`mint_start`,
+  `mint_finish`, `mint_sweep`) refuse a row that is not in the state they need. The window is
+  open while `tip + 1 + TX_EXPIRING_SOON_THRESHOLD(3) <= R + REF_WINDOW`, the node's
+  `CheckExpiry`; a `CARRIER_CONFIRMED` row past it is `LAPSED`.
+- **VAULT and CARRIER are synthesised, never scanned.** `GetAddressUtxos` lists own-address
+  P2PKH outputs only; a vault or a carrier is a P2SH output, so the sync loop adds them from
+  its own tables: every open own vault (`vaults`, refreshed from `GetVault` for every mint row
+  and every history row the server labelled `mint`, kept when `HASH160(ownerPubKey)` is an own
+  key — a restore from seed finds its vaults this way) and every row that holds an unspent
+  carrier. Both are locked to their flows by the gate and are in neither balance.
+- **The gate has a path per template** (still two layers, still no override): carrier funding
+  (`YEC`/`FEE_RESERVE` in, `vout[0]` a P2SH of `CARRIER_VALUE`, no payload); mint (those plus
+  exactly one `CARRIER` as `vin[last]`, one MINT payload); redeem (the own `VAULT` at `vin[0]`,
+  `TOKEN`s, a REDEEM payload, no carrier); release of a VOID vault (the vault alone, no
+  payload); claim (the *named* foreign vault at `vin[0]` — it is nobody's UTXO here — then
+  `TOKEN`s and the carrier last, a REDEEM payload); sweep (`CARRIER`s only, no payload). YEC
+  never enters a vault spend: the fee comes from the vault (spec §3.5).
+- **The bundle is verified before the carrier is funded** (plan §4 rule 6): shape, count in
+  `[1, BUNDLE_MAX]`, every `seq` seated in `ListAttestors` and unique, every compact signature
+  under that seat's key over `SHA256("YBATTEST1" ‖ seq ‖ price ‖ citedHeight ‖ blockHash)` with
+  the block hash from `GetBlock` (internal order) — high-S refused, never normalised (R17). A
+  bundle with one mutated byte is refused naming the attestor and height. Freshness and the
+  price range are the node's rules and are judged by its dry run.
+- **The node's templates reproduce byte-for-byte** (plan W4 acceptance, `tests/vectors.rs`
+  `w4_templates_…`): the vault script and its P2SH hash, the carrier script and its hash, the
+  carrier scriptSig `<bundle> <sig> <carrierScript>` push encoding, the MINT `vout` order
+  (vault, token, payload, pool fee, attestor fee, change), the MINT and REDEEM payload bytes,
+  the REDEEM plan (collateral, fee, payload; `nLockTime = lockHeight`, `vin[0].nSequence =
+  0xFFFFFFFE`, `nExpiryHeight = R + REF_WINDOW`). Both node signatures (owner and carrier)
+  verify under the core's ZIP-243 digests. Differences kept: the carrier and owner keys are the
+  next unused change / external HD keys; the YEC side selects `FEE_RESERVE` then `YEC`; the
+  collateral is `max(requiredZat, 4·feeMin)` rounded up to 1,000 zat exactly as `BuildMint`
+  does (`yed_estimatecollateral.requiredZat` is *not* rounded); the attestor payee is the
+  node's `DefaultAttestPayee` pick (`SHA256(blockHash(R) ‖ selector ‖ "A") mod |A|`) — AFEE-1
+  accepts any `seq` of the bundle; the fee payee is `GetFeePayee.preferred`, else
+  `default.payoutAddress`, else FEE-0.
+- **Plan §8.7 (bundle push size)**: the largest bundle is `4 + 74·6 = 448` bytes, inside
+  `MAX_SCRIPT_ELEMENT_SIZE = 520`; the push is `OP_PUSHDATA2` for four or more attestations,
+  `OP_PUSHDATA1` below, exactly `CScript << bundle`; `carrier_script_sig` refuses a larger
+  element. The node-built vector (three attestations, 226 bytes) confirms the encoding.
+- **A claim takes the node's numbers at the tip.** `ListClaimable` names the vault, its
+  `claimPath`, `feeZat`, `attestFeeZat` and `residualZat` (RED-5, paid to `P2PKH(ownerPubKey)`);
+  `R` is the index tip; the bundle is for `outpointSelector(vault)` (txid internal bytes ‖ vout
+  LE32). The wallet's YED must cover `mintedCents` before the carrier is funded; the BURN stage
+  (a sub-dollar remainder) is allowed on redeem and claim, never on a transfer.
+- **Sweeping is explicit.** The sync loop marks a row `LAPSED`; `mint_sweep` builds the
+  one-input sweep (`CARRIER_VALUE − FEE_ZAT` to a fresh change key) and `yew-cli sync` runs it
+  for every lapsed row. The node answers `ok` to the sweep's dry run (a non-Yellowback
+  transaction with a carrier-shaped input and no payload).
+
 ## Toolchain
 
 | Tool | Version | Pinned in |
@@ -161,6 +220,9 @@ yew-cli [--server host:port] [--plain] [--wallet PATH] [--network regtest|testne
         status | yed-info | price | address [--new] | balance | sync | coins
         | send-yec <addr> <zat> [--all] | send-yed <addr> <cents> [<addr> <cents> ...]
         | export-wif <addr> | import-wif <wif> | history | version
+        | mint-estimate <cents> <lockBlocks> | mint-start <cents> <lockBlocks>
+        | mint-status [<id>] | mint-finish <id> | mint-sweep <id>
+        | vaults | redeem <vaultTxid> | claimable | claim <vaultTxid>
 ```
 
 Defaults: `127.0.0.1:9067`, TLS on (`--plain` is refused on mainnet), `yew-wallet.sqlite`,
@@ -174,6 +236,13 @@ broadcast, lock the inputs until the transaction confirms or its `nExpiryHeight`
 cents (up to 14 recipients).
 `import-wif` adds a YecWallet/`ycashd` key outside the HD tree (not covered by the seed);
 `export-wif` is byte-identical to `dumpprivkey` (checked on the devnet).
+W4: `mint-estimate` prints the collateral, fees and whether the wallet can afford both steps;
+`mint-start` funds the carrier and prints the mint id; after one block, `sync` (any syncing
+command) advances the row and `mint-finish <id>` sends the MINT; `mint-status` lists the rows;
+`vaults` the own vaults with their status; `redeem <vaultTxid>` the owner-path spend at or past
+`lockHeight` (a VOID vault is released); `claimable` the liquidator's list; `claim <vaultTxid>`
+starts the two-step claim (finished with `mint-finish`); `sync` sweeps every lapsed row,
+`mint-sweep <id>` one by hand.
 
 ## Devnet acceptance (plan §6.3, §7 W1 and W2)
 
@@ -207,6 +276,15 @@ node 5's `yed_send` moves the $12.34 back to A (B labels it `sent $12.34`); a YE
 56 unit tests (the gate property test on 2,000 random coin sets for both paths, the builder
 property test on 1,000 random wallets, the node's coinselect tables), the template payload
 vectors, the schema migration.
+
+`scripts/devnet-w4.sh` runs the W4 acceptance on the same armed devnet (it finds the workspace
+by walking up to `repos.yaml`, so it works from a git worktree too):
+
+```bash
+scripts/devnet-w4.sh test     # YEW_DEVNET=1 cargo test -p yew-core --test devnet -- --ignored w4_
+```
+
+`w4_mint_resume_lapse_redeem_import_and_claim` (W4_EVIDENCE)
 
 `scripts/devnet-w1.sh` runs a private regtest devnet so the default one is never touched:
 `YELLOWBACK_DEVNET_DIR=~/yb-devnet-w1`, `YELLOWBACK_DEVNET_PORTSEED=57`, `lightwalletd-dd` on

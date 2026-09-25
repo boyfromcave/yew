@@ -14,17 +14,28 @@
 //!
 //! Locks are released **only** here: when the spending transaction is seen confirmed, or when
 //! its `nExpiryHeight` has passed (plan §3.7 "Locks").
+//!
+//! **W4.** Each sync also advances every in-flight two-step row (`mints`, plan §5.3): the
+//! carrier seen confirmed ⇒ `CarrierConfirmed`; the main transaction seen confirmed ⇒ `Done`;
+//! the window (`refHeight + REF_WINDOW`) closed without it ⇒ `Lapsed` (the sweep is the
+//! wallet's explicit `mint_sweep`; `yew-cli sync` runs it for every lapsed row); the sweep
+//! seen confirmed ⇒ `Swept`. It refreshes every own vault from `GetVault` (the mint rows'
+//! and every history row the server labelled `mint`, so a restore from seed finds them) and
+//! synthesises the `VAULT` (open own vaults) and `CARRIER` (rows holding a carrier) UTXO rows,
+//! which `GetAddressUtxos` never lists: they are P2SH, not an own address.
 
 use std::collections::{HashMap, HashSet};
 
+use crate::build::mint::window_open;
+use crate::bundle;
 use crate::coins::{self, Utxo, UtxoClass};
 use crate::keys;
 use crate::net::rpc::YedTxInfo;
 use crate::net::{CompactClient, NetError, YellowbackClient};
-use crate::params::GAP_LIMIT;
+use crate::params::{CARRIER_VALUE, GAP_LIMIT};
 use crate::script;
-use crate::store::HistoryRow;
-use crate::tx::{txid_hex, OutPoint, Transaction};
+use crate::store::{HistoryRow, MintState, VaultRow};
+use crate::tx::{txid_from_hex, txid_hex, OutPoint, Transaction};
 use crate::wallet::{dollars, Wallet, WalletError};
 
 /// What one sync did.
@@ -54,6 +65,10 @@ pub struct SyncReport {
     pub yellowback: bool,
     /// `GetPrice.pMint` at the tip, when defined.
     pub price_micro_usd: Option<i64>,
+    /// Two-step rows advanced this run, as `(id, new state)`.
+    pub mints_advanced: Vec<(i64, MintState)>,
+    /// Own vaults refreshed from `GetVault`.
+    pub vaults: usize,
 }
 
 /// Run one sync of `wallet` against `client`, and against `yellowback` for the YED steps when
@@ -225,6 +240,73 @@ pub async fn sync(
             });
         }
     }
+    // 4c. Labels from GetTxInfo, and the price.
+    if let Some(yb) = yellowback.as_mut() {
+        report.labelled = label_history(wallet, yb).await?;
+        let p = yb.price(0).await?;
+        report.price_micro_usd = if p.p_mint > 0 { Some(p.p_mint) } else { None };
+        wallet.store.set_meta(
+            "price_micro_usd",
+            &report.price_micro_usd.unwrap_or(0).to_string(),
+        )?;
+    }
+
+    // 5. W4: the two-step rows, the own vaults, and the VAULT / CARRIER rows.
+    report.mints_advanced = advance_mints(wallet, tip)?;
+    if let Some(yb) = yellowback.as_mut() {
+        report.vaults = refresh_vaults(wallet, yb, tip).await?;
+    }
+    let present: HashSet<OutPoint> = utxos.iter().map(|u| u.outpoint).collect();
+    for v in wallet.store.vaults()? {
+        let op = OutPoint {
+            txid: v.txid,
+            n: v.vout,
+        };
+        if !v.is_open() || present.contains(&op) {
+            continue;
+        }
+        let vs = script::vault_script(v.lock_height, &v.owner_pubkey, v.claim_height)
+            .map_err(|e| WalletError::Other(e.to_string()))?;
+        let hash = keys::hash160(&vs);
+        utxos.push(Utxo {
+            outpoint: op,
+            address: keys::encode_p2sh(wallet.network, &hash),
+            script: script::p2sh_script(&hash),
+            value: v.collateral_zat,
+            height: v.mint_height,
+            class: UtxoClass::Vault,
+            cents: 0,
+        });
+    }
+    for m in wallet.store.mints()? {
+        if !m.state.holds_carrier() {
+            continue;
+        }
+        let op = OutPoint {
+            txid: m.carrier_txid,
+            n: m.carrier_vout,
+        };
+        if present.contains(&op) {
+            continue;
+        }
+        let key = match wallet.key_for_hash(&m.carrier_hash160)? {
+            Some(k) => k,
+            None => continue,
+        };
+        let redeem = script::carrier_script(&key.pubkey, &bundle::bundle_hash(&m.bundle))
+            .map_err(|e| WalletError::Other(e.to_string()))?;
+        let hash = keys::hash160(&redeem);
+        utxos.push(Utxo {
+            outpoint: op,
+            address: keys::encode_p2sh(wallet.network, &hash),
+            script: script::p2sh_script(&hash),
+            value: CARRIER_VALUE,
+            height: m.created_height,
+            class: UtxoClass::Carrier,
+            cents: 0,
+        });
+    }
+
     wallet.store.replace_utxos(&utxos)?;
     report.utxos = utxos.len();
     report.yec = coins::yec_balances(&utxos);
@@ -240,22 +322,187 @@ pub async fn sync(
         }
     }
 
-    // 4c. Labels from GetTxInfo, and the price.
-    if let Some(yb) = yellowback {
-        report.labelled = label_history(wallet, yb).await?;
-        let p = yb.price(0).await?;
-        report.price_micro_usd = if p.p_mint > 0 { Some(p.p_mint) } else { None };
-        wallet.store.set_meta(
-            "price_micro_usd",
-            &report.price_micro_usd.unwrap_or(0).to_string(),
-        )?;
-    }
-
     wallet.store.set_meta("scanned_height", &tip.to_string())?;
     wallet
         .store
         .set_meta("last_synced_height", &tip.to_string())?;
     Ok(report)
+}
+
+/// The height a transaction was seen confirmed at, if the history scan saw it.
+fn confirmed_height(wallet: &Wallet, txid: &[u8; 32]) -> Result<Option<u64>, WalletError> {
+    Ok(wallet
+        .store
+        .history_row(txid)?
+        .filter(|r| !r.pending && r.height > 0)
+        .map(|r| r.height))
+}
+
+/// Advance every in-flight two-step row (plan §5.3) from what the history scan saw at `tip`.
+/// Returns `(id, new state)` for the rows that moved.
+pub fn advance_mints(wallet: &Wallet, tip: u64) -> Result<Vec<(i64, MintState)>, WalletError> {
+    let mut moved = Vec::new();
+    for m in wallet.store.mints()? {
+        if !m.state.in_flight() {
+            continue;
+        }
+        let next: Option<(MintState, String)> = match m.state {
+            MintState::CarrierSent => {
+                if confirmed_height(wallet, &m.carrier_txid)?.is_some() {
+                    Some((MintState::CarrierConfirmed, String::new()))
+                } else if tip > m.expiry_height as u64 {
+                    Some((
+                        MintState::Failed,
+                        format!("carrier {} expired unconfirmed", txid_hex(&m.carrier_txid)),
+                    ))
+                } else {
+                    None
+                }
+            }
+            MintState::CarrierConfirmed => {
+                if window_open(tip, m.expiry_height) {
+                    None
+                } else {
+                    Some((
+                        MintState::Lapsed,
+                        format!(
+                            "window closed at {} without the main transaction",
+                            m.expiry_height
+                        ),
+                    ))
+                }
+            }
+            MintState::MainSent => {
+                if let Some(h) = confirmed_height(wallet, &m.main_txid)? {
+                    let verdict = wallet
+                        .store
+                        .history_row(&m.main_txid)?
+                        .map(|r| r.verdict)
+                        .unwrap_or_default();
+                    Some((
+                        MintState::Done,
+                        format!(
+                            "confirmed at {h}{}",
+                            if verdict.is_empty() {
+                                String::new()
+                            } else {
+                                format!(", verdict {verdict}")
+                            }
+                        ),
+                    ))
+                } else if tip > m.expiry_height as u64 {
+                    Some((
+                        MintState::Lapsed,
+                        format!(
+                            "main transaction {} expired unconfirmed",
+                            txid_hex(&m.main_txid)
+                        ),
+                    ))
+                } else {
+                    None
+                }
+            }
+            MintState::SweepSent => {
+                if confirmed_height(wallet, &m.sweep_txid)?.is_some() {
+                    Some((MintState::Swept, String::new()))
+                } else if wallet
+                    .store
+                    .pending_txs()?
+                    .iter()
+                    .all(|(t, _, _)| *t != m.sweep_txid)
+                {
+                    // The sweep expired (its pending record lapsed): the carrier is back.
+                    Some((MintState::Lapsed, "sweep expired unconfirmed".into()))
+                } else {
+                    None
+                }
+            }
+            MintState::Lapsed | MintState::Done | MintState::Swept | MintState::Failed => None,
+        };
+        if let Some((state, note)) = next {
+            let note = if note.is_empty() {
+                m.note.clone()
+            } else {
+                note
+            };
+            wallet
+                .store
+                .set_mint_state(m.id, state, None, None, &note)?;
+            moved.push((m.id, state));
+        }
+    }
+    Ok(moved)
+}
+
+/// Refresh the own vaults from `GetVault`: every mint row's main transaction and every
+/// history row labelled `mint`, kept when the owner key is ours. Returns the rows written.
+pub async fn refresh_vaults(
+    wallet: &Wallet,
+    yb: &mut YellowbackClient,
+    tip: u64,
+) -> Result<usize, WalletError> {
+    let own = wallet.own_hashes()?;
+    let mut candidates: HashSet<[u8; 32]> = HashSet::new();
+    for m in wallet.store.mints()? {
+        if m.kind == crate::store::MintKind::Mint
+            && matches!(m.state, MintState::Done | MintState::MainSent)
+            && m.main_txid != [0; 32]
+        {
+            candidates.insert(m.main_txid);
+        }
+    }
+    for h in wallet.store.history()? {
+        if h.kind == "mint" && !h.pending {
+            candidates.insert(h.txid);
+        }
+    }
+    for v in wallet.store.vaults()? {
+        if v.is_open() {
+            candidates.insert(v.txid);
+        }
+    }
+    let mut n = 0;
+    for txid in candidates {
+        let v = match yb.vault(&txid_hex(&txid)).await {
+            Ok(v) => v,
+            Err(NetError::Node { identifier, .. }) if identifier == "vault-not-found" => continue,
+            Err(e) => return Err(e.into()),
+        };
+        let pk: [u8; 33] = match keys::unhex(&v.owner_pub_key)
+            .ok()
+            .and_then(|b| b.as_slice().try_into().ok())
+        {
+            Some(p) => p,
+            None => continue,
+        };
+        let owner_hash160 = keys::hash160(&pk);
+        if !own.contains(&owner_hash160) {
+            continue;
+        }
+        let vault_txid = txid_from_hex(&v.txid).unwrap_or(txid);
+        wallet.store.upsert_vault(&VaultRow {
+            txid: vault_txid,
+            vout: v.vout,
+            status: v.status,
+            owner_hash160,
+            owner_pubkey: pk,
+            term_class: v.term_class,
+            lock_height: v.lock_height as u32,
+            claim_height: v.claim_height as u32,
+            collateral_zat: v.collateral_zat,
+            minted_cents: v.minted_cents.max(0) as u64,
+            mint_height: v.mint_height.max(0) as u64,
+            claimable: v.claimable,
+            underwater_at: v.underwater_at,
+            sweep_before: v.sweep_before.max(0) as u64,
+            close_height: v.close_height.max(0) as u64,
+            closing_txid: v.closing_txid,
+            void_reason: v.void_reason,
+            updated_height: tip,
+        })?;
+        n += 1;
+    }
+    Ok(n)
 }
 
 /// Record one transaction touching an own address: history row, own outputs, used marks,
@@ -331,7 +578,12 @@ fn record_transaction(
     if let Some(p) = prior {
         // A row this wallet broadcast keeps its pending label until GetTxInfo labels it; once
         // confirmed, the local label is dropped so nothing "pending" survives confirmation.
-        if confirmed && p.pending {
+        if confirmed && p.pending && (p.kind == "carrier" || p.kind == "sweep") {
+            // The wallet's own carrier and sweep rows carry no payload: nothing to relabel.
+            row.kind = p.kind;
+            row.label = p.label;
+            row.labelled = true;
+        } else if confirmed && p.pending {
             row.labelled = false;
         } else {
             row.yed_delta = p.yed_delta;
@@ -464,6 +716,13 @@ pub fn label_for(info: &YedTxInfo, own_in: u64, own_out: u64) -> (String, i64) {
                 format!("received {}{burned}", dollars(delta))
             }
         }
+        "redeem" if info.path == "claim" => {
+            if ok {
+                format!("claimed vault{burned}")
+            } else {
+                format!("claim ({}){burned}", info.verdict)
+            }
+        }
         "redeem" => {
             if ok {
                 format!("redeemed{burned}")
@@ -540,5 +799,135 @@ mod tests {
         let mut e = info("transfer", "expired", 0);
         e.expired = true;
         assert_eq!(label_for(&e, 500, 0), ("expired".into(), 0));
+    }
+
+    #[test]
+    fn advance_mints_follows_the_history() {
+        use crate::keys;
+        use crate::params::Network;
+        use crate::store::{MintKind, MintRow, Store};
+        let seed = keys::seed_from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "",
+        )
+        .unwrap();
+        let w = Wallet::from_parts(
+            Store::open_in_memory().unwrap(),
+            Network::Regtest,
+            &seed,
+            None,
+        )
+        .unwrap();
+        let row = MintRow {
+            id: 0,
+            kind: MintKind::Mint,
+            state: MintState::CarrierSent,
+            created_height: 480,
+            cents: 10_000,
+            lock_blocks: 48,
+            term_class: "A".into(),
+            ref_height: 478,
+            lock_height: 526,
+            claim_height: 550,
+            collateral_zat: 1_000_000_000,
+            fee_zat: 0,
+            payee: String::new(),
+            attest_fee_zat: 0,
+            attest_payee: String::new(),
+            residual_zat: 0,
+            bundle: vec![],
+            bundle_seqs: String::new(),
+            carrier_hash160: [1; 20],
+            owner_hash160: [2; 20],
+            carrier_txid: [3; 32],
+            carrier_vout: 0,
+            main_txid: [0; 32],
+            sweep_txid: [0; 32],
+            expiry_height: 518,
+            vault_txid: [0; 32],
+            owner_pubkey: vec![],
+            note: String::new(),
+        };
+        let id = w.store.insert_mint(&row).unwrap();
+        let seen = |txid: [u8; 32], height: u64| HistoryRow {
+            txid,
+            height,
+            yec_delta: 0,
+            has_payload: false,
+            pending: false,
+            shielded: false,
+            yed_delta: 0,
+            kind: String::new(),
+            verdict: String::new(),
+            label: String::new(),
+            labelled: true,
+        };
+        // Nothing seen yet: still CarrierSent.
+        assert!(advance_mints(&w, 481).unwrap().is_empty());
+        w.store.upsert_history(&seen([3; 32], 481)).unwrap();
+        assert_eq!(
+            advance_mints(&w, 481).unwrap(),
+            vec![(id, MintState::CarrierConfirmed)]
+        );
+        // The window closes at 518: tip 514 is the last open tip (514 + 4 <= 518).
+        assert!(advance_mints(&w, 514).unwrap().is_empty());
+        assert_eq!(
+            advance_mints(&w, 515).unwrap(),
+            vec![(id, MintState::Lapsed)]
+        );
+        // A second row that finishes: MainSent → Done with the verdict.
+        let id2 = w
+            .store
+            .insert_mint(&MintRow {
+                carrier_txid: [4; 32],
+                ..row.clone()
+            })
+            .unwrap();
+        w.store.upsert_history(&seen([4; 32], 482)).unwrap();
+        assert_eq!(
+            advance_mints(&w, 482).unwrap(),
+            vec![(id2, MintState::CarrierConfirmed)]
+        );
+        w.store
+            .set_mint_state(id2, MintState::MainSent, Some(&[5; 32]), None, "")
+            .unwrap();
+        assert!(advance_mints(&w, 483).unwrap().is_empty());
+        w.store
+            .upsert_history(&HistoryRow {
+                verdict: "ok".into(),
+                ..seen([5; 32], 484)
+            })
+            .unwrap();
+        assert_eq!(
+            advance_mints(&w, 484).unwrap(),
+            vec![(id2, MintState::Done)]
+        );
+        assert!(w
+            .store
+            .mint(id2)
+            .unwrap()
+            .unwrap()
+            .note
+            .contains("verdict ok"));
+        // A third whose carrier never confirms: Failed once the expiry passed.
+        let id3 = w
+            .store
+            .insert_mint(&MintRow {
+                carrier_txid: [6; 32],
+                ..row
+            })
+            .unwrap();
+        assert!(advance_mints(&w, 518).unwrap().is_empty());
+        assert_eq!(
+            advance_mints(&w, 519).unwrap(),
+            vec![(id3, MintState::Failed)]
+        );
+        assert!(w.store.mint(id).unwrap().unwrap().state.in_flight());
+        let mut c = info("redeem", "ok", 10_000);
+        c.path = "claim".into();
+        assert_eq!(
+            label_for(&c, 10_000, 0),
+            ("claimed vault, burned $100.00".into(), -10_000)
+        );
     }
 }

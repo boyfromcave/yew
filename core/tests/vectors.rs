@@ -309,3 +309,268 @@ fn template_payload_vectors_round_trip() {
         }
     }
 }
+
+/// Plan W4 acceptance: from the node-built armed MINT, its carrier and the REDEEM in
+/// `templates.json`, rebuild the vault script (and its P2SH hash at `vout[0]`), the carrier
+/// script (its P2SH hash at the carrier's `vout[0]`, the bundle hash from the spent scriptSig's
+/// first push), the MINT `vout` order and values, the payload bytes, the carrier scriptSig
+/// push encoding, the owner-path scriptSig shape, `nLockTime` / `nSequence` / `nExpiryHeight`
+/// — byte-for-byte except keys and amounts, which are the node's own here.
+#[test]
+fn w4_templates_reproduce_the_node_scripts_and_payloads() {
+    use yew_core::bundle;
+    use yew_core::params::{CARRIER_VALUE, REF_WINDOW, SEQUENCE_LOCKTIME};
+    use yew_core::payload::{self, Payload};
+    let v = load("templates.json");
+    let network = network_of(&v);
+    let mint = &v["mint"];
+    let (mtx, mtxid) = Transaction::parse(&hex_field(mint, "hex")).unwrap();
+    assert_eq!(txid_hex(&mtxid), mint["txid"].as_str().unwrap());
+    let d = &mint["payloadDecoded"];
+    let mut owner = [0u8; 33];
+    owner.copy_from_slice(&hex_field(d, "ownerPubKey"));
+    let lock_height = d["lockHeight"].as_u64().unwrap() as u32;
+    let ref_height = d["refHeight"].as_u64().unwrap() as u32;
+    let claim_height = mint["result"]["claimHeight"].as_u64().unwrap() as u32;
+    let grace = load("params.json")["params"]["grace"]
+        .as_u64()
+        .map(|g| g as u32);
+    if let Some(g) = grace {
+        assert_eq!(
+            claim_height,
+            lock_height + g,
+            "claimHeight = lockHeight + GRACE"
+        );
+    }
+    // vout[0]: P2SH(vaultScript(lockHeight, owner, claimHeight)).
+    let vault = script::vault_script(lock_height, &owner, claim_height).unwrap();
+    assert_eq!(
+        mtx.vout[0].script_pubkey,
+        script::p2sh_of(&vault),
+        "vault P2SH"
+    );
+    assert_eq!(
+        mtx.vout[0].value,
+        mint["result"]["collateralZat"].as_i64().unwrap()
+    );
+    assert_eq!(
+        script::parse_vault_script(&vault).unwrap(),
+        script::VaultParts {
+            lock_height,
+            owner,
+            claim_height
+        }
+    );
+    // vout[1]: TOKEN_VALUE to P2PKH(owner); vout[2]: the payload; vout[3]/[4]: the fees.
+    assert_eq!(mtx.vout[1].value, TOKEN_VALUE);
+    assert_eq!(
+        mtx.vout[1].script_pubkey,
+        script::p2pkh_script(&keys::hash160(&owner))
+    );
+    let fee_vout = d["feeVout"].as_u64().unwrap() as u8;
+    let attest_fee_vout = d["attestFeeVout"].as_u64().unwrap() as u8;
+    let expected = Payload::Mint {
+        term_class: 0,
+        cents: d["cents"].as_u64().unwrap() as u32,
+        lock_height,
+        ref_height,
+        owner_key: owner,
+        fee_vout,
+        attest_fee_vout,
+    };
+    assert_eq!(
+        mtx.vout[2].script_pubkey,
+        payload::payload_script(&payload::encode(&expected).unwrap()),
+        "payload output"
+    );
+    assert_eq!((fee_vout, attest_fee_vout), (3, 4));
+    let payee = keys::parse_address(network, mint["txinfo"]["payee"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        mtx.vout[3].script_pubkey,
+        script::p2pkh_script(&payee.hash())
+    );
+    assert_eq!(
+        mtx.vout[3].value,
+        mint["txinfo"]["feeZat"].as_i64().unwrap()
+    );
+    let attest_payee =
+        keys::parse_address(network, mint["txinfo"]["attestPayee"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        mtx.vout[4].script_pubkey,
+        script::p2pkh_script(&attest_payee.hash())
+    );
+    assert_eq!(
+        mtx.vout[4].value,
+        mint["txinfo"]["attestFeeZat"].as_i64().unwrap()
+    );
+    assert_eq!(
+        mtx.vout.len(),
+        6,
+        "vault, token, payload, fee, attestor fee, change"
+    );
+    assert_eq!(
+        mtx.expiry_height,
+        ref_height + REF_WINDOW,
+        "nExpiryHeight = R + REF_WINDOW"
+    );
+    assert_eq!(mtx.lock_time, 0);
+    // vin[last]: the carrier, scriptSig <bundle> <sig> <carrierScript>, 71-byte script whose
+    // hash is the carrier's vout[0], committing SHA256(bundle).
+    let carrier_vin = mint["txinfo"]["carrierVin"].as_u64().unwrap() as usize;
+    assert_eq!(carrier_vin, mtx.vin.len() - 1);
+    let spend = script::parse_carrier_script_sig(&mtx.vin[carrier_vin].script_sig)
+        .expect("carrier-shaped scriptSig");
+    assert_eq!(
+        spend.bundle_hash,
+        bundle::bundle_hash(&spend.bundle),
+        "SHA256(bundle)"
+    );
+    let atts = bundle::decode(&spend.bundle).unwrap();
+    let seqs: Vec<i64> = atts.iter().map(|a| a.seq as i64).collect();
+    let node_seqs: Vec<i64> = mint["txinfo"]["bundleSeqs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_i64().unwrap())
+        .collect();
+    assert_eq!(
+        seqs, node_seqs,
+        "the bundle's seqs equal yed_gettxinfo.bundleSeqs"
+    );
+    assert_eq!(
+        script::carrier_script(&spend.pk, &spend.bundle_hash).unwrap(),
+        spend.carrier_script
+    );
+    assert_eq!(
+        script::carrier_script_sig(&spend.bundle, &spend.sig, &spend.carrier_script).unwrap(),
+        mtx.vin[carrier_vin].script_sig,
+        "carrier scriptSig push encoding (plan §8.7)"
+    );
+    let carrier = &v["carrier"];
+    let (ctx, ctxid) = Transaction::parse(&hex_field(carrier, "hex")).unwrap();
+    assert_eq!(txid_hex(&ctxid), carrier["txid"].as_str().unwrap());
+    assert_eq!(mtx.vin[carrier_vin].prevout.txid, ctxid);
+    assert_eq!(mtx.vin[carrier_vin].prevout.n, 0);
+    assert_eq!(ctx.vout[0].value, CARRIER_VALUE);
+    assert_eq!(
+        ctx.vout[0].script_pubkey,
+        script::p2sh_of(&spend.carrier_script),
+        "carrier P2SH"
+    );
+    assert_eq!(
+        ctx.expiry_height,
+        ref_height + REF_WINDOW,
+        "the pair expires together"
+    );
+    // The carrier signature verifies under the ZIP-243 digest over the redeem script with
+    // amount CARRIER_VALUE (spend_carrier), bound to the vectors' branch id.
+    let branch_id = u32::from_str_radix(
+        load("transparent.json")["transactions"][0]["branchId"]
+            .as_str()
+            .unwrap(),
+        16,
+    )
+    .unwrap();
+    let digest = mtx
+        .sighash(
+            carrier_vin,
+            &spend.carrier_script,
+            CARRIER_VALUE,
+            1,
+            branch_id,
+        )
+        .unwrap();
+    let sig = secp256k1::ecdsa::Signature::from_der(&spend.sig[..spend.sig.len() - 1]).unwrap();
+    let pk = secp256k1::PublicKey::from_slice(&spend.pk).unwrap();
+    assert!(secp256k1::ecdsa::verify(&sig, secp256k1::Message::from_digest(digest), &pk).is_ok());
+
+    // The REDEEM: vin[0] = the vault, <ownerSig> OP_1 <vaultScript>, nSequence 0xFFFFFFFE,
+    // nLockTime = lockHeight, nExpiryHeight = R + REF_WINDOW; outputs collateral, fee, payload.
+    let redeem = &v["redeem"];
+    let (rtx, rtxid) = Transaction::parse(&hex_field(redeem, "hex")).unwrap();
+    assert_eq!(txid_hex(&rtxid), redeem["txid"].as_str().unwrap());
+    assert_eq!(rtx.vin[0].prevout.txid, mtxid);
+    assert_eq!(rtx.vin[0].prevout.n, 0);
+    assert_eq!(rtx.vin[0].sequence, SEQUENCE_LOCKTIME);
+    assert_eq!(rtx.lock_time, lock_height);
+    let rd = &redeem["payloadDecoded"];
+    let r = rd["refHeight"].as_u64().unwrap() as u32;
+    assert_eq!(rtx.expiry_height, r + REF_WINDOW);
+    let pushes = script::pushes(&rtx.vin[0].script_sig).unwrap();
+    assert_eq!(pushes.len(), 3);
+    assert_eq!(
+        pushes[2], vault,
+        "the redeem's last push is the vault script"
+    );
+    assert_eq!(
+        rtx.vin[0].script_sig,
+        script::owner_script_sig(&pushes[0], &vault),
+        "owner-path scriptSig shape"
+    );
+    let owner_digest = rtx
+        .sighash(0, &vault, mtx.vout[0].value, 1, branch_id)
+        .unwrap();
+    let osig = secp256k1::ecdsa::Signature::from_der(&pushes[0][..pushes[0].len() - 1]).unwrap();
+    let opk = secp256k1::PublicKey::from_slice(&owner).unwrap();
+    assert!(
+        secp256k1::ecdsa::verify(&osig, secp256k1::Message::from_digest(owner_digest), &opk)
+            .is_ok()
+    );
+    // Rebuilding the plan from the node's numbers gives the same outputs and payload.
+    let vault_value = mtx.vout[0].value;
+    let redeem_fee = redeem["txinfo"]["feeZat"].as_i64().unwrap();
+    let rpayee = keys::parse_address(network, redeem["txinfo"]["payee"].as_str().unwrap()).unwrap();
+    let shape = yew_core::build::redeem::VaultSpendShape {
+        vault_out: rtx.vin[0].prevout,
+        vault_value,
+        lock_height,
+        claim_height,
+        owner_path: true,
+        with_payload: true,
+        ref_height: r,
+        yed_inputs: rtx.vin[1..]
+            .iter()
+            .map(|i| yew_core::coins::Utxo {
+                outpoint: i.prevout,
+                address: String::new(),
+                script: Vec::new(),
+                value: TOKEN_VALUE,
+                height: 0,
+                class: yew_core::coins::UtxoClass::Token,
+                cents: redeem["txinfo"]["burned"].as_u64().unwrap(),
+            })
+            .collect(),
+        change_cents: 0,
+        change_script: Vec::new(),
+        payee_script: Some(script::p2pkh_script(&rpayee.hash())),
+        fee_zat: redeem_fee,
+        attest_script: None,
+        attest_fee_zat: 0,
+        residual_zat: 0,
+        owner_script: script::p2pkh_script(&keys::hash160(&owner)),
+        carrier_value: 0,
+        collateral_script: rtx.vout[0].script_pubkey.clone(),
+    };
+    let plan = yew_core::build::redeem::plan_vault_spend(&shape).unwrap();
+    assert_eq!(plan.vout, rtx.vout, "REDEEM vout order, values and payload");
+    assert_eq!(plan.lock_time, rtx.lock_time);
+    assert_eq!(
+        plan.vin
+            .iter()
+            .map(|i| (i.prevout, i.sequence))
+            .collect::<Vec<_>>(),
+        rtx.vin
+            .iter()
+            .map(|i| (i.prevout, i.sequence))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        plan.collateral_out,
+        redeem["result"]["collateralOut"].as_i64().unwrap()
+    );
+    assert_eq!(
+        plan.burn_cents,
+        redeem["result"]["burnedCents"].as_i64().unwrap()
+    );
+    let _ = FEE_ZAT;
+}

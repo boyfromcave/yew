@@ -38,9 +38,11 @@ pub enum UtxoClass {
     Token,
     /// A token output the app broadcast, not yet confirmed by the server. Nothing.
     PendingToken,
-    /// `vout[0]` of an own MINT (W4). REDEEM only.
+    /// `vout[0]` of an own open MINT, synthesised from the `vaults` table (W4; `GetVault` is its
+    /// source, since `GetAddressUtxos` lists only own-address P2PKH outputs). REDEEM only.
     Vault,
-    /// A P2SH carrier the app created (W4). Its paired transaction only.
+    /// A confirmed P2SH carrier the app created, synthesised from the `mints` table (W4). Its
+    /// paired MINT / CLAIM, or the sweep after the window lapsed.
     Carrier,
     /// Any P2SH the app did not create. Hidden, never spent.
     UnknownP2sh,
@@ -100,6 +102,24 @@ impl UtxoClass {
     /// True for the classes whose `nValue` counts toward the YEC balance.
     pub fn counts_as_yec(self) -> bool {
         self.yec_spendable()
+    }
+
+    /// True for the classes a **MINT** may spend (W4): YEC for the collateral and fees, plus
+    /// the one `Carrier` at `vin[last]`.
+    pub fn mint_spendable(self) -> bool {
+        self.yec_spendable() || self == UtxoClass::Carrier
+    }
+
+    /// True for the classes a **REDEEM** may spend (W4): the own `Vault` at `vin[0]` and
+    /// `Token` inputs for the burn. Never YEC (the fee comes from the vault, spec §3.5).
+    pub fn redeem_spendable(self) -> bool {
+        matches!(self, UtxoClass::Vault | UtxoClass::Token)
+    }
+
+    /// True for the own classes a **CLAIM** may spend (W4): `Token` inputs for the burn and
+    /// the `Carrier`; the vault at `vin[0]` is another wallet's and is named to the gate.
+    pub fn claim_spendable(self) -> bool {
+        matches!(self, UtxoClass::Token | UtxoClass::Carrier)
     }
 }
 
