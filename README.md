@@ -1,622 +1,289 @@
 # YEW — Your Electronic Wallet
 
-A transparent-only mobile wallet for YEC and Ycash Yellowback (YED): a small Flutter app for iOS
-and Android over a small Rust core. YED is the main currency; everything about it comes through
-`lightwalletd-dd`'s `YellowbackStreamer`, everything about YEC through the untouched
-`CompactTxStreamer` transparent path. No compact-block scanning, nothing shielded, and no
-transaction byte is ever built outside the Rust core.
+A small mobile wallet for **Ycash (YEC)** and **Ycash Yellowback (YED)**, the decentralized
+dollar on Ycash. iOS and Android, one Flutter UI over one Rust core.
 
-Plan: `docs/plans/yellowback-wallet-plan.md` in the `yellowback-workspace` repository (this repo
-is mounted there at `yew/`). Status: **Phase W5 hardening done in-repo; device runs, signing,
-endpoints and the testnet run are the owner's** — the threat review (`docs/security-review.md`)
-with its fixes (key wiping, TLS regtest-only plain, host validation, certificate pinning in the
-core, `0600` cache, Android backup exclusion, `FLAG_SECURE`, no console logger), the dependency
-audit and license listing in CI, the release recipe (`docs/release.md`) and the empty default
-endpoint list — on top of W4 (the core's mint / redeem / claim / sweep, devnet-accepted through
-`yew-cli`, the `api.rs` calls and the M2 screens), W3 (the M1 screens), W2 (YED tokens,
-TRANSFER, the full broadcast gate) and W1 (keys, transactions, YEC send). Nothing here is a
-release; the app has not yet run on a device or simulator.
+**For users.** YEW holds YEC and YED in transparent addresses and lets you receive, send and see
+your history for both. YED is the main currency: 1 YED is a dollar, and the app shows YEC only
+because every transaction needs a little YEC for fees and every mint needs YEC as collateral.
+Beyond send and receive, the Yellowback tab lets you mint YED against locked YEC, watch and
+redeem your vaults, and claim an undercollateralized vault. YEW is **transparent only**: your
+addresses, balances and transactions are public on the chain, and it never holds shielded
+funds. Your keys never leave the phone; the app trusts one light-client server you choose for
+its view of the chain, and every YED transaction is checked by that server's node before it is
+sent. The full statement is [docs/trust.md](docs/trust.md).
 
-## What is left for the owner
+**Status (2026-09-25).** Feature complete for the plan's scope and running on the iOS simulator
+and the Android emulator against a regtest devnet, where the full send/receive flow passes end
+to end. Not released: no public server endpoints yet, no store builds, no testnet run. See
+[What is left](#what-is-left) at the end.
 
-Everything below needs a device, an account, a public server or a signing identity, none of
-which exists on the machine W0–W5 were written on. In the order they unblock each other:
+## Quick start for developers
 
-1. **Run the app on real devices** and the M2 integration test. W6 ran the app and the M1 test
-   on the iOS simulator and the Android emulator ("Running on a simulator / emulator" below);
-   `m2_flow_test.dart` (mint, vault, claim), a physical iPhone / Android phone (signing, the
-   biometric prompt, the camera scanner, `FLAG_SECURE`) and the iOS TLS roots (below) remain.
-2. **The Ywallet derivation capture** (plan D-W-7, `core/tests/vectors/ywallet.json`
-   `"pending": true`): the one `#[ignore]`d vector.
-3. **Owner decisions from the security review** (`docs/security-review.md`): A-1 bind the seed
-   item to biometrics in the keystore or keep the app-level prompt; S-3b whether a SHA-256
-   fingerprint pin justifies `rustls` on the allow-list; S-5b the stranded-carrier recovery
-   after a database rebuild (a W6 item); the iOS backup exclusion and app-switcher blur.
-4. **The app's pinning field**: `Server::ca_pem` exists in the core and `yew-cli`; the app
-   needs one bridge parameter and a Settings field (`docs/release.md` §5).
-5. **Public endpoints** (plan §8 Q4): a `lightwalletd-dd --yellowback` over a `ycashd`
-   `-yellowback -insightexplorer`, TLS, for testnet and later mainnet; enter them in
-   `net/tls.rs` `default_servers` (`docs/release.md` §4) — both lists ship **empty**.
-6. **The testnet run** (≥ 4 weeks, after v3 A7 and lightwalletd L4): `docs/release.md` §9.
-7. **Store metadata and signing** (`docs/release.md` §7, §8): bundle ids, description, privacy
-   declarations ("no data collected"), the Apache 2.0 text with the binary, the iOS export
-   compliance key, the release keystore / Apple team; the review of `docs/trust.md`'s wording.
-8. **Reproducible-build path remap** in the release CI (`docs/release.md` §1).
+Prerequisites: Rust (the exact version is in `rust-toolchain.toml`; `rustup` installs it),
+`protoc` on PATH, Flutter 3.47.5, and for devices Xcode or the Android SDK with NDK
+28.2.13676358 plus `cargo install cargo-ndk`. Everything else is pinned in the repo.
 
-## Layout
-
-```
-Cargo.toml          Rust workspace: core (yew-core) and core/cli (yew-cli)
-core/               the core (module table below)
-core/cli/           yew-cli, the developer's and the devnet tests' driver
-core/tests/         vectors.rs (node-generated vectors), devnet.rs (w1_*, w2_*; YEW_DEVNET=1, ignored otherwise)
-core/tests/vectors/ node-generated vectors from `yellowback-devnet vectors` (Phase W0c)
-core/src/frb_generated.rs   generated by scripts/gen-bridge.sh (committed; never edited)
-app/                Flutter project yew_app (org cash.ycash.yew; iOS + Android): lib/{theme,format,app,main}.dart,
-                    lib/api (WalletApi + the one bridge implementation), lib/state, lib/screens, lib/widgets, lib/term_classes.dart,
-                    lib/src/rust (generated), test/ (widget tests over a fake bridge), integration_test/
-docs/               trust.md (the trust statement; app/lib/trust_text.dart is its checked copy),
-                    security-review.md (W5 threat review), release.md (W5 release recipe), licenses.md (W5)
-proto/              service.proto, compact_formats.proto, yellowback.proto + PIN (lightwalletd-dd commit)
-scripts/            check-proto-pin.sh, check-deps.sh + allowed-deps.txt, check-app-imports.sh, check-trust-text.sh,
-                    audit.sh, check-licenses.sh (W5), devnet-w1.sh, devnet-w2.sh, devnet-w4.sh,
-                    build-core-ios.sh, build-core-android.sh, gen-bridge.sh
-flutter_rust_bridge.yaml   the codegen config (rust_input crate::api, rust_root core, dart_output app/lib/src/rust)
-.github/workflows/  ci.yml
+```bash
+git clone git@github.com:boyfromcave/yew.git && cd yew
+cargo test --workspace                 # core, CLI and the node-generated vectors
+(cd app && flutter test)               # widget tests over a fake bridge
 ```
 
-## Core modules (plan §3.1, §3.6)
+To run the app you need a Yellowback devnet and its lightwalletd, which live in the
+`yellowback-workspace` repository this repo is normally mounted in (at `yew/`). With that
+workspace beside you:
 
-| Module | Phase | Status | Translated from / verified against |
-|---|---|---|---|
-| `params.rs` | W1 | done | `ycash-dd/src/chainparams.cpp`, `src/yellowback/params.{h,cpp}`, `src/primitives/transaction.h`; fee citations below |
-| `keys.rs` | W1, W5 | done | BIP39 (`bip39`), BIP32 over `hmac`/`sha2` (no extra crate), `m/44'/347'/0'/{0,1}/i` (D-W-7), `s…`/`ye…`/`yt…`/`yr…`, WIF (D-W-11). Tests: BIP32 vector 1, BIP39 TREZOR vector, `addresses.json`. W5: `wipe`, `SecretString`, `Drop` on the key types (`docs/security-review.md` S-1) |
-| `script.rs` | W1 (P2PKH/P2SH), W4 (vault, carrier) | W1 done | `CScript` push encoding (`ref/ycash/src/script/script.h`), `ycash-dd/src/yellowback/script.cpp` `GetPushes` |
-| `tx.rs` | W1 | done | v4 serializer/parser (`transaction.h:575-640`), ZIP-243 (`qa/rpc-tests/test_framework/script.py` `SignatureHash`), RFC 6979 signing. `transparent.json`: 12 node transactions reproduced byte-for-byte (unsigned, every sighash, signed, txid) |
-| `net/tls.rs`, `net/compact.rs` | W1, W5 | done | `Server`, TLS (`rustls`, native roots) or `--plain` (W5: regtest only, `Server::parse_for`; host validation; `ca_pem` pinning; `default_servers`); `GetLightdInfo`, `GetLatestBlock`, `GetAddressUtxos` (paged), `GetTaddressTxids` (stream), `GetTaddressBalance`, `SendTransaction` |
-| `net/yellowback.rs` | W2 | done | every `YellowbackStreamer` method (streams collected); `probe()` = contract rule 1 (`UNIMPLEMENTED` ⇒ absent, unknown `rpcversion` ⇒ refused, `enabled && active`); `FAILED_PRECONDITION` ⇒ `NetError::Node { identifier, message }` |
-| `payload.rs` | W2 | done | `ycash-dd/src/yellowback/payload.{h,cpp}`: `"YB"‖0x03‖type`, all seven types encode/decode, `find_payload`; `templates.json` payloads reproduced both ways |
-| `coinselect.rs` | W2 | done | `ycash-dd/src/yellowback/coinselect.{h,cpp}` verbatim (EXACT/SINGLE/GREEDY/SEARCH/BURN, `NearestWorkable`, budget 200,000); `src/test/yellowback_coinselect_tests.cpp` tables ported row for row; equals `yed_estimatesend` input-for-input on the devnet |
-| `build/yed_transfer.rs` | W2 | done | `txbuilder.cpp:1213-1290` `BuildTransfer`: YED inputs, `TOKEN_VALUE` outputs, TRANSFER payload, YEC fee from `FEE_RESERVE` then `YEC`, one change address; refusals carry the node's identifiers (`change-floor` with the alternatives) |
-| `store.rs` | W1, W2 | done (schema v2; v1 files migrate in place) | meta, addresses, utxos+class+cents, locks, history+labels, own_outputs, own_tokens, spent_tokens, pending_txs, imported_keys (wrapped) |
-| `coins.rs` | W1 (YEC), W2 (YED) | done | classes of §3.7; `SelectYec` from `txbuilder.cpp:399-420`; fee reserve; `classify` (TOKEN from `GetAddressTokens` only, else HELD for `TOKEN_VALUE`); `pre_lock` from `wallet.cpp:410-427`; `ranked_tokens` from `txbuilder.cpp:501-510` |
-| `sync.rs` | W1 (YEC), W2 (YED) | done | §3.2 loop: gap-limit derivation, `GetTaddressTxids` history, `GetAddressUtxos` set, `GetAddressTokens` set, classification, PENDING_TOKEN rows, lock release, `GetTxInfo` labels (`label_for`, from `yellowbackmodels.cpp`), `GetPrice.pMint` |
-| `build/yec_send.rs` | W1 | done | YEC send with change, fee `FEE_ZAT`, `nExpiryHeight = tip + 40`, the `TOKEN_VALUE ± 1 zat` rules; `broadcast` runs both gate layers |
-| `gate.rs` | W1 (YEC path), W2 (full) | done | D-W-5: local classes per path + `ValidateRawTransaction` (`valid && verdict == "ok" && burned == 0 && !wouldBeRejected`), no override; `Validator` built only by probing; property test on 2,000 random coin sets, both paths |
-| `wallet.rs` | W1, W2 | done | key ring + store + network; `balances()` (§3.4 shape), `dollars()`; not in the plan's file list (added: the object `sync`, the builders and W3's `api.rs` share) |
-| `api.rs` | W3, W4 | done | plan §3.4: one wallet handle behind an async mutex; `create_wallet` / `unlock` / `lock`, `status`, `balances`, `receive_address`, `addresses`, `history(page)`, `send_yec_preview` / `_confirm`, `send_yed_preview` (with the node's dry run) / `_confirm`, `export_wif`, `import_wif`, `sync_now` (stream), `probe_server`, `validate_address`, seed-word helpers; W4: `mint_estimate`, `mint_start`, `mint_status`, `mints`, `mint_finish`, `mint_sweep`, `vaults`, `redeem`, `claimable`, `claim` — each syncs first and takes the sync's `tip` / `branch_id` as `yew-cli`'s `synced` does; `MintStatus` is the `mints` row plus the screen's flags (`in_progress`, `window_open` at the last synced height, `can_finish`, `can_sweep`), `VaultSummary` the stored vault plus `redeemable` / `releasable` / `underwater`. One error type (`kind` + a message the UI shows verbatim; a gate refusal carries the verdict; a `MintError` is `Refused`, `Unaffordable` is `NeedYecForFees`). Every broadcast runs both gate layers inside the core's builders; no override |
-| `bundle.rs`, `build/{mint,redeem,claim}.rs` | W4 | done (core; devnet-accepted, see "Rules recorded in W4") | `ycash-dd/src/yellowback/{attest,txbuilder,wallet}.cpp`: bundle verification, vault / carrier scripts, `BuildMint` as the two-step state machine (`store.rs` schema v3), `BuildRedeem` (owner path, VOID release), `BuildClaim`, the sweep |
+```bash
+scripts/devnet-w4.sh up                # once: an armed regtest devnet + lightwalletd on 127.0.0.1:9267
+scripts/devnet-w4.sh status            # is it up?
+scripts/run-ios.sh                     # build the core, run on the iPhone simulator
+scripts/run-android.sh                 # build the core, boot the emulator, run
+```
 
-### The fee (plan §7 W1, first task)
+See [Running against the devnet](#running-against-the-devnet) for funding the wallet and
+mining blocks.
 
-`FEE_ZAT = 1_000` zat, the node's flat fee: `ycash-dd/src/yellowback/params.h:79`
-`DEFAULT_YELLOWBACK_FEE = 1000` ("equals policy DEFAULT_FEE", `src/policy/fees.h:15`), the floor of
-`-yellowbackfee` (`src/init.cpp:1186-1189`), what every node-built template pays
-(`src/yellowback/txbuilder.cpp:338`), and `src/wallet/wallet.h:265` `DEFAULT_TRANSACTION_MINFEE =
-1000`. The relay floor is `src/main.h:68` `DEFAULT_MIN_RELAY_TX_FEE = 100` zat/kB. Confirmed on
-the devnet: `yed_getinfo` → `params.feeZat = 1000`, and `params.json` from the W0c vectors.
-`RESERVE_MIN = 105_000` zat = `5 · (FEE_ZAT + 2 · TOKEN_VALUE)`, so the reserve formula's two
-terms are equal at the default fee.
+## How it works
 
-### Rules recorded in W1 (plan §3.7)
+```
+ ┌───────────────────────── app/ (Flutter, Dart) ─────────────────────────┐
+ │ screens ──▶ AppState ──▶ WalletApi (interface) ──▶ RustWalletApi (frb) │
+ └──────────────────────────────────┬──────────────────────────────────────┘
+                                    │ flutter_rust_bridge (generated)
+ ┌──────────────────────────────────▼──────────── core/ (Rust) ───────────┐
+ │ api.rs ─▶ wallet.rs ─▶ sync.rs / coins.rs / build/* ─▶ gate.rs ─▶ net/* │
+ │           keys · tx (v4 + ZIP-243) · script · payload · coinselect      │
+ │           bundle · store (SQLite)                                        │
+ └──────────────────────────────────┬──────────────────────────────────────┘
+                                    │ gRPC (tonic), TLS or plain on regtest
+                        lightwalletd-dd: CompactTxStreamer (YEC) + YellowbackStreamer (YED)
+```
 
-- **HELD** (W1 form): an own P2PKH output of exactly `TOKEN_VALUE` (10,000 zat) cannot be told
-  from a YED token locally, so it is class `HELD` and unspendable. W2 narrows it (below).
-- **Fee reserve refinement**: outputs are reserved smallest-first up to the target, but an output
-  larger than the whole reserve is never reserved (a one-coin wallet would otherwise show
-  "available 0"). When the reserve is short, a YED operation takes its fee from class `YEC`.
-- **`TOKEN_VALUE` avoidance**: a send of exactly 10,000 zat pays 10,001; a change of exactly
-  10,000 becomes 9,999 (the zat goes to the fee). Change under 100 zat folds into the fee.
-- **Imported keys** are stored wrapped under a key derived from the seed (HMAC-SHA256 keystream),
-  not in the clear; W3 moves them to the platform keystore with the seed.
-- The node's plain wallet RPCs (`sendtoaddress`, `validateaddress`) take the `s…` form; the
-  `ye…` form is for the `yed_*` RPCs. `yew-cli address` prints both.
+Three rules explain most of the design:
 
-### Rules recorded in W2 (plan §3.7, D-W-5, D-W-8)
+1. **The core owns every byte.** Keys, addresses, transaction serialization, the ZIP-243
+   sighash, scripts, payloads and coin selection exist only in Rust. The Dart side sees typed
+   models and calls; `scripts/check-app-imports.sh` fails CI if `app/lib` imports any crypto,
+   gRPC, SQLite or socket package.
+2. **Nothing is broadcast without passing the gate twice.** `gate.rs` first checks locally that
+   every input is a class the transaction may spend, then asks the server's node to validate
+   the exact bytes (`ValidateRawTransaction`) and refuses unless the verdict is `ok`, the burn
+   equals what was planned and the node would accept it. There is no override, flag or test
+   hook that skips it. This is what stands between a client bug and burned YED.
+3. **Every UTXO has one class.** On Ycash a YED holding is a 10,000-zat transparent output whose
+   dollars live in a payload; spending it as plain YEC burns it. So `coins.rs` classifies every
+   output (`YEC`, `FEE_RESERVE`, `TOKEN`, `PENDING_TOKEN`, `VAULT`, `CARRIER`, `HELD`,
+   `UNKNOWN_P2SH`) from server data, keeps a YEC reserve so YED is never stranded without fee
+   money, and never lets the YEC path touch anything but `YEC` and `FEE_RESERVE`. The user
+   sees two balances; a UTXO list exists only in `yew-cli coins`.
 
-- **TOKEN has one source.** `GetAddressTokens` (the node's `yed_listtokens`, whoever holds the
-  keys) decides the TOKEN class and its cents; nothing local does. An own P2PKH output of
-  exactly `TOKEN_VALUE` that the server does *not* list stays **HELD**, never YEC: it may be a
-  VOID mint's `vout[1]`, a transaction the index has not digested, or a server without
-  Yellowback, and spending it as YEC could burn. Spent tokens are never listed (IN-1 erases
-  them), so the wallet keeps `own_tokens` / `spent_tokens` itself to value a spend in history.
-- **PENDING_TOKEN** is written at broadcast by the `PreLock` rule (MINT ⇒ `vout[1]`,
-  TRANSFER/REDEEM ⇒ the payload's own assignments) and re-derived from the pending record at
-  every sync; it is "pending YED", in neither balance, until the server lists it (TOKEN) or the
-  transaction confirms without it (HELD). Locked outputs (inputs of an own unconfirmed
-  transaction) are in neither balance either; YEC change of such a transaction is "YEC pending".
-- **The gate has two layers and no override.** Local: every input is a known unspent output of
-  a class the path may spend (YEC path: `YEC`/`FEE_RESERVE`; transfer path: those plus `TOKEN`),
-  no payload on the YEC path, exactly one decodable TRANSFER payload and at least one token on
-  the transfer path. Remote: `ValidateRawTransaction` on the same bytes, `valid && verdict ==
-  "ok" && burned == 0 && !wouldBeRejected`, the node's verdict in the error. A plain YEC send is
-  validated too (the node answers `ok` for a non-Yellowback transaction). The `Validator` is
-  built only by probing the server; on a server without the service the YED path is refused
-  and the YEC path runs on the local layer (nothing can be TOKEN there, so every `TOKEN_VALUE`
-  output is HELD and already refused).
-- **Labels come from verdicts.** Every confirmed own transaction that carries an `OP_RETURN` or
-  spends an own token is labelled from `GetTxInfo` (`minted $`, `sent $` / `received $` /
-  `self-transfer`, `VOID mint (verdict)`, `redeemed`, `burned $`, `expired`); the local payload
-  is read only for the pending label of a transaction this wallet itself broadcast, and for
-  `PreLock`. A `tx-not-found` marks the row "payload, not yellowback".
-- **YED selection is the node's.** `coinselect.rs` is `coinselect.cpp` verbatim over coins
-  ranked `(cents, txid bytes, vout)`; on the devnet the wallet's answer equals
-  `yed_estimatesend` input-for-input, stage, change and alternatives on 100 random targets over
-  three coin sets. A TRANSFER's YEC comes from `FEE_RESERVE` then `YEC`, smallest first; surplus
-  token value (more tokens in than out) returns as YEC change, as the node does.
-- **The armed devnet has no heartbeat and node 0's blocks are untagged.** Every block of the
-  acceptance is mined on a pool node (2-4, round-robin, after the transaction reached the
-  pools' mempools) with the pools re-quoted first (`yellowback-devnet price 50`): a stale quote
-  makes the pool tag its block `signal` only, the price windows drain, and `yed_mint` fails
-  `mintpol-no-price`. The mint reads the price at `tip - refLag`, so the warm-up holds until
-  `GetPrice(tip - 2).pMint` is defined. `yed_mint … wait=false` returns after the carrier; one
-  pool block confirms it, the node's wallet then broadcasts the MINT by itself, one more block.
-- **`getreceivedbyaddress` counts token value**: an address holding 0.5 YEC and one YED output
-  reports 0.5001, the 10,000 zat of the token included.
-- Node 1 of the armed devnet is the stock node (no `-yellowback`), so the key round trip uses
-  node 5 (an attestor node with the wallet layer): `importprivkey … true` → `dumpprivkey` equals
-  `export-wif`, `yed_getbalance` grows by the address's cents, `yed_listunspent` lists the token,
-  `yed_send` moves it.
+Other things worth knowing before reading code:
 
-### Rules recorded in W4 (plan §3.7 VAULT / CARRIER, §4 rules 5 and 6, §5.3, §8.6, §8.7)
+- **Sync is per address, not per block.** The wallet derives its addresses
+  (`m/44'/347'/0'/{0,1}/i`, Ywallet-compatible, gap limit 20), asks the server for their UTXOs
+  and transaction history, and asks the Yellowback service which of those outputs are YED.
+  No compact blocks, no shielded scanning.
+- **A mint is a persisted state machine, not a process.** Minting takes two transactions (a
+  carrier holding the price attestations, then the mint itself) inside a 40-block window. The
+  `mints` table holds every fact the second step needs, only the sync loop advances a row, and
+  a killed app resumes from the table; a lapsed carrier is swept back.
+- **Labels come from the node's verdicts.** History rows for Yellowback transactions are
+  labelled from `GetTxInfo`, never from decoding the payload locally.
+- **The node is the oracle for tests.** `core/tests/vectors/` holds transactions the node
+  signed, addresses, mint/transfer/redeem templates and parameters, exported by the workspace's
+  `yellowback-devnet vectors`; the core must reproduce them byte for byte.
 
-- **The two-step state machine is a table, not a process.** A mint or claim is a `mints` row
-  (`schema v3`) from the moment its carrier is broadcast: `CARRIER_SENT → CARRIER_CONFIRMED →
-  MAIN_SENT → DONE`, or `→ LAPSED → SWEEP_SENT → SWEPT`, or `→ FAILED` (the carrier's own
-  funding expired unconfirmed). The row holds everything the main step needs (the bundle, the
-  carrier key hash, `R`, the fee and attestor payees, the vault facts for a claim), so a wallet
-  file closed mid-mint and reopened finishes from where it was. **Only the sync loop advances a
-  row**, from what the history scan saw (the carrier confirmed, the main transaction confirmed,
-  the window `R + REF_WINDOW` closed, the sweep confirmed); the app's steps (`mint_start`,
-  `mint_finish`, `mint_sweep`) refuse a row that is not in the state they need. The window is
-  open while `tip + 1 + TX_EXPIRING_SOON_THRESHOLD(3) <= R + REF_WINDOW`, the node's
-  `CheckExpiry`; a `CARRIER_CONFIRMED` row past it is `LAPSED`.
-- **VAULT and CARRIER are synthesised, never scanned.** `GetAddressUtxos` lists own-address
-  P2PKH outputs only; a vault or a carrier is a P2SH output, so the sync loop adds them from
-  its own tables: every open own vault (`vaults`, refreshed from `GetVault` for every mint row
-  and every history row the server labelled `mint`, kept when `HASH160(ownerPubKey)` is an own
-  key — a restore from seed finds its vaults this way) and every row that holds an unspent
-  carrier. Both are locked to their flows by the gate and are in neither balance.
-- **The gate has a path per template** (still two layers, still no override): carrier funding
-  (`YEC`/`FEE_RESERVE` in, `vout[0]` a P2SH of `CARRIER_VALUE`, no payload); mint (those plus
-  exactly one `CARRIER` as `vin[last]`, one MINT payload); redeem (the own `VAULT` at `vin[0]`,
-  `TOKEN`s, a REDEEM payload, no carrier); release of a VOID vault (the vault alone, no
-  payload); claim (the *named* foreign vault at `vin[0]` — it is nobody's UTXO here — then
-  `TOKEN`s and the carrier last, a REDEEM payload); sweep (`CARRIER`s only, no payload). YEC
-  never enters a vault spend: the fee comes from the vault (spec §3.5).
-- **The bundle is verified before the carrier is funded** (plan §4 rule 6): shape, count in
-  `[1, BUNDLE_MAX]`, every `seq` seated in `ListAttestors` and unique, every compact signature
-  under that seat's key over `SHA256("YBATTEST1" ‖ seq ‖ price ‖ citedHeight ‖ blockHash)` with
-  the block hash from `GetBlock` (internal order) — high-S refused, never normalised (R17). A
-  bundle with one mutated byte is refused naming the attestor and height. Freshness and the
-  price range are the node's rules and are judged by its dry run.
-- **The node's templates reproduce byte-for-byte** (plan W4 acceptance, `tests/vectors.rs`
-  `w4_templates_…`): the vault script and its P2SH hash, the carrier script and its hash, the
-  carrier scriptSig `<bundle> <sig> <carrierScript>` push encoding, the MINT `vout` order
-  (vault, token, payload, pool fee, attestor fee, change), the MINT and REDEEM payload bytes,
-  the REDEEM plan (collateral, fee, payload; `nLockTime = lockHeight`, `vin[0].nSequence =
-  0xFFFFFFFE`, `nExpiryHeight = R + REF_WINDOW`). Both node signatures (owner and carrier)
-  verify under the core's ZIP-243 digests. Differences kept: the carrier and owner keys are the
-  next unused change / external HD keys; the YEC side selects `FEE_RESERVE` then `YEC`; the
-  collateral is `max(requiredZat, 4·feeMin)` rounded up to 1,000 zat exactly as `BuildMint`
-  does (`yed_estimatecollateral.requiredZat` is *not* rounded); the attestor payee is the
-  node's `DefaultAttestPayee` pick (`SHA256(blockHash(R) ‖ selector ‖ "A") mod |A|`) — AFEE-1
-  accepts any `seq` of the bundle; the fee payee is `GetFeePayee.preferred`, else
-  `default.payoutAddress`, else FEE-0.
-- **Plan §8.7 (bundle push size)**: the largest bundle is `4 + 74·6 = 448` bytes, inside
-  `MAX_SCRIPT_ELEMENT_SIZE = 520`; the push is `OP_PUSHDATA2` for four or more attestations,
-  `OP_PUSHDATA1` below, exactly `CScript << bundle`; `carrier_script_sig` refuses a larger
-  element. The node-built vector (three attestations, 226 bytes) confirms the encoding.
-- **A claim takes the node's numbers at the tip.** `ListClaimable` names the vault, its
-  `claimPath`, `feeZat`, `attestFeeZat` and `residualZat` (RED-5, paid to `P2PKH(ownerPubKey)`);
-  `R` is the index tip; the bundle is for `outpointSelector(vault)` (txid internal bytes ‖ vout
-  LE32). The wallet's YED must cover `mintedCents` before the carrier is funded; the BURN stage
-  (a sub-dollar remainder) is allowed on redeem and claim, never on a transfer.
-- **A redeem or claim burns by design, and the remote gate knows how much.** The W2 remote rule
-  `burned == 0` refused the first devnet redeem (`valid, ok, burned 10000`): `gate::accept` now
-  takes the *planned* burn — `0` on every path but redeem and claim, where `confirm_burning`
-  passes the plan's `burn_cents` (the debt plus any sub-dollar remainder). Any other burn, more
-  or less, is still refused with the node's numbers.
-- **Plan §8.6 (open question 6) — answered on the devnet, no node change needed.** After
-  `importprivkey <ownerWIF> … true` on node 5, `yed_listvaults` lists the yew-minted vault,
-  `yed_getbalance` counts the address's YED, `yed_redeem` before `lockHeight` is refused
-  `vault-locked: the vault is locked until height N (tip T)`, and at `lockHeight` node 5's
-  `yed_redeem` builds, signs and broadcasts the owner-path redeem (`burnedCents 10000`,
-  `collateralOut 950009000`); the yew side then sees the vault `CLOSED` at the next sync.
-  The node recognises the vault by the owner pubkey, exactly as the question hoped.
-- **Lightwalletd plan Q6 (the armed carrier path) and §8.7, as seen on the wire.** The claim's
-  carrier scriptSig on the devnet is 373 bytes: `OP_PUSHDATA1` (0x4c) of the 226-byte bundle
-  (three attestations), the DER signature, then the carrier redeem script; the node accepted
-  every carrier spend (mint, resumed mint, claim) with verdict `ok` and the lapsed carrier's
-  sweep too. Nothing in the light path needed the node's wallet.
-- **Devnet funding comes from a pool node.** Node 0's YEC is what its own mints and the W2
-  acceptance left (a few YEC); the acceptance funds its wallet from node 2 (mature coinbase).
-- **Sweeping is explicit.** The sync loop marks a row `LAPSED`; `mint_sweep` builds the
-  one-input sweep (`CARRIER_VALUE − FEE_ZAT` to a fresh change key) and `yew-cli sync` runs it
-  for every lapsed row. The node answers `ok` to the sweep's dry run (a non-Yellowback
-  transaction with a carrier-shaped input and no payload).
+The reasoning behind each rule, with the evidence from the devnet, is in
+[docs/design-notes.md](docs/design-notes.md).
+
+## Repository layout
+
+```
+Cargo.toml              Rust workspace: core (yew-core) and core/cli (yew-cli)
+core/src/               the core; api.rs is the bridge surface, frb_generated.rs is generated
+core/cli/               yew-cli: the developer's driver and what the devnet tests use
+core/tests/             vectors.rs (node vectors), devnet.rs (acceptance; YEW_DEVNET=1, ignored otherwise)
+core/tests/vectors/     node-generated vectors (ywallet.json is pending an owner capture)
+app/                    Flutter project yew_app (org cash.ycash.yew)
+app/lib/api/            WalletApi interface + the one file that calls the bridge
+app/lib/state/          AppState, the single app state
+app/lib/screens/        one file per screen, each under 300 lines
+app/lib/src/rust/       generated by scripts/gen-bridge.sh; never edited
+app/test/               widget tests over test/fake_wallet_api.dart
+app/integration_test/   m1 (send/receive) and m2 (mint/vault/claim) flows against a devnet
+proto/                  the three lightwalletd-dd .proto files + PIN (the commit they came from)
+scripts/                build, run, devnet and CI check scripts (listed below)
+docs/                   trust.md, design-notes.md, security-review.md, release.md, licenses.md
+flutter_rust_bridge.yaml   codegen config
+.github/workflows/ci.yml
+```
 
 ## Toolchain
 
 | Tool | Version | Pinned in |
 |---|---|---|
-| Rust (stable) | `1.92.0` | `rust-toolchain.toml` |
-| Flutter | `3.47.5` (stable) | `app/pubspec.yaml` `environment.flutter`, CI |
-| Dart SDK | `3.13.4` | `app/pubspec.yaml` `environment.sdk` (exact lower bound) |
-| flutter_rust_bridge (crate, codegen, Dart package) | `2.13.0`, all three | `core/Cargo.toml` (`=2.13.0`), `app/pubspec.yaml` (`2.13.0`), `scripts/gen-bridge.sh` (refuses a codegen of another version) |
-| Android NDK | `28.2.13676358` | `app/android/app/build.gradle.kts` |
-| protoc | any `>= 3.x` on PATH (`36.1` used) | `core/build.rs` (not vendored) |
-| Minimum iOS | 15.0 | `app/ios/Runner.xcodeproj` (`IPHONEOS_DEPLOYMENT_TARGET`); plugins via Swift Package Manager, no Podfile |
-| Minimum Android | API 24 (Flutter default) | `app/android/app/build.gradle.kts` (`flutter.minSdkVersion`) |
+| Rust (stable) | 1.92.0 | `rust-toolchain.toml` |
+| Flutter | `3.47.5` (stable) | `app/pubspec.yaml`, CI (reads this row) |
+| Dart SDK | `3.13.4` | `app/pubspec.yaml` |
+| flutter_rust_bridge (crate, codegen, Dart package) | 2.13.0, all three | `core/Cargo.toml`, `app/pubspec.yaml`, `scripts/gen-bridge.sh` |
+| Android NDK | 28.2.13676358 | `app/android/app/build.gradle.kts` |
+| protoc | any 3.x+ on PATH | `core/build.rs` (not vendored) |
+| Minimum iOS / Android | 15.0 / API 24 | Xcode project / Gradle |
 
 Rust targets: `aarch64-apple-ios`, `aarch64-apple-ios-sim`, `aarch64-linux-android`,
-`x86_64-linux-android`, plus the host for `yew-cli` and tests. Direct Rust dependencies are the
-allow-list of plan §3.3 (`scripts/allowed-deps.txt`); versions are pinned exactly (`=x.y.z`).
-`yew-cli` has no argument-parsing crate for that reason.
+`x86_64-linux-android`, plus the host. Direct Rust dependencies are an allow-list
+(`scripts/allowed-deps.txt`, checked in CI); versions are pinned exactly. Adding a crate is a
+recorded decision, not a `cargo add`.
 
-## Build and test
+## Development
 
-```bash
-cargo build && cargo test --workspace   # core + cli + node vectors (needs protoc on PATH)
-cargo run -p yew-cli -- version
-scripts/check-proto-pin.sh           # protos identical to ../lightwalletd-dd/walletrpc (skips if absent)
-scripts/check-deps.sh                # direct deps ⊆ allow-list
-scripts/check-app-imports.sh         # no grpc/crypto/sqlite/http import under app/lib; the bridge called from one file
-scripts/check-trust-text.sh          # app/lib/trust_text.dart equals docs/trust.md
-scripts/check-licenses.sh [--print]  # every linked crate's license in the allowed set (--print: the docs/licenses.md table)
-scripts/audit.sh                     # cargo audit; blocks only on advisories with a fix (needs cargo install cargo-audit)
-(cd app && flutter analyze && flutter test)   # 29 widget tests over the fake bridge
-scripts/gen-bridge.sh                # regenerate core/src/frb_generated.rs + app/lib/src/rust after editing core/src/api.rs
-scripts/build-core-ios.sh            # → app/ios/Frameworks/YewCore.xcframework (Xcode)
-scripts/build-core-android.sh        # → app/android/app/src/main/jniLibs (cargo-ndk + NDK)
-scripts/run-ios.sh [host:port] [--test m1|m2]       # build the core, then flutter run / the integration test on a simulator
-scripts/run-android.sh [host:port] [--test m1|m2]   # same on the Android emulator (see "Running on a simulator / emulator")
-```
-
-`core/tests/vectors.rs` reads `core/tests/vectors/*.json`. `ywallet_derivation_vector` is
-`#[ignore]`d while `ywallet.json` says `"pending": true` (the `[owner]` Ywallet capture, plan
-D-W-7); run it with `--ignored` once the file is filled.
-
-## Running on a simulator / emulator
-
-Verified on 2026-09-24 (W6) on macOS 26 / Xcode 26.3 / Flutter 3.47.5: the app runs on the iOS
-simulator (iPhone 17 Pro) and the Android emulator (`yew_pixel`, API 35 arm64) against the armed
-regtest devnet, and `m1_flow_test.dart` passes end-to-end on both. One command per platform does
-everything (build the core, pick or boot the device, run):
+### Build, test and check
 
 ```bash
-scripts/run-ios.sh                    # → flutter run on the booted (or first) iPhone simulator, server 127.0.0.1:9267
-scripts/run-android.sh                # → starts the yew_pixel AVD if needed, flutter run on emulator-5554, server 10.0.2.2:9267
-scripts/run-ios.sh --test m1          # the M1 integration test instead of the app (m2 likewise)
-scripts/run-android.sh --test m1
-scripts/run-ios.sh lwd.example.org:443   # any other server, as host:port
+cargo build && cargo test --workspace     # core + CLI + node vectors
+(cd app && flutter analyze && flutter test)
+scripts/check-proto-pin.sh                # protos identical to ../lightwalletd-dd/walletrpc (skips if absent)
+scripts/check-deps.sh                     # direct deps ⊆ allow-list
+scripts/check-app-imports.sh              # no crypto/network/db imports under app/lib
+scripts/check-trust-text.sh               # app copy of the trust statement == docs/trust.md
+scripts/check-licenses.sh [--print]       # every linked crate's license in the allowed set
+scripts/audit.sh                          # cargo audit (blocks only when a fix exists)
 ```
 
-**Devnet prerequisites** (the workspace, one terminal): the armed devnet of W2 with
-`lightwalletd-dd --yellowback` on 9267, plain — `scripts/devnet-w4.sh up` once,
-`scripts/devnet-w4.sh status` to check (it prints the lightwalletd `GetLightdInfo`). The armed
-devnet has **no heartbeat**: nothing confirms until a pool block is mined, and every mine is
-preceded by a re-quote. Alias the tool, from the workspace root:
+CI (`.github/workflows/ci.yml`) runs all of these on Linux and macOS, regenerates the bridge
+and fails if it differs from the committed output.
+
+### Change the bridge
+
+Edit `core/src/api.rs`, then `scripts/gen-bridge.sh` (needs
+`cargo install flutter_rust_bridge_codegen --version 2.13.0`). Commit both generated outputs.
+The api functions are blocking Rust functions on a private tokio runtime (the store is not
+`Send` across awaits); Dart still sees a `Future` per call. Amounts and heights cross as `i64`.
+
+### Build the core for a device
+
+```bash
+scripts/build-core-ios.sh        # → app/ios/Frameworks/YewCore.xcframework
+scripts/build-core-android.sh    # → app/android/app/src/main/jniLibs/*/libyew_core.so
+```
+
+`run-ios.sh` and `run-android.sh` call these for you. On iOS the static library is force-loaded
+by `app/ios/Flutter/YewCore.xcconfig` (without it the linker silently drops all Rust code and the
+build still succeeds) and the bridge resolves symbols from the process.
+
+### The workspace
+
+This repo is one component of `yellowback-workspace`, which holds the Ycash node fork
+(`ycash-dd`), the lightwalletd fork (`lightwalletd-dd`) whose `YellowbackStreamer` service is
+YEW's only source of YED information, the devnet tooling, and the plan
+(`docs/plans/yellowback-wallet-plan.md`). The `proto/PIN` file records which lightwalletd-dd
+commit the protos were copied from; `check-proto-pin.sh` keeps them identical.
+
+## Running against the devnet
+
+The armed regtest devnet (eight nodes, three attestors, the price layer live) comes from the
+workspace's `ycash-dd/contrib/yellowback/devnet/yellowback-devnet`. `scripts/devnet-w4.sh`
+wraps it for YEW: directory `~/yb-devnet-w0c`, port seed 9, `lightwalletd-dd --yellowback` on
+`127.0.0.1:9267`, plain HTTP/2.
+
+```bash
+scripts/devnet-w4.sh up | status | down [--wipe]
+scripts/run-ios.sh [host:port] [--test m1|m2]       # default server 127.0.0.1:9267
+scripts/run-android.sh [host:port] [--test m1|m2]   # default server 10.0.2.2:9267 (the emulator's name for the host)
+```
+
+**In the app**: Create, accept the trust statement, network **regtest**, server as above with
+*Plain connection* on, *Check server*, *Continue*, *Finish*, back up the seed. Home shows the
+synced height.
+
+**The devnet has no heartbeat**: nothing confirms until a block is mined on a pool node
+(2, 3 or 4), and each mine should be preceded by a re-quote or the price windows drain. From the
+workspace root:
 
 ```bash
 dn() { (cd ycash-dd && YELLOWBACK_DEVNET_DIR=$HOME/yb-devnet-w0c YELLOWBACK_DEVNET_PORTSEED=9 \
         ../.venv/bin/python contrib/yellowback/devnet/yellowback-devnet "$@"); }
-dn price 50 && dn mine 1 2            # re-quote, then one block on pool node 2 (3 and 4 are pools too)
-dn cli --node 2 -- sendtoaddress <s-address> 1.0      # YEC: the pool nodes hold the mature coinbases
-dn cli --node 0 -- yed_send <ye-address> 5000         # $50.00 YED from node 0 (its YED balance: yed_getbalance)
+dn cli --node 2 -- sendtoaddress <s-address> 1.0     # YEC (pool nodes hold the mature coinbases)
+dn cli --node 0 -- yed_send <ye-address> 5000        # $50.00 of YED from node 0
+dn price 50 && dn mine 1 2                           # re-quote, one block on pool node 2
 ```
 
-**The app by hand.** `run-ios.sh` / `run-android.sh` launch the app; in Onboarding choose
-*Create*, accept the trust statement, set the network to **regtest** — the server field prefills
-the core's regtest default (`127.0.0.1:9067`, plain on) — change it to the printed server
-(`127.0.0.1:9267` on the simulator, `10.0.2.2:9267` on the emulator, which is the emulator's
-name for the host's loopback), keep *Plain connection* on, *Check server* (`Server ok · tip N`),
-*Continue*, *Finish*: the seed-backup screen, then Home synced to the tip. Fund the address from
-*Receive* with the two `dn cli` lines above and `dn price 50 && dn mine 1 2`; the next sync
-shows the balances.
+Copy the `s…` address for YEC and the `ye…` address for YED from the Receive screen (same key,
+two encodings). The integration tests print a `YEW M1:` / `YEW M2:` line whenever they need
+you to fund or mine, and wait up to three minutes. `m1` passes on both platforms; `m2` reaches
+the mint estimate and stops because the node's minimum mint is $100 while the test's amounts
+were written smaller (see [What is left](#what-is-left)).
 
-**The integration tests** drive the same screens over the real core and stop three times for
-the operator (each prints a `YEW M1: ...` line and polls for up to three minutes):
+## Testing
 
-1. `fund this address ... : <ye> / <s>` — the two `dn cli` sends, then `dn price 50 && dn mine 1 2`.
-2. `mine a pool block (the YEC change must confirm before the YED send)` — `dn price 50 && dn mine 1 3`.
-3. `mine a pool block (the YED change must confirm before the change-floor check)` — `dn price 50 && dn mine 1 4`.
+| Level | Where | Runs |
+|---|---|---|
+| Unit | `core/src/**` `#[test]` | `cargo test`; includes property tests that no YEC-path transaction ever spends a token, vault or carrier input, on thousands of random coin sets |
+| Node vectors | `core/tests/vectors.rs` | `cargo test`; twelve node-signed transactions, addresses, templates reproduced byte for byte |
+| Widget | `app/test/` | `flutter test`; 29 tests over the fake bridge |
+| Devnet acceptance | `core/tests/devnet.rs` | `scripts/devnet-w1.sh test`, `devnet-w2.sh test`, `devnet-w4.sh test`; YEC round trip and restore, YED transfer and gate refusal, mint/redeem/claim/lapse/resume; nightly, not CI |
+| Device integration | `app/integration_test/` | `scripts/run-ios.sh --test m1`, `run-android.sh --test m1` |
 
-Node 0 spends about 1 YEC of fees and $50 per run; top it up from a pool node when
-`sendtoaddress` says `Insufficient funds` (`dn cli --node 2 -- sendtoaddress $(dn cli --node 0 -- getnewaddress) 50`).
-`m2_flow_test.dart` (mint, vault, claim) uses the same helpers and its own `YEW M2:` prompts
-(fund from node 2, "mine" on each wait, mine to a height, one `price --shock=-80%`; restore
-`price 50` afterwards). On the simulator it passes onboarding, funding and the Mint screen and
-stops at the estimate: the node's floor is **$100** (`cents must be between 10000 and 1000000`,
-what `core/tests/devnet.rs` mints) while plan §7 W4's flow mints $25, $5 and $1 on a 20 YEC
-wallet. Re-basing the amounts (three mints of ≥ $100 need ≥ 3 × the class A collateral) is an
-`[owner]` decision on the acceptance flow, not a device fix.
-
-**What the device runs found** (all fixed in W6, recorded here so the next port does not repeat them):
-
-- *iOS wiring.* No CocoaPods and no pbxproj edit: `app/ios/Flutter/YewCore.xcconfig` (included by
-  `Debug.xcconfig` and `Release.xcconfig`) adds `-force_load` of the xcframework's slice for the
-  SDK being built (`[sdk=iphoneos*]` / `[sdk=iphonesimulator*]`) and turns off dead-code stripping
-  so the `frb_*` symbols survive; the Runner never references the Rust code from Swift, so
-  without `-force_load` the linker drops it silently and the build "succeeds". Xcode tracks the
-  archive as a link input, so `build-core-ios.sh` followed by `flutter run` relinks. Xcode 26 puts
-  the app code in `Runner.debug.dylib` beside a stub `Runner`; `RustLib.init` passes
-  `ExternalLibrary.process()` on iOS (frb's default loader tries `libyew_core.dylib` and
-  `yew_core.framework` there, never the process) and the symbols resolve from the loaded dylib.
-- *No native TLS roots on iOS.* `rustls-native-certs` has no iOS backend: a TLS endpoint fails
-  with `no native certs found`. Plain regtest is unaffected; for testnet/mainnet the app must ship
-  roots (`tonic` `tls-webpki-roots`, a `webpki-roots` allow-list decision) or pin `ca_pem` (owner
-  list, item 4). Surfaced by `NetError::Transport` now printing tonic's source chain.
-- *The core creates the data directory* (`open_wallet`): the app's `Application Support`
-  directory does not exist on a fresh iOS install.
-- *The seed backup was skipped on the device*: `AppState.createWallet` notifies the root, which
-  replaces Onboarding with Home before the call returns, so `mounted` was false at the push.
-  Onboarding now takes the navigator before the await.
-- *Lazy lists on a phone.* Widgets below the fold of a `ListView` are not built, so `find.byKey`
-  sees nothing: `integration_test/device.dart` scrolls to every target. The regtest default now
-  prefills *plain* on, so a blind tap turned it off (and sent the probe to `https`); the switch
-  helper is value-aware.
-- *Devnet order.* Unconfirmed YEC does not pay a YED fee and unconfirmed YED is refused as
-  `insufficient-yed` before the change floor is checked: a block between the sends and one before
-  the change-floor probe (the prompts above). The one 1 YEC coin is larger than the whole fee
-  reserve and so is never reserved (W1 rule); the test expected a positive reserve.
+`ywallet_derivation_vector` is `#[ignore]`d until `core/tests/vectors/ywallet.json` is filled
+from a Ywallet desktop build.
 
 ## `yew-cli`
 
+The CLI drives the same core the app does and is the fastest way to reproduce anything.
+
 ```
 yew-cli [--server host:port] [--plain] [--ca-pem PATH] [--wallet PATH] [--network regtest|testnet|mainnet]
-        [--seed-file PATH | YEW_SEED="<mnemonic>"] [--passphrase P | YEW_PASSPHRASE=P] [--birthday H]
-        status | yed-info | price | address [--new] | balance | sync | coins
+        [--seed-file PATH | YEW_SEED="<mnemonic>"] [--passphrase P] [--birthday H]
+        status | yed-info | price | address [--new] | balance | coins | sync | history
         | send-yec <addr> <zat> [--all] | send-yed <addr> <cents> [<addr> <cents> ...]
-        | export-wif <addr> | import-wif <wif> | history | version
+        | export-wif <addr> | import-wif <wif>
         | mint-estimate <cents> <lockBlocks> | mint-start <cents> <lockBlocks>
         | mint-status [<id>] | mint-finish <id> | mint-sweep <id>
-        | vaults | redeem <vaultTxid> | claimable | claim <vaultTxid>
+        | vaults | redeem <vaultTxid> | claimable | claim <vaultTxid> | version
 ```
 
-Defaults: `127.0.0.1:9067`, TLS on (`--plain` is refused outside regtest; `--ca-pem` pins a
-certificate as the only trust anchor), `yew-wallet.sqlite`, `regtest`. Every command that talks to the server probes `GetYellowbackInfo` first (contract
-rule 1); `status` and `yed-info` print what it found, `price` the display price (`pMint`).
-`balance` shows YED, pending YED, the price, YEC available / reserved / pending and any HELD
-outputs; `coins` is the debug listing of every UTXO with its class, cents and lock; `history`
-shows the verdict-derived labels. `send-yec` and `send-yed` sync, build, run both gate layers,
-broadcast, lock the inputs until the transaction confirms or its `nExpiryHeight` passes;
-`--all` lets a YEC send spend the fee reserve; `send-yed` takes `ye…`/`yr…`/`s…` addresses and
-cents (up to 14 recipients).
-`import-wif` adds a YecWallet/`ycashd` key outside the HD tree (not covered by the seed);
-`export-wif` is byte-identical to `dumpprivkey` (checked on the devnet).
-W4: `mint-estimate` prints the collateral, fees and whether the wallet can afford both steps;
-`mint-start` funds the carrier and prints the mint id; after one block, `sync` (any syncing
-command) advances the row and `mint-finish <id>` sends the MINT; `mint-status` lists the rows;
-`vaults` the own vaults with their status; `redeem <vaultTxid>` the owner-path spend at or past
-`lockHeight` (a VOID vault is released); `claimable` the liquidator's list; `claim <vaultTxid>`
-starts the two-step claim (finished with `mint-finish`); `sync` sweeps every lapsed row,
-`mint-sweep <id>` one by hand.
+Defaults: `127.0.0.1:9067`, TLS on (`--plain` is refused outside regtest; `--ca-pem` pins one
+certificate as the only trust anchor), `yew-wallet.sqlite`, regtest. `coins` lists every UTXO
+with its class; `--all` lets a YEC send spend the fee reserve; `export-wif` is byte-identical to
+`ycashd`'s `dumpprivkey`, so a YEW key imports into YecWallet, vault ownership included.
 
-## Devnet acceptance (plan §6.3, §7 W1 and W2)
+## Security
 
-`scripts/devnet-w2.sh` runs the W2 acceptance on the **armed** devnet the W0c vectors came from
-(`YELLOWBACK_DEVNET_DIR=~/yb-devnet-w0c`, `YELLOWBACK_DEVNET_PORTSEED=9`, `lightwalletd-dd
---yellowback` on `127.0.0.1:9267`, plain HTTP/2):
+`docs/security-review.md` is the threat review: seed and key handling (key material is wiped,
+the seed lives in the platform keystore and exists in the core only inside `Wallet::open`), the
+gate (every `SendTransaction` call site sits behind both layers), TLS (plain is a regtest-only
+property; CA pinning in the core and CLI), storage (`0600` cache, no Android backups,
+`FLAG_SECURE` on seed and key screens), and the bridge boundary. `cargo audit` and a license
+allow-list run in CI. The app has no telemetry and nothing in the core logs.
 
-```bash
-scripts/devnet-w2.sh up       # yellowback-devnet up (armed) + lightwalletd start --port 9267 --extra=--yellowback
-scripts/devnet-w2.sh lwd      # (re)start only the lightwalletd on a running devnet
-scripts/devnet-w2.sh test     # YEW_DEVNET=1 cargo test -p yew-core --test devnet -- --ignored w2_
-scripts/devnet-w2.sh status / down [--wipe]
-```
+Known gap: `rustls-native-certs` has no iOS backend, so a TLS server on iOS fails until webpki
+roots are added (an allow-list decision) or a CA is pinned.
 
-`w2_yed_tokens_transfer_gate_and_key_round_trip` (2026-09-24, 39 s): the service probes as
-rpcversion 3, enabled and active; `yed_mint 100000 48` on node 0 (carrier, pool block, MINT,
-pool block) confirms with verdict `ok`; node 0 sends 1 YEC and $50.00 to wallet A — nothing
-before the block, TOKEN $50.00 and `received $50.00 / ok` after; A sends $12.34 to wallet B —
-the $37.66 change is PENDING_TOKEN and `sending $12.34` until the block, then `sent $12.34`
-on A and `received $12.34` on B, the node holds exactly the bytes the core built; a TRANSFER
-assembled with an assignment of $99.99 over a $37.66 input passes the local layer and is
-refused by the node's dry run with verdict `transfer-over-assigned`, nothing broadcast; $37.16
-from a $37.66 coin is refused `change-floor` with alternatives 3666 / 3766; `coinselect.rs`
-equals `yed_estimatesend` on node 0 input-for-input (stage, inputs, selected, change,
-alternatives) on 100 random targets over three coin sets (node 0's, then split twice by
-`yed_sendmany`); B's key exported as WIF, imported on node 5 with rescan: `dumpprivkey` equals,
-`getreceivedbyaddress` 0.5001, `yed_getbalance` +1234, `yed_listunspent` lists the token,
-`yed_estimatesend` on node 5 reports the same change-floor alternatives the core computes, and
-node 5's `yed_send` moves the $12.34 back to A (B labels it `sent $12.34`); a YEC send from A
-(holding tokens) spends only `YEC`/`FEE_RESERVE` inputs and passes the node's dry run. Offline:
-56 unit tests (the gate property test on 2,000 random coin sets for both paths, the builder
-property test on 1,000 random wallets, the node's coinselect tables), the template payload
-vectors, the schema migration.
+## What is left
 
-`scripts/devnet-w4.sh` runs the W4 acceptance on the same armed devnet (it finds the workspace
-by walking up to `repos.yaml`, so it works from a git worktree too):
+Everything below needs a device, an account, a public server or a decision:
 
-```bash
-scripts/devnet-w4.sh test     # YEW_DEVNET=1 cargo test -p yew-core --test devnet -- --ignored w4_
-```
+1. **Physical devices**: the signed iOS build, the biometric prompt, the camera scanner and
+   `FLAG_SECURE` on real hardware; the M2 integration test after its amounts are re-based to the
+   node's $100 minimum mint.
+2. **Ywallet vector**: capture the address for the test mnemonic in `ywallet.json` from a
+   Ywallet desktop build.
+3. **Security decisions**: keystore-bound biometrics; a SHA-256 certificate pin (needs `rustls`
+   on the allow-list) versus the CA pin; recovery of a carrier stranded by deleting the database
+   mid-mint; iOS backup exclusion and switcher blur; iOS TLS roots (above); the app's pinning field.
+4. **Public endpoints**: a `lightwalletd-dd --yellowback` over a `ycashd -yellowback
+   -insightexplorer` behind TLS, entered in `net/tls.rs` `default_servers` (mainnet and testnet
+   ship empty; the app asks for a server until then).
+5. **Testnet run**, store metadata and signing: `docs/release.md`.
 
-`w4_mint_resume_lapse_redeem_import_and_claim` (2026-09-25, 271 s): wallet A is funded 40 YEC
-from pool node 2 (node 0 holds only a few YEC after its own mints); `mint_estimate` of $100.00
-for 48 blocks answers collateral 10 YEC, fee 0.5 YEC, attestor fee 0.125 YEC, bundle seqs
-`[0, 1, 2]`, affordable; `mint_start` funds a `scripthash` carrier of `CARRIER_VALUE` and
-`mint_finish` before its block is refused `WrongState`; after one pool block the sync advances
-the row to `CARRIER_CONFIRMED` and lists the `CARRIER` UTXO, `mint_finish` sends the MINT
-(verdict `ok`, type `mint`, the carrier at `vin[last]`), the $100 is PENDING_TOKEN until the
-next block, then TOKEN, the row is `DONE`, `vaults` lists the vault `ACTIVE` with the node's
-`lockHeight`/`claimHeight`, the `VAULT` UTXO is synthesised, the carrier is gone, the node
-holds our bytes and the history row reads `minted $100.00`. A second mint is started, the
-wallet dropped and reopened from the file (`CARRIER_SENT` survives), synced and finished
-(`ok`). Its owner key goes to node 5 by `importprivkey … true` (plan §8.6). A third mint is
-left unfinished: a bundle with one flipped signature byte is refused `bundle-refused:
-signature …` (the intact one verifies), the pools mine past `R + REF_WINDOW`, the sync marks
-the row `LAPSED`, `mint_finish` is refused, `mint_sweep` returns `CARRIER_VALUE − FEE_ZAT`
-(verdict `ok`, type `none`) and the row ends `SWEPT`. Vault 1 is redeemed at `lockHeight`
-(`nLockTime = lockHeight`, `nExpiryHeight = R + REF_WINDOW`, verdict `ok` path `owner`,
-`burned 10000`), the vault is `CLOSED`, 9.50009 YEC of collateral returns as YEC and the row
-reads `redeemed, burned $100.00`. The liquidator: node 0 sends A $100, `price --shock=-80%`,
-pool blocks until `ListClaimable` names node 0's oldest ACTIVE vault (claimHeight 327, path
-`a`, `pClaim` $10, claimant 9.37499 YEC), `claim` funds the carrier, `mint_finish` sends the
-claim (`nLockTime = claimHeight`, the vault at `vin[0]`, the carrier last, verdict `ok` path
-`claim` type `redeem`), the node marks the vault `CLAIMED` with our txid, A's YED falls by
-the debt and its YEC grows by the collateral. The devnet is left at `price 50` (the windows
-refill as the pools mine).
+## Further reading
 
-`scripts/devnet-w1.sh` runs a private regtest devnet so the default one is never touched:
-`YELLOWBACK_DEVNET_DIR=~/yb-devnet-w1`, `YELLOWBACK_DEVNET_PORTSEED=57`, `lightwalletd-dd` on
-`127.0.0.1:9167` (plain HTTP/2).
-
-```bash
-scripts/devnet-w1.sh up       # yellowback-devnet up --no-attest --lean + lightwalletd start --port 9167
-scripts/devnet-w1.sh test     # YEW_DEVNET=1 cargo test -p yew-core --test devnet -- --ignored
-scripts/devnet-w1.sh status
-scripts/devnet-w1.sh down [--wipe]
-```
-
-`core/tests/devnet.rs`: a fresh wallet syncs to zero, is funded 1.5 YEC from node 0, syncs, sends
-0.5 YEC back (the node holds exactly the bytes the core built, `getreceivedbyaddress` agrees),
-locks release on confirmation, and a restore from the same seed into a fresh database reproduces
-the balance and UTXO set. Not part of CI (nightly on the owner's machine, plan §6.4).
-
-## Phase W3 — the app (M1)
-
-`core/src/api.rs` is the bridge surface (module table above) and `app/` the Flutter app over it.
-The app never sees a protobuf, a key or a transaction byte: `lib/api/wallet_api.dart` is the
-abstract interface every screen depends on, `lib/api/rust_wallet_api.dart` the only file that
-calls the generated functions, and the widget tests run over `test/fake_wallet_api.dart`. The
-seed lives in the platform keystore (`flutter_secure_storage`, D-W-6) and is handed to the core
-at unlock; the core's SQLite cache is in the app's support directory (`path_provider`).
-
-**Dart packages** (7 + the Flutter SDK; plan §1.5 "≈ 12"): `flutter_rust_bridge` 2.13.0,
-`flutter_secure_storage`, `local_auth`, `qr_flutter`, `mobile_scanner`, `path_provider`,
-`cupertino_icons`; dev: `flutter_test`, `integration_test`, `flutter_lints`. Navigation is the
-plain `Navigator`; there is no state-management, formatting or networking package.
-
-**Generate the bridge** after any edit of `core/src/api.rs`: `scripts/gen-bridge.sh` (needs
-`cargo install flutter_rust_bridge_codegen --version 2.13.0`; it installs `cargo-expand` itself
-on first run and needs the network for `flutter pub get`). Both outputs are committed and CI
-regenerates and diffs them. `flutter_rust_bridge.yaml` sets `type_64bit_int: false` (Dart `int`
-for zat and cents; there is no web target) and the surface uses `i64` throughout for that reason.
-The calls are blocking Rust functions driving the core on a private tokio runtime — the core's
-futures borrow the SQLite store across awaits and are not `Send`, so they cannot be frb async
-functions; Dart still sees a `Future` per call and a `Stream<SyncEvent>` for `sync_now`.
-
-**Run the app**: `scripts/run-android.sh` / `scripts/run-ios.sh` (section "Running on a simulator /
-emulator"; W6). Under them: `scripts/build-core-android.sh` (cargo-ndk + NDK 28.2.13676358) →
-`jniLibs/*/libyew_core.so`, loaded by name; `scripts/build-core-ios.sh` →
-`app/ios/Frameworks/YewCore.xcframework`, force-loaded by `app/ios/Flutter/YewCore.xcconfig`.
-
-**Tests.** `flutter test` (15 widget tests, fake bridge) and `flutter analyze` are green;
-`scripts/check-app-imports.sh` and `scripts/check-trust-text.sh` pass. The M1 flow of plan §6.3
-is `app/integration_test/m1_flow_test.dart` against the W2 armed devnet (`scripts/devnet-w2.sh up`,
-lightwalletd on 9267): onboarding, sync to zero, receive in both forms, funding by the operator,
-a YEC send and a YED send to a second wallet on the same device, a `change-floor` refusal verbatim,
-the pending label in history, restore of the second wallet from its seed. Written without a
-simulator or emulator; W6 ran it on both ("Running on a simulator / emulator") and fixed what
-the devices showed. A physical device and the signed iOS build remain `[owner]` tasks (plan §7 W3).
-
-**Rules recorded in W3.**
-- A mnemonic never comes out of the core; the one exception is a mnemonic `create_wallet`
-  itself generated, returned once so the app can put it in the keystore.
-- The lock screen unlocks by itself on a cold start when device unlock is off; after an explicit
-  Lock it waits for a tap.
-- A YED preview runs `ValidateRawTransaction` and shows the verdict; the slider is disabled
-  unless the gate would accept it, and confirm runs both gate layers again on the same bytes.
-- `send_yed_preview` refuses with `NeedYecForFees` ("You need about 0.00021000 YEC to send YED.
-  Receive YEC first.") when `available + reserved < fee + 2 · TOKEN_VALUE`; the Send screen shows
-  the receive address one tap away (plan §3.7 item 4).
-- `import_wif(wif, birthday)` lowers the wallet's `scanned_height` (and `birthday`) to the key's
-  birthday so the next sync finds the key's history; the key is flagged as outside the seed.
-
-## Phase W4 — the app (M2)
-
-The screens of plan §5.3, over the W4 calls of `api.rs`. `lib/api/wallet_api.dart` gains the
-ten Yellowback calls (the fake in `test/fake_wallet_api.dart` scripts them: a `mints` table
-that `mintStart` / `mintFinish` / `mintSweep` / `claim` move, scripted vaults and claimable
-rows, one error slot per call); `AppState.refresh` reads the `mints` and `vaults` rows with the
-balances, so every screen renders what the core's store holds and nothing else.
-
-| Screen (`lib/screens/`) | Content |
-|---|---|
-| `yellowback.dart` (third tab) | YED held (+ pending, YEC locked as collateral), **Mint** / **Claimable**, the rows in progress (state in the words of §5.3), the own vaults: amount, collateral, `redeemable at H · N blocks to go` / `redeemable now` / `void … release` / `closed at H`, the underwater warning (last `pMint` at or below `underwaterAt`) |
-| `mint.dart` | amount in dollars; the term-class picker (`lib/term_classes.dart`: the spec's three lock ranges per network, the picker sets the class's shortest lock, the field takes any length and the node's estimate names the class); **Estimate** → the core's `MintEstimate` (collateral, enforcement / attestor fees, carrier + token, two network fees, total, redeem / claim heights, `R` and the window, price at `R`, attestor seqs, an un-armed warning); the two-step in one sentence; **Start: fund the carrier** (disabled, with the missing YEC named, when unaffordable) → `mint_start` → the progress screen |
-| `mint_progress.dart` | one row: *funding carrier → waiting for 1 confirmation → minting → done*, or *window closed → sweeping carrier*, or *failed*; the state line (`blocks left in the window`, `synced to`); **sends the main step by itself** once the row is `CARRIER_CONFIRMED` with the window open (once per synced height — the core refuses any other state), with a **Send now** button as well; **Sweep the carrier back** on `LAPSED`; the row's facts (carrier / main / sweep txids, fees, `R`, note); syncs on a timer (`AppState.mintPollInterval`, 15 s; `null` in the tests) while the row moves. Opening the Yellowback tab on a reopened wallet lists the persisted row, so a killed app resumes from the table |
-| `vault.dart` | the vault's facts; the slider redeems only when `redeemable` (`tip >= lockHeight`, the node's rule at the last synced height) and the wallet holds the debt in YED (else the shortfall is named), or releases a `VOID` vault; the result shows the burn, the change and the collateral back; a gate refusal is the node's verdict verbatim |
-| `claimable.dart` | `ListClaimable` at the node's tip; picking a row shows what is burned, kept and paid (fee, attestor fee, residual, the claim path with `pClaim`); the slider funds the claim's carrier only with the debt in YED; then the progress screen of the `claim` row |
-
-**Tests.** `flutter test`: 29 widget tests (15 of W3, 14 of W4) over the fake bridge — the
-estimate and the start rendering the `CARRIER_SENT` row, the automatic finish of a confirmed
-carrier and the `DONE` view, a lapsed row's wording and sweep, the carrier gate refusal and the
-unaffordable estimate on Mint; the vault list, the slider disabled before `lockHeight` and the
-redeem at it, the VOID release with a gate refusal verbatim, the YED shortfall on Vault; the
-claimable list, the claim hand-over to progress, the listing error and the carrier refusal
-verbatim on Claimable; the Yellowback tab's balances, lock heights and underwater warning.
-`flutter analyze`, `scripts/check-app-imports.sh` and `scripts/check-trust-text.sh` pass; every
-screen stays under 300 lines (largest 294, `send.dart`). The M2 flow of plan §6.3 is
-`app/integration_test/m2_flow_test.dart` against the W4 devnet (`scripts/devnet-w4.sh up`):
-funding from node 2, a mint carried through both steps, kill-and-resume on a second mint
-(the app state torn down and rebuilt on the same directory), a forced lapse and sweep on a
-third, the redeem of the first vault at its lock, and a claim of a second wallet's vault after
-`yellowback-devnet price --shock=-80%`; the operator mines and shocks on the test's prompts.
-
-**Unverified.** As W3: no simulator, emulator or Xcode on the machine, so no W4 screen has been
-launched, `m2_flow_test.dart` has never run, and the W4 calls of `api.rs` have run only under
-`cargo test` (the locked / input / mapping cases) — their network paths are the same
-`wallet.rs` methods `yew-cli` drove through the devnet acceptance, reached through the same
-sync-then-step sequence, but no bridge call has yet touched a devnet. The term-class lock
-ranges for testnet are assumed to equal mainnet's (the spec gives mainnet and regtest).
-
-**Rules recorded in W4 (app).**
-- A screen never decides a state: `MintStatus` and `VaultSummary` carry the flags
-  (`can_finish`, `can_sweep`, `redeemable`, `releasable`, `underwater`) judged in the core at
-  the last synced height, and the screens only render them and call the one step they allow.
-- The main step is sent automatically, but only from `CARRIER_CONFIRMED` with the window open
-  and only once per synced height; the core's `WrongState` / `carrier-lapsed` refusals are the
-  backstop and are shown verbatim when they happen.
-- Redeem and claim are disabled without the debt in YED: the core would refuse with the
-  selector's message anyway, but the shortfall is shown before the slider, as §3.7 item 4 does
-  for the fee.
-
-## Phase W5 — hardening and release preparation
-
-What was done here, what it changed, and what it left to the owner (the list at the top).
-
-- **Threat review** — `docs/security-review.md`: seed and key handling, the gate (every
-  `SendTransaction` call site behind both layers, no bypass), TLS, server trust, the bridge
-  boundary, storage, the app. Fixed in the same commits: key material is wiped (`keys::wipe`,
-  `SecretString`, `Drop` on `ExtendedPrivKey` / `AddressKey` / the wrap key, `bip39/zeroize` —
-  no new crate); `plain` is refused outside regtest in the core (`Server::parse_for`), the CLI
-  and the app's switch (it was mainnet-only); the server host is validated; `Server::ca_pem`
-  pins a PEM certificate as the only trust anchor (core + `yew-cli --ca-pem`); the SQLite cache
-  is `0600`; Android backups exclude everything (`allowBackup=false`, extraction rules);
-  `FLAG_SECURE` on the seed, export and import screens through a 20-line `MethodChannel` in
-  `MainActivity.kt`; the bridge init installs a backtrace hook only, not the Trace console
-  logger; the app is named YEW on both platforms. Deferred with reasons: keystore-bound
-  biometrics (A-1), the SHA-256 pin (needs `rustls` on the allow-list, S-3b), the app's pinning
-  field, the stranded-carrier recovery after a database rebuild (S-5b), iOS backup exclusion
-  and switcher blur.
-- **Audit and licenses** — `scripts/audit.sh` (`cargo audit`, 0 vulnerabilities and 0 warnings
-  on 2026-09-25; blocks only when a fix exists) and `scripts/check-licenses.sh` (all 225 linked
-  crates permissive; `docs/licenses.md`), both in CI; `cargo test --locked` in CI.
-- **Release recipe** — `docs/release.md`: toolchain pins, `--locked`, how CI verifies the
-  generated bridge and the proto pin, the default endpoint mechanism (`net/tls.rs`
-  `default_servers`, bridged; **mainnet and testnet lists empty**, regtest `127.0.0.1:9067`;
-  Onboarding prefills from it and otherwise asks — there is no built-in mainnet server any
-  more), the pinning setting, "no telemetry", the store metadata checklist, signing and the
-  testnet plan as `[owner]`.
-
-**Rules recorded in W5.**
-- No secret string crosses the bridge without a `SecretString` guard, and no owned buffer of
-  key material is dropped without `keys::wipe`; the seed exists only inside `Wallet::open`.
-- `plain` is a regtest property: every constructor that knows the network goes through
-  `Server::parse_for`, and the app never shows the switch elsewhere.
-- Default endpoints are the core's table, not an app constant; the mainnet arm stays empty
-  until the owner records a vetted endpoint there.
-- The bridge init never installs a logger; nothing in the core logs.
-
-## Trust statement
-
-The text is `docs/trust.md` (plan §3.5, client contract rule 7); `app/lib/trust_text.dart` is
-its copy, checked by `scripts/check-trust-text.sh`. It is shown once at onboarding (and must be
-acknowledged) and from Settings → "What YEW trusts". Owner review of the wording is a W3
-checklist item.
+- [docs/design-notes.md](docs/design-notes.md) — the rules behind the code and the devnet evidence, phase by phase
+- [docs/security-review.md](docs/security-review.md) — findings, fixes, deferrals
+- [docs/release.md](docs/release.md) — reproducible build, endpoints, store checklist, testnet plan
+- [docs/trust.md](docs/trust.md) — what the app trusts, shown to users at onboarding
+- `docs/plans/yellowback-wallet-plan.md` in `yellowback-workspace` — the plan and its decision record
 
 ## License
 
