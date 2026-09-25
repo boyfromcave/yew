@@ -1,10 +1,12 @@
 // Plan §6.3, the M2 flow on a device against the W4 devnet (`scripts/devnet-w4.sh up`:
-// the ARMED devnet, lightwalletd-dd --yellowback on 9267, plain HTTP/2). NOT RUN: no
-// simulator or emulator exists on the machine this was written on (Xcode and the Android SDK
-// are [owner] installs, plan §7 W3/W4). Written against the real core; the fake is not used.
+// the ARMED devnet, lightwalletd-dd --yellowback on 9267, plain HTTP/2). W6 ran it on the iOS
+// simulator (README "Running on a simulator / emulator"): onboarding, funding and the Mint
+// screen pass; the estimate is refused because the node's floor is $100 (`cents must be
+// between 10000 and 1000000`) and this flow mints $25 / $5 / $1 — an [owner] decision on the
+// amounts (plan §7 W4). Written against the real core; the fake is not used.
 //
-//   Android emulator:  flutter test integration_test/m2_flow_test.dart -d emulator-5554
-//   iOS simulator:     flutter test integration_test/m2_flow_test.dart -d <simulator id>
+//   scripts/run-android.sh --test m2  (= flutter test integration_test/m2_flow_test.dart -d emulator-5554)
+//   scripts/run-ios.sh --test m2      (= ... -d <simulator id>)
 //
 // The server is 10.0.2.2:9267 on the Android emulator and localhost:9267 on the iOS
 // simulator; --dart-define=YEW_SERVER=host:port overrides. The devnet has no heartbeat: an
@@ -118,15 +120,15 @@ void main() {
     await enterKey(tester, 'amount', '25');
     await tapKey(tester, 'estimate');
     await tester.pumpAndSettle(const Duration(seconds: 5));
-    expect(find.text('class A · 48 blocks'), findsOneWidget);
+    await expectVisible(tester, find.text('class A · 48 blocks'));
     await tapKey(tester, 'start');
     await tester.pumpAndSettle(const Duration(seconds: 5));
-    expect(find.text('CARRIER_SENT'), findsOneWidget);
+    await expectVisible(tester, find.text('CARRIER_SENT'));
     final mint1 = state.mintsInProgress.single.mintId;
     // One block confirms the carrier; the progress screen sends the MINT by itself on the next sync.
     await waitFor(tester, state, 'the carrier of mint $mint1 to confirm', () => state.mintById(mint1)!.state != 'CARRIER_SENT');
     await tester.pumpAndSettle(const Duration(seconds: 5));
-    expect(find.text('MAIN_SENT'), findsOneWidget);
+    await expectVisible(tester, find.text('MAIN_SENT'));
     await waitFor(tester, state, 'mint $mint1 to confirm', () => state.mintById(mint1)!.state == 'DONE');
     await tapKey(tester, 'done');
     await tester.pumpAndSettle();
@@ -174,12 +176,12 @@ void main() {
     say('mine ${expiry3 + 1} or more blocks in total (window of mint $mint3 closes at $expiry3) before continuing');
     await Future<void>.delayed(const Duration(seconds: 30));
     await waitFor(tester, state, 'mint $mint3 to lapse', () => state.mintById(mint3)!.state == 'LAPSED');
-    expect(find.text('window closed, sweeping carrier'), findsOneWidget);
+    await expectVisible(tester, find.text('window closed, sweeping carrier'));
     await tapKey(tester, 'mint-$mint3');
     await tester.pumpAndSettle();
     await tapKey(tester, 'sweep');
     await tester.pumpAndSettle(const Duration(seconds: 5));
-    expect(find.text('SWEEP_SENT'), findsOneWidget);
+    await expectVisible(tester, find.text('SWEEP_SENT'));
     await waitFor(tester, state, 'the sweep to confirm', () => state.mintById(mint3)!.state == 'SWEPT');
     await tapKey(tester, 'done');
     await tester.pumpAndSettle();
@@ -188,10 +190,10 @@ void main() {
     await waitFor(tester, state, 'height ${vault1.lockHeight}', () => state.vaultByTxid(vault1.vaultTxid)!.redeemable);
     await tapKey(tester, 'vault-${vault1.vaultTxid}');
     await tester.pumpAndSettle();
-    expect(find.textContaining('Redeemable'), findsOneWidget);
+    await expectVisible(tester, find.textContaining('Redeemable'));
     await longPressKey(tester, 'slide-to-confirm');
     await tester.pumpAndSettle(const Duration(seconds: 5));
-    expect(find.text('Vault redeemed'), findsOneWidget);
+    await expectVisible(tester, find.text('Vault redeemed'));
     await tapKey(tester, 'done');
     await tester.pumpAndSettle();
     await waitFor(tester, state, 'the redeem to confirm', () => state.vaultByTxid(vault1.vaultTxid)!.status == 'CLOSED');
@@ -247,7 +249,7 @@ void main() {
     final yecBefore = state.balances.yecZat + state.balances.yecReservedZat;
     await longPressKey(tester, 'slide-to-confirm');
     await tester.pumpAndSettle(const Duration(seconds: 5));
-    expect(find.text('CARRIER_SENT'), findsOneWidget);
+    await expectVisible(tester, find.text('CARRIER_SENT'));
     final claimRow = state.mintsInProgress.single.mintId;
     await waitFor(tester, state, 'the claim to confirm', () => state.mintById(claimRow)!.state == 'DONE');
     expect(state.balances.yedCents, 0, reason: 'the \$5.00 debt was burned');

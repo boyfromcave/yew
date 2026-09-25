@@ -324,8 +324,13 @@ the operator (each prints a `YEW M1: ...` line and polls for up to three minutes
 
 Node 0 spends about 1 YEC of fees and $50 per run; top it up from a pool node when
 `sendtoaddress` says `Insufficient funds` (`dn cli --node 2 -- sendtoaddress $(dn cli --node 0 -- getnewaddress) 50`).
-`m2_flow_test.dart` (mint, vault, claim) uses the same helpers and prompts; it is not yet run on a
-device (W6 stopped at M1).
+`m2_flow_test.dart` (mint, vault, claim) uses the same helpers and its own `YEW M2:` prompts
+(fund from node 2, "mine" on each wait, mine to a height, one `price --shock=-80%`; restore
+`price 50` afterwards). On the simulator it passes onboarding, funding and the Mint screen and
+stops at the estimate: the node's floor is **$100** (`cents must be between 10000 and 1000000`,
+what `core/tests/devnet.rs` mints) while plan §7 W4's flow mints $25, $5 and $1 on a 20 YEC
+wallet. Re-basing the amounts (three mints of ≥ $100 need ≥ 3 × the class A collateral) is an
+`[owner]` decision on the acceptance flow, not a device fix.
 
 **What the device runs found** (all fixed in W6, recorded here so the next port does not repeat them):
 
