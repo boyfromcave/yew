@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- [owner] Copy to ExportOptions.plist (gitignored) and fill in the Apple team id and profile.
+     Plan: docs/plans/yellowback-wallet-plan.md §7 W0a. CI never signs. -->
+<plist version="1.0">
+<dict>
+  <key>method</key><string>app-store-connect</string>
+  <key>teamID</key><string>REPLACE_WITH_TEAM_ID</string>
+  <key>signingStyle</key><string>manual</string>
+  <key>provisioningProfiles</key>
+  <dict><key>cash.ycash.yew.yewApp</key><string>REPLACE_WITH_PROFILE_NAME</string></dict>
+</dict>
+</plist>

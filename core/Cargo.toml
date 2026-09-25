@@ -1,0 +1,41 @@
+[package]
+name = "yew-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "YEW core: keys, transactions, Yellowback (YED) payloads, gRPC clients, sync, store, broadcast gate"
+build = "build.rs"
+
+[lib]
+name = "yew_core"
+path = "src/lib.rs"
+
+[features]
+default = []
+# Placeholder for the flutter_rust_bridge surface (api.rs). The crate is added, pinned to the
+# same version as flutter_rust_bridge_codegen, when the codegen is installed (plan §7 W0a).
+bridge = []
+
+# Allow-list: plan §3.3 only (checked by scripts/check-deps.sh against scripts/allowed-deps.txt).
+# tonic 0.14 moved its prost codec into `tonic-prost`; it is counted as part of tonic.
+[dependencies]
+secp256k1 = { version = "=0.33.1", features = ["recovery", "rand", "std"] }
+bip39 = { version = "=3.0.0", features = ["rand"] }
+hmac = "=0.13.0"
+sha2 = "=0.11.0"
+ripemd = "=0.2.0"
+blake2b_simd = "=1.0.5"
+bs58 = "=0.5.1"
+tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "channel", "tls-ring", "tls-native-roots"] }
+tonic-prost = "=0.14.6"
+prost = "=0.14.4"
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+thiserror = "=2.0.21"
+
+[build-dependencies]
+tonic-prost-build = "=0.14.6"
+prost-build = "=0.14.4"

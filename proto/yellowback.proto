@@ -1,0 +1,190 @@
+// Yellowback (YED) light-client service: a second, separate gRPC service beside
+// CompactTxStreamer (service.proto, which is not edited). Every method is a thin proxy of a
+// read-only yed_* RPC on the node this server already talks to; the server adds no rule and
+// holds no Yellowback state. Field names are the JSON names of the node's RPC contract
+// (ycash-dd/doc/yellowback-rpc-contract.json, rpcversion 3) so the contract's example values
+// are the test fixtures and the JSON result unmarshals straight into these messages; a message
+// may carry a subset of a result's fields (unknown JSON fields are ignored), never a renamed one.
+// Plan: docs/plans/yellowback-lightwalletd-plan.md section 4.1.
+syntax = "proto3";
+package cash.z.wallet.sdk.rpc;
+option go_package = "lightwalletd/walletrpc";
+
+import "service.proto";
+
+// ---- requests -----------------------------------------------------------------------------
+
+message HeightFilter { uint32 height = 1; }                       // 0 = the index tip
+message YedTxid { string txid = 1; }                              // display order (as the RPCs)
+message YedHex { string hex = 1; }
+message YedVaultFilter { string status = 1; uint32 count = 2; uint32 skip = 3; }
+message YedMintQuery { uint64 cents = 1; uint32 lockBlocks = 2; uint64 priceMicroUsd = 3; }
+message YedFeeQuery { int64 collateralZat = 1; }
+message YedPayeeQuery { uint32 refHeight = 1; int64 collateralZat = 2; string selectorHex = 3; }
+message YedBundleQuery { uint32 refHeight = 1; string selectorHex = 2; }
+message YedAddressList { repeated string addresses = 1; uint32 minHeight = 2; }   // YED (ye/yt/yr) or transparent forms; 1..100
+
+// ---- shared -------------------------------------------------------------------------------
+
+message YedOutpoint { string txid = 1; uint32 vout = 2; }
+// yed_listtokens: one live YED output of one of the queried addresses (the authoritative UTXO set).
+message YedToken {
+  string txid = 1; uint32 vout = 2; uint64 cents = 3; int64 valueZat = 4; int64 height = 5; string address = 6;
+  string transparentAddress = 7;
+}
+message YedAssignment { uint32 vout = 1; uint64 cents = 2; }
+
+// ---- yed_getinfo --------------------------------------------------------------------------
+
+message YellowbackActivationState {
+  int64 activateHeight = 1; int64 lockInHeight = 2; int64 signalCount = 3; string status = 4; int64 window = 5;
+}
+message YellowbackAttestState {
+  int64 armHeight = 1; bool armed = 2; string carrierMode = 3; int64 poolFresh = 4; int64 poolSize = 5;
+  bool required = 6; int64 seatedCount = 7; string status = 8; int64 triggerHeight = 9;
+}
+message YellowbackClassParams { int64 baseRatioBps = 1; string class = 2; int64 maxBlocks = 3; int64 minBlocks = 4; }
+message YellowbackAttestParams {
+  int64 attestFeeBps = 1; int64 attestMaxAge = 2; int64 bondMaturity = 3; int64 bondMinLock = 4; int64 bondMinZat = 5;
+  int64 bundleMax = 6; string carrierMode = 7; int64 carrierValueZat = 8; int64 mSelect = 9; int64 payloadVersion = 10;
+  bool required = 11; int64 residualMinZat = 12; int64 emergencyRatioBps = 13;
+}
+message YellowbackParams {
+  int64 abandonBlocks = 1; YellowbackAttestParams attest = 2; repeated YellowbackClassParams classes = 3;
+  int64 enforceUntilHeight = 4; int64 feeBps = 5; int64 feeMinZat = 6; int64 feeZat = 7; int64 grace = 8;
+  int64 refLag = 9; int64 refWindow = 10; int64 startHeight = 11; int64 tokenValueZat = 12; int64 supplyCapBps = 13;
+  int64 globalRatioHaltBps = 14; int64 recapRatioBps = 15; int64 sigmaRefBps = 16;
+}
+message YellowbackInfo {
+  bool abandoned = 1; YellowbackActivationState activation = 2; YellowbackAttestState attest = 3; string blockhash = 4;
+  int64 chainHeight = 5; bool enabled = 6; bool enforcing = 7; bool healthy = 8; int64 height = 9; string network = 10;
+  YellowbackParams params = 11; int64 rpcversion = 12; int64 startHeight = 13; bool sunset = 14;
+  string unhealthyReason = 15; bool valveTripped = 16; bool protectedByIndex = 17; bool rebuilt = 18;
+  string serverVersion = 19;                                          // this server's, not the node's
+}
+
+// ---- yed_getprice, yed_getstats, yed_getactivation ------------------------------------------
+
+message YedPriceFill { int64 minFill = 1; int64 quoteTags = 2; int64 window = 3; }
+message YedPriceFills { YedPriceFill fast = 1; YedPriceFill mid = 2; YedPriceFill slow = 3; }
+message YedPriceTag {
+  bool found = 1; string kind = 2; string payoutAddress = 3; int64 priceMicroUsd = 4; bool signal = 5;
+  int64 sourceMask = 6; int64 version = 7;
+}
+message YedPrice {
+  bool armed = 1; string attestStatus = 2; YedPriceFills fill = 3; int64 height = 4; int64 pClaim = 5; int64 pFast = 6;
+  int64 pMid = 7; int64 pMint = 8; int64 pSlow = 9; repeated string pinnedKeys = 10; repeated int64 pinnedSeqs = 11;
+  repeated int64 seated = 12; YedPriceTag tag = 13; int64 xClaim = 14; int64 xMint = 15;
+}
+message YellowbackStats {
+  int64 activeVaults = 1; int64 claimedVaults = 2; int64 closedVaults = 3; int64 collateralZat = 4; int64 globalRatioBps = 5;
+  repeated string haltMask = 6; int64 height = 7; int64 issuedZat = 8; repeated string mintableClasses = 9;
+  bool mintingAllowed = 10; int64 pClaim = 11; int64 pFast = 12; int64 pMid = 13; int64 pMint = 14; int64 pSlow = 15;
+  int64 sigmaMultBps = 16; int64 supplyCapCents = 17; int64 supplyCents = 18; int64 unbackedCents = 19; int64 voidVaults = 20;
+}
+message YellowbackActivationHistory { int64 height = 1; int64 signalCount = 2; }
+message YellowbackActivation {
+  int64 activateHeight = 1; int64 enforceUntilHeight = 2; int64 enforcementFloor = 3; int64 enforcementResume = 4;
+  bool enforcementSuspended = 5; bool enforcing = 6; repeated YellowbackActivationHistory history = 7; int64 lockInHeight = 8;
+  bool mintHalted = 9; int64 participationFloor = 10; int64 signalCount = 11; string status = 12; bool sunset = 13;
+  int64 threshold = 14; bool valveTripped = 15; int64 window = 16;
+}
+
+// ---- yed_gettxinfo, yed_validaterawtransaction, yed_decodepayload ---------------------------
+
+message YedTxInfo {
+  int64 aClaim = 1; int64 aMint = 2; repeated YedAssignment assigned = 3; int64 attestFeeZat = 4; string attestPayee = 5;
+  repeated int64 bundleSeqs = 6; string bundleSource = 7; int64 burned = 8; int64 carrierVin = 9; string claimPath = 10;
+  repeated YedOutpoint closedVaults = 11; bool expired = 12; int64 feeZat = 13; int64 height = 14; bool notice = 15;
+  int64 pClaim = 16; int64 pMint = 17; string path = 18; string payee = 19; int64 residualZat = 20;
+  repeated YedOutpoint spentTokens = 21; string txid = 22; string type = 23; string verdict = 24; int64 xClaim = 25;
+  int64 xMint = 26; int64 yedIn = 27; int64 yedOut = 28;
+}
+message YedValidation {
+  bool blockValid = 1; int64 burned = 2; int64 feeZat = 3; bool mempoolExpiryOk = 4; string path = 5; string payee = 6;
+  string type = 7; repeated YedOutpoint unconfirmedInputs = 8; bool valid = 9; string verdict = 10; bool wouldBeRejected = 11;
+  int64 yedIn = 12; int64 yedOut = 13;
+}
+message YedPayload {
+  int64 attestFeeVout = 1; int64 cents = 2; int64 feeVout = 3; int64 lockHeight = 4; string ownerPubKey = 5; string reason = 6;
+  int64 refHeight = 7; string termClass = 8; string type = 9; bool valid = 10; int64 version = 11;
+}
+
+// ---- vaults --------------------------------------------------------------------------------
+
+message YedVault {
+  int64 burnedCents = 1; int64 claimHeight = 2; bool claimable = 3; int64 closeHeight = 4; string closingTxid = 5;
+  int64 collateralZat = 6; int64 emergencyOpenAt = 7; int64 feePaidZat = 8; int64 lockHeight = 9; int64 mintHeight = 10;
+  int64 mintedCents = 11; int64 noticeHeight = 12; bool noticed = 13; string ownerAddress = 14; string ownerKeyId = 15;
+  string ownerPubKey = 16; int64 refHeight = 17; string status = 18; int64 sweepBefore = 19; string termClass = 20;
+  string txid = 21; bool unbacked = 22; int64 underwaterAt = 23; string voidReason = 24; uint32 vout = 25;
+}
+message YedClaimable {
+  int64 attestFeeZat = 1; int64 claimHeight = 2; string claimPath = 3; int64 collateralZat = 4; int64 emergencyOpenAt = 5;
+  int64 feeZat = 6; int64 mintedCents = 7; int64 noticeHeight = 8; bool noticed = 9; string ownerAddress = 10; int64 pClaim = 11;
+  int64 residualZat = 12; int64 underwaterAt = 13; string vault = 14;
+}
+message YedNotice {
+  int64 emergencyOpenAt = 1; int64 expiresAt = 2; bool found = 3; int64 height = 4; int64 pEmerg = 5; int64 refHeight = 6;
+  string txid = 7; string vault = 8;
+}
+
+// ---- estimates and fees ----------------------------------------------------------------------
+
+message YedCollateralEstimate {
+  int64 aMint = 1; bool armed = 2; int64 attestFeeZat = 3; int64 baseRatioBps = 4; repeated int64 bundleSeqs = 5;
+  int64 claimHeight = 6; int64 divergenceBps = 7; int64 lockHeight = 8; int64 minRatioBps = 9; int64 pMint = 10;
+  int64 refHeight = 11; int64 requiredZat = 12; int64 sigmaMultBps = 13; string source = 14; string termClass = 15; int64 xMint = 16;
+}
+message YedFeeEstimate { int64 feeZat = 1; }
+message YedPayeeDefault { string payoutAddress = 1; int64 weight = 2; }
+message YedPayeePolicy { int64 accuracyWindow = 1; int64 penaltyBlocks = 2; int64 tiltBps = 3; }
+message YedPayee {
+  YedPayeeDefault default = 1; repeated string eligible = 2; int64 feeZat = 3; YedPayeePolicy policy = 4; string preferred = 5;
+}
+
+// ---- attestation ---------------------------------------------------------------------------
+
+message YedBundle {
+  int64 aClaim = 1; int64 aMint = 2; bool armed = 3; int64 count = 4; string hex = 5; repeated int64 missing = 6;
+  int64 refHeight = 7; repeated int64 selected = 8; string selector = 9; repeated int64 seqs = 10;
+}
+message YedSelectionEntry { string bondKeyAddress = 1; bool poolFresh = 2; int64 seq = 3; string status = 4; string weight = 5; }
+message YedSelection {
+  bool armed = 1; bool fallback = 2; int64 kSlack = 3; int64 mSelect = 4; repeated int64 pool = 5; int64 reachable = 6;
+  int64 refHeight = 7; repeated YedSelectionEntry selected = 8; string selector = 9; string sumWeight = 10;
+}
+message YedAttestation {
+  int64 citedHeight = 1; bool fresh = 2; string hex = 3; int64 priceMicroUsd = 4; int64 receivedHeight = 5; bool seated = 6; int64 seq = 7;
+}
+message YedAttestorFlags { bool pool = 1; int64 tier = 2; }
+message YedAttestor {
+  string attestorPubKey = 1; string bondAddress = 2; string bondKeyAddress = 3; int64 bondLocktime = 4; YedOutpoint bondOutpoint = 5;
+  int64 bondSpentHeight = 6; int64 bondZat = 7; YedAttestorFlags flags = 8; bool founding = 9; int64 lastBundleHeight = 10;
+  bool pinned = 11; bool poolFresh = 12; int64 registerHeight = 13; bool seated = 14; int64 seatedSince = 15; int64 seq = 16;
+  string status = 17; int64 statusHeight = 18; string weight = 19;
+}
+
+// ---- the service ---------------------------------------------------------------------------
+
+service YellowbackStreamer {
+  rpc GetYellowbackInfo(Empty) returns (YellowbackInfo) {}
+  rpc GetPrice(HeightFilter) returns (YedPrice) {}
+  rpc GetStats(Empty) returns (YellowbackStats) {}
+  rpc GetActivation(Empty) returns (YellowbackActivation) {}
+  rpc GetTxInfo(YedTxid) returns (YedTxInfo) {}
+  rpc ValidateRawTransaction(RawTransaction) returns (YedValidation) {}
+  rpc DecodePayload(YedHex) returns (YedPayload) {}
+  rpc GetVault(YedTxid) returns (YedVault) {}
+  rpc ListVaults(YedVaultFilter) returns (stream YedVault) {}
+  rpc ListClaimable(Empty) returns (stream YedClaimable) {}
+  rpc GetNotice(YedTxid) returns (YedNotice) {}
+  rpc EstimateCollateral(YedMintQuery) returns (YedCollateralEstimate) {}
+  rpc EstimateFee(YedFeeQuery) returns (YedFeeEstimate) {}
+  rpc GetFeePayee(YedPayeeQuery) returns (YedPayee) {}
+  rpc BuildBundle(YedBundleQuery) returns (YedBundle) {}
+  rpc GetSelection(YedBundleQuery) returns (YedSelection) {}
+  rpc GetAttestations(Empty) returns (stream YedAttestation) {}
+  rpc ListAttestors(HeightFilter) returns (stream YedAttestor) {}
+  rpc GetAddressTokens(YedAddressList) returns (stream YedToken) {}     // Phase L2: yed_listtokens (node N1)
+}

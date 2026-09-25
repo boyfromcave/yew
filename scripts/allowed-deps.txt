@@ -1,0 +1,18 @@
+# Direct dependencies of yew-core allowed by docs/plans/yellowback-wallet-plan.md §3.3.
+# One crate name per line; checked by scripts/check-deps.sh. Adding a line is a recorded decision.
+secp256k1
+bip39
+hmac
+sha2
+ripemd
+blake2b_simd
+bs58
+tonic
+tonic-prost
+prost
+tokio
+rusqlite
+serde
+serde_json
+thiserror
+flutter_rust_bridge

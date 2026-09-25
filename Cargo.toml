@@ -1,0 +1,16 @@
+# YEW workspace: the Rust core (`yew-core`) and the devnet/developer CLI (`yew-cli`).
+# Dependency policy: docs/plans/yellowback-wallet-plan.md §3.3; enforced by scripts/check-deps.sh.
+[workspace]
+resolver = "2"
+members = ["core", "core/cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/boyfromcave/yew"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

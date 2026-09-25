@@ -1,0 +1,15 @@
+[package]
+name = "yew-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "YEW developer and devnet CLI over yew-core (plan §6.3)"
+
+[[bin]]
+name = "yew-cli"
+path = "src/main.rs"
+
+[dependencies]
+yew-core = { path = ".." }
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros"] }

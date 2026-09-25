@@ -1,0 +1,62 @@
+# YEW CI (plan §6.4): Rust core on Linux and macOS; Flutter analyze/test on macOS.
+# The devnet suite is nightly on the owner's machine, not here. iOS signing is never done in CI.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  core-linux:
+    name: core (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler && protoc --version
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: scripts/check-proto-pin.sh
+      - run: scripts/check-deps.sh
+
+  core-macos:
+    name: core + app (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install protoc
+        run: brew install protobuf && protoc --version
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: scripts/check-proto-pin.sh
+      - run: scripts/check-deps.sh
+      - name: Flutter version from README.md
+        id: fl
+        run: echo "version=$(sed -n 's/^| Flutter *| `\([0-9.]*\)`.*/\1/p' README.md | head -1)" >> "$GITHUB_OUTPUT"
+      - uses: subosito/flutter-action@v2
+        if: hashFiles('app/pubspec.yaml') != ''
+        with:
+          channel: stable
+          flutter-version: ${{ steps.fl.outputs.version }}
+      - name: flutter analyze / test
+        if: hashFiles('app/pubspec.yaml') != ''
+        working-directory: app
+        run: |
+          flutter --version
+          flutter pub get
+          flutter analyze
+          flutter test
+      - name: iOS core build (unsigned, no xcframework signing)
+        run: scripts/build-core-ios.sh

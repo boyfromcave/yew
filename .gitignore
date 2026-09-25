@@ -1,0 +1,16 @@
+/target/
+**/*.rs.bk
+# Flutter / Dart
+app/.dart_tool/
+app/.flutter-plugins*
+app/.packages
+app/build/
+app/ios/Pods/
+app/ios/Flutter/ephemeral/
+app/ios/Frameworks/YewCore.xcframework/
+app/android/app/src/main/jniLibs/
+app/android/.gradle/
+app/android/local.properties
+# Owner-only signing material (plan §7 W0a [owner])
+app/ios/ExportOptions.plist
+.DS_Store
