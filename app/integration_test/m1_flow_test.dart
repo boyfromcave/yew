@@ -1,10 +1,10 @@
-// Plan §6.3, the M1 flow on a device against the W2 armed devnet (`scripts/devnet-w2.sh up`:
-// lightwalletd-dd --yellowback on port 9267, plain HTTP/2). NOT RUN YET: no simulator or
-// emulator exists on the machine this was written on (Xcode and the Android SDK are [owner]
-// installs, plan §7 W3). Written against the real core; the fake is not used here.
+// Plan §6.3, the M1 flow on a device against the W2 armed devnet (`scripts/devnet-w4.sh up`:
+// lightwalletd-dd --yellowback on port 9267, plain HTTP/2). Passes on the iOS simulator and the
+// Android emulator (W6, README "Running on a simulator / emulator" — the operator prompts and
+// the devnet commands are there). Written against the real core; the fake is not used here.
 //
-//   Android emulator:  flutter test integration_test/m1_flow_test.dart -d emulator-5554
-//   iOS simulator:     flutter test integration_test/m1_flow_test.dart -d <simulator id>
+//   scripts/run-ios.sh --test m1      (= flutter test integration_test/m1_flow_test.dart -d <simulator id>)
+//   scripts/run-android.sh --test m1  (= ... -d emulator-5554)
 //
 // The server is 10.0.2.2:9267 on the Android emulator (the host's loopback) and
 // localhost:9267 on the iOS simulator; override with --dart-define=YEW_SERVER=host:port.

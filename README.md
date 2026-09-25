@@ -22,12 +22,10 @@ release; the app has not yet run on a device or simulator.
 Everything below needs a device, an account, a public server or a signing identity, none of
 which exists on the machine W0–W5 were written on. In the order they unblock each other:
 
-1. **Run the app once** on an iOS simulator / device and an Android emulator / device
-   (`scripts/build-core-ios.sh` + the Xcode wiring of `YewCore.xcframework`, plan §7 W3;
-   `scripts/build-core-android.sh`), then the M1 and M2 integration tests against the armed
-   devnet (`app/integration_test/m1_flow_test.dart`, `m2_flow_test.dart`). Every screen, the
-   platform edits (manifest, `MainActivity.kt` `FLAG_SECURE` channel, `Info.plist`) and the
-   phone builds of the core are unverified until then.
+1. **Run the app on real devices** and the M2 integration test. W6 ran the app and the M1 test
+   on the iOS simulator and the Android emulator ("Running on a simulator / emulator" below);
+   `m2_flow_test.dart` (mint, vault, claim), a physical iPhone / Android phone (signing, the
+   biometric prompt, the camera scanner, `FLAG_SECURE`) and the iOS TLS roots (below) remain.
 2. **The Ywallet derivation capture** (plan D-W-7, `core/tests/vectors/ywallet.json`
    `"pending": true`): the one `#[ignore]`d vector.
 3. **Owner decisions from the security review** (`docs/security-review.md`): A-1 bind the seed
@@ -248,7 +246,7 @@ terms are equal at the default fee.
 | flutter_rust_bridge (crate, codegen, Dart package) | `2.13.0`, all three | `core/Cargo.toml` (`=2.13.0`), `app/pubspec.yaml` (`2.13.0`), `scripts/gen-bridge.sh` (refuses a codegen of another version) |
 | Android NDK | `28.2.13676358` | `app/android/app/build.gradle.kts` |
 | protoc | any `>= 3.x` on PATH (`36.1` used) | `core/build.rs` (not vendored) |
-| Minimum iOS | 15.0 | `app/ios/Runner.xcodeproj` (`IPHONEOS_DEPLOYMENT_TARGET`); `Podfile` once CocoaPods generates it |
+| Minimum iOS | 15.0 | `app/ios/Runner.xcodeproj` (`IPHONEOS_DEPLOYMENT_TARGET`); plugins via Swift Package Manager, no Podfile |
 | Minimum Android | API 24 (Flutter default) | `app/android/app/build.gradle.kts` (`flutter.minSdkVersion`) |
 
 Rust targets: `aarch64-apple-ios`, `aarch64-apple-ios-sim`, `aarch64-linux-android`,
@@ -271,11 +269,92 @@ scripts/audit.sh                     # cargo audit; blocks only on advisories wi
 scripts/gen-bridge.sh                # regenerate core/src/frb_generated.rs + app/lib/src/rust after editing core/src/api.rs
 scripts/build-core-ios.sh            # → app/ios/Frameworks/YewCore.xcframework (Xcode)
 scripts/build-core-android.sh        # → app/android/app/src/main/jniLibs (cargo-ndk + NDK)
+scripts/run-ios.sh [host:port] [--test m1|m2]       # build the core, then flutter run / the integration test on a simulator
+scripts/run-android.sh [host:port] [--test m1|m2]   # same on the Android emulator (see "Running on a simulator / emulator")
 ```
 
 `core/tests/vectors.rs` reads `core/tests/vectors/*.json`. `ywallet_derivation_vector` is
 `#[ignore]`d while `ywallet.json` says `"pending": true` (the `[owner]` Ywallet capture, plan
 D-W-7); run it with `--ignored` once the file is filled.
+
+## Running on a simulator / emulator
+
+Verified on 2026-09-24 (W6) on macOS 26 / Xcode 26.3 / Flutter 3.47.5: the app runs on the iOS
+simulator (iPhone 17 Pro) and the Android emulator (`yew_pixel`, API 35 arm64) against the armed
+regtest devnet, and `m1_flow_test.dart` passes end-to-end on both. One command per platform does
+everything (build the core, pick or boot the device, run):
+
+```bash
+scripts/run-ios.sh                    # → flutter run on the booted (or first) iPhone simulator, server 127.0.0.1:9267
+scripts/run-android.sh                # → starts the yew_pixel AVD if needed, flutter run on emulator-5554, server 10.0.2.2:9267
+scripts/run-ios.sh --test m1          # the M1 integration test instead of the app (m2 likewise)
+scripts/run-android.sh --test m1
+scripts/run-ios.sh lwd.example.org:443   # any other server, as host:port
+```
+
+**Devnet prerequisites** (the workspace, one terminal): the armed devnet of W2 with
+`lightwalletd-dd --yellowback` on 9267, plain — `scripts/devnet-w4.sh up` once,
+`scripts/devnet-w4.sh status` to check (it prints the lightwalletd `GetLightdInfo`). The armed
+devnet has **no heartbeat**: nothing confirms until a pool block is mined, and every mine is
+preceded by a re-quote. Alias the tool, from the workspace root:
+
+```bash
+dn() { (cd ycash-dd && YELLOWBACK_DEVNET_DIR=$HOME/yb-devnet-w0c YELLOWBACK_DEVNET_PORTSEED=9 \
+        ../.venv/bin/python contrib/yellowback/devnet/yellowback-devnet "$@"); }
+dn price 50 && dn mine 1 2            # re-quote, then one block on pool node 2 (3 and 4 are pools too)
+dn cli --node 2 -- sendtoaddress <s-address> 1.0      # YEC: the pool nodes hold the mature coinbases
+dn cli --node 0 -- yed_send <ye-address> 5000         # $50.00 YED from node 0 (its YED balance: yed_getbalance)
+```
+
+**The app by hand.** `run-ios.sh` / `run-android.sh` launch the app; in Onboarding choose
+*Create*, accept the trust statement, set the network to **regtest** — the server field prefills
+the core's regtest default (`127.0.0.1:9067`, plain on) — change it to the printed server
+(`127.0.0.1:9267` on the simulator, `10.0.2.2:9267` on the emulator, which is the emulator's
+name for the host's loopback), keep *Plain connection* on, *Check server* (`Server ok · tip N`),
+*Continue*, *Finish*: the seed-backup screen, then Home synced to the tip. Fund the address from
+*Receive* with the two `dn cli` lines above and `dn price 50 && dn mine 1 2`; the next sync
+shows the balances.
+
+**The integration tests** drive the same screens over the real core and stop three times for
+the operator (each prints a `YEW M1: ...` line and polls for up to three minutes):
+
+1. `fund this address ... : <ye> / <s>` — the two `dn cli` sends, then `dn price 50 && dn mine 1 2`.
+2. `mine a pool block (the YEC change must confirm before the YED send)` — `dn price 50 && dn mine 1 3`.
+3. `mine a pool block (the YED change must confirm before the change-floor check)` — `dn price 50 && dn mine 1 4`.
+
+Node 0 spends about 1 YEC of fees and $50 per run; top it up from a pool node when
+`sendtoaddress` says `Insufficient funds` (`dn cli --node 2 -- sendtoaddress $(dn cli --node 0 -- getnewaddress) 50`).
+`m2_flow_test.dart` (mint, vault, claim) uses the same helpers and prompts; it is not yet run on a
+device (W6 stopped at M1).
+
+**What the device runs found** (all fixed in W6, recorded here so the next port does not repeat them):
+
+- *iOS wiring.* No CocoaPods and no pbxproj edit: `app/ios/Flutter/YewCore.xcconfig` (included by
+  `Debug.xcconfig` and `Release.xcconfig`) adds `-force_load` of the xcframework's slice for the
+  SDK being built (`[sdk=iphoneos*]` / `[sdk=iphonesimulator*]`) and turns off dead-code stripping
+  so the `frb_*` symbols survive; the Runner never references the Rust code from Swift, so
+  without `-force_load` the linker drops it silently and the build "succeeds". Xcode tracks the
+  archive as a link input, so `build-core-ios.sh` followed by `flutter run` relinks. Xcode 26 puts
+  the app code in `Runner.debug.dylib` beside a stub `Runner`; `RustLib.init` passes
+  `ExternalLibrary.process()` on iOS (frb's default loader tries `libyew_core.dylib` and
+  `yew_core.framework` there, never the process) and the symbols resolve from the loaded dylib.
+- *No native TLS roots on iOS.* `rustls-native-certs` has no iOS backend: a TLS endpoint fails
+  with `no native certs found`. Plain regtest is unaffected; for testnet/mainnet the app must ship
+  roots (`tonic` `tls-webpki-roots`, a `webpki-roots` allow-list decision) or pin `ca_pem` (owner
+  list, item 4). Surfaced by `NetError::Transport` now printing tonic's source chain.
+- *The core creates the data directory* (`open_wallet`): the app's `Application Support`
+  directory does not exist on a fresh iOS install.
+- *The seed backup was skipped on the device*: `AppState.createWallet` notifies the root, which
+  replaces Onboarding with Home before the call returns, so `mounted` was false at the push.
+  Onboarding now takes the navigator before the await.
+- *Lazy lists on a phone.* Widgets below the fold of a `ListView` are not built, so `find.byKey`
+  sees nothing: `integration_test/device.dart` scrolls to every target. The regtest default now
+  prefills *plain* on, so a blind tap turned it off (and sent the probe to `https`); the switch
+  helper is value-aware.
+- *Devnet order.* Unconfirmed YEC does not pay a YED fee and unconfirmed YED is refused as
+  `insufficient-yed` before the change floor is checked: a block between the sends and one before
+  the change-floor probe (the prompts above). The one 1 YEC coin is larger than the whole fee
+  reserve and so is never reserved (W1 rule); the test expected a positive reserve.
 
 ## `yew-cli`
 
@@ -414,24 +493,19 @@ The calls are blocking Rust functions driving the core on a private tokio runtim
 futures borrow the SQLite store across awaits and are not `Send`, so they cannot be frb async
 functions; Dart still sees a `Future` per call and a `Stream<SyncEvent>` for `sync_now`.
 
-**Run the app** (unverified here, below): build the core for the target, then `flutter run`.
-- Android: `scripts/build-core-android.sh` (cargo-ndk + NDK 28.2.13676358) → `jniLibs/*/libyew_core.so`;
-  the bridge loads `yew_core`. Emulator devnet server: `10.0.2.2:9267`, plain.
-- iOS: `scripts/build-core-ios.sh` → `app/ios/Frameworks/YewCore.xcframework`; add it to the Runner
-  target in Xcode (static library: keep the symbols with `-force_load` or the frb "dummy method"
-  pattern so the linker does not strip the bridge). Simulator devnet server: `localhost:9267`, plain.
+**Run the app**: `scripts/run-android.sh` / `scripts/run-ios.sh` (section "Running on a simulator /
+emulator"; W6). Under them: `scripts/build-core-android.sh` (cargo-ndk + NDK 28.2.13676358) →
+`jniLibs/*/libyew_core.so`, loaded by name; `scripts/build-core-ios.sh` →
+`app/ios/Frameworks/YewCore.xcframework`, force-loaded by `app/ios/Flutter/YewCore.xcconfig`.
 
 **Tests.** `flutter test` (15 widget tests, fake bridge) and `flutter analyze` are green;
 `scripts/check-app-imports.sh` and `scripts/check-trust-text.sh` pass. The M1 flow of plan §6.3
 is `app/integration_test/m1_flow_test.dart` against the W2 armed devnet (`scripts/devnet-w2.sh up`,
 lightwalletd on 9267): onboarding, sync to zero, receive in both forms, funding by the operator,
 a YEC send and a YED send to a second wallet on the same device, a `change-floor` refusal verbatim,
-the pending label in history, restore of the second wallet from its seed. **Unverified:** no
-Xcode, Android SDK/NDK, simulator or emulator exists on the machine W3 was written on, so the app
-has never been launched, the integration test has never run, the iOS/Android core builds are
-unrun, and the platform edits (manifest permissions, `FlutterFragmentActivity`, Info.plist
-strings) are untested. The Xcode wiring of the xcframework and the signed iOS build are `[owner]`
-tasks (plan §7 W3).
+the pending label in history, restore of the second wallet from its seed. Written without a
+simulator or emulator; W6 ran it on both ("Running on a simulator / emulator") and fixed what
+the devices showed. A physical device and the signed iOS build remain `[owner]` tasks (plan §7 W3).
 
 **Rules recorded in W3.**
 - A mnemonic never comes out of the core; the one exception is a mnemonic `create_wallet`
