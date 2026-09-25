@@ -3,7 +3,8 @@
 //!
 //! Every wire byte, script byte, key and signature of the wallet lives here; the Flutter app is a
 //! view over [`api`]. Plan: `docs/plans/yellowback-wallet-plan.md` (workspace), §3.
-//! Modules are stubs in Phase W0a; each names its translation source (plan §3.6).
+//! Each module names its translation source (plan §3.6). Phase W1: keys, script, tx, net (T0),
+//! store, coins, sync (YEC), build::yec_send, gate (YEC path), wallet.
 
 pub mod api;
 pub mod build;
@@ -19,6 +20,7 @@ pub mod script;
 pub mod store;
 pub mod sync;
 pub mod tx;
+pub mod wallet;
 
 /// Crate version, as pinned in the workspace `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
