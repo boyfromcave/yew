@@ -1,0 +1,11 @@
+# flutter_rust_bridge 2.13.0 codegen config (scripts/gen-bridge.sh; plan §3.4, W0a pin).
+# The surface is core/src/api.rs only; Dart output is app/lib/src/rust (committed), Rust output
+# core/src/frb_generated.rs (committed).
+rust_input: crate::api
+rust_root: core
+rust_output: core/src/frb_generated.rs
+dart_output: app/lib/src/rust
+dart_entrypoint_class_name: RustLib
+web: false
+# Dart int is 64-bit on iOS/Android (no web target): u64/i64 map to int, not BigInt.
+type_64bit_int: false

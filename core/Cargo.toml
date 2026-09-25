@@ -11,12 +11,6 @@ build = "build.rs"
 name = "yew_core"
 path = "src/lib.rs"
 
-[features]
-default = []
-# Placeholder for the flutter_rust_bridge surface (api.rs). The crate is added, pinned to the
-# same version as flutter_rust_bridge_codegen, when the codegen is installed (plan §7 W0a).
-bridge = []
-
 # Allow-list: plan §3.3 only (checked by scripts/check-deps.sh against scripts/allowed-deps.txt).
 # tonic 0.14 moved its prost codec into `tonic-prost`; it is counted as part of tonic.
 [dependencies]
@@ -35,6 +29,13 @@ rusqlite = { version = "=0.40.2", features = ["bundled"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 thiserror = "=2.0.21"
+# The bridge (api.rs): the crate and flutter_rust_bridge_codegen are the same version (W0a); the
+# Dart package in app/pubspec.yaml is pinned to it too.
+flutter_rust_bridge = "=2.13.0"
+
+# flutter_rust_bridge's macros test `cfg(frb_expand)`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
 
 [build-dependencies]
 tonic-prost-build = "=0.14.6"
