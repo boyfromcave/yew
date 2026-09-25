@@ -1,5 +1,7 @@
-//! Storage (D-W-6): the SQLite schema v1 (wallet meta, addresses, utxos with class, locks,
-//! history, own outputs, pending transactions, imported keys) and its queries. `rusqlite`, bundled.
+//! Storage (D-W-6): the SQLite schema (wallet meta, addresses, utxos with class and cents,
+//! locks, history with labels, own outputs, own tokens, pending transactions, imported keys)
+//! and its queries. `rusqlite`, bundled. Schema v2 (W2) adds `utxos.cents`, the history label
+//! columns and `own_tokens`; a v1 file is migrated in place (`ALTER TABLE`, additive only).
 //!
 //! The database is a cache: deleting it and restoring from seed plus birthday rebuilds it.
 //! The seed is never here. Imported keys (D-W-11, "outside the HD tree") have to live
@@ -26,7 +28,7 @@ pub enum StoreError {
 }
 
 /// The schema version this build writes and reads.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// The `chain` column value of an imported key (D-W-11): outside the HD tree.
 pub const CHAIN_IMPORTED: u32 = 2;
@@ -64,12 +66,23 @@ pub struct HistoryRow {
     pub height: u64,
     /// Net YEC change to the wallet's own P2PKH outputs minus own inputs, in zat.
     pub yec_delta: i64,
-    /// The transaction carried an `OP_RETURN` output (a possible `"YB"` payload; W2 labels it).
+    /// The transaction carried an `OP_RETURN` output (a possible `"YB"` payload).
     pub has_payload: bool,
     /// Broadcast by this wallet and not yet seen confirmed.
     pub pending: bool,
     /// The transaction had shielded components.
     pub shielded: bool,
+    /// Net YED change to this wallet in cents (own assigned cents minus own tokens spent),
+    /// from `GetTxInfo` once labelled, from the local payload while pending.
+    pub yed_delta: i64,
+    /// `GetTxInfo.type` (`mint`, `transfer`, `redeem`, …) or `""`.
+    pub kind: String,
+    /// `GetTxInfo.verdict` (`ok`, a rule name, `expired`) or `""`.
+    pub verdict: String,
+    /// The display label derived from the verdict (`sync::label_for`), or `""`.
+    pub label: String,
+    /// `GetTxInfo` has answered for this row (or said `tx-not-found`).
+    pub labelled: bool,
 }
 
 /// One row of `locks`.
@@ -108,15 +121,31 @@ CREATE TABLE IF NOT EXISTS imported_keys (hash160 BLOB PRIMARY KEY, wrapped BLOB
 CREATE TABLE IF NOT EXISTS utxos (
   txid BLOB NOT NULL, n INTEGER NOT NULL, address TEXT NOT NULL, script BLOB NOT NULL,
   value INTEGER NOT NULL, height INTEGER NOT NULL, class TEXT NOT NULL,
+  cents INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (txid, n));
 CREATE TABLE IF NOT EXISTS locks (
   txid BLOB NOT NULL, n INTEGER NOT NULL, reason TEXT NOT NULL,
   expiry_height INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (txid, n));
 CREATE TABLE IF NOT EXISTS history (
   txid BLOB PRIMARY KEY, height INTEGER NOT NULL, yec_delta INTEGER NOT NULL,
-  has_payload INTEGER NOT NULL, pending INTEGER NOT NULL, shielded INTEGER NOT NULL);
+  has_payload INTEGER NOT NULL, pending INTEGER NOT NULL, shielded INTEGER NOT NULL,
+  yed_delta INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT '',
+  verdict TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '',
+  labelled INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS pending_txs (txid BLOB PRIMARY KEY, raw BLOB NOT NULL, expiry_height INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS own_outputs (txid BLOB NOT NULL, n INTEGER NOT NULL, value INTEGER NOT NULL, hash160 BLOB NOT NULL, PRIMARY KEY (txid, n));
+CREATE TABLE IF NOT EXISTS own_tokens (txid BLOB NOT NULL, n INTEGER NOT NULL, cents INTEGER NOT NULL, PRIMARY KEY (txid, n));
+CREATE TABLE IF NOT EXISTS spent_tokens (spender BLOB NOT NULL, txid BLOB NOT NULL, n INTEGER NOT NULL, cents INTEGER NOT NULL, PRIMARY KEY (spender, txid, n));
+";
+
+/// The additive v1 → v2 migration (W2).
+const MIGRATE_1_TO_2: &str = "
+ALTER TABLE utxos ADD COLUMN cents INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE history ADD COLUMN yed_delta INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE history ADD COLUMN kind TEXT NOT NULL DEFAULT '';
+ALTER TABLE history ADD COLUMN verdict TEXT NOT NULL DEFAULT '';
+ALTER TABLE history ADD COLUMN label TEXT NOT NULL DEFAULT '';
+ALTER TABLE history ADD COLUMN labelled INTEGER NOT NULL DEFAULT 0;
 ";
 
 impl Store {
@@ -133,6 +162,24 @@ impl Store {
 
     fn init(conn: Connection) -> Result<Store, StoreError> {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        // Read the version before creating tables: a v1 `utxos` must be altered, not recreated.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )?;
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if existing.as_deref() == Some("1") {
+            conn.execute_batch(MIGRATE_1_TO_2)?;
+            conn.execute(
+                "UPDATE meta SET value = '2' WHERE key = 'schema_version'",
+                [],
+            )?;
+        }
         conn.execute_batch(SCHEMA)?;
         let s = Store { conn };
         match s.meta("schema_version")? {
@@ -294,7 +341,7 @@ impl Store {
         tx.execute("DELETE FROM utxos", [])?;
         {
             let mut st = tx.prepare(
-                "INSERT INTO utxos (txid, n, address, script, value, height, class) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO utxos (txid, n, address, script, value, height, class, cents) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
             for u in utxos {
                 st.execute(params![
@@ -304,7 +351,8 @@ impl Store {
                     u.script,
                     u.value,
                     u.height as i64,
-                    u.class.as_str()
+                    u.class.as_str(),
+                    u.cents as i64
                 ])?;
             }
         }
@@ -312,9 +360,28 @@ impl Store {
         Ok(())
     }
 
+    /// Insert or replace one UTXO row (the builders add `PENDING_TOKEN` rows at broadcast;
+    /// the next sync's `replace_utxos` re-derives them from the pending record).
+    pub fn upsert_utxo(&self, u: &Utxo) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO utxos (txid, n, address, script, value, height, class, cents) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                u.outpoint.txid.as_slice(),
+                u.outpoint.n,
+                u.address,
+                u.script,
+                u.value,
+                u.height as i64,
+                u.class.as_str(),
+                u.cents as i64
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Every UTXO.
     pub fn utxos(&self) -> Result<Vec<Utxo>, StoreError> {
-        let mut st = self.conn.prepare("SELECT txid, n, address, script, value, height, class FROM utxos ORDER BY height, txid, n")?;
+        let mut st = self.conn.prepare("SELECT txid, n, address, script, value, height, class, cents FROM utxos ORDER BY height, txid, n")?;
         let rows = st.query_map([], |r| {
             Ok((
                 r.get::<_, Vec<u8>>(0)?,
@@ -324,11 +391,12 @@ impl Store {
                 r.get::<_, i64>(4)?,
                 r.get::<_, i64>(5)?,
                 r.get::<_, String>(6)?,
+                r.get::<_, i64>(7)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (t, n, address, script, value, height, class) = row?;
+            let (t, n, address, script, value, height, class, cents) = row?;
             let txid: [u8; 32] = t
                 .as_slice()
                 .try_into()
@@ -342,6 +410,7 @@ impl Store {
                 value,
                 height: height as u64,
                 class,
+                cents: cents.max(0) as u64,
             });
         }
         Ok(out)
@@ -416,20 +485,63 @@ impl Store {
 
     // ---- history and pending transactions
 
-    /// Insert or update a history row.
+    /// Insert or update a history row (every column).
     pub fn upsert_history(&self, row: &HistoryRow) -> Result<(), StoreError> {
         self.conn.execute(
-            "INSERT INTO history (txid, height, yec_delta, has_payload, pending, shielded) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO history (txid, height, yec_delta, has_payload, pending, shielded, yed_delta, kind, verdict, label, labelled)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(txid) DO UPDATE SET height = excluded.height, yec_delta = excluded.yec_delta,
-             has_payload = excluded.has_payload, pending = excluded.pending, shielded = excluded.shielded",
-            params![row.txid.as_slice(), row.height as i64, row.yec_delta, row.has_payload as i64, row.pending as i64, row.shielded as i64],
+             has_payload = excluded.has_payload, pending = excluded.pending, shielded = excluded.shielded,
+             yed_delta = excluded.yed_delta, kind = excluded.kind, verdict = excluded.verdict,
+             label = excluded.label, labelled = excluded.labelled",
+            params![row.txid.as_slice(), row.height as i64, row.yec_delta, row.has_payload as i64, row.pending as i64, row.shielded as i64,
+                    row.yed_delta, row.kind, row.verdict, row.label, row.labelled as i64],
         )?;
         Ok(())
     }
 
+    /// Update only the chain-side columns of a history row (height, yec delta, payload flag,
+    /// pending, shielded), inserting it if absent; the label columns are kept.
+    pub fn upsert_history_seen(&self, row: &HistoryRow) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO history (txid, height, yec_delta, has_payload, pending, shielded, yed_delta, kind, verdict, label, labelled)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(txid) DO UPDATE SET height = excluded.height, yec_delta = excluded.yec_delta,
+             has_payload = excluded.has_payload, pending = excluded.pending, shielded = excluded.shielded",
+            params![row.txid.as_slice(), row.height as i64, row.yec_delta, row.has_payload as i64, row.pending as i64, row.shielded as i64,
+                    row.yed_delta, row.kind, row.verdict, row.label, row.labelled as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Set the label columns of a history row.
+    pub fn set_history_label(
+        &self,
+        txid: &[u8; 32],
+        yed_delta: i64,
+        kind: &str,
+        verdict: &str,
+        label: &str,
+        labelled: bool,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE history SET yed_delta = ?2, kind = ?3, verdict = ?4, label = ?5, labelled = ?6 WHERE txid = ?1",
+            params![txid.as_slice(), yed_delta, kind, verdict, label, labelled as i64],
+        )?;
+        Ok(())
+    }
+
+    /// One history row.
+    pub fn history_row(&self, txid: &[u8; 32]) -> Result<Option<HistoryRow>, StoreError> {
+        Ok(self.history()?.into_iter().find(|h| h.txid == *txid))
+    }
+
     /// History, newest first (pending rows first).
     pub fn history(&self) -> Result<Vec<HistoryRow>, StoreError> {
-        let mut st = self.conn.prepare("SELECT txid, height, yec_delta, has_payload, pending, shielded FROM history ORDER BY pending DESC, height DESC")?;
+        let mut st = self.conn.prepare(
+            "SELECT txid, height, yec_delta, has_payload, pending, shielded, yed_delta, kind, verdict, label, labelled
+             FROM history ORDER BY pending DESC, height DESC",
+        )?;
         let rows = st.query_map([], |r| {
             Ok((
                 r.get::<_, Vec<u8>>(0)?,
@@ -438,11 +550,17 @@ impl Store {
                 r.get::<_, i64>(3)?,
                 r.get::<_, i64>(4)?,
                 r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, String>(7)?,
+                r.get::<_, String>(8)?,
+                r.get::<_, String>(9)?,
+                r.get::<_, i64>(10)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (t, height, yec_delta, p, pending, sh) = row?;
+            let (t, height, yec_delta, p, pending, sh, yed_delta, kind, verdict, label, labelled) =
+                row?;
             let txid: [u8; 32] = t
                 .as_slice()
                 .try_into()
@@ -454,6 +572,11 @@ impl Store {
                 has_payload: p != 0,
                 pending: pending != 0,
                 shielded: sh != 0,
+                yed_delta,
+                kind,
+                verdict,
+                label,
+                labelled: labelled != 0,
             });
         }
         Ok(out)
@@ -523,6 +646,91 @@ impl Store {
             .optional()?)
     }
 
+    /// The own outputs of one transaction: `(n, value, hash160)`.
+    pub fn own_outputs_of(&self, txid: &[u8; 32]) -> Result<Vec<(u32, i64, [u8; 20])>, StoreError> {
+        let mut st = self
+            .conn
+            .prepare("SELECT n, value, hash160 FROM own_outputs WHERE txid = ?1 ORDER BY n")?;
+        let rows = st.query_map(params![txid.as_slice()], |r| {
+            Ok((
+                r.get::<_, u32>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (n, v, h) = row?;
+            let hash160: [u8; 20] = h
+                .as_slice()
+                .try_into()
+                .map_err(|_| StoreError::Corrupt("hash160 length".into()))?;
+            out.push((n, v, hash160));
+        }
+        Ok(out)
+    }
+
+    /// Remember a token the wallet held (from `GetAddressTokens`), so a later spend of it can
+    /// be valued in history after IN-1 erased it from the live set.
+    pub fn insert_own_token(&self, op: &OutPoint, cents: u64) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO own_tokens (txid, n, cents) VALUES (?1, ?2, ?3)",
+            params![op.txid.as_slice(), op.n, cents as i64],
+        )?;
+        Ok(())
+    }
+
+    /// The cents of a token the wallet ever held, if known.
+    pub fn own_token_cents(&self, op: &OutPoint) -> Result<Option<u64>, StoreError> {
+        let c: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT cents FROM own_tokens WHERE txid = ?1 AND n = ?2",
+                params![op.txid.as_slice(), op.n],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(c.map(|c| c.max(0) as u64))
+    }
+
+    /// Record that `spender` spent the own token `op` of `cents`.
+    pub fn insert_spent_token(
+        &self,
+        spender: &[u8; 32],
+        op: &OutPoint,
+        cents: u64,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO spent_tokens (spender, txid, n, cents) VALUES (?1, ?2, ?3, ?4)",
+            params![spender.as_slice(), op.txid.as_slice(), op.n, cents as i64],
+        )?;
+        Ok(())
+    }
+
+    /// The own tokens `spender` spent: `(outpoint, cents)`.
+    pub fn spent_tokens_by(&self, spender: &[u8; 32]) -> Result<Vec<(OutPoint, u64)>, StoreError> {
+        let mut st = self.conn.prepare(
+            "SELECT txid, n, cents FROM spent_tokens WHERE spender = ?1 ORDER BY txid, n",
+        )?;
+        let rows = st.query_map(params![spender.as_slice()], |r| {
+            Ok((
+                r.get::<_, Vec<u8>>(0)?,
+                r.get::<_, u32>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (t, n, c) = row?;
+            let txid: [u8; 32] = t
+                .as_slice()
+                .try_into()
+                .map_err(|_| StoreError::Corrupt("txid length".into()))?;
+            out.push((OutPoint { txid, n }, c.max(0) as u64));
+        }
+        Ok(out)
+    }
+
     /// Drop a pending transaction (confirmed or expired).
     pub fn remove_pending_tx(&self, txid: &[u8; 32]) -> Result<(), StoreError> {
         self.conn.execute(
@@ -563,7 +771,7 @@ mod tests {
     #[test]
     fn schema_meta_addresses_utxos_locks_history() {
         let mut s = Store::open_in_memory().unwrap();
-        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("1"));
+        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("2"));
         s.set_meta("network", "regtest").unwrap();
         s.set_meta("network", "regtest").unwrap();
         assert_eq!(s.meta("network").unwrap().as_deref(), Some("regtest"));
@@ -597,6 +805,7 @@ mod tests {
             value: 5,
             height: 9,
             class: UtxoClass::Held,
+            cents: 42,
         };
         s.replace_utxos(std::slice::from_ref(&u)).unwrap();
         assert_eq!(s.utxos().unwrap(), vec![u.clone()]);
@@ -622,9 +831,16 @@ mod tests {
             has_payload: false,
             pending: true,
             shielded: false,
+            yed_delta: 0,
+            kind: String::new(),
+            verdict: String::new(),
+            label: String::new(),
+            labelled: false,
         };
         s.upsert_history(&h).unwrap();
-        s.upsert_history(&HistoryRow {
+        s.set_history_label(&[4; 32], -500, "transfer", "ok", "sent $5.00", true)
+            .unwrap();
+        s.upsert_history_seen(&HistoryRow {
             height: 12,
             pending: false,
             ..h.clone()
@@ -634,6 +850,28 @@ mod tests {
         assert_eq!(hist.len(), 1);
         assert_eq!(hist[0].height, 12);
         assert!(!hist[0].pending);
+        assert_eq!(
+            (hist[0].yed_delta, hist[0].kind.as_str(), hist[0].labelled),
+            (-500, "transfer", true)
+        );
+        assert_eq!(
+            s.history_row(&[4; 32]).unwrap().unwrap().label,
+            "sent $5.00"
+        );
+        s.insert_own_token(&u.outpoint, 42).unwrap();
+        assert_eq!(s.own_token_cents(&u.outpoint).unwrap(), Some(42));
+        assert_eq!(
+            s.own_token_cents(&OutPoint {
+                txid: [8; 32],
+                n: 0
+            })
+            .unwrap(),
+            None
+        );
+        s.insert_spent_token(&[4; 32], &u.outpoint, 42).unwrap();
+        s.insert_spent_token(&[4; 32], &u.outpoint, 42).unwrap();
+        assert_eq!(s.spent_tokens_by(&[4; 32]).unwrap(), vec![(u.outpoint, 42)]);
+        assert!(s.spent_tokens_by(&[5; 32]).unwrap().is_empty());
 
         s.insert_pending_tx(&[4; 32], &[9, 9], 50).unwrap();
         assert_eq!(s.pending_txs().unwrap().len(), 1);
@@ -642,8 +880,30 @@ mod tests {
 
         s.insert_own_output(&u.outpoint, 5, &[1; 20]).unwrap();
         assert_eq!(s.own_output_value(&u.outpoint).unwrap(), Some(5));
+        assert_eq!(s.own_outputs_of(&[2; 32]).unwrap(), vec![(1, 5, [1; 20])]);
         s.insert_imported_key(&[7; 20], &[1, 2, 3]).unwrap();
         assert_eq!(s.imported_key(&[7; 20]).unwrap(), Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn v1_file_migrates_in_place() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO meta VALUES ('schema_version', '1');
+             CREATE TABLE utxos (txid BLOB NOT NULL, n INTEGER NOT NULL, address TEXT NOT NULL, script BLOB NOT NULL,
+               value INTEGER NOT NULL, height INTEGER NOT NULL, class TEXT NOT NULL, PRIMARY KEY (txid, n));
+             CREATE TABLE history (txid BLOB PRIMARY KEY, height INTEGER NOT NULL, yec_delta INTEGER NOT NULL,
+               has_payload INTEGER NOT NULL, pending INTEGER NOT NULL, shielded INTEGER NOT NULL);
+             INSERT INTO history VALUES (x'0101010101010101010101010101010101010101010101010101010101010101', 3, 4, 0, 0, 0);",
+        )
+        .unwrap();
+        let s = Store::init(conn).unwrap();
+        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("2"));
+        assert!(s.utxos().unwrap().is_empty());
+        let h = s.history().unwrap();
+        assert_eq!(h.len(), 1);
+        assert!(!h[0].labelled && h[0].label.is_empty());
     }
 
     #[test]

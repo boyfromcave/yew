@@ -6,7 +6,8 @@ use std::collections::HashSet;
 
 use thiserror::Error;
 
-use crate::coins::{CoinError, Utxo};
+use crate::build::yed_transfer::TransferError;
+use crate::coins::{self, CoinError, Utxo};
 use crate::gate::GateError;
 use crate::keys::{self, AddressKey, Chain, KeyError, KeyRing};
 use crate::net::NetError;
@@ -35,9 +36,37 @@ pub enum WalletError {
     /// The gate.
     #[error(transparent)]
     Gate(#[from] GateError),
+    /// A YED transfer could not be built (the node's identifiers).
+    #[error(transparent)]
+    Transfer(#[from] TransferError),
     /// Anything else, with a message.
     #[error("{0}")]
     Other(String),
+}
+
+/// `$N.NN` for a number of cents (negative allowed).
+pub fn dollars(cents: i64) -> String {
+    let sign = if cents < 0 { "-" } else { "" };
+    let c = cents.unsigned_abs();
+    format!("{sign}${}.{:02}", c / 100, c % 100)
+}
+
+/// The balances the home screen shows (plan §3.4): computed from classes, never from
+/// `sum(nValue)` (§3.7).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Balances {
+    /// YEC available (class `YEC`), zat.
+    pub yec_zat: i64,
+    /// YEC reserved for YED fees (class `FEE_RESERVE`), zat.
+    pub yec_reserved_zat: i64,
+    /// YEC change of the wallet's own unconfirmed transactions, zat (in neither balance).
+    pub yec_pending_zat: i64,
+    /// YED (class `TOKEN`), cents.
+    pub yed_cents: u64,
+    /// Pending YED (class `PENDING_TOKEN`), cents.
+    pub yed_pending_cents: u64,
+    /// `GetPrice.pMint` at the last sync, micro-USD per YEC, when defined.
+    pub price_micro_usd: Option<i64>,
 }
 
 /// An open wallet.
@@ -267,6 +296,38 @@ impl Wallet {
         Ok(row)
     }
 
+    /// The balances (plan §3.4) from the stored classes and the last sync's price. Locked
+    /// outputs (inputs of the wallet's own unconfirmed transactions) are in neither balance:
+    /// what they become is shown as pending until the spend confirms.
+    pub fn balances(&self) -> Result<Balances, WalletError> {
+        let utxos = self.store.utxos()?;
+        let spendable = self.spendable_utxos()?;
+        let (yec_zat, yec_reserved_zat) = coins::yec_balances(&spendable);
+        let (yed_cents, yed_pending_cents) = coins::yed_balances(&spendable);
+        let mut yec_pending_zat = 0;
+        for (txid, _, _) in self.store.pending_txs()? {
+            let pending_tokens: HashSet<u32> = utxos
+                .iter()
+                .filter(|u| u.outpoint.txid == txid)
+                .map(|u| u.outpoint.n)
+                .collect();
+            for (n, value, _) in self.store.own_outputs_of(&txid)? {
+                if !pending_tokens.contains(&n) {
+                    yec_pending_zat += value;
+                }
+            }
+        }
+        let price = self.store.meta_u64("price_micro_usd")?;
+        Ok(Balances {
+            yec_zat,
+            yec_reserved_zat,
+            yec_pending_zat,
+            yed_cents,
+            yed_pending_cents,
+            price_micro_usd: if price > 0 { Some(price as i64) } else { None },
+        })
+    }
+
     /// The UTXOs that are not locked (the input set every builder selects from).
     pub fn spendable_utxos(&self) -> Result<Vec<Utxo>, WalletError> {
         let locked: HashSet<_> = self
@@ -345,6 +406,14 @@ mod tests {
             foreign.wif(Network::Regtest)
         );
         assert!(w.import_wif(&foreign.wif(Network::Mainnet)).is_err());
+    }
+
+    #[test]
+    fn dollars_format() {
+        assert_eq!(dollars(0), "$0.00");
+        assert_eq!(dollars(5), "$0.05");
+        assert_eq!(dollars(12_345), "$123.45");
+        assert_eq!(dollars(-250), "-$2.50");
     }
 
     #[test]

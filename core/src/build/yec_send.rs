@@ -10,7 +10,7 @@
 //! is lowered by one zat (the zat goes to the fee) for the same reason.
 
 use crate::coins::{self, Utxo};
-use crate::gate;
+use crate::gate::{self, Validator};
 use crate::keys::{self, AddressKind};
 use crate::net::CompactClient;
 use crate::params::{FEE_ZAT, TOKEN_VALUE, TX_EXPIRY_DELTA};
@@ -136,16 +136,19 @@ pub fn build_yec_send(
     })
 }
 
-/// `confirm`: the gate, then `SendTransaction`, then the locks, the pending record and the
-/// history row. Returns the txid in display form.
+/// `confirm`: both gate layers (the node's `ValidateRawTransaction` too, D-W-5; on a server
+/// without Yellowback the local layer alone, see `gate`), then `SendTransaction`, then the
+/// locks, the pending record and the history row. Returns the txid in display form.
 pub async fn broadcast(
     wallet: &Wallet,
     client: &mut CompactClient,
+    validator: &mut Validator,
     preview: &YecSendPreview,
 ) -> Result<String, WalletError> {
-    gate::check(gate::Path::Yec, &preview.raw, |op| {
+    gate::confirm(validator, gate::Path::Yec, &preview.raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
-    })?;
+    })
+    .await?;
     let reply = client.send_transaction(preview.raw.clone()).await?;
     let txid_str = txid_hex(&preview.txid);
     if !reply.is_empty() && reply != txid_str {
@@ -170,6 +173,11 @@ pub async fn broadcast(
         has_payload: false,
         pending: true,
         shielded: false,
+        yed_delta: 0,
+        kind: String::new(),
+        verdict: String::new(),
+        label: String::new(),
+        labelled: true,
     })?;
     if let Some(a) = &preview.change_address {
         if let Some(row) = wallet.row_for_address(a)? {
@@ -221,6 +229,7 @@ mod tests {
                     value: *v,
                     height: 10,
                     class: *c,
+                    cents: 0,
                 }
             })
             .collect();

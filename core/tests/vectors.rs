@@ -208,3 +208,104 @@ fn ywallet_derivation_vector() {
         );
     }
 }
+
+/// W2: the node-built templates' payloads (`templates.json`, `yed_decodepayload` results).
+/// `payload::encode` of the decoded form must reproduce `payloadHex`, `payload::decode` the
+/// reverse, and `find_payload` on the node's raw transfer must find the same assignments the
+/// node's `yed_gettxinfo.assigned` reports (contract rule 3: decoded locally for display).
+#[test]
+fn template_payload_vectors_round_trip() {
+    use yew_core::payload::{self, Assignment, Payload};
+    let v = load("templates.json");
+    let assignments = |d: &Value| -> Vec<Assignment> {
+        d["assignments"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|x| Assignment {
+                        vout: x["vout"].as_u64().unwrap() as u8,
+                        cents: x["cents"].as_u64().unwrap() as u32,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    for kind in ["mint", "transfer", "redeem"] {
+        let t = &v[kind];
+        let hex = hex_field(t, "payloadHex");
+        let d = &t["payloadDecoded"];
+        assert_eq!(d["type"].as_str().unwrap(), kind);
+        assert_eq!(d["version"].as_u64().unwrap(), payload::VERSION as u64);
+        let expected = match kind {
+            "mint" => {
+                let mut owner_key = [0u8; 33];
+                owner_key.copy_from_slice(&hex_field(d, "ownerPubKey"));
+                Payload::Mint {
+                    term_class: match d["termClass"].as_str().unwrap() {
+                        "A" => 0,
+                        "B" => 1,
+                        _ => 2,
+                    },
+                    cents: d["cents"].as_u64().unwrap() as u32,
+                    lock_height: d["lockHeight"].as_u64().unwrap() as u32,
+                    ref_height: d["refHeight"].as_u64().unwrap() as u32,
+                    owner_key,
+                    fee_vout: d["feeVout"].as_u64().unwrap() as u8,
+                    attest_fee_vout: d["attestFeeVout"].as_u64().unwrap() as u8,
+                }
+            }
+            "transfer" => Payload::Transfer {
+                assignments: assignments(d),
+            },
+            _ => Payload::Redeem {
+                ref_height: d["refHeight"].as_u64().unwrap() as u32,
+                fee_vout: d["feeVout"].as_u64().unwrap() as u8,
+                attest_fee_vout: d["attestFeeVout"].as_u64().unwrap() as u8,
+                assignments: assignments(d),
+            },
+        };
+        assert_eq!(payload::encode(&expected).unwrap(), hex, "{kind}: encode");
+        assert_eq!(payload::decode(&hex).unwrap(), expected, "{kind}: decode");
+        assert_eq!(
+            expected.assigned_cents() as u64,
+            d["assignedCents"].as_u64().unwrap_or(0),
+            "{kind}: assignedCents"
+        );
+        // The payload is found in the node's raw transaction at its OP_RETURN.
+        let (tx, txid) = Transaction::parse(&hex_field(t, "hex")).unwrap();
+        assert_eq!(txid_hex(&txid), t["txid"].as_str().unwrap());
+        let fp = payload::find_payload(&tx).unwrap_or_else(|| panic!("{kind}: find_payload"));
+        assert_eq!(fp.payload, expected);
+        let info_assigned: Vec<(u64, u64)> = t["txinfo"]["assigned"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| (a["vout"].as_u64().unwrap(), a["cents"].as_u64().unwrap()))
+            .collect();
+        let ours: Vec<(u64, u64)> = match kind {
+            "mint" => vec![(1, expected.assigned_cents() as u64)],
+            _ => fp
+                .payload
+                .assignments()
+                .iter()
+                .map(|a| (a.vout as u64, a.cents as u64))
+                .collect(),
+        };
+        if kind != "mint" {
+            assert_eq!(
+                ours, info_assigned,
+                "{kind}: assignments equal yed_gettxinfo.assigned"
+            );
+        } else {
+            // MINT-1: vout[1] carries the minted cents.
+            assert_eq!(info_assigned, vec![(1, d["cents"].as_u64().unwrap())]);
+        }
+        // Every token output of the template is TOKEN_VALUE.
+        for (vout, _) in &info_assigned {
+            assert_eq!(
+                tx.vout[*vout as usize].value, TOKEN_VALUE,
+                "{kind}: vout {vout}"
+            );
+        }
+    }
+}

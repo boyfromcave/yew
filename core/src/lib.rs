@@ -4,7 +4,9 @@
 //! Every wire byte, script byte, key and signature of the wallet lives here; the Flutter app is a
 //! view over [`api`]. Plan: `docs/plans/yellowback-wallet-plan.md` (workspace), §3.
 //! Each module names its translation source (plan §3.6). Phase W1: keys, script, tx, net (T0),
-//! store, coins, sync (YEC), build::yec_send, gate (YEC path), wallet.
+//! store, coins, sync (YEC), build::yec_send, gate (YEC path), wallet. Phase W2: payload,
+//! coinselect, net::yellowback, the TOKEN / PENDING_TOKEN classes, build::yed_transfer, the
+//! full gate (local classes + the node's `ValidateRawTransaction`), history labels, balances.
 
 pub mod api;
 pub mod build;

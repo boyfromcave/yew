@@ -5,3 +5,4 @@
 //! REDEEM, CLAIM templates and `nLockTime` / `nSequence` / `nExpiryHeight`). Phase W1/W2/W4.
 
 pub mod yec_send;
+pub mod yed_transfer;

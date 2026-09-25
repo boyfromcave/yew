@@ -1,23 +1,31 @@
-//! Sync (plan §3.2, YEC only in Phase W1): gap-limit address derivation, `GetTaddressTxids`
-//! per address for history (the yodl baseline streams the raw transactions with heights),
-//! `GetAddressUtxos` for the confirmed UTXO set, classification (`coins`), the fee reserve,
-//! lock release. W2 adds `GetAddressTokens` and `GetTxInfo` labels.
+//! Sync (plan §3.2): gap-limit address derivation, `GetTaddressTxids` per address for history
+//! (the yodl baseline streams the raw transactions with heights), `GetAddressUtxos` for the
+//! confirmed UTXO set, **`GetAddressTokens` for the YED token set** (the only source of the
+//! TOKEN class, D-W-8), classification (`coins`), the `PreLock` pending rule for the wallet's
+//! own unconfirmed transactions, the fee reserve, lock release, `GetTxInfo` labels for every
+//! own transaction that carries a `"YB"` payload or spends an own token, and `GetPrice.pMint`.
 //!
-//! Translation source (plan §3.6): `yecwallet-dd/src/yellowbackmodels.cpp`,
-//! `yellowbackcontroller.cpp` for labels and the `PreLock` pending rule (W2).
+//! Translation source (plan §3.6): `yecwallet-dd/src/yellowbackmodels.cpp:202-216`
+//! (`typeLabel`), `:743-810` (`YellowbackTxModel::data`: the self-transfer, expired and burn
+//! rules) for the verdict-to-label mapping; `ycash-dd/src/yellowback/wallet.cpp:410-427`
+//! (`PreLock`). The verdict is the server's, the label is derived from it, never from the
+//! payload alone (contract rule 3); the payload is read locally only for the *pending* label of
+//! a transaction this wallet itself broadcast.
 //!
 //! Locks are released **only** here: when the spending transaction is seen confirmed, or when
 //! its `nExpiryHeight` has passed (plan §3.7 "Locks").
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use crate::coins::{self, Utxo};
-use crate::net::CompactClient;
+use crate::coins::{self, Utxo, UtxoClass};
+use crate::keys;
+use crate::net::rpc::YedTxInfo;
+use crate::net::{CompactClient, NetError, YellowbackClient};
 use crate::params::GAP_LIMIT;
 use crate::script;
 use crate::store::HistoryRow;
 use crate::tx::{txid_hex, OutPoint, Transaction};
-use crate::wallet::{Wallet, WalletError};
+use crate::wallet::{dollars, Wallet, WalletError};
 
 /// What one sync did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -30,18 +38,31 @@ pub struct SyncReport {
     pub addresses: usize,
     /// Transactions parsed into history this run.
     pub transactions: usize,
-    /// UTXOs after classification.
+    /// UTXOs after classification (pending tokens included).
     pub utxos: usize,
     /// Locks released.
     pub locks_released: usize,
     /// `(available, reserved)` YEC in zat.
     pub yec: (i64, i64),
+    /// `(cents, pending cents)` YED.
+    pub yed: (u64, u64),
+    /// Tokens `GetAddressTokens` listed.
+    pub tokens: usize,
+    /// History rows labelled from `GetTxInfo` this run.
+    pub labelled: usize,
+    /// A Yellowback client was given (the YED steps ran).
+    pub yellowback: bool,
+    /// `GetPrice.pMint` at the tip, when defined.
+    pub price_micro_usd: Option<i64>,
 }
 
-/// Run one sync of `wallet` against `client`.
+/// Run one sync of `wallet` against `client`, and against `yellowback` for the YED steps when
+/// the server offers the service (`None` = contract rule 1 said absent: every own
+/// `TOKEN_VALUE` output stays `HELD`, no labels, no price).
 pub async fn sync(
     wallet: &mut Wallet,
     client: &mut CompactClient,
+    mut yellowback: Option<&mut YellowbackClient>,
 ) -> Result<SyncReport, WalletError> {
     let info = client.lightd_info_for(wallet.network).await?;
     let tip = client.latest_height().await?.max(info.block_height);
@@ -53,6 +74,7 @@ pub async fn sync(
     let mut report = SyncReport {
         tip,
         branch_id: info.branch_id,
+        yellowback: yellowback.is_some(),
         ..Default::default()
     };
 
@@ -99,27 +121,48 @@ pub async fn sync(
     }
     let _ = GAP_LIMIT; // the gap rule lives in Wallet::ensure_gap
 
-    // 2. The confirmed UTXO set, classified for the YEC-only phase, then the fee reserve.
+    // 4a. The token set (D-W-8): the only source of class TOKEN.
     let own = wallet.own_hashes()?;
     let addresses: Vec<String> = wallet
         .addresses()?
         .into_iter()
         .map(|a| a.address_s)
         .collect();
+    let mut tokens: HashMap<OutPoint, u64> = HashMap::new();
+    if let Some(yb) = yellowback.as_mut() {
+        for t in yb.address_tokens(&addresses, 0).await? {
+            wallet.store.insert_own_token(&t.outpoint, t.cents)?;
+            tokens.insert(t.outpoint, t.cents);
+        }
+        report.tokens = tokens.len();
+    }
+
+    // 2. The confirmed UTXO set, classified, then the fee reserve.
     let mut utxos: Vec<Utxo> = client
         .address_utxos(&addresses, birthday)
         .await?
         .into_iter()
-        .map(|u| Utxo {
-            class: coins::classify_yec_phase(&u.script, u.value_zat, |h| own.contains(h)),
-            outpoint: OutPoint {
+        .map(|u| {
+            let outpoint = OutPoint {
                 txid: u.txid,
                 n: u.index,
-            },
-            address: u.address,
-            script: u.script,
-            value: u.value_zat,
-            height: u.height,
+            };
+            let (class, cents) = coins::classify(
+                &outpoint,
+                &u.script,
+                u.value_zat,
+                |h| own.contains(h),
+                &tokens,
+            );
+            Utxo {
+                outpoint,
+                address: u.address,
+                script: u.script,
+                value: u.value_zat,
+                height: u.height,
+                class,
+                cents,
+            }
         })
         .collect();
     coins::apply_fee_reserve(&mut utxos);
@@ -131,9 +174,6 @@ pub async fn sync(
             }
         }
     }
-    wallet.store.replace_utxos(&utxos)?;
-    report.utxos = utxos.len();
-    report.yec = coins::yec_balances(&utxos);
 
     // Locks: a spending transaction seen confirmed released its inputs in record_transaction;
     // here the expired ones lapse (nExpiryHeight passed and the spend never confirmed).
@@ -141,15 +181,55 @@ pub async fn sync(
         if expiry != 0 && tip > expiry {
             release_spent_by(wallet, &txid)?;
             wallet.store.remove_pending_tx(&txid)?;
-            if let Some(mut row) = wallet.store.history()?.into_iter().find(|h| h.txid == txid) {
-                row.pending = false;
-                row.height = 0;
-                row.yec_delta = 0;
-                wallet.store.upsert_history(&row)?;
+            if let Some(row) = wallet.store.history_row(&txid)? {
+                wallet.store.upsert_history(&HistoryRow {
+                    pending: false,
+                    height: 0,
+                    yec_delta: 0,
+                    yed_delta: 0,
+                    verdict: "expired".into(),
+                    label: "expired".into(),
+                    labelled: true,
+                    ..row
+                })?;
             }
             report.locks_released += 1;
         }
     }
+
+    // 4b. PENDING_TOKEN (`PreLock`): the outputs of the wallet's own still-unconfirmed
+    // transactions that their payload marks as YED for own keys. In neither balance.
+    let present: HashSet<OutPoint> = utxos.iter().map(|u| u.outpoint).collect();
+    for (txid, raw, _expiry) in wallet.store.pending_txs()? {
+        let (tx, _) = match Transaction::parse(&raw) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        for (n, cents) in coins::pre_lock(&tx, |h| own.contains(h)) {
+            let outpoint = OutPoint { txid, n };
+            if present.contains(&outpoint) {
+                continue;
+            }
+            let script = tx.vout[n as usize].script_pubkey.clone();
+            let address = script::p2pkh_hash(&script)
+                .map(|h| keys::encode_p2pkh(wallet.network, &h))
+                .unwrap_or_default();
+            utxos.push(Utxo {
+                outpoint,
+                address,
+                script,
+                value: tx.vout[n as usize].value,
+                height: 0,
+                class: UtxoClass::PendingToken,
+                cents,
+            });
+        }
+    }
+    wallet.store.replace_utxos(&utxos)?;
+    report.utxos = utxos.len();
+    report.yec = coins::yec_balances(&utxos);
+    report.yed = coins::yed_balances(&utxos);
+
     let present: HashSet<OutPoint> = utxos.iter().map(|u| u.outpoint).collect();
     for l in wallet.store.locks()? {
         if !present.contains(&l.outpoint) && l.reason.starts_with("spent-by:") {
@@ -158,6 +238,17 @@ pub async fn sync(
             wallet.store.unlock(&l.outpoint)?;
             report.locks_released += 1;
         }
+    }
+
+    // 4c. Labels from GetTxInfo, and the price.
+    if let Some(yb) = yellowback {
+        report.labelled = label_history(wallet, yb).await?;
+        let p = yb.price(0).await?;
+        report.price_micro_usd = if p.p_mint > 0 { Some(p.p_mint) } else { None };
+        wallet.store.set_meta(
+            "price_micro_usd",
+            &report.price_micro_usd.unwrap_or(0).to_string(),
+        )?;
     }
 
     wallet.store.set_meta("scanned_height", &tip.to_string())?;
@@ -199,6 +290,9 @@ fn record_transaction(
         if let Some(v) = wallet.store.own_output_value(&i.prevout)? {
             delta -= v;
         }
+        if let Some(cents) = wallet.store.own_token_cents(&i.prevout)? {
+            wallet.store.insert_spent_token(txid, &i.prevout, cents)?;
+        }
         // A P2PKH scriptSig's second push is the pubkey: an own key spending marks it used.
         if let Some(p) = script::pushes(&i.script_sig) {
             if p.len() == 2 && p[1].len() == 33 {
@@ -220,14 +314,34 @@ fn record_transaction(
         release_spent_by(wallet, txid)?;
         wallet.store.remove_pending_tx(txid)?;
     }
-    wallet.store.upsert_history(&HistoryRow {
+    let prior = wallet.store.history_row(txid)?;
+    let mut row = HistoryRow {
         txid: *txid,
         height: if confirmed { height } else { 0 },
         yec_delta: delta,
         has_payload,
         pending: !confirmed,
         shielded: tx.shielded.any(),
-    })?;
+        yed_delta: 0,
+        kind: String::new(),
+        verdict: String::new(),
+        label: String::new(),
+        labelled: false,
+    };
+    if let Some(p) = prior {
+        // A row this wallet broadcast keeps its pending label until GetTxInfo labels it; once
+        // confirmed, the local label is dropped so nothing "pending" survives confirmation.
+        if confirmed && p.pending {
+            row.labelled = false;
+        } else {
+            row.yed_delta = p.yed_delta;
+            row.kind = p.kind;
+            row.verdict = p.verdict;
+            row.label = p.label;
+            row.labelled = p.labelled;
+        }
+    }
+    wallet.store.upsert_history(&row)?;
     Ok(newly_used)
 }
 
@@ -239,4 +353,192 @@ fn release_spent_by(wallet: &Wallet, txid: &[u8; 32]) -> Result<(), WalletError>
         }
     }
     Ok(())
+}
+
+/// Label every confirmed, unlabelled history row that carries a payload or spends a token the
+/// wallet ever held, from `GetTxInfo` (contract rule 3). A `tx-not-found` (an `OP_RETURN`
+/// that is not a Yellowback payload) marks the row labelled with an empty label. Returns the
+/// number of rows labelled.
+pub async fn label_history(
+    wallet: &Wallet,
+    yb: &mut YellowbackClient,
+) -> Result<usize, WalletError> {
+    let mut n = 0;
+    for row in wallet.store.history()? {
+        if row.labelled || row.pending {
+            continue;
+        }
+        let spends_token = spent_own_token_cents(wallet, &row.txid)?.is_some();
+        if !row.has_payload && !spends_token {
+            continue;
+        }
+        let txid = txid_hex(&row.txid);
+        match yb.tx_info(&txid).await {
+            Ok(info) => {
+                let own_out = own_assigned_cents(wallet, &row.txid, &info)?;
+                let own_in = spent_own_token_cents(wallet, &row.txid)?.unwrap_or(0);
+                let (label, yed_delta) = label_for(&info, own_in, own_out);
+                wallet.store.set_history_label(
+                    &row.txid,
+                    yed_delta,
+                    &info.r#type,
+                    &info.verdict,
+                    &label,
+                    true,
+                )?;
+                n += 1;
+            }
+            Err(NetError::Node { identifier, .. }) if identifier == "tx-not-found" => {
+                wallet
+                    .store
+                    .set_history_label(&row.txid, 0, "", "", "", true)?;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(n)
+}
+
+/// The cents `info.assigned` gives to outputs of `txid` paid to own keys.
+fn own_assigned_cents(
+    wallet: &Wallet,
+    txid: &[u8; 32],
+    info: &YedTxInfo,
+) -> Result<u64, WalletError> {
+    let own_vouts: HashSet<u32> = wallet
+        .store
+        .own_outputs_of(txid)?
+        .into_iter()
+        .map(|(n, _, _)| n)
+        .collect();
+    Ok(info
+        .assigned
+        .iter()
+        .filter(|a| own_vouts.contains(&a.vout))
+        .map(|a| a.cents)
+        .sum())
+}
+
+/// The cents of tokens the wallet ever held that `txid` spent, or `None` when it spent none
+/// (`spent_tokens`, written by `record_transaction` and by the transfer builder's broadcast;
+/// IN-1 erases spent tokens server-side, so the wallet keeps its own record). A token
+/// created and spent between two syncs was never listed and is not counted — the row then
+/// reads as "received" for its own change; the verdict and cents are still the server's.
+fn spent_own_token_cents(wallet: &Wallet, txid: &[u8; 32]) -> Result<Option<u64>, WalletError> {
+    let spent = wallet.store.spent_tokens_by(txid)?;
+    if spent.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(spent.iter().map(|(_, c)| *c).sum()))
+}
+
+/// The verdict-to-label mapping (translated from `yellowbackmodels.cpp`, W2). Returns the
+/// label and the wallet's net YED change in cents.
+pub fn label_for(info: &YedTxInfo, own_in: u64, own_out: u64) -> (String, i64) {
+    let delta = own_out as i64 - own_in as i64;
+    let burned = if info.burned > 0 {
+        format!(", burned {}", dollars(info.burned))
+    } else {
+        String::new()
+    };
+    if info.expired || info.verdict == "expired" {
+        return ("expired".into(), 0);
+    }
+    let ok = info.verdict == "ok";
+    let label = match info.r#type.as_str() {
+        "mint" => {
+            if ok {
+                format!("minted {}", dollars(own_out as i64))
+            } else {
+                format!("VOID mint ({})", info.verdict)
+            }
+        }
+        "transfer" => {
+            if !ok {
+                format!("transfer refused ({}){burned}", info.verdict)
+            } else if own_in > 0 && own_out > 0 && delta == 0 {
+                format!("self-transfer{burned}")
+            } else if delta < 0 {
+                format!("sent {}{burned}", dollars(-delta))
+            } else {
+                format!("received {}{burned}", dollars(delta))
+            }
+        }
+        "redeem" => {
+            if ok {
+                format!("redeemed{burned}")
+            } else {
+                format!("redeem ({}){burned}", info.verdict)
+            }
+        }
+        "" if info.burned > 0 => format!("burned {}", dollars(info.burned)),
+        other => {
+            if ok {
+                format!("{other}{burned}")
+            } else {
+                format!("{other} ({}){burned}", info.verdict)
+            }
+        }
+    };
+    (label, delta)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(t: &str, verdict: &str, burned: i64) -> YedTxInfo {
+        YedTxInfo {
+            r#type: t.into(),
+            verdict: verdict.into(),
+            burned,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn labels_follow_the_verdict() {
+        assert_eq!(
+            label_for(&info("mint", "ok", 0), 0, 10_000),
+            ("minted $100.00".into(), 10_000)
+        );
+        assert_eq!(
+            label_for(&info("mint", "mintpol-no-price", 0), 0, 0),
+            ("VOID mint (mintpol-no-price)".into(), 0)
+        );
+        assert_eq!(
+            label_for(&info("transfer", "ok", 0), 500, 250),
+            ("sent $2.50".into(), -250)
+        );
+        assert_eq!(
+            label_for(&info("transfer", "ok", 0), 0, 250),
+            ("received $2.50".into(), 250)
+        );
+        assert_eq!(
+            label_for(&info("transfer", "ok", 0), 500, 500),
+            ("self-transfer".into(), 0)
+        );
+        assert_eq!(
+            label_for(&info("transfer", "xfer-conservation", 500), 500, 0),
+            (
+                "transfer refused (xfer-conservation), burned $5.00".into(),
+                -500
+            )
+        );
+        assert_eq!(
+            label_for(&info("redeem", "ok", 10_000), 10_000, 0),
+            ("redeemed, burned $100.00".into(), -10_000)
+        );
+        assert_eq!(
+            label_for(&info("", "ok", 700), 700, 0),
+            ("burned $7.00".into(), -700)
+        );
+        assert_eq!(
+            label_for(&info("notice", "ok", 0), 0, 0),
+            ("notice".into(), 0)
+        );
+        let mut e = info("transfer", "expired", 0);
+        e.expired = true;
+        assert_eq!(label_for(&e, 500, 0), ("expired".into(), 0));
+    }
 }
