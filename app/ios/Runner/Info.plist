@@ -66,5 +66,9 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>YEW scans QR codes of addresses to send to.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>YEW asks for Face ID before opening the wallet or showing keys.</string>
 </dict>
 </plist>

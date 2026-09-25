@@ -58,5 +58,12 @@ jobs:
           flutter pub get
           flutter analyze
           flutter test
+      - run: scripts/check-app-imports.sh
+      - run: scripts/check-trust-text.sh
+      - name: bridge is up to date (regenerate and diff)
+        run: |
+          cargo install flutter_rust_bridge_codegen --version "$(sed -n 's/^flutter_rust_bridge = "=\(.*\)"/\1/p' core/Cargo.toml)" --locked
+          scripts/gen-bridge.sh
+          git diff --exit-code -- core/src/frb_generated.rs app/lib/src/rust
       - name: iOS core build (unsigned, no xcframework signing)
         run: scripts/build-core-ios.sh

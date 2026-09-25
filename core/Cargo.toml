@@ -10,6 +10,9 @@ build = "build.rs"
 [lib]
 name = "yew_core"
 path = "src/lib.rs"
+# rlib for yew-cli and the tests, staticlib for the iOS xcframework (scripts/build-core-ios.sh),
+# cdylib for Android jniLibs (scripts/build-core-android.sh); the bridge loads `yew_core`.
+crate-type = ["rlib", "staticlib", "cdylib"]
 
 # Allow-list: plan §3.3 only (checked by scripts/check-deps.sh against scripts/allowed-deps.txt).
 # tonic 0.14 moved its prost codec into `tonic-prost`; it is counted as part of tonic.
