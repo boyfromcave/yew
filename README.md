@@ -7,8 +7,9 @@ and Android over a small Rust core. YED is the main currency; everything about i
 transaction byte is ever built outside the Rust core.
 
 Plan: `docs/plans/yellowback-wallet-plan.md` in the `yellowback-workspace` repository (this repo
-is mounted there at `yew/`). Status: **Phase W1 done** (keys, transactions, YEC send, `yew-cli`,
-devnet round trip); W2 (YED) next. Nothing here is a release; the app is the W0a scaffold.
+is mounted there at `yew/`). Status: **Phase W2 done** (YED tokens, TRANSFER, the full broadcast
+gate, history labels, `yew-cli send-yed`, the armed-devnet acceptance) on top of W1 (keys,
+transactions, YEC send); W3 (the app) next. Nothing here is a release; the app is the W0a scaffold.
 
 ## Layout
 
@@ -16,11 +17,11 @@ devnet round trip); W2 (YED) next. Nothing here is a release; the app is the W0a
 Cargo.toml          Rust workspace: core (yew-core) and core/cli (yew-cli)
 core/               the core (module table below)
 core/cli/           yew-cli, the developer's and the devnet tests' driver
-core/tests/         vectors.rs (node-generated vectors), devnet.rs (YEW_DEVNET=1, ignored otherwise)
+core/tests/         vectors.rs (node-generated vectors), devnet.rs (w1_*, w2_*; YEW_DEVNET=1, ignored otherwise)
 core/tests/vectors/ node-generated vectors from `yellowback-devnet vectors` (Phase W0c)
 app/                Flutter project yew_app (org cash.ycash.yew; iOS + Android)
 proto/              service.proto, compact_formats.proto, yellowback.proto + PIN (lightwalletd-dd commit)
-scripts/            check-proto-pin.sh, check-deps.sh + allowed-deps.txt, devnet-w1.sh,
+scripts/            check-proto-pin.sh, check-deps.sh + allowed-deps.txt, devnet-w1.sh, devnet-w2.sh,
                     build-core-ios.sh, build-core-android.sh, gen-bridge.sh
 .github/workflows/  ci.yml
 ```
@@ -34,14 +35,17 @@ scripts/            check-proto-pin.sh, check-deps.sh + allowed-deps.txt, devnet
 | `script.rs` | W1 (P2PKH/P2SH), W4 (vault, carrier) | W1 done | `CScript` push encoding (`ref/ycash/src/script/script.h`), `ycash-dd/src/yellowback/script.cpp` `GetPushes` |
 | `tx.rs` | W1 | done | v4 serializer/parser (`transaction.h:575-640`), ZIP-243 (`qa/rpc-tests/test_framework/script.py` `SignatureHash`), RFC 6979 signing. `transparent.json`: 12 node transactions reproduced byte-for-byte (unsigned, every sighash, signed, txid) |
 | `net/tls.rs`, `net/compact.rs` | W1 | done | `Server`, TLS (`rustls`, native roots) or `--plain`; `GetLightdInfo`, `GetLatestBlock`, `GetAddressUtxos` (paged), `GetTaddressTxids` (stream), `GetTaddressBalance`, `SendTransaction` |
-| `net/yellowback.rs` | W2 | — | `YellowbackStreamer` |
-| `store.rs` | W1 | done (schema v1) | meta, addresses, utxos+class, locks, history, own_outputs, pending_txs, imported_keys (wrapped) |
-| `coins.rs` | W1 (YEC), W2 (YED) | W1 done | classes of §3.7; `SelectYec` from `txbuilder.cpp:399-420`; fee reserve; the YEC-only-phase HELD rule (below) |
-| `sync.rs` | W1 (YEC), W2 (YED) | W1 done | §3.2 loop: gap-limit derivation, `GetTaddressTxids` history, `GetAddressUtxos` set, classification, lock release |
-| `build/yec_send.rs` | W1 | done | YEC send with change, fee `FEE_ZAT`, `nExpiryHeight = tip + 40`, the `TOKEN_VALUE ± 1 zat` rules |
-| `gate.rs` | W1 (YEC path), W2 (YED path) | W1 done | D-W-5; property test on random coin sets (§6.1 item 3) |
-| `wallet.rs` | W1 | done | key ring + store + network; not in the plan's file list (added: the object `sync`, the builders and W3's `api.rs` share) |
-| `payload.rs`, `bundle.rs`, `coinselect.rs`, `build/{yed_transfer,mint,redeem,claim}.rs`, `api.rs` | W2–W4 | stubs | |
+| `net/yellowback.rs` | W2 | done | every `YellowbackStreamer` method (streams collected); `probe()` = contract rule 1 (`UNIMPLEMENTED` ⇒ absent, unknown `rpcversion` ⇒ refused, `enabled && active`); `FAILED_PRECONDITION` ⇒ `NetError::Node { identifier, message }` |
+| `payload.rs` | W2 | done | `ycash-dd/src/yellowback/payload.{h,cpp}`: `"YB"‖0x03‖type`, all seven types encode/decode, `find_payload`; `templates.json` payloads reproduced both ways |
+| `coinselect.rs` | W2 | done | `ycash-dd/src/yellowback/coinselect.{h,cpp}` verbatim (EXACT/SINGLE/GREEDY/SEARCH/BURN, `NearestWorkable`, budget 200,000); `src/test/yellowback_coinselect_tests.cpp` tables ported row for row; equals `yed_estimatesend` input-for-input on the devnet |
+| `build/yed_transfer.rs` | W2 | done | `txbuilder.cpp:1213-1290` `BuildTransfer`: YED inputs, `TOKEN_VALUE` outputs, TRANSFER payload, YEC fee from `FEE_RESERVE` then `YEC`, one change address; refusals carry the node's identifiers (`change-floor` with the alternatives) |
+| `store.rs` | W1, W2 | done (schema v2; v1 files migrate in place) | meta, addresses, utxos+class+cents, locks, history+labels, own_outputs, own_tokens, spent_tokens, pending_txs, imported_keys (wrapped) |
+| `coins.rs` | W1 (YEC), W2 (YED) | done | classes of §3.7; `SelectYec` from `txbuilder.cpp:399-420`; fee reserve; `classify` (TOKEN from `GetAddressTokens` only, else HELD for `TOKEN_VALUE`); `pre_lock` from `wallet.cpp:410-427`; `ranked_tokens` from `txbuilder.cpp:501-510` |
+| `sync.rs` | W1 (YEC), W2 (YED) | done | §3.2 loop: gap-limit derivation, `GetTaddressTxids` history, `GetAddressUtxos` set, `GetAddressTokens` set, classification, PENDING_TOKEN rows, lock release, `GetTxInfo` labels (`label_for`, from `yellowbackmodels.cpp`), `GetPrice.pMint` |
+| `build/yec_send.rs` | W1 | done | YEC send with change, fee `FEE_ZAT`, `nExpiryHeight = tip + 40`, the `TOKEN_VALUE ± 1 zat` rules; `broadcast` runs both gate layers |
+| `gate.rs` | W1 (YEC path), W2 (full) | done | D-W-5: local classes per path + `ValidateRawTransaction` (`valid && verdict == "ok" && burned == 0 && !wouldBeRejected`), no override; `Validator` built only by probing; property test on 2,000 random coin sets, both paths |
+| `wallet.rs` | W1, W2 | done | key ring + store + network; `balances()` (§3.4 shape), `dollars()`; not in the plan's file list (added: the object `sync`, the builders and W3's `api.rs` share) |
+| `bundle.rs`, `build/{mint,redeem,claim}.rs`, `api.rs` | W3–W4 | stubs | |
 
 ### The fee (plan §7 W1, first task)
 
@@ -56,9 +60,8 @@ terms are equal at the default fee.
 
 ### Rules recorded in W1 (plan §3.7)
 
-- **HELD**: until W2 wires `GetAddressTokens`, an own P2PKH output of exactly `TOKEN_VALUE`
-  (10,000 zat) cannot be told from a YED token, so it is class `HELD` and unspendable; `balance`
-  lists them. W2 replaces this with the server's answer.
+- **HELD** (W1 form): an own P2PKH output of exactly `TOKEN_VALUE` (10,000 zat) cannot be told
+  from a YED token locally, so it is class `HELD` and unspendable. W2 narrows it (below).
 - **Fee reserve refinement**: outputs are reserved smallest-first up to the target, but an output
   larger than the whole reserve is never reserved (a one-coin wallet would otherwise show
   "available 0"). When the reserve is short, a YED operation takes its fee from class `YEC`.
@@ -68,6 +71,52 @@ terms are equal at the default fee.
   not in the clear; W3 moves them to the platform keystore with the seed.
 - The node's plain wallet RPCs (`sendtoaddress`, `validateaddress`) take the `s…` form; the
   `ye…` form is for the `yed_*` RPCs. `yew-cli address` prints both.
+
+### Rules recorded in W2 (plan §3.7, D-W-5, D-W-8)
+
+- **TOKEN has one source.** `GetAddressTokens` (the node's `yed_listtokens`, whoever holds the
+  keys) decides the TOKEN class and its cents; nothing local does. An own P2PKH output of
+  exactly `TOKEN_VALUE` that the server does *not* list stays **HELD**, never YEC: it may be a
+  VOID mint's `vout[1]`, a transaction the index has not digested, or a server without
+  Yellowback, and spending it as YEC could burn. Spent tokens are never listed (IN-1 erases
+  them), so the wallet keeps `own_tokens` / `spent_tokens` itself to value a spend in history.
+- **PENDING_TOKEN** is written at broadcast by the `PreLock` rule (MINT ⇒ `vout[1]`,
+  TRANSFER/REDEEM ⇒ the payload's own assignments) and re-derived from the pending record at
+  every sync; it is "pending YED", in neither balance, until the server lists it (TOKEN) or the
+  transaction confirms without it (HELD). Locked outputs (inputs of an own unconfirmed
+  transaction) are in neither balance either; YEC change of such a transaction is "YEC pending".
+- **The gate has two layers and no override.** Local: every input is a known unspent output of
+  a class the path may spend (YEC path: `YEC`/`FEE_RESERVE`; transfer path: those plus `TOKEN`),
+  no payload on the YEC path, exactly one decodable TRANSFER payload and at least one token on
+  the transfer path. Remote: `ValidateRawTransaction` on the same bytes, `valid && verdict ==
+  "ok" && burned == 0 && !wouldBeRejected`, the node's verdict in the error. A plain YEC send is
+  validated too (the node answers `ok` for a non-Yellowback transaction). The `Validator` is
+  built only by probing the server; on a server without the service the YED path is refused
+  and the YEC path runs on the local layer (nothing can be TOKEN there, so every `TOKEN_VALUE`
+  output is HELD and already refused).
+- **Labels come from verdicts.** Every confirmed own transaction that carries an `OP_RETURN` or
+  spends an own token is labelled from `GetTxInfo` (`minted $`, `sent $` / `received $` /
+  `self-transfer`, `VOID mint (verdict)`, `redeemed`, `burned $`, `expired`); the local payload
+  is read only for the pending label of a transaction this wallet itself broadcast, and for
+  `PreLock`. A `tx-not-found` marks the row "payload, not yellowback".
+- **YED selection is the node's.** `coinselect.rs` is `coinselect.cpp` verbatim over coins
+  ranked `(cents, txid bytes, vout)`; on the devnet the wallet's answer equals
+  `yed_estimatesend` input-for-input, stage, change and alternatives on 100 random targets over
+  three coin sets. A TRANSFER's YEC comes from `FEE_RESERVE` then `YEC`, smallest first; surplus
+  token value (more tokens in than out) returns as YEC change, as the node does.
+- **The armed devnet has no heartbeat and node 0's blocks are untagged.** Every block of the
+  acceptance is mined on a pool node (2-4, round-robin, after the transaction reached the
+  pools' mempools) with the pools re-quoted first (`yellowback-devnet price 50`): a stale quote
+  makes the pool tag its block `signal` only, the price windows drain, and `yed_mint` fails
+  `mintpol-no-price`. The mint reads the price at `tip - refLag`, so the warm-up holds until
+  `GetPrice(tip - 2).pMint` is defined. `yed_mint … wait=false` returns after the carrier; one
+  pool block confirms it, the node's wallet then broadcasts the MINT by itself, one more block.
+- **`getreceivedbyaddress` counts token value**: an address holding 0.5 YEC and one YED output
+  reports 0.5001, the 10,000 zat of the token included.
+- Node 1 of the armed devnet is the stock node (no `-yellowback`), so the key round trip uses
+  node 5 (an attestor node with the wallet layer): `importprivkey … true` → `dumpprivkey` equals
+  `export-wif`, `yed_getbalance` grows by the address's cents, `yed_listunspent` lists the token,
+  `yed_send` moves it.
 
 ## Toolchain
 
@@ -109,17 +158,55 @@ D-W-7); run it with `--ignored` once the file is filled.
 ```
 yew-cli [--server host:port] [--plain] [--wallet PATH] [--network regtest|testnet|mainnet]
         [--seed-file PATH | YEW_SEED="<mnemonic>"] [--passphrase P | YEW_PASSPHRASE=P] [--birthday H]
-        status | address [--new] | balance | sync | send-yec <addr> <zat> [--all]
+        status | yed-info | price | address [--new] | balance | sync | coins
+        | send-yec <addr> <zat> [--all] | send-yed <addr> <cents> [<addr> <cents> ...]
         | export-wif <addr> | import-wif <wif> | history | version
 ```
 
 Defaults: `127.0.0.1:9067`, TLS on (`--plain` is refused on mainnet), `yew-wallet.sqlite`,
-`regtest`. `send-yec` syncs, builds, runs the gate, broadcasts, locks the inputs until the
-transaction confirms or its `nExpiryHeight` passes; `--all` allows the fee reserve to be spent.
+`regtest`. Every command that talks to the server probes `GetYellowbackInfo` first (contract
+rule 1); `status` and `yed-info` print what it found, `price` the display price (`pMint`).
+`balance` shows YED, pending YED, the price, YEC available / reserved / pending and any HELD
+outputs; `coins` is the debug listing of every UTXO with its class, cents and lock; `history`
+shows the verdict-derived labels. `send-yec` and `send-yed` sync, build, run both gate layers,
+broadcast, lock the inputs until the transaction confirms or its `nExpiryHeight` passes;
+`--all` lets a YEC send spend the fee reserve; `send-yed` takes `ye…`/`yr…`/`s…` addresses and
+cents (up to 14 recipients).
 `import-wif` adds a YecWallet/`ycashd` key outside the HD tree (not covered by the seed);
 `export-wif` is byte-identical to `dumpprivkey` (checked on the devnet).
 
-## Devnet acceptance (plan §6.3, §7 W1)
+## Devnet acceptance (plan §6.3, §7 W1 and W2)
+
+`scripts/devnet-w2.sh` runs the W2 acceptance on the **armed** devnet the W0c vectors came from
+(`YELLOWBACK_DEVNET_DIR=~/yb-devnet-w0c`, `YELLOWBACK_DEVNET_PORTSEED=9`, `lightwalletd-dd
+--yellowback` on `127.0.0.1:9267`, plain HTTP/2):
+
+```bash
+scripts/devnet-w2.sh up       # yellowback-devnet up (armed) + lightwalletd start --port 9267 --extra=--yellowback
+scripts/devnet-w2.sh lwd      # (re)start only the lightwalletd on a running devnet
+scripts/devnet-w2.sh test     # YEW_DEVNET=1 cargo test -p yew-core --test devnet -- --ignored w2_
+scripts/devnet-w2.sh status / down [--wipe]
+```
+
+`w2_yed_tokens_transfer_gate_and_key_round_trip` (2026-09-24, 39 s): the service probes as
+rpcversion 3, enabled and active; `yed_mint 100000 48` on node 0 (carrier, pool block, MINT,
+pool block) confirms with verdict `ok`; node 0 sends 1 YEC and $50.00 to wallet A — nothing
+before the block, TOKEN $50.00 and `received $50.00 / ok` after; A sends $12.34 to wallet B —
+the $37.66 change is PENDING_TOKEN and `sending $12.34` until the block, then `sent $12.34`
+on A and `received $12.34` on B, the node holds exactly the bytes the core built; a TRANSFER
+assembled with an assignment of $99.99 over a $37.66 input passes the local layer and is
+refused by the node's dry run with verdict `transfer-over-assigned`, nothing broadcast; $37.16
+from a $37.66 coin is refused `change-floor` with alternatives 3666 / 3766; `coinselect.rs`
+equals `yed_estimatesend` on node 0 input-for-input (stage, inputs, selected, change,
+alternatives) on 100 random targets over three coin sets (node 0's, then split twice by
+`yed_sendmany`); B's key exported as WIF, imported on node 5 with rescan: `dumpprivkey` equals,
+`getreceivedbyaddress` 0.5001, `yed_getbalance` +1234, `yed_listunspent` lists the token,
+`yed_estimatesend` on node 5 reports the same change-floor alternatives the core computes, and
+node 5's `yed_send` moves the $12.34 back to A (B labels it `sent $12.34`); a YEC send from A
+(holding tokens) spends only `YEC`/`FEE_RESERVE` inputs and passes the node's dry run. Offline:
+56 unit tests (the gate property test on 2,000 random coin sets for both paths, the builder
+property test on 1,000 random wallets, the node's coinselect tables), the template payload
+vectors, the schema migration.
 
 `scripts/devnet-w1.sh` runs a private regtest devnet so the default one is never touched:
 `YELLOWBACK_DEVNET_DIR=~/yb-devnet-w1`, `YELLOWBACK_DEVNET_PORTSEED=57`, `lightwalletd-dd` on
