@@ -1,10 +1,11 @@
 // The root: theme (light and dark), the one AppState, and the choice between Onboarding, the
-// lock screen and the shell (Home, with History behind one tab; plan §1.1).
+// lock screen and the shell (Home, Yellowback and History behind three tabs; plan §1.1, §5.3).
 import 'package:flutter/material.dart';
 
 import 'screens/history.dart';
 import 'screens/home.dart';
 import 'screens/onboarding.dart';
+import 'screens/yellowback.dart';
 import 'state/app_scope.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
@@ -123,12 +124,13 @@ class _ShellState extends State<Shell> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(index: _tab, children: const [HomeScreen(), HistoryScreen()]),
+      body: IndexedStack(index: _tab, children: const [HomeScreen(), YellowbackScreen(), HistoryScreen()]),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
         onDestinationSelected: (i) => setState(() => _tab = i),
         destinations: const [
           NavigationDestination(key: Key('tab-home'), icon: Icon(Icons.account_balance_wallet_outlined), selectedIcon: Icon(Icons.account_balance_wallet), label: 'Wallet'),
+          NavigationDestination(key: Key('tab-yellowback'), icon: Icon(Icons.lock_outline_rounded), selectedIcon: Icon(Icons.lock_rounded), label: 'Yellowback'),
           NavigationDestination(key: Key('tab-history'), icon: Icon(Icons.receipt_long_outlined), selectedIcon: Icon(Icons.receipt_long), label: 'History'),
         ],
       ),

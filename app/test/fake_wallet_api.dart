@@ -1,6 +1,7 @@
 // A fake WalletApi for the widget tests (plan §6.2 "Flutter widget tests with a mocked
 // bridge"): scripted answers, recorded calls, no core.
 import 'dart:async';
+import 'dart:typed_data' show Uint32List;
 import 'dart:ui' show Size;
 
 import 'package:flutter_test/flutter_test.dart';
@@ -35,6 +36,193 @@ class FakeWalletApi implements WalletApi {
   DryRun dryRun = const DryRun(valid: true, verdict: 'ok', burnedCents: 0, wouldBeRejected: false, yedInCents: 5000, yedOutCents: 5000, accepted: true);
   AddressPair address = const AddressPair(ye: fakeYe, s: fakeS, path: "m/44'/347'/0'/0/0", coveredBySeed: true);
   int fresh = 0;
+
+  // ---- W4: the two-step table and the vaults, scripted.
+  List<MintStatus> mintsAnswer = [];
+  List<VaultSummary> vaultsAnswer = const [];
+  List<ClaimableItem> claimableAnswer = const [];
+  Object? mintEstimateError;
+  Object? mintStartError;
+  Object? mintFinishError;
+  Object? mintSweepError;
+  Object? redeemError;
+  Object? claimableError;
+  Object? claimError;
+  int tip = 484;
+  bool armed = true;
+
+  MintStatus mintRow({required int id, required String state, String kind = 'mint', int cents = 2500, int tip = 484, int refHeight = 480, String vaultTxid = ''}) {
+    final expiry = refHeight + 40;
+    final open = tip + 1 + 3 <= expiry;
+    return MintStatus(
+      mintId: id,
+      kind: kind,
+      state: state,
+      createdHeight: refHeight + 2,
+      cents: cents,
+      lockBlocks: 48,
+      termClass: 'A',
+      refHeight: refHeight,
+      lockHeight: refHeight + 48,
+      claimHeight: refHeight + 68,
+      expiryHeight: expiry,
+      collateralZat: 950000000,
+      feeZat: 1000,
+      attestFeeZat: 0,
+      residualZat: 0,
+      bundleSeqs: '0,1,2',
+      carrierTxid: 'ca' * 32,
+      mainTxid: state == 'MAIN_SENT' || state == 'DONE' ? 'ma' * 32 : '',
+      sweepTxid: state == 'SWEEP_SENT' || state == 'SWEPT' ? '5e' * 32 : '',
+      vaultTxid: vaultTxid,
+      tip: tip,
+      inProgress: state == 'CARRIER_SENT' || state == 'CARRIER_CONFIRMED' || state == 'MAIN_SENT',
+      windowOpen: open,
+      blocksLeft: open ? expiry - (tip + 4) : 0,
+      canFinish: state == 'CARRIER_CONFIRMED' && open,
+      canSweep: state == 'LAPSED',
+      note: '',
+    );
+  }
+
+  VaultSummary vault({required String txid, String status = 'ACTIVE', int cents = 2500, int lockHeight = 528, int tip = 484, bool underwater = false, String voidReason = ''}) => VaultSummary(
+    vaultTxid: txid,
+    status: status,
+    ownerAddress: fakeYe,
+    termClass: 'A',
+    cents: cents,
+    collateralZat: 950000000,
+    lockHeight: lockHeight,
+    claimHeight: lockHeight + 20,
+    mintHeight: 482,
+    tip: tip,
+    open: status == 'ACTIVE' || status == 'VOID',
+    redeemable: status == 'ACTIVE' && tip >= lockHeight,
+    blocksUntilRedeem: lockHeight > tip ? lockHeight - tip : 0,
+    releasable: status == 'VOID',
+    claimable: underwater,
+    underwaterAtMicroUsd: 400000,
+    underwater: underwater,
+    closeHeight: status == 'CLOSED' || status == 'CLAIMED' ? 530 : 0,
+    closingTxid: status == 'CLOSED' || status == 'CLAIMED' ? 'c1' * 32 : '',
+    voidReason: voidReason,
+  );
+
+  void _set(MintStatus m) {
+    final i = mintsAnswer.indexWhere((x) => x.mintId == m.mintId);
+    if (i < 0) {
+      mintsAnswer.add(m);
+    } else {
+      mintsAnswer[i] = m;
+    }
+  }
+
+  @override
+  Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks}) async {
+    calls.add('mintEstimate $cents $lockBlocks');
+    if (mintEstimateError != null) throw mintEstimateError!;
+    final klass = lockBlocks <= 96 ? 'A' : (lockBlocks <= 144 ? 'B' : 'C');
+    final collateral = cents * 19000 * 2 ~/ 1; // 1 YED = $1, $0.52/YEC, 200 %
+    final total = collateral + 10000 + 10000 + 2000 + 1000;
+    final available = balancesAnswer.yecZat + balancesAnswer.yecReservedZat;
+    return MintEstimate(
+      cents: cents,
+      lockBlocks: lockBlocks,
+      termClass: klass,
+      refHeight: tip - 4,
+      lockHeight: tip - 4 + lockBlocks,
+      claimHeight: tip - 4 + lockBlocks + 20,
+      expiryHeight: tip - 4 + 40,
+      requiredZat: collateral - 500,
+      collateralZat: collateral,
+      feeZat: 1000,
+      attestFeeZat: 0,
+      carrierZat: 10000,
+      tokenZat: 10000,
+      networkFeeZat: 2000,
+      totalZat: total,
+      availableZat: available,
+      affordable: available >= total,
+      pMintMicroUsd: 520000,
+      armed: armed,
+      bundleSeqs: Uint32List.fromList([0, 1, 2]),
+    );
+  }
+
+  @override
+  Future<MintStatus> mintStart({required int cents, required int lockBlocks}) async {
+    calls.add('mintStart $cents $lockBlocks');
+    if (mintStartError != null) throw mintStartError!;
+    final m = mintRow(id: mintsAnswer.length + 1, state: 'CARRIER_SENT', cents: cents, tip: tip, refHeight: tip - 4);
+    _set(m);
+    return m;
+  }
+
+  @override
+  Future<MintStatus> mintStatus({required int mintId}) async => mintsAnswer.firstWhere((m) => m.mintId == mintId);
+
+  @override
+  Future<List<MintStatus>> mints() async => List.of(mintsAnswer);
+
+  @override
+  Future<MintStatus> mintFinish({required int mintId}) async {
+    calls.add('mintFinish $mintId');
+    if (mintFinishError != null) throw mintFinishError!;
+    final old = mintsAnswer.firstWhere((m) => m.mintId == mintId);
+    final m = mintRow(id: mintId, state: 'MAIN_SENT', kind: old.kind, cents: old.cents, tip: old.tip, refHeight: old.refHeight, vaultTxid: old.vaultTxid);
+    _set(m);
+    return m;
+  }
+
+  @override
+  Future<MintStatus> mintSweep({required int mintId}) async {
+    calls.add('mintSweep $mintId');
+    if (mintSweepError != null) throw mintSweepError!;
+    final old = mintsAnswer.firstWhere((m) => m.mintId == mintId);
+    final m = mintRow(id: mintId, state: 'SWEEP_SENT', kind: old.kind, cents: old.cents, tip: old.tip, refHeight: old.refHeight);
+    _set(m);
+    return m;
+  }
+
+  @override
+  Future<List<VaultSummary>> vaults() async => vaultsAnswer;
+
+  @override
+  Future<RedeemResult> redeem({required String vaultTxid}) async {
+    calls.add('redeem $vaultTxid');
+    if (redeemError != null) throw redeemError!;
+    final v = vaultsAnswer.firstWhere((x) => x.vaultTxid == vaultTxid);
+    return RedeemResult(
+      txid: 'ed' * 32,
+      verdict: 'ok',
+      kind: v.releasable ? 'release' : 'redeem',
+      burnCents: v.releasable ? 0 : v.cents,
+      extraBurnCents: 0,
+      changeCents: v.releasable ? 0 : balancesAnswer.yedCents - v.cents,
+      feeZat: 1000,
+      collateralZat: v.collateralZat - 2000,
+      collateralAddress: fakeS,
+      lockTime: v.lockHeight,
+      expiryHeight: tip + 40,
+    );
+  }
+
+  @override
+  Future<List<ClaimableItem>> claimable() async {
+    calls.add('claimable');
+    if (claimableError != null) throw claimableError!;
+    return claimableAnswer;
+  }
+
+  @override
+  Future<MintStatus> claim({required String vaultTxid}) async {
+    calls.add('claim $vaultTxid');
+    if (claimError != null) throw claimError!;
+    final c = claimableAnswer.firstWhere((x) => x.vaultTxid == vaultTxid);
+    final m = mintRow(id: mintsAnswer.length + 1, state: 'CARRIER_SENT', kind: 'claim', cents: c.cents, tip: tip, refHeight: tip - 4, vaultTxid: vaultTxid);
+    _set(m);
+    return m;
+  }
 
   @override
   Future<ServerProbe> probeServer({required String server, required bool plain, required NetworkId network}) async {
@@ -183,7 +371,8 @@ class Harness {
       secrets.write('seed', fakeWords);
       secrets.write('settings', const WalletSettings(server: '127.0.0.1:9267', plain: true, network: NetworkId.regtest, trustAccepted: true).encode());
     }
-    state = AppState(api: api, secrets: secrets, auth: const NoAuthenticator(), dirs: const FixedDataDirs('/tmp/yew-test'));
+    state = AppState(api: api, secrets: secrets, auth: const NoAuthenticator(), dirs: const FixedDataDirs('/tmp/yew-test'))
+      ..mintPollInterval = null;
   }
 
   final FakeWalletApi api = FakeWalletApi();

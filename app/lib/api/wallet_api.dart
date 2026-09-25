@@ -8,18 +8,23 @@ export '../src/rust/api.dart'
         AddressCheck,
         AddressPair,
         Balances,
+        ClaimableItem,
         Created,
         DryRun,
         ErrorKind,
         HistoryItem,
         HistoryPage,
+        MintEstimate,
+        MintStatus,
         NetworkId,
         Recipient,
+        RedeemResult,
         SendResult,
         ServerProbe,
         Status,
         SyncEvent,
         SyncStage,
+        VaultSummary,
         WifExport,
         YecPreview,
         YedPreview,
@@ -85,6 +90,29 @@ abstract class WalletApi {
   Future<AddressPair> importWif({required String wif, int? birthday});
 
   Stream<SyncEvent> syncNow();
+
+  // ---- Yellowback operations (plan §3.4, §5.3; Phase W4). Every broadcast runs through the
+  // core's gate; the app only renders the rows the core returns.
+
+  Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks});
+
+  Future<MintStatus> mintStart({required int cents, required int lockBlocks});
+
+  Future<MintStatus> mintStatus({required int mintId});
+
+  Future<List<MintStatus>> mints();
+
+  Future<MintStatus> mintFinish({required int mintId});
+
+  Future<MintStatus> mintSweep({required int mintId});
+
+  Future<List<VaultSummary>> vaults();
+
+  Future<RedeemResult> redeem({required String vaultTxid});
+
+  Future<List<ClaimableItem>> claimable();
+
+  Future<MintStatus> claim({required String vaultTxid});
 
   String generateSeedWords({required int words});
 

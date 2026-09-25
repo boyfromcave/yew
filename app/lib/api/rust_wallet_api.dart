@@ -109,6 +109,38 @@ class RustWalletApi implements WalletApi {
   Stream<SyncEvent> syncNow() => rust.syncNow();
 
   @override
+  Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks}) =>
+      rust.mintEstimate(cents: cents, lockBlocks: lockBlocks);
+
+  @override
+  Future<MintStatus> mintStart({required int cents, required int lockBlocks}) =>
+      rust.mintStart(cents: cents, lockBlocks: lockBlocks);
+
+  @override
+  Future<MintStatus> mintStatus({required int mintId}) => rust.mintStatus(mintId: mintId);
+
+  @override
+  Future<List<MintStatus>> mints() => rust.mints();
+
+  @override
+  Future<MintStatus> mintFinish({required int mintId}) => rust.mintFinish(mintId: mintId);
+
+  @override
+  Future<MintStatus> mintSweep({required int mintId}) => rust.mintSweep(mintId: mintId);
+
+  @override
+  Future<List<VaultSummary>> vaults() => rust.vaults();
+
+  @override
+  Future<RedeemResult> redeem({required String vaultTxid}) => rust.redeem(vaultTxid: vaultTxid);
+
+  @override
+  Future<List<ClaimableItem>> claimable() => rust.claimable();
+
+  @override
+  Future<MintStatus> claim({required String vaultTxid}) => rust.claim(vaultTxid: vaultTxid);
+
+  @override
   String generateSeedWords({required int words}) => rust.generateSeedWords(words: words);
 
   @override

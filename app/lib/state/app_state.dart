@@ -50,6 +50,14 @@ class AppState extends ChangeNotifier {
   );
   Status? status;
   List<HistoryItem> history = const [];
+
+  /// The two-step rows (mints and claims) and the own vaults, from the core's store (W4).
+  List<MintStatus> mints = const [];
+  List<VaultSummary> vaults = const [];
+
+  /// How often a screen watching a mint in progress syncs by itself; `null` disables the
+  /// timer (the widget tests).
+  Duration? mintPollInterval = const Duration(seconds: 15);
   AddressPair? receive;
   StreamSubscription<SyncEvent>? _sync;
 
@@ -160,6 +168,8 @@ class AppState extends ChangeNotifier {
       balances = await api.balances();
       receive = await api.receiveAddress(fresh: false);
       history = (await api.history(page: 0, pageSize: 200)).rows;
+      mints = await api.mints();
+      vaults = await api.vaults();
       lastError = null;
     } catch (e) {
       lastError = messageOf(e);
@@ -228,4 +238,23 @@ class AppState extends ChangeNotifier {
 
   /// Send YED is possible only when the server offers Yellowback and there is YEC for the fee.
   bool get canPayYedFee => balances.yecZat + balances.yecReservedZat >= balances.yedSendMinZat;
+
+  /// The rows still moving (the Yellowback screen's "in progress" list).
+  List<MintStatus> get mintsInProgress => mints.where((m) => m.inProgress || m.canSweep || m.state == 'SWEEP_SENT').toList();
+
+  /// One row by id, from the last refresh.
+  MintStatus? mintById(int id) {
+    for (final m in mints) {
+      if (m.mintId == id) return m;
+    }
+    return null;
+  }
+
+  /// One vault by txid, from the last refresh.
+  VaultSummary? vaultByTxid(String txid) {
+    for (final v in vaults) {
+      if (v.vaultTxid == txid) return v;
+    }
+    return null;
+  }
 }
