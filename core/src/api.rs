@@ -1159,7 +1159,7 @@ pub fn send_yed_preview(recipients: Vec<Recipient>) -> Result<YedPreview, YewErr
                     would_be_rejected: v.would_be_rejected,
                     yed_in_cents: v.yed_in,
                     yed_out_cents: v.yed_out,
-                    accepted: crate::gate::accept(&v).is_ok(),
+                    accepted: crate::gate::accept(&v, 0).is_ok(),
                 },
             };
             o.previews.insert(txid, Preview::Yed(p));
