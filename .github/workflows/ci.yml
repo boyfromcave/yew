@@ -1,5 +1,7 @@
-# YEW CI (plan §6.4): Rust core on Linux and macOS; Flutter analyze/test on macOS.
-# The devnet suite is nightly on the owner's machine, not here. iOS signing is never done in CI.
+# YEW CI (plan §6.4): Rust core on Linux and macOS; Flutter analyze/test on macOS; the bridge
+# and the proto pin are verified, not trusted (docs/release.md §1). `cargo audit` and the
+# license listing run on Linux (W5). The devnet suite is nightly on the owner's machine, not
+# here. iOS signing is never done in CI.
 name: ci
 on:
   push:
@@ -23,9 +25,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo test --workspace --locked
       - run: scripts/check-proto-pin.sh
       - run: scripts/check-deps.sh
+      - run: scripts/check-licenses.sh
+      - name: cargo audit (W5; blocks only on advisories with a fix, scripts/audit.sh)
+        run: |
+          cargo install cargo-audit --locked
+          scripts/audit.sh
 
   core-macos:
     name: core + app (macos)
@@ -39,7 +46,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo test --workspace --locked
       - run: scripts/check-proto-pin.sh
       - run: scripts/check-deps.sh
       - name: Flutter version from README.md
