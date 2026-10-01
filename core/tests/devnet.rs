@@ -247,6 +247,7 @@ async fn w1_yec_round_trip_and_restore() {
     println!("funding {} ({})", addr.address_ye, addr.address_s);
     let fund_txid = dn.node(0, &["sendtoaddress", &addr.address_s, "1.5"]);
     assert_eq!(fund_txid.len(), 64, "sendtoaddress txid: {fund_txid}");
+    dn.wait_mempool(&fund_txid);
     dn.run(&["mine", "1"]);
     let h = c.latest_height().await.unwrap();
     wait_for_height(&mut c, h.max(info.block_height + 1)).await;
@@ -284,6 +285,7 @@ async fn w1_yec_round_trip_and_restore() {
     );
     let (avail, _) = coins::yec_balances(&w.spendable_utxos().unwrap());
     assert!(avail < funded - send, "locked inputs are not spendable");
+    dn.wait_mempool(&txid.to_string());
     dn.run(&["mine", "1"]);
     let h = c.latest_height().await.unwrap();
     wait_for_height(&mut c, h + 1).await;
