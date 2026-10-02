@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // The device side of D-W-6: the seed lives only in the platform keystore (iOS Keychain,
 // Android Keystore through flutter_secure_storage) and is handed to the core at unlock;
 // biometrics through local_auth; the data directory through path_provider. Each is behind a

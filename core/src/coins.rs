@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! UTXO classes (plan §3.7, D-W-12), the classifier, the fee reserve and `SelectYec`.
 //!
 //! Translation source (plan §3.6): `ycash-dd/src/yellowback/txbuilder.cpp:395-420` (`SelectYec`:

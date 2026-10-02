@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // A QR with its text and a copy action (Receive; the export-key screen reuses it).
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';

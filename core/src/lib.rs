@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! `yew-core`: the Rust core of YEW ("Your Electronic Wallet"), a transparent-only mobile
 //! wallet for YEC and Ycash Yellowback (YED).
 //!

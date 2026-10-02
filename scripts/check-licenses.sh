@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+#
 # License listing and check (plan §7 W5, docs/licenses.md): every crate the shipped core links
 # (normal + build dependencies of the workspace, dev dependencies excluded) must carry a license
 # expression made only of the SPDX identifiers below — all permissive, all compatible with the

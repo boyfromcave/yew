@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // The interface every screen depends on (plan §3.4). One implementation is the generated
 // flutter_rust_bridge functions (rust_wallet_api.dart); the widget tests use a fake. The
 // models are the generated data classes of src/rust/api.dart: plain, const, no behaviour.

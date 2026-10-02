@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // Yellowback (plan §5.3): the YED you hold, the vaults you own (status, lock height, the
 // underwater warning), the mints and claims in flight, "Mint" and "Claimable". Everything
 // shown is a row the core's store holds; nothing is computed here beyond formatting.

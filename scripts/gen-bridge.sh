@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+#
 # Regenerates the flutter_rust_bridge bindings (flutter_rust_bridge.yaml): core/src/api.rs ->
 # core/src/frb_generated.rs + app/lib/src/rust/*. Idempotent (codegen overwrites its outputs;
 # both are committed). The codegen version must equal the flutter_rust_bridge crate version in

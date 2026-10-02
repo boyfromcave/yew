@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // The Home cards (plan §5.1): one large number, one sub-line, one accent per asset. The
 // number animates only when it changes (D-W-9: motion where something happened).
 import 'package:flutter/material.dart';

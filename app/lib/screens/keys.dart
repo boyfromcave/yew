@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // Export private key (D-W-11): pick an address, show its WIF as text and QR, with the
 // warning that YEC **and** YED on that address move with it. Import private key: a WIF from
 // YecWallet / ycashd, flagged as not covered by the seed backup.

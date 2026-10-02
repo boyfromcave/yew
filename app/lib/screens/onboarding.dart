@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // Onboarding (plan §5.1): create / restore a 12-word seed, birthday height (default: the
 // server's tip), the trust statement, the transparent-only notice, biometric unlock.
 import 'package:flutter/material.dart';

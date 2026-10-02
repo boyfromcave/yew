@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The owner-path vault spend (plan §4 rule 6; spec §3.5 "REDEEM, owner path" and "VOID
 //! RELEASE"): `vin[0]` = the own vault with `<ownerSig> OP_1 <vaultScript>` and `nSequence
 //! 0xFFFFFFFE`, `vin[1..]` = own YED inputs covering `mintedCents` (the floor-aware selector

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // Helpers for the integration tests on a real phone screen (W6). The screens are lazy
 // `ListView`s: on a 6" display the button below the trust text or the send form is not built
 // until it is scrolled to, so `find.byKey` sees nothing — unlike the 800x600 widget-test

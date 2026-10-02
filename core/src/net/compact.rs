@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The typed T0 client over `CompactTxStreamer` (plan §1.4, §3.2; yodl 0.4.6 baseline):
 //! `GetLightdInfo`, `GetLatestBlock`, `GetAddressUtxos`, `GetTaddressTxids` (a stream of raw
 //! transactions with heights), `GetTaddressBalance`, `SendTransaction`.

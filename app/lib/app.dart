@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // The root: theme (light and dark), the one AppState, and the choice between Onboarding, the
 // lock screen and the shell (Home, Yellowback and History behind three tabs; plan §1.1, §5.3).
 import 'package:flutter/material.dart';

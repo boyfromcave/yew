@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+#
 # Builds yew-core for Android (scripts/build-core-android.sh -> app/android/app/src/main/jniLibs)
 # and runs the app, or one of the integration tests, on an Android emulator against a
 # lightwalletd-dd `--yellowback` server.

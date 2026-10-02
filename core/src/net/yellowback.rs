@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The typed T1–T3 client over `YellowbackStreamer` (plan §1.4, §3.5, §4 rule 1; lightwalletd
 //! plan §3, §4.1, §5): every method of `lightwalletd-dd/walletrpc/yellowback.proto`, each a
 //! thin proxy of one read-only `yed_*` RPC on the server's node. Streams are collected.

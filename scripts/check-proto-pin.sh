@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+#
 # Verifies proto/*.proto are byte-identical to lightwalletd-dd/walletrpc/ (the interface is
 # declared once, in the server's repo; plan §1 budget table, §7 W0a). Skips when the sibling
 # checkout is absent (CI), fails when it is present and differs; proto/PIN records the commit.

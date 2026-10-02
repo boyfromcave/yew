@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! Transactions: the v4 (Sapling, `fOverwintered`) transparent-only serializer, a parser that
 //! also reads the transparent part of transactions with shielded components (history of funds
 //! from shielded senders), the ZIP-243 sighash bound to `consensusBranchId`, and the signer

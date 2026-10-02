@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! Scripts: the generic `CScript` push encoding, P2PKH and P2SH scriptPubKey / scriptSig
 //! construction and recognition, and (W4) the Yellowback `vaultScript` / `carrierScript`
 //! templates with their scriptSigs.

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // Amount rules on screen (plan §3.7 "What the user sees", W3 brief): YED is dollars with two
 // decimals from cents; YEC has eight decimals from zat. Pure functions, no locale package.
 

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or https://www.opensource.org/licenses/mit-license.php .
+
 // Yellowback (YED) light-client service: a second, separate gRPC service beside
 // CompactTxStreamer (service.proto, which is not edited). Every method is a thin proxy of a
 // read-only yed_* RPC on the node this server already talks to; the server adds no rule and

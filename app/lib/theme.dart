@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // The one design system of YEW (plan D-W-9, §5.2): Material 3, one accent for YED and one for
 // YEC, large tabular numerals, cards, light and dark from day one, restrained motion.
 import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! Compiles the pinned lightwalletd protos (`../proto/*.proto`, pinned in `../proto/PIN`) into
 //! client stubs for `CompactTxStreamer` and `YellowbackStreamer` (plan §3.1 `net/`).
 //! Uses the `protoc` on PATH (or `PROTOC`); nothing is vendored.

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! Storage (D-W-6): the SQLite schema (wallet meta, addresses, utxos with class and cents,
 //! locks, history with labels, own outputs, own tokens, pending transactions, imported keys,
 //! and — W4 — the mint / claim state machine and the own-vault table) and its queries.

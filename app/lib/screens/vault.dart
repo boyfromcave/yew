@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // Vault (plan §5.3): the details of one own vault; Redeem once `lockHeight` is reached
 // (burning the debt from the wallet's YED); Release when the node reports it VOID. Both are
 // the core's `redeem`, which builds, dry-runs, gates and broadcasts; the slider only asks.

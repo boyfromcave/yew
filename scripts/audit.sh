@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+#
 # Dependency audit (plan §7 W5, docs/release.md §2): `cargo audit` over Cargo.lock against the
 # RustSec database. Blocking when an advisory has a patched version we could move to;
 # non-blocking (printed, exit 0) when the advisory has no fix yet or is a warning

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The wallet: the key ring, the store and the network bound together. This is what `sync`,
 //! the builders and (in W3) `api.rs` operate on. Keys are derived on demand and never stored;
 //! imported keys (D-W-11) are stored wrapped under a key derived from the seed (`store.rs`).

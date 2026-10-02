@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // The term classes of a mint (spec §2 table, V19): the lock range in blocks per class, per
 // network. The node decides the class from `lockBlocks` (the estimate reports it); this table
 // only gives the Mint screen its picker and each class's shortest lock as the default.

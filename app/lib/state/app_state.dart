@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // The single app state (plan §7 W3: "one store, streams from the core"). Screens read it and
 // call its intents; it talks to the core only through WalletApi and to the device only
 // through SecretStore / Authenticator / DataDirs. It holds no key material beyond the moment

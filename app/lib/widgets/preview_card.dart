@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // What a screen renders before a signature is used (plan §3.4: "the preview objects are the
 // only thing a screen renders before…"): fee in YEC, change, and for YED the node's dry-run
 // verdict, verbatim.

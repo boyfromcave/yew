@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The broadcast gate (D-W-5): every `confirm` passes through [`confirm`] and there is no
 //! override — no "send anyway" parameter, no debug flag, no `cfg(test)` hook.
 //!

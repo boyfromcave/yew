@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+#
 # The trust statement has one source, docs/trust.md; app/lib/trust_text.dart is its copy
 # (client contract rule 7). Fails when the paragraphs differ.
 set -euo pipefail

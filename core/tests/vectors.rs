@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! Node-generated vectors (plan W0c, `yellowback-devnet vectors`): the core must reproduce the
 //! node's bytes exactly (D-W-3). Files live in `core/tests/vectors/`:
 //! `transparent.json`, `addresses.json`, `params.json`, `ywallet.json` (`templates.json` is W2/W4).

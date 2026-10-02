@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // The progress of one two-step row (plan §5.3): *funding carrier → waiting for 1
 // confirmation → minting → done*, or *window closed, sweeping carrier*. The screen renders
 // the row the core holds and moves it forward the only two ways a screen can: `mintFinish`

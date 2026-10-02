@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The two-step CLAIM of another wallet's vault (plan §4 rule 6, §5.3 "Claimable"; v3 spec
 //! §3.5 "CLAIM"): the vault must be in `ListClaimable`; `R` = the index tip; the bundle is
 //! `BuildBundle(R, outpointSelector(vault))`, verified against `ListAttestors` (rule 6); the

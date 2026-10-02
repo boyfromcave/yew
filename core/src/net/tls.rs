@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! Server configuration and channel construction (plan §3.5): TLS (`rustls`, system roots)
 //! everywhere but regtest, where `plain` selects `http://`; an optional pinned certificate
 //! (`ca_pem`) replaces the system roots; the default endpoint table (`docs/release.md`).

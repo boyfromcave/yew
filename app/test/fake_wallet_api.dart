@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // A fake WalletApi for the widget tests (plan §6.2 "Flutter widget tests with a mocked
 // bridge"): scripted answers, recorded calls, no core.
 import 'dart:async';

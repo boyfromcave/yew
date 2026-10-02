@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // The QR scanner, in a bottom sheet opened on demand (the camera plugin is never built
 // otherwise, so widget tests can render the Send screen).
 import 'package:flutter/material.dart';

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // Seed backup: the recovery phrase, shown once after creation and from Settings (behind the
 // device prompt). The words come from the keystore through AppState, never from the core.
 import 'package:flutter/material.dart';

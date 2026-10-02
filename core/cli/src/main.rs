@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! `yew-cli`: the developer's and the devnet tests' driver over `yew-core` (plan §6.3).
 //!
 //! ```text

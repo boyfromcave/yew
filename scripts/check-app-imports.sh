@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+#
 # Plan §7 W3 acceptance: "no crypto or networking import under app/lib". The app is a view over
 # the Rust core; the only networking is the core's gRPC, the only crypto is the core's, the only
 # persistence of keys is flutter_secure_storage (D-W-6) and the core's SQLite. Fails when any

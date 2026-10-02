@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! A YEC send: `SelectYec` inputs, one P2PKH/P2SH output to the destination, change to the
 //! next change address, fee = `FEE_ZAT`, `nExpiryHeight = tip + TX_EXPIRY_DELTA`, signed with
 //! ZIP-243 under the server's branch id. The preview is the transaction that will be sent.

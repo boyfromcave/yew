@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! Keys and addresses: BIP39 mnemonic → seed, BIP32 secp256k1 derivation (implemented here over
 //! `hmac`/`sha2`, no extra crate), BIP44 paths compatible with Ywallet (D-W-7), compressed
 //! public keys, HASH160, address encoding (`s…` / `ye…` / `yt…` / `yr…`), WIF export and

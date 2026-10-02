@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // The one real implementation of WalletApi: the generated flutter_rust_bridge functions
 // (src/rust/api.dart, from core/src/api.rs). Nothing else under lib/ calls the bridge.
 import 'dart:io' show Platform;

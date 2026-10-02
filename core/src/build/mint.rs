@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The two-step MINT (plan §4 rule 5, §5.3; v3 spec §3.5): `EstimateCollateral` →
 //! `BuildBundle` → the **carrier funding transaction** (`P2SH(carrierScript(freshKey,
 //! SHA256(bundle)))` of `CARRIER_VALUE`) → one confirmation → the **MINT** with `vin[last]` the

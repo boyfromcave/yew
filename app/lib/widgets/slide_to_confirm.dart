@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // "One gesture to send" (plan §5.2): a slider that fires once dragged to the end. No
 // package; a GestureDetector over a track. Disabled while busy.
 import 'package:flutter/material.dart';

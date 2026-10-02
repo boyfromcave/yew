@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The Yellowback payload codec, version 3: `"YB" ‖ 0x03 ‖ type ‖ body`, the data of a
 //! transaction's only `OP_RETURN` output (spec §3.3; v3 §3.3).
 //!

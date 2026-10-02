@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // Send (plan §5.1, §3.7 item 4): asset toggle YED/YEC, address (paste, scan), amount,
 // preview (fee in YEC, dry-run verdict for YED), slide to confirm, result. Every error the
 // core returns is shown verbatim; a gate refusal is the node's verdict.

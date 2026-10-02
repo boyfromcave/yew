@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // Plan §6.3, the M1 flow on a device against the W2 armed devnet (`scripts/devnet-w4.sh up`:
 // lightwalletd-dd --yellowback on port 9267, plain HTTP/2). Passes on the iOS simulator and the
 // Android emulator (W6, README "Running on a simulator / emulator" — the operator prompts and

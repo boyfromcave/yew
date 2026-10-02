@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+#
 # Dependency allow-list check (plan §3.3, §6.4): the direct normal dependencies of yew-core
 # (from `cargo tree`) must all appear in scripts/allowed-deps.txt. Transitive deps are not
 # checked; build-dependencies (tonic-prost-build, prost-build) are not checked.

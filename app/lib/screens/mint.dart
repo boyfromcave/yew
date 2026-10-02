@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // Mint (plan §5.3): cents, the term-class picker, the estimate (required YEC, fees, heights),
 // the two-step explained in one sentence, then the carrier step. The estimate is the core's;
 // this screen never computes a collateral. After the start it hands over to MintProgressScreen,

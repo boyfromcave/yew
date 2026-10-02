@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The bridge surface (plan §3.4): the small set of calls the Flutter app sees through
 //! `flutter_rust_bridge`, each returning a plain data struct or a [`YewError`] whose `message`
 //! the UI may show verbatim (a gate refusal carries the node's verdict text).

@@ -10,6 +10,9 @@
 # The devnet is left up after `test`; `down` is deliberate. Everything under ~/yb-devnet-w1 is
 # disposable. Overrides: YELLOWBACK_DEVNET_DIR, YELLOWBACK_DEVNET_PORTSEED, YEW_LWD_PORT.
 set -euo pipefail
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ws="$(cd "$here/.." && pwd)"
 export YELLOWBACK_DEVNET_DIR="${YELLOWBACK_DEVNET_DIR:-$HOME/yb-devnet-w1}"

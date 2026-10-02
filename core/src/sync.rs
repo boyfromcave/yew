@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! Sync (plan §3.2): gap-limit address derivation, `GetTaddressTxids` per address for history
 //! (the yodl baseline streams the raw transactions with heights), `GetAddressUtxos` for the
 //! confirmed UTXO set, **`GetAddressTokens` for the YED token set** (the only source of the

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // Receive (plan §5.1): one QR (`ye…`), a toggle to the `s…` form, copy, "new address".
 import 'package:flutter/material.dart';
 

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! Attestation bundles: the wire form, and compact-ECDSA verification of every attestation
 //! against the seated attestor set returned by `YellowbackStreamer.ListAttestors` (plan §4
 //! rule 6: "verify the bundle it is handed: every attestation's compact ECDSA signature against

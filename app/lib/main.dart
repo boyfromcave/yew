@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // YEW ("Your Electronic Wallet"): a transparent-only wallet for YEC and Ycash Yellowback (YED).
 // Everything under lib/ is a view over the Rust core (api/rust_wallet_api.dart); the seed
 // lives in the platform keystore (state/secrets.dart). scripts/check-app-imports.sh keeps

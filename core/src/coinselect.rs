@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The floor-aware YED coin selector: EXACT, SINGLE, GREEDY, SEARCH for a TRANSFER, plus BURN
 //! for a REDEEM or CLAIM; and `NearestWorkable`, the two amounts a `change-floor` refusal names.
 //!

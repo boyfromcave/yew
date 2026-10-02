@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // History (plan §5.1): one list, both assets, verdict labels; tap for details.
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';

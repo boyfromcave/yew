@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! A YED transfer (TRANSFER, spec §3.5): YED inputs from the floor-aware selector, one
 //! `TOKEN_VALUE` P2PKH output per recipient, one for YED change (next change address), the
 //! `OP_RETURN` TRANSFER payload, YEC fee inputs from `FEE_RESERVE` then `YEC` (plan §3.7 item

@@ -12,6 +12,9 @@
 #
 # The devnet is left up after `test`; `down` is deliberate. Overrides: YELLOWBACK_DEVNET_DIR,
 # YELLOWBACK_DEVNET_PORTSEED, YEW_LWD_PORT. (devnet-w1.sh is the W1 counterpart on ~/yb-devnet-w1.)
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ws="$(cd "$here/.." && pwd)"

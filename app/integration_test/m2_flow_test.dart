@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // Plan §6.3, the M2 flow on a device against the W4 devnet (`scripts/devnet-w4.sh up`:
 // the ARMED devnet, lightwalletd-dd --yellowback on 9267, plain HTTP/2). W6 ran it on the iOS
 // simulator (README "Running on a simulator / emulator"): onboarding, funding and the Mint

@@ -8,6 +8,9 @@
 #   scripts/devnet-w4.sh up | lwd | test | status | down [--wipe]
 #
 # Works from a git worktree too: the workspace is found by walking up to repos.yaml.
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ws="$here"

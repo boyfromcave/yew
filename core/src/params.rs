@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! Network parameters and protocol constants: address version bytes, the fee, `TOKEN_VALUE`,
 //! `CARRIER_VALUE`, `REF_WINDOW`, `MIN_OUTPUT`, the v4 transaction header, the fee reserve.
 //!

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+#
 # Builds yew-core for Android (arm64-v8a device, x86_64 emulator) into
 # app/android/app/src/main/jniLibs/ with cargo-ndk. Idempotent.
 # Requires: cargo-ndk, the Android NDK pinned in app/android/app/build.gradle.kts, protoc.

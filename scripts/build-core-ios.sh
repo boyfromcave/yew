@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+#
 # Builds yew-core for iOS device and simulator and packages app/ios/Frameworks/YewCore.xcframework.
 # Idempotent: re-running rebuilds only what cargo decides and replaces the xcframework.
 # Requires: rustup targets aarch64-apple-ios + aarch64-apple-ios-sim, Xcode (xcodebuild), protoc.

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // Screen privacy for the seed and private-key screens (W5 review, docs/security-review.md
 // A-3): on Android, FLAG_SECURE blanks the window in screenshots, screen recordings and the
 // recent-apps switcher while such a screen is up. It is set through a small MethodChannel in

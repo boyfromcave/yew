@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // The trust statement (client contract rule 7; plan §3.5, §4): shown once at onboarding and
 // from Settings. The canonical text is docs/trust.md in this repository; this file is its
 // copy, and scripts/check-trust-text.sh fails when the two differ. Do not edit here.

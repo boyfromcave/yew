@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // Claimable (plan §5.3, the liquidator persona): the node's `ListClaimable` rows; a claim is
 // the same two-step as a mint (bundle, carrier, then the CLAIM) and reuses MintProgressScreen.
 // The wallet must hold the debt in YED before the carrier is funded; the core checks that.

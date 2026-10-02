@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 // Settings → Server (plan §3.5): one endpoint; TLS required outside regtest (the core refuses
 // plain on mainnet and testnet, the switch shows on regtest only); probe before
 // saving (contract rule 1: an unknown rpcversion is refused by the core).
