@@ -20,7 +20,7 @@ hardening; **Info** = a property worth recording. Every finding says what was do
 | S-5b | storage | "Rebuild from chain" (delete the file, restore from seed) loses the imported keys **and any mint / claim between its carrier step and its main step**: the carrier is P2SH, `GetAddressUtxos` never lists it, and without the `mints` row the wallet cannot finish or sweep it (`CARRIER_VALUE` stranded) | Medium | **deferred**: the app never deletes the file by itself, "Forget this wallet" is the only path and it warns; a recovery (scan own history for carrier fundings and rebuild the row) is a W6 item. Recorded in the README |
 | S-6 | app / Android | `allowBackup` was the default (`true`): the keystore ciphertext and the SQLite cache went into device / cloud backups | Low | **fixed** (`allowBackup=false`, `fullBackupContent=false`, `dataExtractionRules` excluding everything) |
 | S-7 | bridge boundary | What Dart passes and what the core checks | Info | verified (table below); no gap found beyond S-3c |
-| A-1 | app / keystore | Seed and passphrase in `flutter_secure_storage`: iOS `first_unlock_this_device` (non-migrating); Android AES-GCM under an Android Keystore key. The "device unlock" toggle is an app-level `local_auth` prompt, **not** a keystore-bound requirement: a process with the app's sandbox access reads the seed without biometrics | Medium | **deferred** (owner decision): `AndroidOptions(enforceBiometrics: true)` / iOS `accessControl` bind the key to the biometric and change the UX (a prompt on every unlock, loss on biometric re-enrolment); recorded in `docs/release.md` §7 |
+| A-1 | app / keystore | Seed and passphrase in `flutter_secure_storage`: iOS `first_unlock_this_device` (non-migrating); Android AES-GCM under an Android Keystore key. The "device unlock" toggle was an app-level `local_auth` prompt only | Medium | **fixed** (audit G-10): with the toggle on, the seed and passphrase move to a presence-bound entry (`AndroidOptions.biometric(enforceBiometrics)` in its own namespace; iOS `userPresence` access control under its own service name) and the platform prompts on read; `userPresence` / biometric-or-credential so re-enrolment does not strand the item. Unverified on hardware |
 | A-2 | app / logging | The seed is never logged or `Debug`-printed: no `print` / `debugPrint` / `log` under `lib/` names it; the core's error strings never include a mnemonic (`bip39` errors carry an index, not a word); the core itself has no `log` dependency. But `init_app` called the bridge's `setup_default_user_utils`, which (the crate's `log` feature is on by default) installs a **Trace-level console logger** — every dependency's records (h2 frames, rustls handshakes, server hosts) would reach logcat / os_log in release builds | Low | **fixed**: `init_app` calls `setup_backtrace()` only |
 | A-3 | app / screenshots | No `FLAG_SECURE`: the recovery phrase and the WIF could be screenshotted, screen-recorded or shown in the app switcher | Low | **fixed on Android** (`MethodChannel cash.ycash.yew/screen`, `MainActivity.kt`, on the seed, export and import screens). iOS has no flag; an app-switcher blur is deferred (unverifiable without Xcode) |
 | A-4 | app / clipboard | The WIF screen has a Copy button (the user's action); the seed screen has none; nothing copies by itself. On Android < 13 the clipboard is readable by other apps | Low | accepted; the WIF warning text stays |
@@ -98,8 +98,10 @@ outside the wallet's surface (`api.rs` exposes no raw send) and is accepted.
 ## S-3 — TLS
 
 - Scheme: `https://` unless `plain`; `h2` over `rustls` (`tonic` `tls-ring`,
-  `tls-native-roots`): the platform's root store (`rustls-native-certs`). No `webpki-roots`
-  bundle, so the device's own trust decisions (an enterprise root, a revoked CA) apply.
+  `tls-native-roots`, `tls-webpki-roots`): the platform's root store (`rustls-native-certs`)
+  **plus** the Mozilla bundle (`webpki-roots`, pinned; audit G-4) — `rustls-native-certs` has
+  no iOS backend, so on iOS the bundle is the root store. The device's own additions apply
+  where native roots load; a device's removal of a Mozilla root does not.
 - `plain` is a `Server` field; **`Server::parse_for(network, …)` refuses it outside regtest**
   and is the only constructor the bridge (`api.rs::parse_server`) and the CLI use. Before W5
   testnet accepted plain (`api.rs`, `main.rs` tested `== Mainnet`); the plan's §3.5 says
@@ -110,8 +112,8 @@ outside the wallet's surface (`api.rs` exposes no raw send) and is accepted.
   the host). A SHA-256 *fingerprint* pin would need a custom `ServerCertVerifier`, i.e.
   `rustls` as a direct dependency (`tonic` 0.14 offers no verifier hook on `ClientTlsConfig`);
   that is an allow-list decision (plan §3.3) left to the owner. The CLI takes `--ca-pem PATH`;
-  the app has no field for it yet (a bridge parameter on `set_server` / `probe_server` /
-  `create_wallet` / `unlock`, a Settings field): deferred, listed in the README.
+  the app's Server screen and Onboarding take the PEM (`ca_pem` on `set_server` /
+  `probe_server` / `create_wallet` / `unlock`; audit G-4), kept in the settings JSON.
 - `Server::parse` accepts a DNS name (`[A-Za-z0-9.-]`), an IPv4 address or a bracketed IPv6
   address and a port; anything else is refused before an `Endpoint` is built.
 
@@ -123,16 +125,16 @@ chain. Concretely, acted on **without a local check**:
 | Answer | Used for | Worst case of a lie |
 |---|---|---|
 | `GetLightdInfo.chainName`, `taddrSupport` | refuse a server for another chain | none (refusal only) |
-| `GetLightdInfo.consensusBranchId` | the ZIP-243 signature | a wrong id makes every signature invalid: refusal by the node, no loss |
+| `GetLightdInfo.consensusBranchId` | the ZIP-243 signature, **only if it is a Ycash epoch** (`params.rs` `branch_ids`, audit G-5) | a wrong Ycash id makes every signature invalid: refusal by the node, no loss; a Zcash id is refused before signing |
 | `GetLatestBlock`, `blockHeight` | `nExpiryHeight = tip + 40`, mint windows, lock heights | a stale tip expires transactions early or judges a window wrongly; no loss |
 | `GetAddressUtxos`, `GetTaddressTxids` | the UTXO set and the history | hidden coins (shown balance too low), phantom coins (a spend of them is refused by the node) |
 | `GetAddressTokens` | **the only source of the TOKEN class** (D-W-8) | hidden YED; a listed non-token is refused by the node's dry run and, if it were relayed, would be a burn — this is exactly why the dry run is mandatory and why HELD is never spent |
 | `GetTxInfo` | history labels | wrong labels only |
 | `GetPrice.pMint` | display, the underwater flag | wrong display |
 | `ValidateRawTransaction` | the remote gate layer | a false `ok` on a transaction the local layer already accepted: the local layer bounds it (only known classes, right payload shape), so the damage is a rejected transaction, not a burn of a wrongly-classed coin |
-| `EstimateCollateral`, `EstimateFee`, `GetFeePayee`, `ListClaimable` | the mint / claim amounts and payees | overpaying a fee or a payee of the server's choice, within what the user confirmed on screen (amounts are shown before the slider) |
+| `EstimateCollateral`, `GetFeePayee`, `ListClaimable`, `GetVault` | the mint / claim / redeem terms, **each checked against the spec's rules for the network first** (`build/terms.rs`, audit G-1, G-2): class ranges, `lockHeight = R + lockBlocks`, `claimHeight = lockHeight + GRACE`, `R` inside `REF_WINDOW`, `requiredZat` from `pMint` with the class ratio, `pMint` bounded by the verified bundle's prices, the fee exactly FEE-1 and the attestor fee AFEE-1, the start's terms equal to the confirmed estimate | the **payee** (an address of the server's choice among what the node accepts as eligible, or a false "no payee due") — the fee amount is fixed by the rule and shown with the payee before the slider; an inconsistent answer is refused with `inconsistent-server` |
 | `BuildBundle` + `ListAttestors` + `GetBlock` | the price bundle | the signatures are verified locally, but the attestor set and the block hash come from the same server: a server that forges all three could feed a bundle the node then refuses (the node knows the real set). No loss |
-| `GetVault` | vault facts (lock heights, status) | a wrong `lockHeight` produces a redeem the node refuses |
+| `GetVault` (status, debt) | the vault's status and `mintedCents` (the script terms are checked, above) | a wrong status or debt produces a redeem the node refuses |
 
 Not trusted at all: transaction bytes, amounts, scripts, signatures, addresses (parsed locally
 with the network prefix), the coin classes (local rules over the server's *lists*), payloads.
@@ -179,8 +181,9 @@ secret, only privacy-relevant data).
   `IOSOptions(accessibility: first_unlock_this_device)` — the item does not migrate to a new
   device and needs the device to have been unlocked once since boot. Android: the plugin's
   default (`KeyCipherAlgorithm` AES in the Android Keystore, `StorageCipherAlgorithm`
-  AES-GCM); `enforceBiometrics` is off (A-1). Keys: `seed`, `passphrase`, `settings` (JSON,
-  no secret).
+  AES-GCM) for `settings` (JSON, no secret) and, with "device unlock" off, `seed` and
+  `passphrase`; with it on, the two move to the presence-bound entry (A-1, audit G-10). On iOS
+  the support directory is marked excluded from backup (`AppDelegate.swift`, audit G-10).
 - **Seed flow**: `createWallet` receives the generated words once from the core and writes
   them to the keystore; `unlock` reads them and hands them to the core; `seedWordsForBackup`
   reads them again for the backup screen behind the `local_auth` prompt when biometrics are

@@ -38,6 +38,19 @@ void main() {
     expect(find.textContaining('(pinned)'), findsOneWidget);
   });
 
+  testWidgets('the device-unlock toggle moves the seed into the presence-bound keystore entry (audit G-10)', (tester) async {
+    final h = Harness(withWallet: true);
+    await openSettings(tester, h);
+    expect(h.secrets.bound, isFalse);
+    await tester.tap(find.byKey(const Key('biometrics')));
+    await tester.pumpAndSettle();
+    expect(h.state.settings.biometrics, isTrue);
+    expect(h.secrets.bound, isTrue);
+    await tester.tap(find.byKey(const Key('biometrics')));
+    await tester.pumpAndSettle();
+    expect(h.secrets.bound, isFalse);
+  });
+
   testWidgets('export private key shows the warning before the key, then the WIF and both address forms', (tester) async {
     final h = Harness(withWallet: true);
     await openSettings(tester, h);

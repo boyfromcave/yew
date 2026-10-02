@@ -257,8 +257,14 @@ property; CA pinning in the core and CLI), storage (`0600` cache, no Android bac
 `FLAG_SECURE` on seed and key screens), and the bridge boundary. `cargo audit` and a license
 allow-list run in CI. The app has no telemetry and nothing in the core logs.
 
-Known gap: `rustls-native-certs` has no iOS backend, so a TLS server on iOS fails until webpki
-roots are added (an allow-list decision) or a CA is pinned.
+The 2026-10-01 audit (workspace `docs/audits/`, §6 "yew") added: every server-supplied mint,
+claim and vault term is checked against the network's rules (`core/src/build/terms.rs`,
+`params.rs`) before anything is signed, the enforcement and attestor fees are computed locally,
+a redeem is previewed (fee and payee on screen) before it is confirmed, the server's
+`consensusBranchId` must be a Ycash epoch, server streams are bounded, the Mozilla root bundle
+backs TLS on iOS, a certificate can be pinned from Settings, and "device unlock" binds the seed
+to the platform's presence check. What is still not checked locally is the fee **payee**: the
+node, not the wallet, knows which miners are eligible (`docs/trust.md`).
 
 ## What is left
 
@@ -269,9 +275,9 @@ Everything below needs a device, an account, a public server or a decision:
    node's $100 minimum mint.
 2. **Ywallet vector**: capture the address for the test mnemonic in `ywallet.json` from a
    Ywallet desktop build.
-3. **Security decisions**: keystore-bound biometrics; a SHA-256 certificate pin (needs `rustls`
-   on the allow-list) versus the CA pin; recovery of a carrier stranded by deleting the database
-   mid-mint; iOS backup exclusion and switcher blur; iOS TLS roots (above); the app's pinning field.
+3. **Security decisions**: a SHA-256 certificate pin (needs `rustls` on the allow-list) versus
+   the CA pin; recovery of a carrier stranded by deleting the database mid-mint; iOS switcher
+   blur; the keystore binding, the iOS backup exclusion and the webpki roots on real devices.
 4. **Public endpoints**: a `lightwalletd-dd --yellowback` over a `ycashd -yellowback
    -insightexplorer` behind TLS, entered in `net/tls.rs` `default_servers` (mainnet and testnet
    ship empty; the app asks for a server until then).

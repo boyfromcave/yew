@@ -1,8 +1,21 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+// Release signing (audit G-11; docs/release.md §8): from android/key.properties (untracked,
+// gitignored) or the YEW_RELEASE_* environment, never the debug key. A release build without
+// a signing config fails instead of producing a debug-signed artifact.
+val keyProps = Properties().also { p ->
+    val f = rootProject.file("key.properties")
+    if (f.exists()) f.inputStream().use { p.load(it) }
+}
+fun signing(name: String): String? = keyProps.getProperty(name) ?: System.getenv("YEW_RELEASE_" + name.uppercase())
+val releaseStoreFile = signing("storeFile")
+val hasReleaseSigning = releaseStoreFile != null
 
 android {
     namespace = "cash.ycash.yew.yew_app"
@@ -30,11 +43,34 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile!!)
+                storePassword = signing("storePassword")
+                keyAlias = signing("keyAlias")
+                keyPassword = signing("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Only the release keystore signs a release; with none configured the build fails
+            // below rather than falling back to the debug key.
+            signingConfig = if (hasReleaseSigning) signingConfigs.getByName("release") else null
+        }
+    }
+}
+
+tasks.configureEach {
+    if (!hasReleaseSigning && (name.startsWith("assembleRelease") || name.startsWith("bundleRelease") || name.startsWith("packageRelease"))) {
+        doFirst {
+            throw GradleException(
+                "YEW: no release signing config. Create android/key.properties (storeFile, storePassword, " +
+                    "keyAlias, keyPassword) or set YEW_RELEASE_STOREFILE/STOREPASSWORD/KEYALIAS/KEYPASSWORD " +
+                    "(docs/release.md §8). Release builds are never signed with the debug key."
+            )
         }
     }
 }

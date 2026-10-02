@@ -140,10 +140,13 @@ A-2). A future crash reporter would be **off by default** and a recorded decisio
   frb dummy-method pattern) so the linker keeps the bridge symbols; `flutter build ipa
   --release`; upload with Transporter / `xcrun altool`. TestFlight first.
 - **Android**: a release keystore (`keytool -genkey -v -keystore yew-release.jks -keyalg RSA
-  -keysize 4096 -validity 10000 -alias yew`), `app/android/key.properties` (untracked) and the
-  `signingConfigs.release` block in `build.gradle.kts` (the Flutter template comment shows
-  where); `flutter build appbundle --release`; Play Console internal testing track first. Enrol
-  in Play App Signing so the upload key can be rotated.
+  -keysize 4096 -validity 10000 -alias yew`) and `app/android/key.properties` (untracked,
+  gitignored) with `storeFile`, `storePassword`, `keyAlias`, `keyPassword` — or the same four
+  as `YEW_RELEASE_STOREFILE`, `YEW_RELEASE_STOREPASSWORD`, `YEW_RELEASE_KEYALIAS`,
+  `YEW_RELEASE_KEYPASSWORD` in the environment. `build.gradle.kts` reads them (audit G-11);
+  **a release build with neither fails** rather than signing with the debug key.
+  `flutter build appbundle --release`; Play Console internal testing track first. Enrol in
+  Play App Signing so the upload key can be rotated.
 - Never in CI (`ci.yml` states it); the signing material never enters this repository.
 
 ## 9. The testnet plan `[owner]` (plan §7 W5, third item)

@@ -69,6 +69,9 @@ class AppState extends ChangeNotifier {
   Future<void> load() async {
     final s = await secrets.read(_kSettings);
     if (s != null) settings = WalletSettings.decode(s);
+    // Which keystore entry holds the seed follows the toggle (audit G-10); the items were
+    // moved when the toggle changed, so this only selects the entry.
+    await secrets.bind(settings.biometrics);
     hasWallet = (await secrets.read(_kSeed)) != null;
     unlocked = hasWallet && api.isUnlocked();
     loaded = true;
@@ -76,9 +79,18 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> saveSettings(WalletSettings s) async {
+    final rebind = s.biometrics != settings.biometrics;
     settings = s;
     await secrets.write(_kSettings, s.encode());
+    if (rebind) await secrets.bind(s.biometrics);
     notifyListeners();
+  }
+
+  /// The device prompt before a secret is read, unless the keystore entry itself prompts.
+  Future<bool> _presence(String reason) async {
+    if (!settings.biometrics) return true;
+    if (secrets.bindingPrompts) return true;
+    return auth.authenticate(reason);
   }
 
   /// Create a new seed (words `null`) or restore one; store it in the keystore; open the
@@ -112,7 +124,7 @@ class AppState extends ChangeNotifier {
 
   /// Biometrics (when enabled), then the seed from the keystore into the core.
   Future<bool> unlock() async {
-    if (settings.biometrics && !await auth.authenticate('Unlock YEW')) return false;
+    if (!await _presence('Unlock YEW')) return false;
     final words = await secrets.read(_kSeed);
     if (words == null) return false;
     try {
@@ -154,7 +166,7 @@ class AppState extends ChangeNotifier {
   /// The seed for the backup screen: gated by the device prompt, read from the keystore
   /// (never from the core).
   Future<String?> seedWordsForBackup() async {
-    if (settings.biometrics && !await auth.authenticate('Show the recovery phrase')) return null;
+    if (!await _presence('Show the recovery phrase')) return null;
     return secrets.read(_kSeed);
   }
 
