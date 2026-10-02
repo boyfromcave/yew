@@ -74,6 +74,9 @@ void main() {
     await openSettings(tester, h);
     await tester.tap(find.byKey(const Key('trust')));
     await tester.pumpAndSettle();
+    expect(find.text(trustParagraphs.first), findsOneWidget);
+    // The last paragraph is below the fold on a phone (audit G-3 added one): scroll to it.
+    await tester.scrollUntilVisible(find.text(trustParagraphs.last), 200, scrollable: find.byType(Scrollable).first);
     expect(find.text(trustParagraphs.last), findsOneWidget);
     await tester.pageBack();
     await tester.pumpAndSettle();

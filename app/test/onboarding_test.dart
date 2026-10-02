@@ -8,6 +8,13 @@ import 'package:yew_app/trust_text.dart';
 
 import 'fake_wallet_api.dart';
 
+/// The trust statement grew past one phone screen (audit G-3): scroll its checkbox and the
+/// Continue button into view, as a reader must.
+Future<void> revealTrustControls(WidgetTester tester) async {
+  await tester.scrollUntilVisible(find.byKey(const Key('next')), 200, scrollable: find.byType(Scrollable).first);
+  await tester.pumpAndSettle();
+}
+
 void main() {
   testWidgets('create flow: trust statement, server, biometrics, seed backup, home', (tester) async {
     final h = Harness();
@@ -20,6 +27,7 @@ void main() {
     // The trust statement (plan §4 rule 7), verbatim, and it must be acknowledged.
     expect(find.text(trustTitle), findsOneWidget);
     expect(find.text(trustParagraphs.first), findsOneWidget);
+    await revealTrustControls(tester);
     expect(tester.widget<FilledButton>(find.byKey(const Key('next'))).onPressed, isNull);
     await tester.tap(find.byKey(const Key('trust-check')));
     await tester.pumpAndSettle();
@@ -79,6 +87,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('next')));
     await tester.pumpAndSettle();
+    await revealTrustControls(tester);
     await tester.tap(find.byKey(const Key('trust-check')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('next')));
@@ -103,6 +112,7 @@ void main() {
     await tester.enterText(find.byKey(const Key('words')), 'a b c d e f g h i j k l');
     await tester.pumpAndSettle();
     for (final step in ['next', 'trust-check', 'next']) {
+      if (step == 'trust-check') await revealTrustControls(tester);
       await tester.tap(find.byKey(Key(step)));
       await tester.pumpAndSettle();
     }
