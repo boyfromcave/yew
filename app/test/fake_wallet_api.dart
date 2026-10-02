@@ -50,6 +50,8 @@ class FakeWalletApi implements WalletApi {
   Object? mintFinishError;
   Object? mintSweepError;
   Object? redeemError;
+  Object? redeemConfirmError;
+  String payee = fakeS;
   Object? claimableError;
   Object? claimError;
   int tip = 484;
@@ -74,6 +76,8 @@ class FakeWalletApi implements WalletApi {
       feeZat: 1000,
       attestFeeZat: 0,
       residualZat: 0,
+      payee: payee,
+      attestPayee: '',
       bundleSeqs: '0,1,2',
       carrierTxid: 'ca' * 32,
       mainTxid: state == 'MAIN_SENT' || state == 'DONE' ? 'ma' * 32 : '',
@@ -141,6 +145,7 @@ class FakeWalletApi implements WalletApi {
       collateralZat: collateral,
       feeZat: 1000,
       attestFeeZat: 0,
+      payee: payee,
       carrierZat: 10000,
       tokenZat: 10000,
       networkFeeZat: 2000,
@@ -154,8 +159,9 @@ class FakeWalletApi implements WalletApi {
   }
 
   @override
-  Future<MintStatus> mintStart({required int cents, required int lockBlocks}) async {
+  Future<MintStatus> mintStart({required int cents, required int lockBlocks, required MintTerms confirmed}) async {
     calls.add('mintStart $cents $lockBlocks');
+    calls.add('mintStart confirmed ${confirmed.collateralZat} ${confirmed.feeZat} ${confirmed.payee} ${confirmed.termClass}');
     if (mintStartError != null) throw mintStartError!;
     final m = mintRow(id: mintsAnswer.length + 1, state: 'CARRIER_SENT', cents: cents, tip: tip, refHeight: tip - 4);
     _set(m);
@@ -192,9 +198,33 @@ class FakeWalletApi implements WalletApi {
   Future<List<VaultSummary>> vaults() async => vaultsAnswer;
 
   @override
-  Future<RedeemResult> redeem({required String vaultTxid}) async {
-    calls.add('redeem $vaultTxid');
+  Future<RedeemPreview> redeemPreview({required String vaultTxid}) async {
+    calls.add('redeemPreview $vaultTxid');
     if (redeemError != null) throw redeemError!;
+    final v = vaultsAnswer.firstWhere((x) => x.vaultTxid == vaultTxid);
+    return RedeemPreview(
+      previewId: 'rp-$vaultTxid',
+      vaultTxid: vaultTxid,
+      kind: v.releasable ? 'release' : 'redeem',
+      burnCents: v.releasable ? 0 : v.cents,
+      extraBurnCents: 0,
+      changeCents: v.releasable ? 0 : balancesAnswer.yedCents - v.cents,
+      yedInputs: v.releasable ? 0 : 1,
+      feeZat: v.releasable ? 0 : 50000000,
+      payee: v.releasable ? '' : payee,
+      collateralZat: v.collateralZat - (v.releasable ? 1000 : 50001000),
+      collateralAddress: fakeS,
+      lockTime: v.lockHeight,
+      expiryHeight: tip + 40,
+      txid: 'ed' * 32,
+    );
+  }
+
+  @override
+  Future<RedeemResult> redeemConfirm({required String previewId}) async {
+    calls.add('redeemConfirm $previewId');
+    if (redeemConfirmError != null) throw redeemConfirmError!;
+    final vaultTxid = previewId.substring(3);
     final v = vaultsAnswer.firstWhere((x) => x.vaultTxid == vaultTxid);
     return RedeemResult(
       txid: 'ed' * 32,
@@ -203,8 +233,9 @@ class FakeWalletApi implements WalletApi {
       burnCents: v.releasable ? 0 : v.cents,
       extraBurnCents: 0,
       changeCents: v.releasable ? 0 : balancesAnswer.yedCents - v.cents,
-      feeZat: 1000,
-      collateralZat: v.collateralZat - 2000,
+      feeZat: v.releasable ? 0 : 50000000,
+      payee: v.releasable ? '' : payee,
+      collateralZat: v.collateralZat - (v.releasable ? 1000 : 50001000),
       collateralAddress: fakeS,
       lockTime: v.lockHeight,
       expiryHeight: tip + 40,

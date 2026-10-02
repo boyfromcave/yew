@@ -195,6 +195,10 @@ void main() {
     await tapKey(tester, 'vault-${vault1.vaultTxid}');
     await tester.pumpAndSettle();
     await expectVisible(tester, find.textContaining('Redeemable'));
+    // Preview first (audit G-2): the fee and its payee are on screen before the slider.
+    await tapKey(tester, 'preview');
+    await tester.pumpAndSettle(const Duration(seconds: 5));
+    await expectVisible(tester, find.text('Fee paid to'));
     await longPressKey(tester, 'slide-to-confirm');
     await tester.pumpAndSettle(const Duration(seconds: 5));
     await expectVisible(tester, find.text('Vault redeemed'));

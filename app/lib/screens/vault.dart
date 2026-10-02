@@ -4,7 +4,9 @@
 
 // Vault (plan §5.3): the details of one own vault; Redeem once `lockHeight` is reached
 // (burning the debt from the wallet's YED); Release when the node reports it VOID. Both are
-// the core's `redeem`, which builds, dry-runs, gates and broadcasts; the slider only asks.
+// two calls of the core (audit G-2): `redeemPreview` builds and signs and the card shows the
+// collateral back, the enforcement fee and its payee and the burn; the slider then calls
+// `redeemConfirm`, which gates and broadcasts those same bytes.
 import 'package:flutter/material.dart';
 
 import '../api/wallet_api.dart';
@@ -24,16 +26,39 @@ class VaultScreen extends StatefulWidget {
 
 class _VaultScreenState extends State<VaultScreen> {
   String? _error;
+  RedeemPreview? _preview;
   RedeemResult? _result;
+  bool _busy = false;
 
-  Future<void> _redeem() async {
+  Future<void> _previewNow() async {
     final app = AppScope.read(context);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
     try {
-      final r = await app.api.redeem(vaultTxid: widget.vaultTxid);
+      final p = await app.api.redeemPreview(vaultTxid: widget.vaultTxid);
+      setState(() => _preview = p);
+    } catch (e) {
+      setState(() => _error = messageOf(e));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _confirm() async {
+    final app = AppScope.read(context);
+    final p = _preview;
+    if (p == null) return;
+    try {
+      final r = await app.api.redeemConfirm(previewId: p.previewId);
       setState(() => _result = r);
       await app.refresh();
     } catch (e) {
-      setState(() => _error = messageOf(e));
+      setState(() {
+        _error = messageOf(e);
+        _preview = null;
+      });
     }
   }
 
@@ -121,18 +146,63 @@ class _VaultScreenState extends State<VaultScreen> {
                     style: t.bodySmall?.copyWith(color: c.danger),
                   ),
                 ),
-              SlideToConfirm(
-                label: v.releasable ? 'Slide to release ${formatYec(v.collateralZat)} YEC' : 'Slide to redeem: burn ${formatYed(v.cents)}',
-                color: v.releasable ? c.yec : c.yed,
-                enabled: canAct && (v.releasable || enoughYed),
-                onConfirmed: _redeem,
-              ),
+              if (_preview == null)
+                FilledButton(
+                  key: const Key('preview'),
+                  onPressed: _busy || !(canAct && (v.releasable || enoughYed)) ? null : _previewNow,
+                  style: FilledButton.styleFrom(backgroundColor: v.releasable ? c.yec : c.yed),
+                  child: Text(_busy ? 'Preparing…' : (v.releasable ? 'Preview the release' : 'Preview the redeem')),
+                ),
+              if (_preview != null) ...[
+                _RedeemPreviewCard(_preview!),
+                const SizedBox(height: 12),
+                SlideToConfirm(
+                  label: v.releasable
+                      ? 'Slide to release ${formatYec(_preview!.collateralZat)} YEC'
+                      : 'Slide to redeem: burn ${formatYed(_preview!.burnCents)}, pay ${formatYec(_preview!.feeZat)} YEC fee',
+                  color: v.releasable ? c.yec : c.yed,
+                  enabled: canAct && (v.releasable || enoughYed),
+                  onConfirmed: _confirm,
+                ),
+                TextButton(key: const Key('cancel'), onPressed: () => setState(() => _preview = null), child: const Text('Cancel')),
+              ],
               if (!canAct)
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
                   child: Text('Redeem unlocks at height ${v.lockHeight}.', key: const Key('locked'), textAlign: TextAlign.center, style: t.bodySmall?.copyWith(color: c.pending)),
                 ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// What the redeem will do, from the core's signed preview (audit G-2): the fee and the payee
+/// are on screen before anything is sent.
+class _RedeemPreviewCard extends StatelessWidget {
+  const _RedeemPreviewCard(this.p);
+  final RedeemPreview p;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = yewColors(context);
+    final released = p.kind == 'release';
+    return Card(
+      key: const Key('redeem-preview'),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            PreviewRow('Collateral back', '${formatYec(p.collateralZat)} YEC', emphasis: true, color: c.yec),
+            if (!released) PreviewRow('You burn', formatYed(p.burnCents), emphasis: true, color: c.yed),
+            if (p.extraBurnCents > 0) PreviewRow('Of which remainder', formatYed(p.extraBurnCents)),
+            if (p.changeCents > 0) PreviewRow('YED change', formatYed(p.changeCents)),
+            PreviewRow('Enforcement fee', p.feeZat > 0 ? '${formatYec(p.feeZat)} YEC' : 'none'),
+            if (p.payee.isNotEmpty) PreviewRow('Fee paid to', shorten(p.payee, head: 10, tail: 6)),
+            PreviewRow('To', shorten(p.collateralAddress, head: 14, tail: 8)),
+            PreviewRow('Expires', 'height ${p.expiryHeight}'),
           ],
         ),
       ),
@@ -178,6 +248,7 @@ class _RedeemedView extends StatelessWidget {
                     if (r.extraBurnCents > 0) PreviewRow('Of which remainder', formatYed(r.extraBurnCents)),
                     if (r.changeCents > 0) PreviewRow('YED change', formatYed(r.changeCents)),
                     if (r.feeZat > 0) PreviewRow('Enforcement fee', '${formatYec(r.feeZat)} YEC'),
+                    if (r.payee.isNotEmpty) PreviewRow('Fee paid to', shorten(r.payee, head: 10, tail: 6)),
                     PreviewRow('To', shorten(r.collateralAddress, head: 14, tail: 8)),
                     PreviewRow('Expires', 'height ${r.expiryHeight}'),
                   ],

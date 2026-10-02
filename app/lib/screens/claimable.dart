@@ -117,6 +117,7 @@ class _ClaimableScreenState extends State<ClaimableScreen> {
                       PreviewRow('You burn', formatYed(p.cents), emphasis: true, color: c.yed),
                       PreviewRow('Collateral', '${formatYec(p.collateralZat)} YEC', emphasis: true, color: c.yec),
                       if (p.feeZat > 0) PreviewRow('Enforcement fee', '${formatYec(p.feeZat)} YEC'),
+                      if (p.payee.isNotEmpty) PreviewRow('Fee paid to', shorten(p.payee, head: 10, tail: 6)),
                       if (p.attestFeeZat > 0) PreviewRow('Attestor fee', '${formatYec(p.attestFeeZat)} YEC'),
                       if (p.residualZat > 0) PreviewRow('Residual to owner', '${formatYec(p.residualZat)} YEC'),
                       PreviewRow('You keep', '${formatYec(p.claimantZat)} YEC', emphasis: true),

@@ -128,8 +128,8 @@ class RustWalletApi implements WalletApi {
       rust.mintEstimate(cents: cents, lockBlocks: lockBlocks);
 
   @override
-  Future<MintStatus> mintStart({required int cents, required int lockBlocks}) =>
-      rust.mintStart(cents: cents, lockBlocks: lockBlocks);
+  Future<MintStatus> mintStart({required int cents, required int lockBlocks, required MintTerms confirmed}) =>
+      rust.mintStart(cents: cents, lockBlocks: lockBlocks, confirmed: confirmed);
 
   @override
   Future<MintStatus> mintStatus({required int mintId}) => rust.mintStatus(mintId: mintId);
@@ -147,7 +147,10 @@ class RustWalletApi implements WalletApi {
   Future<List<VaultSummary>> vaults() => rust.vaults();
 
   @override
-  Future<RedeemResult> redeem({required String vaultTxid}) => rust.redeem(vaultTxid: vaultTxid);
+  Future<RedeemPreview> redeemPreview({required String vaultTxid}) => rust.redeemPreview(vaultTxid: vaultTxid);
+
+  @override
+  Future<RedeemResult> redeemConfirm({required String previewId}) => rust.redeemConfirm(previewId: previewId);
 
   @override
   Future<List<ClaimableItem>> claimable() => rust.claimable();

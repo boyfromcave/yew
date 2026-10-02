@@ -96,7 +96,12 @@ class _MintScreenState extends State<MintScreen> {
     final e = _estimate!;
     setState(() => _busy = true);
     try {
-      final row = await app.api.mintStart(cents: e.cents, lockBlocks: e.lockBlocks);
+      // The terms shown are the terms confirmed: the core refuses a server answer that differs.
+      final row = await app.api.mintStart(
+        cents: e.cents,
+        lockBlocks: e.lockBlocks,
+        confirmed: MintTerms(collateralZat: e.collateralZat, feeZat: e.feeZat, payee: e.payee, termClass: e.termClass),
+      );
       await app.refresh();
       if (!mounted) return;
       Navigator.of(context).pushReplacement(MaterialPageRoute<void>(builder: (_) => MintProgressScreen(mintId: row.mintId)));
@@ -247,6 +252,7 @@ class MintEstimateCard extends StatelessWidget {
             PreviewRow('Redeemable from', 'height ${e.lockHeight}'),
             PreviewRow('Claimable from', 'height ${e.claimHeight}'),
             if (e.feeZat > 0) PreviewRow('Enforcement fee', '${formatYec(e.feeZat)} YEC'),
+            if (e.payee.isNotEmpty) PreviewRow('Fee paid to', shorten(e.payee, head: 10, tail: 6)),
             if (e.attestFeeZat > 0) PreviewRow('Attestor fee', '${formatYec(e.attestFeeZat)} YEC'),
             PreviewRow('Carrier + token', '${formatYec(e.carrierZat + e.tokenZat)} YEC'),
             PreviewRow('Network fees', '${formatYec(e.networkFeeZat)} YEC (two transactions)'),

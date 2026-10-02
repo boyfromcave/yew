@@ -20,6 +20,7 @@ const claimable1 = ClaimableItem(
   attestFeeZat: 0,
   residualZat: 0,
   claimantZat: 949998000,
+  payee: fakeS,
 );
 
 Future<void> openClaimable(WidgetTester tester, Harness h) async {

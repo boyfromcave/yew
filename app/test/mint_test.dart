@@ -45,6 +45,8 @@ void main() {
     await tester.tap(find.byKey(const Key('start')));
     await tester.pumpAndSettle();
     expect(h.api.calls, contains('mintStart 2500 48'));
+    // The estimate shown is the estimate confirmed (audit G-2).
+    expect(h.api.calls, contains('mintStart confirmed 95000000 1000 $fakeS A'));
     // The progress screen renders the CARRIER_SENT row: step one now, the rest to do.
     expect(find.text('Mint \$25.00'), findsOneWidget);
     expect(find.text('funding carrier'), findsOneWidget);

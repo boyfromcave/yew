@@ -21,8 +21,10 @@ export '../src/rust/api.dart'
         HistoryPage,
         MintEstimate,
         MintStatus,
+        MintTerms,
         NetworkId,
         Recipient,
+        RedeemPreview,
         RedeemResult,
         SendResult,
         ServerProbe,
@@ -105,7 +107,9 @@ abstract class WalletApi {
 
   Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks});
 
-  Future<MintStatus> mintStart({required int cents, required int lockBlocks});
+  /// [confirmed] is the estimate the user saw: the core refuses a server answer whose
+  /// collateral, fee, payee or class differs from it (audit G-2).
+  Future<MintStatus> mintStart({required int cents, required int lockBlocks, required MintTerms confirmed});
 
   Future<MintStatus> mintStatus({required int mintId});
 
@@ -117,7 +121,11 @@ abstract class WalletApi {
 
   Future<List<VaultSummary>> vaults();
 
-  Future<RedeemResult> redeem({required String vaultTxid});
+  /// Build and sign the redeem (or VOID release); nothing is sent. The preview carries the
+  /// fee, its payee and the collateral returned, shown before the slider (audit G-2).
+  Future<RedeemPreview> redeemPreview({required String vaultTxid});
+
+  Future<RedeemResult> redeemConfirm({required String previewId});
 
   Future<List<ClaimableItem>> claimable();
 
