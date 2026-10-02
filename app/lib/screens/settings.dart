@@ -29,7 +29,7 @@ class SettingsScreen extends StatelessWidget {
             key: const Key('server'),
             leading: const Icon(Icons.dns_outlined),
             title: const Text('Server'),
-            subtitle: Text('${s.server}${s.plain ? ' (plain)' : ''} · ${s.network.name}'),
+            subtitle: Text('${s.server}${s.plain ? ' (plain)' : ''}${s.caPem.isNotEmpty ? ' (pinned)' : ''} · ${s.network.name}'),
             onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const ServerScreen())),
           ),
           ListTile(

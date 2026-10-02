@@ -96,6 +96,7 @@ class AppState extends ChangeNotifier {
       network: withSettings.network,
       server: withSettings.server,
       plain: withSettings.plain,
+      caPem: withSettings.caPem.isEmpty ? null : withSettings.caPem,
       dataDir: await dirs.dataDir(),
     );
     final words = seedWords ?? created.seedWords!;
@@ -122,6 +123,7 @@ class AppState extends ChangeNotifier {
           network: settings.network,
           server: settings.server,
           plain: settings.plain,
+          caPem: settings.caPem.isEmpty ? null : settings.caPem,
           dataDir: await dirs.dataDir(),
         );
       }
@@ -223,9 +225,9 @@ class AppState extends ChangeNotifier {
     await refresh();
   }
 
-  Future<void> setServer(String server, bool plain) async {
-    await api.setServer(server: server, plain: plain);
-    await saveSettings(settings.copyWith(server: server, plain: plain));
+  Future<void> setServer(String server, bool plain, {String caPem = ''}) async {
+    await api.setServer(server: server, plain: plain, caPem: caPem.isEmpty ? null : caPem);
+    await saveSettings(settings.copyWith(server: server, plain: plain, caPem: caPem));
     status = null;
   }
 

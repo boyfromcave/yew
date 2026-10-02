@@ -102,6 +102,7 @@ abstract class RustLibApi extends BaseApi {
     required NetworkId network,
     required String server,
     required bool plain,
+    String? caPem,
     required String dataDir,
   });
 
@@ -149,6 +150,7 @@ abstract class RustLibApi extends BaseApi {
   Future<ServerProbe> crateApiProbeServer({
     required String server,
     required bool plain,
+    String? caPem,
     required NetworkId network,
   });
 
@@ -172,7 +174,11 @@ abstract class RustLibApi extends BaseApi {
     required List<Recipient> recipients,
   });
 
-  Future<void> crateApiSetServer({required String server, required bool plain});
+  Future<void> crateApiSetServer({
+    required String server,
+    required bool plain,
+    String? caPem,
+  });
 
   Future<Status> crateApiStatus();
 
@@ -184,6 +190,7 @@ abstract class RustLibApi extends BaseApi {
     required NetworkId network,
     required String server,
     required bool plain,
+    String? caPem,
     required String dataDir,
   });
 
@@ -394,6 +401,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required NetworkId network,
     required String server,
     required bool plain,
+    String? caPem,
     required String dataDir,
   }) {
     return handler.executeNormal(
@@ -406,6 +414,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_network_id(network, serializer);
           sse_encode_String(server, serializer);
           sse_encode_bool(plain, serializer);
+          sse_encode_opt_String(caPem, serializer);
           sse_encode_String(dataDir, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
@@ -426,6 +435,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           network,
           server,
           plain,
+          caPem,
           dataDir,
         ],
         apiImpl: this,
@@ -442,6 +452,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       "network",
       "server",
       "plain",
+      "caPem",
       "dataDir",
     ],
   );
@@ -849,6 +860,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<ServerProbe> crateApiProbeServer({
     required String server,
     required bool plain,
+    String? caPem,
     required NetworkId network,
   }) {
     return handler.executeNormal(
@@ -857,6 +869,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(server, serializer);
           sse_encode_bool(plain, serializer);
+          sse_encode_opt_String(caPem, serializer);
           sse_encode_network_id(network, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
@@ -870,7 +883,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_yew_error,
         ),
         constMeta: kCrateApiProbeServerConstMeta,
-        argValues: [server, plain, network],
+        argValues: [server, plain, caPem, network],
         apiImpl: this,
       ),
     );
@@ -878,7 +891,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiProbeServerConstMeta => const TaskConstMeta(
     debugName: "probe_server",
-    argNames: ["server", "plain", "network"],
+    argNames: ["server", "plain", "caPem", "network"],
   );
 
   @override
@@ -1097,6 +1110,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<void> crateApiSetServer({
     required String server,
     required bool plain,
+    String? caPem,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1104,6 +1118,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(server, serializer);
           sse_encode_bool(plain, serializer);
+          sse_encode_opt_String(caPem, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1116,7 +1131,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_yew_error,
         ),
         constMeta: kCrateApiSetServerConstMeta,
-        argValues: [server, plain],
+        argValues: [server, plain, caPem],
         apiImpl: this,
       ),
     );
@@ -1124,7 +1139,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiSetServerConstMeta => const TaskConstMeta(
     debugName: "set_server",
-    argNames: ["server", "plain"],
+    argNames: ["server", "plain", "caPem"],
   );
 
   @override
@@ -1193,6 +1208,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required NetworkId network,
     required String server,
     required bool plain,
+    String? caPem,
     required String dataDir,
   }) {
     return handler.executeNormal(
@@ -1204,6 +1220,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_network_id(network, serializer);
           sse_encode_String(server, serializer);
           sse_encode_bool(plain, serializer);
+          sse_encode_opt_String(caPem, serializer);
           sse_encode_String(dataDir, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
@@ -1217,7 +1234,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_yew_error,
         ),
         constMeta: kCrateApiUnlockConstMeta,
-        argValues: [seedWords, passphrase, network, server, plain, dataDir],
+        argValues: [
+          seedWords,
+          passphrase,
+          network,
+          server,
+          plain,
+          caPem,
+          dataDir,
+        ],
         apiImpl: this,
       ),
     );
@@ -1231,6 +1256,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       "network",
       "server",
       "plain",
+      "caPem",
       "dataDir",
     ],
   );
@@ -1734,22 +1760,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Status dco_decode_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 13)
-      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
     return Status(
       walletId: dco_decode_String(arr[0]),
       network: dco_decode_network_id(arr[1]),
       server: dco_decode_String(arr[2]),
       plain: dco_decode_bool(arr[3]),
-      serverVersion: dco_decode_String(arr[4]),
-      chainName: dco_decode_String(arr[5]),
-      branchId: dco_decode_String(arr[6]),
-      tip: dco_decode_i_64(arr[7]),
-      birthday: dco_decode_i_64(arr[8]),
-      syncHeight: dco_decode_i_64(arr[9]),
-      addresses: dco_decode_i_64(arr[10]),
-      yellowback: dco_decode_yellowback_status(arr[11]),
-      coreVersion: dco_decode_String(arr[12]),
+      caPinned: dco_decode_bool(arr[4]),
+      serverVersion: dco_decode_String(arr[5]),
+      chainName: dco_decode_String(arr[6]),
+      branchId: dco_decode_String(arr[7]),
+      tip: dco_decode_i_64(arr[8]),
+      birthday: dco_decode_i_64(arr[9]),
+      syncHeight: dco_decode_i_64(arr[10]),
+      addresses: dco_decode_i_64(arr[11]),
+      yellowback: dco_decode_yellowback_status(arr[12]),
+      coreVersion: dco_decode_String(arr[13]),
     );
   }
 
@@ -2499,6 +2526,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_network = sse_decode_network_id(deserializer);
     var var_server = sse_decode_String(deserializer);
     var var_plain = sse_decode_bool(deserializer);
+    var var_caPinned = sse_decode_bool(deserializer);
     var var_serverVersion = sse_decode_String(deserializer);
     var var_chainName = sse_decode_String(deserializer);
     var var_branchId = sse_decode_String(deserializer);
@@ -2513,6 +2541,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       network: var_network,
       server: var_server,
       plain: var_plain,
+      caPinned: var_caPinned,
       serverVersion: var_serverVersion,
       chainName: var_chainName,
       branchId: var_branchId,
@@ -3162,6 +3191,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_network_id(self.network, serializer);
     sse_encode_String(self.server, serializer);
     sse_encode_bool(self.plain, serializer);
+    sse_encode_bool(self.caPinned, serializer);
     sse_encode_String(self.serverVersion, serializer);
     sse_encode_String(self.chainName, serializer);
     sse_encode_String(self.branchId, serializer);

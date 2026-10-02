@@ -16,3 +16,5 @@ serde
 serde_json
 thiserror
 flutter_rust_bridge
+# Audit G-4 (2026-10-01): the Mozilla root bundle, needed on iOS where rustls-native-certs has no backend.
+webpki-roots

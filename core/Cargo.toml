@@ -26,7 +26,12 @@ sha2 = "=0.11.0"
 ripemd = "=0.2.0"
 blake2b_simd = "=1.0.5"
 bs58 = "=0.5.1"
-tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "channel", "tls-ring", "tls-native-roots"] }
+# `tls-webpki-roots` (audit G-4): the Mozilla bundle as a root store beside the platform's
+# roots. `rustls-native-certs` has no iOS backend, so without it every TLS connection on iOS
+# failed the handshake. `webpki-roots` is pinned here as a direct dependency so its version is
+# exact (plan §3.3 allow-list: scripts/allowed-deps.txt).
+tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "channel", "tls-ring", "tls-native-roots", "tls-webpki-roots"] }
+webpki-roots = "=1.0.9"
 tonic-prost = "=0.14.6"
 prost = "=0.14.4"
 tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "sync", "time"] }

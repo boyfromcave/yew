@@ -17,7 +17,8 @@ python3 - "${1:-}" "$meta" <<'PY'
 import json, re, sys
 ALLOWED = {"MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause",
            "ISC", "Zlib", "CC0-1.0", "MIT-0", "Unlicense", "0BSD", "Unicode-3.0", "Unicode-DFS-2016",
-           "LGPL-2.1-or-later"}  # r-efi: "MIT OR Apache-2.0 OR LGPL-2.1-or-later" — MIT is taken
+           "LGPL-2.1-or-later",  # r-efi: "MIT OR Apache-2.0 OR LGPL-2.1-or-later" — MIT is taken
+           "CDLA-Permissive-2.0"}  # webpki-roots: Mozilla's root bundle (data, permissive; audit G-4)
 # A crate whose manifest gives license-file only (no SPDX expression): read by hand, recorded here.
 FILE_ONLY = {"allo-isolate": "Apache-2.0"}   # LICENSE is the Apache 2.0 text
 m = json.load(open(sys.argv[2]))

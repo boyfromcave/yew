@@ -266,8 +266,8 @@ class FakeWalletApi implements WalletApi {
   };
 
   @override
-  Future<ServerProbe> probeServer({required String server, required bool plain, required NetworkId network}) async {
-    calls.add('probe $server $plain ${network.name}');
+  Future<ServerProbe> probeServer({required String server, required bool plain, String? caPem, required NetworkId network}) async {
+    calls.add('probe $server $plain ${network.name}${caPem == null ? '' : ' pinned'}');
     return const ServerProbe(
       serverVersion: 'v0-dev',
       chainName: 'regtest',
@@ -278,16 +278,16 @@ class FakeWalletApi implements WalletApi {
   }
 
   @override
-  Future<Created> createWallet({String? seedWords, required String passphrase, int? birthday, required NetworkId network, required String server, required bool plain, required String dataDir}) async {
-    calls.add('create words=${seedWords != null} birthday=$birthday ${network.name} $server plain=$plain');
+  Future<Created> createWallet({String? seedWords, required String passphrase, int? birthday, required NetworkId network, required String server, required bool plain, String? caPem, required String dataDir}) async {
+    calls.add('create words=${seedWords != null} birthday=$birthday ${network.name} $server plain=$plain${caPem == null ? '' : ' pinned'}');
     if (seedWords != null) checkSeedWords(seedWords: seedWords);
     unlockedFlag = true;
     return Created(walletId: 'yew-test', seedWords: seedWords == null ? fakeWords : null, addressYe: fakeYe);
   }
 
   @override
-  Future<String> unlock({required String seedWords, required String passphrase, required NetworkId network, required String server, required bool plain, required String dataDir}) async {
-    calls.add('unlock');
+  Future<String> unlock({required String seedWords, required String passphrase, required NetworkId network, required String server, required bool plain, String? caPem, required String dataDir}) async {
+    calls.add('unlock${caPem == null ? '' : ' pinned'}');
     unlockedFlag = true;
     return 'yew-test';
   }
@@ -302,7 +302,7 @@ class FakeWalletApi implements WalletApi {
   bool isUnlocked() => unlockedFlag;
 
   @override
-  Future<void> setServer({required String server, required bool plain}) async => calls.add('setServer $server $plain');
+  Future<void> setServer({required String server, required bool plain, String? caPem}) async => calls.add('setServer $server $plain${caPem == null ? '' : ' pinned'}');
 
   @override
   Future<Status> status() async => Status(
@@ -310,6 +310,7 @@ class FakeWalletApi implements WalletApi {
     network: NetworkId.regtest,
     server: '127.0.0.1:9267',
     plain: true,
+    caPinned: false,
     serverVersion: 'v0-dev',
     chainName: 'regtest',
     branchId: '19bd2d2f',

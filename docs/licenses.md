@@ -7,11 +7,12 @@ expression contains no identifier from its allowed set. YEW itself is MIT (`LICE
 
 ## Summary
 
-225 crates. Expressions seen: `MIT OR Apache-2.0` (and its spellings) for the large majority;
+226 crates. Expressions seen: `MIT OR Apache-2.0` (and its spellings) for the large majority;
 `MIT`; `Apache-2.0`; `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`; `CC0-1.0`;
 `Unlicense OR MIT`; `Zlib` (`foldhash`); `ISC` (`rustls-webpki`, `untrusted`); `Apache-2.0 AND
 ISC` (`ring`); `BSD-3-Clause` (`subtle`); `(MIT OR Apache-2.0) AND Unicode-3.0`
-(`unicode-ident`); `MIT OR Apache-2.0 OR LGPL-2.1-or-later` (`r-efi`, chosen under MIT).
+(`unicode-ident`); `MIT OR Apache-2.0 OR LGPL-2.1-or-later` (`r-efi`, chosen under MIT);
+`CDLA-Permissive-2.0` (`webpki-roots`, Mozilla's root bundle as data — added for iOS TLS, audit G-4).
 `allo-isolate` declares `license-file` only; its `LICENSE` is the Apache 2.0 text (recorded in
 the script as `FILE_ONLY`). All permissive; no copyleft term is taken.
 
@@ -238,6 +239,7 @@ and its platform packages (BSD-3-Clause), `local_auth` (BSD-3-Clause), `qr_flutt
 | `wasm-bindgen-macro-support` | 0.2.128 | MIT OR Apache-2.0 |
 | `wasm-bindgen-shared` | 0.2.128 | MIT OR Apache-2.0 |
 | `web-sys` | 0.3.105 | MIT OR Apache-2.0 |
+| `webpki-roots` | 1.0.9 | CDLA-Permissive-2.0 |
 | `windows-link` | 0.2.1 | MIT OR Apache-2.0 |
 | `windows-sys` | 0.52.0 | MIT OR Apache-2.0 |
 | `windows-sys` | 0.61.2 | MIT OR Apache-2.0 |

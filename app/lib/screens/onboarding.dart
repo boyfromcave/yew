@@ -34,8 +34,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final _passphrase = TextEditingController();
   final _birthday = TextEditingController();
   final _server = TextEditingController(text: WalletSettings.defaultServer);
+  final _caPem = TextEditingController();
   NetworkId _network = NetworkId.mainnet;
   bool _plain = false;
+
+  String? get _caPemOrNull => _caPem.text.trim().isEmpty ? null : _caPem.text.trim();
 
   /// Prefill the server from the core's default list for [_network] (empty ⇒ the user types
   /// one; the field says so).
@@ -52,7 +55,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   @override
   void dispose() {
-    for (final c in [_words, _passphrase, _birthday, _server]) {
+    for (final c in [_words, _passphrase, _birthday, _server, _caPem]) {
       c.dispose();
     }
     super.dispose();
@@ -65,7 +68,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       _error = null;
     });
     try {
-      final p = await app.api.probeServer(server: _server.text.trim(), plain: _plain, network: _network);
+      final p = await app.api.probeServer(server: _server.text.trim(), plain: _plain, caPem: _caPemOrNull, network: _network);
       setState(() {
         _tip = p.tip;
         if (_birthday.text.isEmpty) _birthday.text = '${p.tip}';
@@ -98,6 +101,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         withSettings: WalletSettings(
           server: _server.text.trim(),
           plain: _plain,
+          caPem: _caPem.text.trim(),
           network: _network,
           trustAccepted: true,
           biometrics: _biometrics,
@@ -260,6 +264,19 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   title: const Text('Plain connection (no TLS; regtest only)'),
                   contentPadding: EdgeInsets.zero,
                 ),
+              if (!_plain) ...[
+                const SizedBox(height: 12),
+                TextField(
+                  key: const Key('ca-pem'),
+                  controller: _caPem,
+                  autocorrect: false,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                    labelText: 'Pinned certificate (PEM, optional)',
+                    hintText: 'The server\'s own certificate or its CA; when set, nothing else is trusted',
+                  ),
+                ),
+              ],
               const SizedBox(height: 12),
               OutlinedButton(
                 key: const Key('probe'),

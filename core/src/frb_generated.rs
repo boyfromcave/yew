@@ -295,6 +295,7 @@ fn wire__crate__api__create_wallet_impl(
             let api_network = <crate::api::NetworkId>::sse_decode(&mut deserializer);
             let api_server = <String>::sse_decode(&mut deserializer);
             let api_plain = <bool>::sse_decode(&mut deserializer);
+            let api_ca_pem = <Option<String>>::sse_decode(&mut deserializer);
             let api_data_dir = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
@@ -306,6 +307,7 @@ fn wire__crate__api__create_wallet_impl(
                         api_network,
                         api_server,
                         api_plain,
+                        api_ca_pem,
                         api_data_dir,
                     )?;
                     std::result::Result::Ok(output_ok)
@@ -797,11 +799,13 @@ fn wire__crate__api__probe_server_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_server = <String>::sse_decode(&mut deserializer);
             let api_plain = <bool>::sse_decode(&mut deserializer);
+            let api_ca_pem = <Option<String>>::sse_decode(&mut deserializer);
             let api_network = <crate::api::NetworkId>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
-                    let output_ok = crate::api::probe_server(api_server, api_plain, api_network)?;
+                    let output_ok =
+                        crate::api::probe_server(api_server, api_plain, api_ca_pem, api_network)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -1066,10 +1070,11 @@ fn wire__crate__api__set_server_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_server = <String>::sse_decode(&mut deserializer);
             let api_plain = <bool>::sse_decode(&mut deserializer);
+            let api_ca_pem = <Option<String>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
-                    let output_ok = crate::api::set_server(api_server, api_plain)?;
+                    let output_ok = crate::api::set_server(api_server, api_plain, api_ca_pem)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -1171,6 +1176,7 @@ fn wire__crate__api__unlock_impl(
             let api_network = <crate::api::NetworkId>::sse_decode(&mut deserializer);
             let api_server = <String>::sse_decode(&mut deserializer);
             let api_plain = <bool>::sse_decode(&mut deserializer);
+            let api_ca_pem = <Option<String>>::sse_decode(&mut deserializer);
             let api_data_dir = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
@@ -1181,6 +1187,7 @@ fn wire__crate__api__unlock_impl(
                         api_network,
                         api_server,
                         api_plain,
+                        api_ca_pem,
                         api_data_dir,
                     )?;
                     std::result::Result::Ok(output_ok)
@@ -1894,6 +1901,7 @@ impl SseDecode for crate::api::Status {
         let mut var_network = <crate::api::NetworkId>::sse_decode(deserializer);
         let mut var_server = <String>::sse_decode(deserializer);
         let mut var_plain = <bool>::sse_decode(deserializer);
+        let mut var_caPinned = <bool>::sse_decode(deserializer);
         let mut var_serverVersion = <String>::sse_decode(deserializer);
         let mut var_chainName = <String>::sse_decode(deserializer);
         let mut var_branchId = <String>::sse_decode(deserializer);
@@ -1908,6 +1916,7 @@ impl SseDecode for crate::api::Status {
             network: var_network,
             server: var_server,
             plain: var_plain,
+            ca_pinned: var_caPinned,
             server_version: var_serverVersion,
             chain_name: var_chainName,
             branch_id: var_branchId,
@@ -2629,6 +2638,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::Status {
             self.network.into_into_dart().into_dart(),
             self.server.into_into_dart().into_dart(),
             self.plain.into_into_dart().into_dart(),
+            self.ca_pinned.into_into_dart().into_dart(),
             self.server_version.into_into_dart().into_dart(),
             self.chain_name.into_into_dart().into_dart(),
             self.branch_id.into_into_dart().into_dart(),
@@ -3275,6 +3285,7 @@ impl SseEncode for crate::api::Status {
         <crate::api::NetworkId>::sse_encode(self.network, serializer);
         <String>::sse_encode(self.server, serializer);
         <bool>::sse_encode(self.plain, serializer);
+        <bool>::sse_encode(self.ca_pinned, serializer);
         <String>::sse_encode(self.server_version, serializer);
         <String>::sse_encode(self.chain_name, serializer);
         <String>::sse_encode(self.branch_id, serializer);

@@ -2,9 +2,11 @@
 // Distributed under the MIT software license, see the accompanying
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
-//! Server configuration and channel construction (plan §3.5): TLS (`rustls`, system roots)
-//! everywhere but regtest, where `plain` selects `http://`; an optional pinned certificate
-//! (`ca_pem`) replaces the system roots; the default endpoint table (`docs/release.md`).
+//! Server configuration and channel construction (plan §3.5): TLS (`rustls`; the platform's
+//! roots plus the Mozilla `webpki-roots` bundle, audit G-4 — `rustls-native-certs` has no iOS
+//! backend, so the bundle is what iOS verifies against) everywhere but regtest, where `plain`
+//! selects `http://`; an optional pinned certificate (`ca_pem`) replaces every root; the
+//! default endpoint table (`docs/release.md`).
 
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
@@ -102,14 +104,31 @@ impl Server {
         self
     }
 
+    /// Check that `pem` looks like a PEM certificate before it is accepted as a pin (the
+    /// app's Settings field, audit G-4): at least one `BEGIN CERTIFICATE` block.
+    pub fn check_ca_pem(pem: &str) -> Result<(), String> {
+        let p = pem.trim();
+        if p.is_empty() {
+            return Ok(());
+        }
+        if !p.contains("-----BEGIN CERTIFICATE-----") || !p.contains("-----END CERTIFICATE-----") {
+            return Err(
+                "The pinned certificate must be a PEM certificate (-----BEGIN CERTIFICATE-----)."
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
     /// The URI the channel connects to.
     pub fn uri(&self) -> String {
         let scheme = if self.plain { "http" } else { "https" };
         format!("{scheme}://{}:{}", self.host, self.port)
     }
 
-    /// Open the channel: `h2` over `rustls` with the platform's native roots — or, when a
-    /// certificate is pinned, that certificate alone — unless `plain`.
+    /// Open the channel: `h2` over `rustls` with the platform's native roots and the
+    /// `webpki-roots` bundle (on iOS only the bundle is populated) — or, when a certificate
+    /// is pinned, that certificate alone — unless `plain`.
     pub async fn connect(&self) -> Result<Channel, NetError> {
         let mut endpoint = Endpoint::from_shared(self.uri())
             .map_err(|e| NetError::Config(format!("invalid endpoint {}: {e}", self.uri())))?;
@@ -117,7 +136,9 @@ impl Server {
         if !self.plain {
             let tls = match &self.ca_pem {
                 Some(pem) => ClientTlsConfig::new().ca_certificate(Certificate::from_pem(pem)),
-                None => ClientTlsConfig::new().with_native_roots(),
+                None => ClientTlsConfig::new()
+                    .with_native_roots()
+                    .with_webpki_roots(),
             };
             endpoint = endpoint.tls_config(tls)?;
         }
@@ -169,6 +190,15 @@ mod tests {
             .with_ca_pem(Some("  ".into()))
             .ca_pem
             .is_none());
+        assert!(Server::check_ca_pem("").is_ok());
+        assert!(Server::check_ca_pem(
+            "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----"
+        )
+        .is_ok());
+        assert!(Server::check_ca_pem("not a certificate").is_err());
+        assert!(Server::check_ca_pem("-----BEGIN PRIVATE KEY-----").is_err());
+        // The bundle is linked: a non-empty root store exists even where native roots are absent.
+        assert!(!webpki_roots::TLS_SERVER_ROOTS.is_empty());
         assert!(default_servers(Network::Mainnet).is_empty());
         assert!(default_servers(Network::Testnet).is_empty());
         assert_eq!(

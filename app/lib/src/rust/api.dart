@@ -36,14 +36,17 @@ List<DefaultEndpoint> defaultServers({required NetworkId network}) =>
     RustLib.instance.api.crateApiDefaultServers(network: network);
 
 /// Probe a server before any wallet is open (Onboarding's default birthday, Settings' server
-/// check). Contract rule 1: an unknown `rpcversion` is an error.
+/// check). Contract rule 1: an unknown `rpcversion` is an error. `ca_pem` pins a certificate
+/// (PEM) as the only trust anchor (audit G-4).
 Future<ServerProbe> probeServer({
   required String server,
   required bool plain,
+  String? caPem,
   required NetworkId network,
 }) => RustLib.instance.api.crateApiProbeServer(
   server: server,
   plain: plain,
+  caPem: caPem,
   network: network,
 );
 
@@ -57,6 +60,7 @@ Future<Created> createWallet({
   required NetworkId network,
   required String server,
   required bool plain,
+  String? caPem,
   required String dataDir,
 }) => RustLib.instance.api.crateApiCreateWallet(
   seedWords: seedWords,
@@ -65,6 +69,7 @@ Future<Created> createWallet({
   network: network,
   server: server,
   plain: plain,
+  caPem: caPem,
   dataDir: dataDir,
 );
 
@@ -75,6 +80,7 @@ Future<String> unlock({
   required NetworkId network,
   required String server,
   required bool plain,
+  String? caPem,
   required String dataDir,
 }) => RustLib.instance.api.crateApiUnlock(
   seedWords: seedWords,
@@ -82,6 +88,7 @@ Future<String> unlock({
   network: network,
   server: server,
   plain: plain,
+  caPem: caPem,
   dataDir: dataDir,
 );
 
@@ -92,8 +99,15 @@ Future<void> lock() => RustLib.instance.api.crateApiLock();
 bool isUnlocked() => RustLib.instance.api.crateApiIsUnlocked();
 
 /// Change the server of the open wallet (Settings). The next call reconnects.
-Future<void> setServer({required String server, required bool plain}) =>
-    RustLib.instance.api.crateApiSetServer(server: server, plain: plain);
+Future<void> setServer({
+  required String server,
+  required bool plain,
+  String? caPem,
+}) => RustLib.instance.api.crateApiSetServer(
+  server: server,
+  plain: plain,
+  caPem: caPem,
+);
 
 /// Server info, Yellowback info, tip, sync height (connects if needed).
 Future<Status> status() => RustLib.instance.api.crateApiStatus();
@@ -1385,6 +1399,9 @@ class Status {
   /// Plain HTTP/2 (regtest only).
   final bool plain;
 
+  /// A certificate is pinned for this server (the only trust anchor).
+  final bool caPinned;
+
   /// The server's `version`.
   final String serverVersion;
 
@@ -1417,6 +1434,7 @@ class Status {
     required this.network,
     required this.server,
     required this.plain,
+    required this.caPinned,
     required this.serverVersion,
     required this.chainName,
     required this.branchId,
@@ -1434,6 +1452,7 @@ class Status {
       network.hashCode ^
       server.hashCode ^
       plain.hashCode ^
+      caPinned.hashCode ^
       serverVersion.hashCode ^
       chainName.hashCode ^
       branchId.hashCode ^
@@ -1453,6 +1472,7 @@ class Status {
           network == other.network &&
           server == other.server &&
           plain == other.plain &&
+          caPinned == other.caPinned &&
           serverVersion == other.serverVersion &&
           chainName == other.chainName &&
           branchId == other.branchId &&

@@ -3,8 +3,9 @@
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
 // Settings → Server (plan §3.5): one endpoint; TLS required outside regtest (the core refuses
-// plain on mainnet and testnet, the switch shows on regtest only); probe before
-// saving (contract rule 1: an unknown rpcversion is refused by the core).
+// plain on mainnet and testnet, the switch shows on regtest only); an optional pinned
+// certificate (PEM, the only trust anchor when set; audit G-4); probe before saving (contract
+// rule 1: an unknown rpcversion is refused by the core).
 import 'package:flutter/material.dart';
 
 import '../api/wallet_api.dart';
@@ -20,6 +21,7 @@ class ServerScreen extends StatefulWidget {
 
 class _ServerScreenState extends State<ServerScreen> {
   late final TextEditingController _server;
+  late final TextEditingController _caPem;
   late bool _plain;
   bool _busy = false;
   String? _note;
@@ -30,14 +32,18 @@ class _ServerScreenState extends State<ServerScreen> {
     super.initState();
     final s = AppScope.read(context).settings;
     _server = TextEditingController(text: s.server);
+    _caPem = TextEditingController(text: s.caPem);
     _plain = s.plain;
   }
 
   @override
   void dispose() {
     _server.dispose();
+    _caPem.dispose();
     super.dispose();
   }
+
+  String? get _caPemOrNull => _caPem.text.trim().isEmpty ? null : _caPem.text.trim();
 
   Future<void> _probe() async {
     final app = AppScope.read(context);
@@ -47,7 +53,7 @@ class _ServerScreenState extends State<ServerScreen> {
       _ok = false;
     });
     try {
-      final p = await app.api.probeServer(server: _server.text.trim(), plain: _plain, network: app.settings.network);
+      final p = await app.api.probeServer(server: _server.text.trim(), plain: _plain, caPem: _caPemOrNull, network: app.settings.network);
       setState(() {
         _ok = true;
         _note =
@@ -64,7 +70,7 @@ class _ServerScreenState extends State<ServerScreen> {
   Future<void> _save() async {
     final app = AppScope.read(context);
     try {
-      await app.setServer(_server.text.trim(), _plain);
+      await app.setServer(_server.text.trim(), _plain, caPem: _caPem.text.trim());
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
       setState(() => _note = messageOf(e));
@@ -101,6 +107,20 @@ class _ServerScreenState extends State<ServerScreen> {
               title: const Text('Plain connection (no TLS)'),
               contentPadding: EdgeInsets.zero,
             ),
+          if (!_plain) ...[
+            const SizedBox(height: 12),
+            TextField(
+              key: const Key('ca-pem'),
+              controller: _caPem,
+              autocorrect: false,
+              maxLines: 4,
+              onChanged: (_) => setState(() => _ok = false),
+              decoration: const InputDecoration(
+                labelText: 'Pinned certificate (PEM, optional)',
+                hintText: 'The server\'s own certificate or its CA; when set, nothing else is trusted',
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           OutlinedButton(key: const Key('probe'), onPressed: _busy ? null : _probe, child: Text(_busy ? 'Checking…' : 'Check')),
           if (_note != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_note!, key: const Key('note'), style: TextStyle(color: _ok ? null : c.danger))),

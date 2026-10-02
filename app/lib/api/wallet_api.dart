@@ -43,9 +43,12 @@ abstract class WalletApi {
   /// owner supplies them: docs/release.md "Default endpoints").
   List<DefaultEndpoint> defaultServers({required NetworkId network});
 
+  /// [caPem] pins one certificate (PEM) as the only trust anchor for the server (audit G-4);
+  /// null or empty = the platform's roots plus the bundled Mozilla roots.
   Future<ServerProbe> probeServer({
     required String server,
     required bool plain,
+    String? caPem,
     required NetworkId network,
   });
 
@@ -56,6 +59,7 @@ abstract class WalletApi {
     required NetworkId network,
     required String server,
     required bool plain,
+    String? caPem,
     required String dataDir,
   });
 
@@ -65,6 +69,7 @@ abstract class WalletApi {
     required NetworkId network,
     required String server,
     required bool plain,
+    String? caPem,
     required String dataDir,
   });
 
@@ -72,7 +77,7 @@ abstract class WalletApi {
 
   bool isUnlocked();
 
-  Future<void> setServer({required String server, required bool plain});
+  Future<void> setServer({required String server, required bool plain, String? caPem});
 
   Future<Status> status();
 

@@ -16,6 +16,28 @@ Future<void> openSettings(WidgetTester tester, Harness h) async {
 }
 
 void main() {
+  testWidgets('the Server screen takes a pinned certificate and passes it to probe and save (audit G-4)', (tester) async {
+    final h = Harness(withWallet: true);
+    await openSettings(tester, h);
+    await tester.tap(find.byKey(const Key('server')));
+    await tester.pumpAndSettle();
+    // Regtest with plain on: no certificate field. Switch plain off: the field appears.
+    expect(find.byKey(const Key('ca-pem')), findsNothing);
+    await tester.tap(find.byKey(const Key('plain')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('server')), 'lwd.example.org:443');
+    await tester.enterText(find.byKey(const Key('ca-pem')), '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----');
+    await tester.tap(find.byKey(const Key('probe')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('probe lwd.example.org:443 false regtest pinned'));
+    await tester.tap(find.byKey(const Key('save')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('setServer lwd.example.org:443 false pinned'));
+    expect(h.state.settings.caPem, contains('BEGIN CERTIFICATE'));
+    // Settings shows the pin; the next unlock passes it to the core.
+    expect(find.textContaining('(pinned)'), findsOneWidget);
+  });
+
   testWidgets('export private key shows the warning before the key, then the WIF and both address forms', (tester) async {
     final h = Harness(withWallet: true);
     await openSettings(tester, h);

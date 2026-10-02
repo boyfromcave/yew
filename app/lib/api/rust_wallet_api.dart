@@ -29,8 +29,9 @@ class RustWalletApi implements WalletApi {
   Future<ServerProbe> probeServer({
     required String server,
     required bool plain,
+    String? caPem,
     required NetworkId network,
-  }) => rust.probeServer(server: server, plain: plain, network: network);
+  }) => rust.probeServer(server: server, plain: plain, caPem: caPem, network: network);
 
   @override
   Future<Created> createWallet({
@@ -40,6 +41,7 @@ class RustWalletApi implements WalletApi {
     required NetworkId network,
     required String server,
     required bool plain,
+    String? caPem,
     required String dataDir,
   }) => rust.createWallet(
     seedWords: seedWords,
@@ -48,6 +50,7 @@ class RustWalletApi implements WalletApi {
     network: network,
     server: server,
     plain: plain,
+    caPem: caPem,
     dataDir: dataDir,
   );
 
@@ -58,6 +61,7 @@ class RustWalletApi implements WalletApi {
     required NetworkId network,
     required String server,
     required bool plain,
+    String? caPem,
     required String dataDir,
   }) => rust.unlock(
     seedWords: seedWords,
@@ -65,6 +69,7 @@ class RustWalletApi implements WalletApi {
     network: network,
     server: server,
     plain: plain,
+    caPem: caPem,
     dataDir: dataDir,
   );
 
@@ -75,8 +80,8 @@ class RustWalletApi implements WalletApi {
   bool isUnlocked() => rust.isUnlocked();
 
   @override
-  Future<void> setServer({required String server, required bool plain}) =>
-      rust.setServer(server: server, plain: plain);
+  Future<void> setServer({required String server, required bool plain, String? caPem}) =>
+      rust.setServer(server: server, plain: plain, caPem: caPem);
 
   @override
   Future<Status> status() => rust.status();

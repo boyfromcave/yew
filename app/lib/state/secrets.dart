@@ -108,6 +108,7 @@ class WalletSettings {
   const WalletSettings({
     this.server = defaultServer,
     this.plain = false,
+    this.caPem = '',
     this.network = NetworkId.mainnet,
     this.birthday,
     this.trustAccepted = false,
@@ -121,6 +122,10 @@ class WalletSettings {
 
   final String server;
   final bool plain;
+
+  /// A pinned certificate (PEM) for the server, the only trust anchor when non-empty
+  /// (audit G-4). Not a secret, kept beside the other settings.
+  final String caPem;
   final NetworkId network;
   final int? birthday;
   final bool trustAccepted;
@@ -129,6 +134,7 @@ class WalletSettings {
   WalletSettings copyWith({
     String? server,
     bool? plain,
+    String? caPem,
     NetworkId? network,
     int? birthday,
     bool? trustAccepted,
@@ -136,6 +142,7 @@ class WalletSettings {
   }) => WalletSettings(
     server: server ?? this.server,
     plain: plain ?? this.plain,
+    caPem: caPem ?? this.caPem,
     network: network ?? this.network,
     birthday: birthday ?? this.birthday,
     trustAccepted: trustAccepted ?? this.trustAccepted,
@@ -145,6 +152,7 @@ class WalletSettings {
   String encode() => jsonEncode({
     'server': server,
     'plain': plain,
+    'caPem': caPem,
     'network': network.name,
     'birthday': birthday,
     'trustAccepted': trustAccepted,
@@ -156,6 +164,7 @@ class WalletSettings {
     return WalletSettings(
       server: m['server'] as String? ?? defaultServer,
       plain: m['plain'] as bool? ?? false,
+      caPem: m['caPem'] as String? ?? '',
       network: NetworkId.values.firstWhere(
         (n) => n.name == m['network'],
         orElse: () => NetworkId.mainnet,

@@ -222,6 +222,8 @@ pub struct Status {
     pub server: String,
     /// Plain HTTP/2 (regtest only).
     pub plain: bool,
+    /// A certificate is pinned for this server (the only trust anchor).
+    pub ca_pinned: bool,
     /// The server's `version`.
     pub server_version: String,
     /// The server's chain name.
@@ -906,8 +908,20 @@ impl Open {
     }
 }
 
-fn parse_server(server: &str, plain: bool, network: Network) -> Result<Server, YewError> {
-    Server::parse_for(network, server, plain).map_err(|m| YewError::new(ErrorKind::Input, m))
+/// `host:port`, `plain` (regtest only) and an optional pinned certificate (PEM; the only trust
+/// anchor when set, audit G-4).
+fn parse_server(
+    server: &str,
+    plain: bool,
+    ca_pem: Option<String>,
+    network: Network,
+) -> Result<Server, YewError> {
+    if let Some(p) = &ca_pem {
+        Server::check_ca_pem(p).map_err(|m| YewError::new(ErrorKind::Input, m))?;
+    }
+    Ok(Server::parse_for(network, server, plain)
+        .map_err(|m| YewError::new(ErrorKind::Input, m))?
+        .with_ca_pem(ca_pem))
 }
 
 fn open_wallet(
@@ -1014,14 +1028,16 @@ pub fn default_servers(network: NetworkId) -> Vec<DefaultEndpoint> {
 }
 
 /// Probe a server before any wallet is open (Onboarding's default birthday, Settings' server
-/// check). Contract rule 1: an unknown `rpcversion` is an error.
+/// check). Contract rule 1: an unknown `rpcversion` is an error. `ca_pem` pins a certificate
+/// (PEM) as the only trust anchor (audit G-4).
 pub fn probe_server(
     server: String,
     plain: bool,
+    ca_pem: Option<String>,
     network: NetworkId,
 ) -> Result<ServerProbe, YewError> {
     let network = network.to_network();
-    let server = parse_server(&server, plain, network)?;
+    let server = parse_server(&server, plain, ca_pem, network)?;
     runtime().block_on(async {
         let c = connect(&server, network).await?;
         Ok(ServerProbe {
@@ -1045,10 +1061,11 @@ pub fn create_wallet(
     network: NetworkId,
     server: String,
     plain: bool,
+    ca_pem: Option<String>,
     data_dir: String,
 ) -> Result<Created, YewError> {
     let network = network.to_network();
-    let server = parse_server(&server, plain, network)?;
+    let server = parse_server(&server, plain, ca_pem, network)?;
     // The bridge's `String`s are wiped when these guards drop (W5 review S-1); the generated
     // mnemonic goes back to the app once, by value, and is the app's to store (D-W-6).
     let passphrase = keys::SecretString::new(passphrase);
@@ -1098,10 +1115,11 @@ pub fn unlock(
     network: NetworkId,
     server: String,
     plain: bool,
+    ca_pem: Option<String>,
     data_dir: String,
 ) -> Result<String, YewError> {
     let network = network.to_network();
-    let server = parse_server(&server, plain, network)?;
+    let server = parse_server(&server, plain, ca_pem, network)?;
     let seed_words = keys::SecretString::new(seed_words);
     let passphrase = keys::SecretString::new(passphrase);
     runtime().block_on(async {
@@ -1139,9 +1157,9 @@ pub fn is_unlocked() -> bool {
 }
 
 /// Change the server of the open wallet (Settings). The next call reconnects.
-pub fn set_server(server: String, plain: bool) -> Result<(), YewError> {
+pub fn set_server(server: String, plain: bool, ca_pem: Option<String>) -> Result<(), YewError> {
     with_open(|o| {
-        o.server = parse_server(&server, plain, o.wallet.network)?;
+        o.server = parse_server(&server, plain, ca_pem, o.wallet.network)?;
         o.conn = None;
         o.previews.clear();
         Ok(())
@@ -1173,6 +1191,7 @@ pub fn status() -> Result<Status, YewError> {
                 network: NetworkId::from_network(network),
                 server: format!("{}:{}", server.host, server.port),
                 plain: server.plain,
+                ca_pinned: server.ca_pem.is_some(),
                 server_version: c.server_version.clone(),
                 chain_name: c.chain_name.clone(),
                 branch_id: format!("{:08x}", c.branch_id),
@@ -2047,7 +2066,7 @@ mod tests {
         assert!(default_servers(NetworkId::Regtest)[0].plain);
         // A plain connection is refused on testnet too, before anything is opened.
         assert_eq!(
-            probe_server("127.0.0.1:1".into(), true, NetworkId::Testnet)
+            probe_server("127.0.0.1:1".into(), true, None, NetworkId::Testnet)
                 .unwrap_err()
                 .kind,
             ErrorKind::Input
@@ -2059,10 +2078,23 @@ mod tests {
             NetworkId::Mainnet,
             "127.0.0.1:1".into(),
             true,
+            None,
             tmp_dir("main"),
         )
         .unwrap_err();
         assert_eq!(e.kind, ErrorKind::Input);
+        // A pin that is not a PEM certificate is refused before anything is opened (G-4).
+        assert_eq!(
+            probe_server(
+                "lwd.example.org:443".into(),
+                false,
+                Some("garbage".into()),
+                NetworkId::Mainnet
+            )
+            .unwrap_err()
+            .kind,
+            ErrorKind::Input
+        );
 
         let dir = tmp_dir("regtest");
         let c = create_wallet(
@@ -2072,6 +2104,7 @@ mod tests {
             NetworkId::Regtest,
             "127.0.0.1:1".into(),
             true,
+            None,
             dir.clone(),
         )
         .unwrap();
@@ -2089,6 +2122,7 @@ mod tests {
             NetworkId::Regtest,
             "127.0.0.1:1".into(),
             true,
+            None,
             dir.clone(),
         )
         .unwrap_err();
@@ -2141,6 +2175,7 @@ mod tests {
             NetworkId::Regtest,
             "127.0.0.1:1".into(),
             true,
+            None,
             dir.clone(),
         )
         .unwrap();
@@ -2152,6 +2187,7 @@ mod tests {
             NetworkId::Regtest,
             "127.0.0.1:1".into(),
             true,
+            None,
             dir,
         )
         .unwrap_err();
