@@ -21,7 +21,7 @@ use tonic::transport::Channel;
 use tonic::Code;
 
 use super::rpc;
-use super::{NetError, Server, YellowbackStreamerClient};
+use super::{limits, NetError, Server, YellowbackStreamerClient};
 use crate::tx::{txid_from_hex, OutPoint};
 
 /// The node `rpcversion` this build implements (`ycash-dd/doc/yellowback-rpc-contract.json`;
@@ -135,6 +135,22 @@ fn map_status(s: tonic::Status) -> NetError {
         }
         _ => NetError::Status(s),
     }
+}
+
+/// Collect a server stream up to `limit` messages (audit G-7).
+async fn collect<T>(
+    stream: &mut tonic::Streaming<T>,
+    what: &'static str,
+    limit: usize,
+) -> Result<Vec<T>, NetError> {
+    let mut out = Vec::new();
+    while let Some(v) = stream.message().await.map_err(map_status)? {
+        if out.len() >= limit {
+            return Err(NetError::TooLarge { what, limit });
+        }
+        out.push(v);
+    }
+    Ok(out)
 }
 
 fn outpoint_of(txid: &str, vout: u32) -> Result<OutPoint, NetError> {
@@ -311,11 +327,7 @@ impl YellowbackClient {
             .await
             .map_err(map_status)?
             .into_inner();
-        let mut out = Vec::new();
-        while let Some(v) = stream.message().await.map_err(map_status)? {
-            out.push(v);
-        }
-        Ok(out)
+        collect(&mut stream, "vaults", limits::MAX_VAULTS).await
     }
 
     /// `ListClaimable` (`yed_listclaimable`), collected.
@@ -326,11 +338,7 @@ impl YellowbackClient {
             .await
             .map_err(map_status)?
             .into_inner();
-        let mut out = Vec::new();
-        while let Some(v) = stream.message().await.map_err(map_status)? {
-            out.push(v);
-        }
-        Ok(out)
+        collect(&mut stream, "claimable vaults", limits::MAX_VAULTS).await
     }
 
     /// `GetNotice` (`yed_getnotice <vaultTxid>`).
@@ -438,11 +446,7 @@ impl YellowbackClient {
             .await
             .map_err(map_status)?
             .into_inner();
-        let mut out = Vec::new();
-        while let Some(v) = stream.message().await.map_err(map_status)? {
-            out.push(v);
-        }
-        Ok(out)
+        collect(&mut stream, "attestations", limits::MAX_ATTESTATIONS).await
     }
 
     /// `ListAttestors` (`yed_listattestors [height]`; 0 = the tip), collected.
@@ -453,11 +457,7 @@ impl YellowbackClient {
             .await
             .map_err(map_status)?
             .into_inner();
-        let mut out = Vec::new();
-        while let Some(v) = stream.message().await.map_err(map_status)? {
-            out.push(v);
-        }
-        Ok(out)
+        collect(&mut stream, "attestors", limits::MAX_ATTESTORS).await
     }
 
     /// `GetAddressTokens` (`yed_listtokens <addresses> [minHeight]`; lightwalletd Phase L2):
@@ -481,6 +481,12 @@ impl YellowbackClient {
                 .map_err(map_status)?
                 .into_inner();
             while let Some(t) = stream.message().await.map_err(map_status)? {
+                if out.len() >= limits::MAX_TOKENS {
+                    return Err(NetError::TooLarge {
+                        what: "tokens",
+                        limit: limits::MAX_TOKENS,
+                    });
+                }
                 out.push(Token {
                     outpoint: outpoint_of(&t.txid, t.vout)?,
                     cents: t.cents,

@@ -285,10 +285,22 @@ impl Transaction {
         let mut shielded = ShieldedSummary::default();
         if is_sapling_v4 {
             shielded.value_balance = r.u64()? as i64;
+            // Counts come from the wire: a crafted transaction must end in a parse error, never
+            // in an overflow (audit G-6).
             shielded.spends = r.compact_size()? as usize;
-            r.take(shielded.spends * SPEND_DESCRIPTION_SIZE)?;
+            r.take(
+                shielded
+                    .spends
+                    .checked_mul(SPEND_DESCRIPTION_SIZE)
+                    .ok_or(TxError::Truncated(r.pos))?,
+            )?;
             shielded.outputs = r.compact_size()? as usize;
-            r.take(shielded.outputs * OUTPUT_DESCRIPTION_SIZE)?;
+            r.take(
+                shielded
+                    .outputs
+                    .checked_mul(OUTPUT_DESCRIPTION_SIZE)
+                    .ok_or(TxError::Truncated(r.pos))?,
+            )?;
         }
         if version >= 2 {
             shielded.joinsplits = r.compact_size()? as usize;
@@ -297,7 +309,12 @@ impl Transaction {
             } else {
                 JOINSPLIT_PHGR_SIZE
             };
-            r.take(shielded.joinsplits * js_size)?;
+            r.take(
+                shielded
+                    .joinsplits
+                    .checked_mul(js_size)
+                    .ok_or(TxError::Truncated(r.pos))?,
+            )?;
             if shielded.joinsplits > 0 {
                 r.take(JOINSPLIT_PUBKEY_SIZE + JOINSPLIT_SIG_SIZE)?;
             }
@@ -523,6 +540,31 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hostile server streams a "transaction" whose shielded counts overflow `usize` when
+    /// multiplied by the description size (audit G-6): a parse error, no panic, no wrap.
+    #[test]
+    fn hostile_shielded_counts_are_a_parse_error() {
+        let base = Transaction::new_v4().serialize().unwrap();
+        // header, group, vin=0, vout=0, lockTime, expiry, valueBalance, then the three counts.
+        let prefix = 4 + 4 + 1 + 1 + 4 + 4 + 8;
+        assert_eq!(base.len(), prefix + 3);
+        for slot in 0..3 {
+            let mut hostile = base[..prefix].to_vec();
+            for i in 0..3 {
+                if i == slot {
+                    hostile.push(0xff);
+                    hostile.extend_from_slice(&u64::MAX.to_le_bytes());
+                } else {
+                    hostile.push(0);
+                }
+            }
+            assert!(
+                matches!(Transaction::parse(&hostile), Err(TxError::Truncated(_))),
+                "slot {slot}"
+            );
+        }
+    }
     use crate::keys::{hex, unhex};
 
     fn sample() -> Transaction {

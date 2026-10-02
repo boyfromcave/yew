@@ -12,7 +12,7 @@
 use tonic::transport::Channel;
 
 use super::rpc;
-use super::{CompactTxStreamerClient, NetError, Server};
+use super::{limits, CompactTxStreamerClient, NetError, Server};
 use crate::params::Network;
 
 /// What `GetLightdInfo` told us, reduced to what the wallet keeps (plan §3.5).
@@ -112,19 +112,11 @@ impl CompactClient {
     }
 
     /// `GetLightdInfo`, then check it is a server for `network` with transparent support
-    /// (plan §3.5).
+    /// (plan §3.5) and a `consensusBranchId` of that network ([`Network::branch_ids`], audit
+    /// G-5): a branch id of another chain or epoch is refused before anything is signed.
     pub async fn lightd_info_for(&mut self, network: Network) -> Result<LightdInfo, NetError> {
         let info = self.lightd_info().await?;
-        if info.network != Some(network) {
-            return Err(NetError::Mismatch(format!(
-                "server chain is {:?}, wallet is {}",
-                info.chain_name,
-                network.chain_name()
-            )));
-        }
-        if !info.taddr_support {
-            return Err(NetError::Mismatch("server has no taddrSupport".into()));
-        }
+        check_lightd_info(&info, network)?;
         Ok(info)
     }
 
@@ -164,7 +156,8 @@ impl CompactClient {
 
     /// `GetAddressUtxos` for `addresses` from `start_height`, paged by `maxEntries`. The proto
     /// has no cursor, so paging re-asks with a larger `maxEntries` until the reply is shorter
-    /// than the page; the last page is the whole set.
+    /// than the page; the last page is the whole set. More than [`limits::MAX_UTXOS`] entries
+    /// is refused (audit G-7); a malformed entry is refused (audit G-8).
     pub async fn address_utxos(
         &mut self,
         addresses: &[String],
@@ -181,14 +174,23 @@ impl CompactClient {
                 })
                 .await?
                 .into_inner();
-            let n = reply.address_utxos.len() as u32;
-            if n < max_entries {
-                return Ok(reply.address_utxos.into_iter().map(from_reply).collect());
+            let n = reply.address_utxos.len();
+            if n > limits::MAX_UTXOS {
+                return Err(NetError::TooLarge {
+                    what: "UTXOs",
+                    limit: limits::MAX_UTXOS,
+                });
+            }
+            if n < max_entries as usize {
+                return reply.address_utxos.into_iter().map(from_reply).collect();
+            }
+            if max_entries as usize >= limits::MAX_UTXOS {
+                return Err(NetError::TooLarge {
+                    what: "UTXOs",
+                    limit: limits::MAX_UTXOS,
+                });
             }
             max_entries = max_entries.saturating_mul(4);
-            if max_entries == u32::MAX {
-                return Ok(reply.address_utxos.into_iter().map(from_reply).collect());
-            }
         }
     }
 
@@ -215,7 +217,22 @@ impl CompactClient {
         };
         let mut stream = self.inner.get_taddress_txids(filter).await?.into_inner();
         let mut out = Vec::new();
+        let mut bytes = 0usize;
         while let Some(t) = stream.message().await? {
+            // Bounded per call (audit G-7): the server, not the chain, decides what it streams.
+            bytes = bytes.saturating_add(t.data.len());
+            if out.len() >= limits::MAX_TXS_PER_ADDRESS {
+                return Err(NetError::TooLarge {
+                    what: "transactions for one address",
+                    limit: limits::MAX_TXS_PER_ADDRESS,
+                });
+            }
+            if bytes > limits::MAX_TX_BYTES_PER_ADDRESS {
+                return Err(NetError::TooLarge {
+                    what: "transaction bytes for one address",
+                    limit: limits::MAX_TX_BYTES_PER_ADDRESS,
+                });
+            }
             out.push(RawTx {
                 data: t.data,
                 height: t.height,
@@ -258,17 +275,110 @@ impl CompactClient {
     }
 }
 
-fn from_reply(r: rpc::GetAddressUtxosReply) -> Utxo {
-    let mut txid = [0u8; 32];
-    if r.txid.len() == 32 {
-        txid.copy_from_slice(&r.txid);
+/// The `chainName` / `taddrSupport` / `consensusBranchId` checks of [`CompactClient::lightd_info_for`].
+fn check_lightd_info(info: &LightdInfo, network: Network) -> Result<(), NetError> {
+    if info.network != Some(network) {
+        return Err(NetError::Mismatch(format!(
+            "server chain is {:?}, wallet is {}",
+            info.chain_name,
+            network.chain_name()
+        )));
     }
-    Utxo {
+    if !info.taddr_support {
+        return Err(NetError::Mismatch("server has no taddrSupport".into()));
+    }
+    if !network.branch_ids().contains(&info.branch_id) {
+        return Err(NetError::Mismatch(format!(
+            "server reports consensusBranchId {:08x}, which is not a Ycash {} epoch",
+            info.branch_id,
+            network.chain_name()
+        )));
+    }
+    Ok(())
+}
+
+/// One `GetAddressUtxos` entry, refused when malformed (audit G-8): a txid that is not 32
+/// bytes or a negative index would otherwise become a phantom coin `0000…:n`.
+fn from_reply(r: rpc::GetAddressUtxosReply) -> Result<Utxo, NetError> {
+    let txid: [u8; 32] = r.txid.as_slice().try_into().map_err(|_| {
+        NetError::Mismatch(format!(
+            "GetAddressUtxos entry with a {}-byte txid",
+            r.txid.len()
+        ))
+    })?;
+    if r.index < 0 {
+        return Err(NetError::Mismatch(format!(
+            "GetAddressUtxos entry with index {}",
+            r.index
+        )));
+    }
+    Ok(Utxo {
         address: r.address,
         txid,
-        index: r.index.max(0) as u32,
+        index: r.index as u32,
         script: r.script,
         value_zat: r.value_zat,
         height: r.height,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hostile_entry(txid: Vec<u8>, index: i32) -> rpc::GetAddressUtxosReply {
+        rpc::GetAddressUtxosReply {
+            address: "s1x".into(),
+            txid,
+            index,
+            script: vec![0x76, 0xa9, 0x14],
+            value_zat: 10_000,
+            height: 5,
+        }
+    }
+
+    /// A hostile server's malformed UTXO entry is refused, never zero-filled (audit G-8).
+    #[test]
+    fn malformed_utxo_entries_are_refused() {
+        assert!(from_reply(hostile_entry(vec![1; 31], 0)).is_err());
+        assert!(from_reply(hostile_entry(vec![1; 33], 0)).is_err());
+        assert!(from_reply(hostile_entry(Vec::new(), 0)).is_err());
+        assert!(from_reply(hostile_entry(vec![1; 32], -1)).is_err());
+        let ok = from_reply(hostile_entry(vec![7; 32], 3)).unwrap();
+        assert_eq!((ok.txid, ok.index), ([7; 32], 3));
+    }
+
+    /// A hostile server's `GetLightdInfo` naming another chain's branch id is refused before
+    /// anything is signed (audit G-5).
+    #[test]
+    fn foreign_branch_ids_are_refused() {
+        let info = |branch_id: u32, chain: &str, taddr: bool| LightdInfo {
+            chain_name: chain.into(),
+            network: Network::from_name(chain),
+            branch_id,
+            block_height: 1,
+            sapling_activation_height: 1,
+            taddr_support: taddr,
+            version: String::new(),
+            zcashd_build: String::new(),
+        };
+        assert!(check_lightd_info(&info(0x19bd_2d2f, "regtest", true), Network::Regtest).is_ok());
+        assert!(check_lightd_info(&info(0x374d_694f, "main", true), Network::Mainnet).is_ok());
+        // Zcash's current epochs and the shared pre-fork epochs.
+        for foreign in [
+            0x76b8_09bb,
+            0x5ba8_1b19,
+            0xc2d6_d0b4,
+            0xc8e7_1055,
+            0,
+            0xffff_ffff,
+        ] {
+            assert!(
+                check_lightd_info(&info(foreign, "main", true), Network::Mainnet).is_err(),
+                "{foreign:08x}"
+            );
+        }
+        assert!(check_lightd_info(&info(0x19bd_2d2f, "test", true), Network::Mainnet).is_err());
+        assert!(check_lightd_info(&info(0x19bd_2d2f, "main", false), Network::Mainnet).is_err());
     }
 }

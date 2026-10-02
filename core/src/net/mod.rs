@@ -27,6 +27,27 @@ pub use rpc::yellowback_streamer_client::YellowbackStreamerClient;
 pub use tls::{default_servers, DefaultServer, Server};
 pub use yellowback::{Availability, Token, Validation, YellowbackClient};
 
+/// Upper bounds on what one call collects from a server stream (audit G-7): the chosen server
+/// can lie, but it must not be able to grow the wallet's memory without bound. Each is far
+/// above any honest answer; a reply past the bound is [`NetError::TooLarge`] and the sync
+/// fails with that error instead of the process being killed.
+pub mod limits {
+    /// `GetAddressUtxos`: entries over all own addresses.
+    pub const MAX_UTXOS: usize = 100_000;
+    /// `GetTaddressTxids`: transactions per address and range.
+    pub const MAX_TXS_PER_ADDRESS: usize = 50_000;
+    /// `GetTaddressTxids`: raw bytes per address and range (64 MiB).
+    pub const MAX_TX_BYTES_PER_ADDRESS: usize = 64 << 20;
+    /// `GetAddressTokens`: tokens over all own addresses.
+    pub const MAX_TOKENS: usize = 100_000;
+    /// `ListVaults`, `ListClaimable`.
+    pub const MAX_VAULTS: usize = 10_000;
+    /// `GetAttestations`.
+    pub const MAX_ATTESTATIONS: usize = 10_000;
+    /// `ListAttestors` (`N_SLOTS` is 9).
+    pub const MAX_ATTESTORS: usize = 1_000;
+}
+
 /// An error's message followed by every source in its chain, `: `-joined.
 fn with_sources(e: &dyn std::error::Error) -> String {
     let mut s = e.to_string();
@@ -70,6 +91,15 @@ pub enum NetError {
     /// The node's `rpcversion` is not the one this build implements (contract rule 1).
     #[error("unknown Yellowback rpcversion {0} (this build implements {known})", known = yellowback::KNOWN_RPCVERSION)]
     UnknownRpcVersion(i64),
+    /// A stream exceeded its bound ([`limits`]): the server answered more than any honest
+    /// server would.
+    #[error("the server sent more than {limit} {what}; refusing the answer (try another server)")]
+    TooLarge {
+        /// What was being collected.
+        what: &'static str,
+        /// The bound.
+        limit: usize,
+    },
     /// The node refused a `yed_*` RPC (`FAILED_PRECONDITION`): `identifier` is the contract's
     /// error identifier (`change-floor`, `tx-not-found`, …), `message` the node's text verbatim.
     #[error("node: {message}")]
