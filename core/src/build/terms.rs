@@ -25,10 +25,10 @@ use crate::params::{
 
 use super::mint::MintError;
 
-/// `required_zat` may exceed the local figure by this much (basis points) before the server
-/// is called inconsistent: more collateral than the rule needs only over-collateralises the
-/// vault (the user confirms the amount), less makes the mint VOID (MINT-5).
-pub const REQUIRED_SLACK_BPS: i64 = 100;
+/// The node reports `requiredZat` rounded up to this granularity (`RequiredCollateralRounded`,
+/// `ycash-dd/src/yellowback/math.h:127-135`): the server's figure must lie between the exact
+/// ceiling and that rounding — less makes the mint VOID (MINT-5), more is not the rule.
+pub const REQUIRED_GRANULARITY_ZAT: i64 = 1_000;
 
 fn inconsistent(what: impl Into<String>) -> MintError {
     MintError::Inconsistent { what: what.into() }
@@ -141,13 +141,15 @@ pub fn check_estimate(
             e.required_zat
         )));
     }
-    let slack = local
-        .saturating_mul(REQUIRED_SLACK_BPS)
-        .checked_div(params::BPS)
-        .unwrap_or(0);
-    if e.required_zat > local.saturating_add(slack) {
+    let rounded = local
+        .checked_add(
+            (REQUIRED_GRANULARITY_ZAT - local % REQUIRED_GRANULARITY_ZAT)
+                % REQUIRED_GRANULARITY_ZAT,
+        )
+        .ok_or_else(|| inconsistent("requiredZat unsatisfiable at this price (K14)"))?;
+    if e.required_zat > rounded {
         return Err(inconsistent(format!(
-            "requiredZat {} above the rule's {local}",
+            "requiredZat {} above the rule's {local} (rounded {rounded})",
             e.required_zat
         )));
     }
@@ -391,6 +393,10 @@ mod tests {
                 other => panic!("{what}: {other:?}"),
             }
         }
+        // The node's own rounding (up to 1,000 zat) is accepted.
+        let mut e = honest();
+        e.required_zat = 96_153_847_000;
+        assert!(check(&e).is_ok());
         // A higher sigma multiplier is legitimate when the ratio and the collateral follow it.
         let mut e = honest();
         e.sigma_mult_bps = 20_000;
