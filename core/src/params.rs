@@ -9,8 +9,15 @@
 //! `src/primitives/transaction.h`, `src/wallet/wallet.h`, `src/main.h`, `src/policy/fees.h`
 //! (branch `feature/yellowback-price-attest`). Every constant below cites its line.
 //!
-//! `consensusBranchId` is deliberately **not** a constant: it is stored from `GetLightdInfo`
-//! at connect time (plan §3.5) and passed to the signer.
+//! `consensusBranchId` is stored from `GetLightdInfo` at connect time (plan §3.5) and passed to
+//! the signer, but only after [`Network::branch_ids`] has accepted it (audit G-5): the ZIP-243
+//! personalization is the one domain separator between Ycash and Zcash, so a server naming a
+//! branch id of another chain is refused before anything is signed.
+//!
+//! The protocol constants a server-supplied mint, claim or vault is checked against (audit
+//! G-1, G-2) live here too: the term classes, `GRACE`, `FEE_MIN` / `FEE_BPS`,
+//! `ATTEST_FEE_BPS`, the mint bounds. Every value is the node's compiled-in parameter set
+//! (`ycash-dd/src/yellowback/params.cpp` `SetCommon` `:14-104`, `RegtestParams` `:186-240`).
 
 /// The three Ycash networks. The chain name is what `GetLightdInfo.chainName` reports
 /// (`"main"`, `"test"`, `"regtest"`) and what `yellowback::Params::network` holds
@@ -84,6 +91,164 @@ impl Network {
             Network::Regtest => [0x20, 0x02],
         }
     }
+}
+
+/// A term class of a mint (spec §2 table, V19): the lock range in blocks and the base
+/// collateral ratio (`ycash-dd/src/yellowback/params.cpp:50-52`, regtest `:214-216`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TermClass {
+    /// `0`, `1`, `2` (the payload's `termClass`).
+    pub index: u8,
+    /// `"A"`, `"B"`, `"C"` (what `EstimateCollateral.termClass` reports).
+    pub letter: &'static str,
+    /// `classMin`.
+    pub min_blocks: u32,
+    /// `classMax`.
+    pub max_blocks: u32,
+    /// `baseRatioBps`: 500 %, 400 %, 300 %.
+    pub base_ratio_bps: i64,
+}
+
+const MAIN_CLASSES: [TermClass; 3] = [
+    TermClass {
+        index: 0,
+        letter: "A",
+        min_blocks: 34_560,
+        max_blocks: 103_680,
+        base_ratio_bps: 50_000,
+    },
+    TermClass {
+        index: 1,
+        letter: "B",
+        min_blocks: 103_681,
+        max_blocks: 420_480,
+        base_ratio_bps: 40_000,
+    },
+    TermClass {
+        index: 2,
+        letter: "C",
+        min_blocks: 420_481,
+        max_blocks: 2_102_400,
+        base_ratio_bps: 30_000,
+    },
+];
+
+const REGTEST_CLASSES: [TermClass; 3] = [
+    TermClass {
+        index: 0,
+        letter: "A",
+        min_blocks: 48,
+        max_blocks: 96,
+        base_ratio_bps: 50_000,
+    },
+    TermClass {
+        index: 1,
+        letter: "B",
+        min_blocks: 97,
+        max_blocks: 144,
+        base_ratio_bps: 40_000,
+    },
+    TermClass {
+        index: 2,
+        letter: "C",
+        min_blocks: 145,
+        max_blocks: 240,
+        base_ratio_bps: 30_000,
+    },
+];
+
+impl Network {
+    /// The three term classes of this network.
+    pub fn term_classes(self) -> &'static [TermClass; 3] {
+        match self {
+            Network::Mainnet | Network::Testnet => &MAIN_CLASSES,
+            Network::Regtest => &REGTEST_CLASSES,
+        }
+    }
+
+    /// `Params::ClassForLockBlocks` (`params.cpp:124-130`): the class `lock_blocks` falls in.
+    pub fn class_for_lock_blocks(self, lock_blocks: u32) -> Option<&'static TermClass> {
+        self.term_classes()
+            .iter()
+            .find(|c| lock_blocks >= c.min_blocks && lock_blocks <= c.max_blocks)
+    }
+
+    /// `GRACE`: `claimHeight = lockHeight + GRACE` (spec §2 table; `params.cpp:46`, regtest
+    /// `:213`).
+    pub fn grace(self) -> u32 {
+        match self {
+            Network::Mainnet | Network::Testnet => 34_560,
+            Network::Regtest => 24,
+        }
+    }
+
+    /// The `consensusBranchId`s a server for this network may report: the Ycash epochs from the
+    /// Ycash fork on (`ref/ycash/src/consensus/upgrades.cpp:33-57`, `chainparams.cpp:126-138`
+    /// main, `:379-395` test). Sprout, Overwinter and Sapling are pre-fork and shared with
+    /// Zcash: a signature under them could spend a pre-fork duplicate on Zcash (audit G-5),
+    /// so they are never accepted. Regtest activates the upgrades by `-nuparams`; the devnet
+    /// signs under Canopy (`yellowback_util.py:139`).
+    pub fn branch_ids(self) -> &'static [u32] {
+        const YCASH_EPOCHS: [u32; 5] = [
+            0x374d_694f, // Ycash
+            0x8e47_1bd6, // Blossom
+            0x6631_4da3, // Heartwood
+            0x19bd_2d2f, // Canopy
+            0xf919_a198, // NU5 (no activation height on 4.5.0; reserved)
+        ];
+        match self {
+            Network::Mainnet | Network::Testnet | Network::Regtest => &YCASH_EPOCHS,
+        }
+    }
+}
+
+/// `FEE_MIN`: the enforcement fee floor, 0.5 YEC (`params.cpp:43`, V10).
+pub const FEE_MIN_ZAT: i64 = 50_000_000;
+
+/// `FEE_BPS`: the enforcement fee rate, 0.25 % of the collateral (`params.cpp:44`).
+pub const FEE_BPS: i64 = 25;
+
+/// `ATTEST_FEE_BPS`: the attestor fee as a share of the enforcement fee (`params.cpp:94`,
+/// AFEE-1, D-3).
+pub const ATTEST_FEE_BPS: i64 = 2_500;
+
+/// `MIN_MINT`: $100 (`params.cpp:16`, MINT-2).
+pub const MIN_MINT_CENTS: u64 = 10_000;
+
+/// `MAX_MINT`: $10,000 (`params.cpp:17`, MINT-2).
+pub const MAX_MINT_CENTS: u64 = 1_000_000;
+
+/// `sigmaMultBps` is clamped to `[10⁴, SIGMA_MULT_MAX_BPS]` (spec SIGMA-1; `params.cpp:59`).
+pub const SIGMA_MULT_MIN_BPS: i64 = 10_000;
+/// See [`SIGMA_MULT_MIN_BPS`].
+pub const SIGMA_MULT_MAX_BPS: i64 = 30_000;
+
+/// `LOCKTIME_THRESHOLD`: a vault's `claimHeight` must be below it (MINT-2;
+/// `ref/ycash/src/script/script.h` `LOCKTIME_THRESHOLD = 500000000`).
+pub const LOCKTIME_THRESHOLD: u32 = 500_000_000;
+
+/// **FEE-1**: `feeZat(collateralZat) = max(FEE_MIN, collateralZat · FEE_BPS / 10⁴)`
+/// (spec §3.3; `ycash-dd/src/yellowback/rules.cpp` `FeeZat`).
+pub fn fee_zat_for(collateral_zat: i64) -> i64 {
+    FEE_MIN_ZAT.max(collateral_zat.saturating_mul(FEE_BPS) / BPS)
+}
+
+/// **AFEE-1**: `attestFeeZat = feeZat · ATTEST_FEE_BPS / 10⁴` (spec §3.3 v3).
+pub fn attest_fee_zat_for(fee_zat: i64) -> i64 {
+    fee_zat.saturating_mul(ATTEST_FEE_BPS) / BPS
+}
+
+/// `requiredZat(cents, class, S) = ⌈cents · minRatioBps · COIN / pMint⌉` (spec §3.3 "Required
+/// collateral"), in 128-bit arithmetic as the node uses `arith_uint256`; `None` when `p_mint`
+/// is undefined (≤ 0) or the quotient does not fit `i64` (K14 "unsatisfiable").
+pub fn required_zat(cents: u64, min_ratio_bps: i64, p_mint: i64) -> Option<i64> {
+    if p_mint <= 0 || min_ratio_bps <= 0 {
+        return None;
+    }
+    let num = (cents as u128) * (min_ratio_bps as u128) * (COIN as u128);
+    let den = p_mint as u128;
+    let q = num.div_ceil(den);
+    i64::try_from(q).ok()
 }
 
 /// SLIP-44 coin type of Ycash, the BIP44 `coin_type'` level of every YEW key (D-W-7; Ywallet
@@ -202,6 +367,52 @@ mod tests {
     fn reserve_is_five_transfers() {
         assert_eq!(reserve_zat(), 105_000);
         assert_eq!(reserve_zat(), RESERVE_K * (FEE_ZAT + 2 * TOKEN_VALUE));
+    }
+
+    #[test]
+    fn protocol_table_matches_the_node() {
+        // params.cpp SetCommon / RegtestParams.
+        for n in [Network::Mainnet, Network::Testnet] {
+            assert_eq!(n.grace(), 34_560);
+            assert_eq!(n.class_for_lock_blocks(34_560).unwrap().letter, "A");
+            assert_eq!(n.class_for_lock_blocks(103_680).unwrap().letter, "A");
+            assert_eq!(n.class_for_lock_blocks(103_681).unwrap().letter, "B");
+            assert_eq!(n.class_for_lock_blocks(420_481).unwrap().letter, "C");
+            assert_eq!(n.class_for_lock_blocks(2_102_400).unwrap().index, 2);
+            assert!(n.class_for_lock_blocks(34_559).is_none());
+            assert!(n.class_for_lock_blocks(2_102_401).is_none());
+        }
+        assert_eq!(Network::Regtest.grace(), 24);
+        assert_eq!(
+            Network::Regtest.class_for_lock_blocks(48).unwrap().letter,
+            "A"
+        );
+        assert_eq!(
+            Network::Regtest.class_for_lock_blocks(144).unwrap().letter,
+            "B"
+        );
+        assert_eq!(
+            Network::Regtest.class_for_lock_blocks(240).unwrap().letter,
+            "C"
+        );
+        assert!(Network::Regtest.class_for_lock_blocks(47).is_none());
+        assert!(Network::Regtest.class_for_lock_blocks(241).is_none());
+        // FEE-1 / AFEE-1.
+        assert_eq!(fee_zat_for(1_000_000_000), 50_000_000);
+        assert_eq!(fee_zat_for(400_000_000_000), 1_000_000_000);
+        assert_eq!(attest_fee_zat_for(50_000_000), 12_500_000);
+        // The spec's worked example: $100 at 300 % and $0.05/YEC = 6,000 YEC.
+        assert_eq!(required_zat(10_000, 30_000, 50_000), Some(600_000_000_000));
+        assert_eq!(required_zat(10_000, 30_000, 0), None);
+        // Class A at the 3x cap and PRICE_MIN exceeds i64: unsatisfiable, not a wrap.
+        assert_eq!(required_zat(1_000_000, 150_000, 1), None);
+        // Branch ids: the Ycash epochs, never a pre-fork (Zcash-shared) one.
+        for n in [Network::Mainnet, Network::Testnet, Network::Regtest] {
+            assert!(n.branch_ids().contains(&0x19bd_2d2f));
+            assert!(!n.branch_ids().contains(&0x76b8_09bb)); // Sapling
+            assert!(!n.branch_ids().contains(&0x5ba8_1b19)); // Overwinter
+            assert!(!n.branch_ids().contains(&0));
+        }
     }
 
     #[test]
