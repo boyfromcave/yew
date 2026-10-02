@@ -308,7 +308,7 @@ pub fn sign_owner_input(
 
 /// What the Vault screen shows before the owner confirms, and what is broadcast.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RedeemPreview {
+pub struct RedeemBuild {
     /// The vault's mint txid (display form).
     pub vault_txid: String,
     /// `"redeem"` (ACTIVE) or `"release"` (VOID).
@@ -352,14 +352,16 @@ pub fn vault_script_of(v: &VaultRow) -> Result<Vec<u8>, WalletError> {
 }
 
 /// `BuildRedeem` (`txbuilder.cpp:1286-1299`): the owner-path spend of an own open vault at or
-/// past `lockHeight`. `R` is the relay node's index tip (`GetYellowbackInfo.height`).
+/// past `lockHeight`. `R` is the relay node's index tip (`GetYellowbackInfo.height`). This is
+/// the **preview** (audit G-2): nothing is broadcast until [`broadcast`] is called with it,
+/// so the fee, the payee and the collateral returned are on screen before the slider.
 pub async fn build_redeem(
     wallet: &Wallet,
     yb: &mut YellowbackClient,
     vault_txid: &[u8; 32],
     tip: u64,
     branch_id: u32,
-) -> Result<RedeemPreview, WalletError> {
+) -> Result<RedeemBuild, WalletError> {
     let v = wallet
         .store
         .vault(vault_txid)?
@@ -397,17 +399,9 @@ pub async fn build_redeem(
     let (yed_inputs, change_cents, extra_burn, stage, fee_zat, payee) = if active {
         let (sel, change, extra, stage) = select_yed_burn(wallet, v.minted_cents)?;
         let selector = crate::bundle::outpoint_selector(&v.txid, v.vout);
-        let p = yb
-            .fee_payee(r, v.collateral_zat, &keys::hex(&selector))
-            .await?;
-        let payee = if !p.preferred.is_empty() {
-            p.preferred
-        } else if let Some(d) = p.default {
-            d.payout_address
-        } else {
-            String::new()
-        };
-        (sel, change, extra, stage, p.fee_zat, payee)
+        // FEE-1 locally (audit G-2): a server quoting more is refused before anything is signed.
+        let (fee_zat, payee) = mint::fee_payee(yb, r, v.collateral_zat, &selector).await?;
+        (sel, change, extra, stage, fee_zat, payee)
     } else {
         (Vec::new(), 0, 0, SelectStage::None, 0, String::new())
     };
@@ -460,7 +454,7 @@ pub async fn build_redeem(
     };
     gate::check(path, &raw, |op| wallet.store.utxo_class(op).ok().flatten())?;
     let _ = CARRIER_VALUE;
-    Ok(RedeemPreview {
+    Ok(RedeemBuild {
         vault_txid: txid_hex(&v.txid),
         kind: if active { "redeem" } else { "release" },
         yed_inputs,
@@ -486,7 +480,7 @@ pub async fn broadcast(
     wallet: &Wallet,
     client: &mut CompactClient,
     validator: &mut Validator,
-    p: &RedeemPreview,
+    p: &RedeemBuild,
 ) -> Result<(String, Validation), WalletError> {
     let path = if p.kind == "redeem" {
         gate::Path::Redeem

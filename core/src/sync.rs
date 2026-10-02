@@ -31,6 +31,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::build::mint::window_open;
+use crate::build::terms;
 use crate::bundle;
 use crate::coins::{self, Utxo, UtxoClass};
 use crate::keys;
@@ -439,7 +440,8 @@ pub fn advance_mints(wallet: &Wallet, tip: u64) -> Result<Vec<(i64, MintState)>,
 }
 
 /// Refresh the own vaults from `GetVault`: every mint row's main transaction and every
-/// history row labelled `mint`, kept when the owner key is ours. Returns the rows written.
+/// history row labelled `mint`, kept when the owner key is ours and its script terms follow
+/// the network's rules (`terms::check_vault`). Returns the rows written.
 pub async fn refresh_vaults(
     wallet: &Wallet,
     yb: &mut YellowbackClient,
@@ -483,6 +485,9 @@ pub async fn refresh_vaults(
         if !own.contains(&owner_hash160) {
             continue;
         }
+        // The script terms the wallet would sign against, checked before the vault is shown
+        // as redeemable (audit G-1); an inconsistent answer fails the sync with that error.
+        terms::check_vault(wallet.network, &v)?;
         let vault_txid = txid_from_hex(&v.txid).unwrap_or(txid);
         wallet.store.upsert_vault(&VaultRow {
             txid: vault_txid,

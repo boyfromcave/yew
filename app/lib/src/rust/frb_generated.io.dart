@@ -46,6 +46,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
 
   @protected
+  MintTerms dco_decode_box_autoadd_mint_terms(dynamic raw);
+
+  @protected
   ClaimableItem dco_decode_claimable_item(dynamic raw);
 
   @protected
@@ -106,6 +109,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MintStatus dco_decode_mint_status(dynamic raw);
 
   @protected
+  MintTerms dco_decode_mint_terms(dynamic raw);
+
+  @protected
   NetworkId dco_decode_network_id(dynamic raw);
 
   @protected
@@ -116,6 +122,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Recipient dco_decode_recipient(dynamic raw);
+
+  @protected
+  RedeemPreview dco_decode_redeem_preview(dynamic raw);
 
   @protected
   RedeemResult dco_decode_redeem_result(dynamic raw);
@@ -189,6 +198,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
+  MintTerms sse_decode_box_autoadd_mint_terms(SseDeserializer deserializer);
+
+  @protected
   ClaimableItem sse_decode_claimable_item(SseDeserializer deserializer);
 
   @protected
@@ -255,6 +267,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MintStatus sse_decode_mint_status(SseDeserializer deserializer);
 
   @protected
+  MintTerms sse_decode_mint_terms(SseDeserializer deserializer);
+
+  @protected
   NetworkId sse_decode_network_id(SseDeserializer deserializer);
 
   @protected
@@ -265,6 +280,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Recipient sse_decode_recipient(SseDeserializer deserializer);
+
+  @protected
+  RedeemPreview sse_decode_redeem_preview(SseDeserializer deserializer);
 
   @protected
   RedeemResult sse_decode_redeem_result(SseDeserializer deserializer);
@@ -341,6 +359,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_i_64(
     PlatformInt64 self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_mint_terms(
+    MintTerms self,
     SseSerializer serializer,
   );
 
@@ -435,6 +459,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_mint_status(MintStatus self, SseSerializer serializer);
 
   @protected
+  void sse_encode_mint_terms(MintTerms self, SseSerializer serializer);
+
+  @protected
   void sse_encode_network_id(NetworkId self, SseSerializer serializer);
 
   @protected
@@ -448,6 +475,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_recipient(Recipient self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_redeem_preview(RedeemPreview self, SseSerializer serializer);
 
   @protected
   void sse_encode_redeem_result(RedeemResult self, SseSerializer serializer);

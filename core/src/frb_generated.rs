@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 369674062;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -978630303;
 
 // Section: executor
 
@@ -663,10 +663,12 @@ fn wire__crate__api__mint_start_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_cents = <i64>::sse_decode(&mut deserializer);
             let api_lock_blocks = <u32>::sse_decode(&mut deserializer);
+            let api_confirmed = <crate::api::MintTerms>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
-                    let output_ok = crate::api::mint_start(api_cents, api_lock_blocks)?;
+                    let output_ok =
+                        crate::api::mint_start(api_cents, api_lock_blocks, api_confirmed)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -839,7 +841,7 @@ fn wire__crate__api__receive_address_impl(
         },
     )
 }
-fn wire__crate__api__redeem_impl(
+fn wire__crate__api__redeem_confirm_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -847,7 +849,40 @@ fn wire__crate__api__redeem_impl(
 ) {
     FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "redeem",
+            debug_name: "redeem_confirm",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_preview_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::YewError>((move || {
+                    let output_ok = crate::api::redeem_confirm(api_preview_id)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__redeem_preview_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "redeem_preview",
             port: Some(port_),
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
@@ -865,7 +900,7 @@ fn wire__crate__api__redeem_impl(
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
-                    let output_ok = crate::api::redeem(api_vault_txid)?;
+                    let output_ok = crate::api::redeem_preview(api_vault_txid)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -1324,6 +1359,7 @@ impl SseDecode for crate::api::ClaimableItem {
         let mut var_attestFeeZat = <i64>::sse_decode(deserializer);
         let mut var_residualZat = <i64>::sse_decode(deserializer);
         let mut var_claimantZat = <i64>::sse_decode(deserializer);
+        let mut var_payee = <String>::sse_decode(deserializer);
         return crate::api::ClaimableItem {
             vault_txid: var_vaultTxid,
             owner_address: var_ownerAddress,
@@ -1336,6 +1372,7 @@ impl SseDecode for crate::api::ClaimableItem {
             attest_fee_zat: var_attestFeeZat,
             residual_zat: var_residualZat,
             claimant_zat: var_claimantZat,
+            payee: var_payee,
         };
     }
 }
@@ -1587,6 +1624,7 @@ impl SseDecode for crate::api::MintEstimate {
         let mut var_collateralZat = <i64>::sse_decode(deserializer);
         let mut var_feeZat = <i64>::sse_decode(deserializer);
         let mut var_attestFeeZat = <i64>::sse_decode(deserializer);
+        let mut var_payee = <String>::sse_decode(deserializer);
         let mut var_carrierZat = <i64>::sse_decode(deserializer);
         let mut var_tokenZat = <i64>::sse_decode(deserializer);
         let mut var_networkFeeZat = <i64>::sse_decode(deserializer);
@@ -1608,6 +1646,7 @@ impl SseDecode for crate::api::MintEstimate {
             collateral_zat: var_collateralZat,
             fee_zat: var_feeZat,
             attest_fee_zat: var_attestFeeZat,
+            payee: var_payee,
             carrier_zat: var_carrierZat,
             token_zat: var_tokenZat,
             network_fee_zat: var_networkFeeZat,
@@ -1639,6 +1678,8 @@ impl SseDecode for crate::api::MintStatus {
         let mut var_feeZat = <i64>::sse_decode(deserializer);
         let mut var_attestFeeZat = <i64>::sse_decode(deserializer);
         let mut var_residualZat = <i64>::sse_decode(deserializer);
+        let mut var_payee = <String>::sse_decode(deserializer);
+        let mut var_attestPayee = <String>::sse_decode(deserializer);
         let mut var_bundleSeqs = <String>::sse_decode(deserializer);
         let mut var_carrierTxid = <String>::sse_decode(deserializer);
         let mut var_mainTxid = <String>::sse_decode(deserializer);
@@ -1667,6 +1708,8 @@ impl SseDecode for crate::api::MintStatus {
             fee_zat: var_feeZat,
             attest_fee_zat: var_attestFeeZat,
             residual_zat: var_residualZat,
+            payee: var_payee,
+            attest_payee: var_attestPayee,
             bundle_seqs: var_bundleSeqs,
             carrier_txid: var_carrierTxid,
             main_txid: var_mainTxid,
@@ -1679,6 +1722,22 @@ impl SseDecode for crate::api::MintStatus {
             can_finish: var_canFinish,
             can_sweep: var_canSweep,
             note: var_note,
+        };
+    }
+}
+
+impl SseDecode for crate::api::MintTerms {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_collateralZat = <i64>::sse_decode(deserializer);
+        let mut var_feeZat = <i64>::sse_decode(deserializer);
+        let mut var_payee = <String>::sse_decode(deserializer);
+        let mut var_termClass = <String>::sse_decode(deserializer);
+        return crate::api::MintTerms {
+            collateral_zat: var_collateralZat,
+            fee_zat: var_feeZat,
+            payee: var_payee,
+            term_class: var_termClass,
         };
     }
 }
@@ -1730,6 +1789,42 @@ impl SseDecode for crate::api::Recipient {
     }
 }
 
+impl SseDecode for crate::api::RedeemPreview {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_previewId = <String>::sse_decode(deserializer);
+        let mut var_vaultTxid = <String>::sse_decode(deserializer);
+        let mut var_kind = <String>::sse_decode(deserializer);
+        let mut var_burnCents = <i64>::sse_decode(deserializer);
+        let mut var_extraBurnCents = <i64>::sse_decode(deserializer);
+        let mut var_changeCents = <i64>::sse_decode(deserializer);
+        let mut var_yedInputs = <u32>::sse_decode(deserializer);
+        let mut var_feeZat = <i64>::sse_decode(deserializer);
+        let mut var_payee = <String>::sse_decode(deserializer);
+        let mut var_collateralZat = <i64>::sse_decode(deserializer);
+        let mut var_collateralAddress = <String>::sse_decode(deserializer);
+        let mut var_lockTime = <i64>::sse_decode(deserializer);
+        let mut var_expiryHeight = <i64>::sse_decode(deserializer);
+        let mut var_txid = <String>::sse_decode(deserializer);
+        return crate::api::RedeemPreview {
+            preview_id: var_previewId,
+            vault_txid: var_vaultTxid,
+            kind: var_kind,
+            burn_cents: var_burnCents,
+            extra_burn_cents: var_extraBurnCents,
+            change_cents: var_changeCents,
+            yed_inputs: var_yedInputs,
+            fee_zat: var_feeZat,
+            payee: var_payee,
+            collateral_zat: var_collateralZat,
+            collateral_address: var_collateralAddress,
+            lock_time: var_lockTime,
+            expiry_height: var_expiryHeight,
+            txid: var_txid,
+        };
+    }
+}
+
 impl SseDecode for crate::api::RedeemResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -1740,6 +1835,7 @@ impl SseDecode for crate::api::RedeemResult {
         let mut var_extraBurnCents = <i64>::sse_decode(deserializer);
         let mut var_changeCents = <i64>::sse_decode(deserializer);
         let mut var_feeZat = <i64>::sse_decode(deserializer);
+        let mut var_payee = <String>::sse_decode(deserializer);
         let mut var_collateralZat = <i64>::sse_decode(deserializer);
         let mut var_collateralAddress = <String>::sse_decode(deserializer);
         let mut var_lockTime = <i64>::sse_decode(deserializer);
@@ -1752,6 +1848,7 @@ impl SseDecode for crate::api::RedeemResult {
             extra_burn_cents: var_extraBurnCents,
             change_cents: var_changeCents,
             fee_zat: var_feeZat,
+            payee: var_payee,
             collateral_zat: var_collateralZat,
             collateral_address: var_collateralAddress,
             lock_time: var_lockTime,
@@ -2064,16 +2161,17 @@ fn pde_ffi_dispatcher_primary_impl(
         22 => wire__crate__api__mints_impl(port, ptr, rust_vec_len, data_len),
         23 => wire__crate__api__probe_server_impl(port, ptr, rust_vec_len, data_len),
         24 => wire__crate__api__receive_address_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__redeem_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__send_yec_confirm_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__send_yec_preview_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__send_yed_confirm_impl(port, ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__send_yed_preview_impl(port, ptr, rust_vec_len, data_len),
-        30 => wire__crate__api__set_server_impl(port, ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__status_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__sync_now_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__unlock_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__vaults_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__redeem_confirm_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__redeem_preview_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__send_yec_confirm_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__send_yec_preview_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__send_yed_confirm_impl(port, ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__send_yed_preview_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__set_server_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__status_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__sync_now_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__unlock_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__vaults_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2091,7 +2189,7 @@ fn pde_ffi_dispatcher_sync_impl(
         9 => wire__crate__api__default_servers_impl(ptr, rust_vec_len, data_len),
         11 => wire__crate__api__generate_seed_words_impl(ptr, rust_vec_len, data_len),
         15 => wire__crate__api__is_unlocked_impl(ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__validate_address_impl(ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__validate_address_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2172,6 +2270,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::ClaimableItem {
             self.attest_fee_zat.into_into_dart().into_dart(),
             self.residual_zat.into_into_dart().into_dart(),
             self.claimant_zat.into_into_dart().into_dart(),
+            self.payee.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -2319,6 +2418,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::MintEstimate {
             self.collateral_zat.into_into_dart().into_dart(),
             self.fee_zat.into_into_dart().into_dart(),
             self.attest_fee_zat.into_into_dart().into_dart(),
+            self.payee.into_into_dart().into_dart(),
             self.carrier_zat.into_into_dart().into_dart(),
             self.token_zat.into_into_dart().into_dart(),
             self.network_fee_zat.into_into_dart().into_dart(),
@@ -2357,6 +2457,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::MintStatus {
             self.fee_zat.into_into_dart().into_dart(),
             self.attest_fee_zat.into_into_dart().into_dart(),
             self.residual_zat.into_into_dart().into_dart(),
+            self.payee.into_into_dart().into_dart(),
+            self.attest_payee.into_into_dart().into_dart(),
             self.bundle_seqs.into_into_dart().into_dart(),
             self.carrier_txid.into_into_dart().into_dart(),
             self.main_txid.into_into_dart().into_dart(),
@@ -2376,6 +2478,24 @@ impl flutter_rust_bridge::IntoDart for crate::api::MintStatus {
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::MintStatus {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::MintStatus> for crate::api::MintStatus {
     fn into_into_dart(self) -> crate::api::MintStatus {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::MintTerms {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.collateral_zat.into_into_dart().into_dart(),
+            self.fee_zat.into_into_dart().into_dart(),
+            self.payee.into_into_dart().into_dart(),
+            self.term_class.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::MintTerms {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::MintTerms> for crate::api::MintTerms {
+    fn into_into_dart(self) -> crate::api::MintTerms {
         self
     }
 }
@@ -2413,6 +2533,34 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::Recipient> for crate::api::Re
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::RedeemPreview {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.preview_id.into_into_dart().into_dart(),
+            self.vault_txid.into_into_dart().into_dart(),
+            self.kind.into_into_dart().into_dart(),
+            self.burn_cents.into_into_dart().into_dart(),
+            self.extra_burn_cents.into_into_dart().into_dart(),
+            self.change_cents.into_into_dart().into_dart(),
+            self.yed_inputs.into_into_dart().into_dart(),
+            self.fee_zat.into_into_dart().into_dart(),
+            self.payee.into_into_dart().into_dart(),
+            self.collateral_zat.into_into_dart().into_dart(),
+            self.collateral_address.into_into_dart().into_dart(),
+            self.lock_time.into_into_dart().into_dart(),
+            self.expiry_height.into_into_dart().into_dart(),
+            self.txid.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::RedeemPreview {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::RedeemPreview> for crate::api::RedeemPreview {
+    fn into_into_dart(self) -> crate::api::RedeemPreview {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::RedeemResult {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -2423,6 +2571,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::RedeemResult {
             self.extra_burn_cents.into_into_dart().into_dart(),
             self.change_cents.into_into_dart().into_dart(),
             self.fee_zat.into_into_dart().into_dart(),
+            self.payee.into_into_dart().into_dart(),
             self.collateral_zat.into_into_dart().into_dart(),
             self.collateral_address.into_into_dart().into_dart(),
             self.lock_time.into_into_dart().into_dart(),
@@ -2757,6 +2906,7 @@ impl SseEncode for crate::api::ClaimableItem {
         <i64>::sse_encode(self.attest_fee_zat, serializer);
         <i64>::sse_encode(self.residual_zat, serializer);
         <i64>::sse_encode(self.claimant_zat, serializer);
+        <String>::sse_encode(self.payee, serializer);
     }
 }
 
@@ -2958,6 +3108,7 @@ impl SseEncode for crate::api::MintEstimate {
         <i64>::sse_encode(self.collateral_zat, serializer);
         <i64>::sse_encode(self.fee_zat, serializer);
         <i64>::sse_encode(self.attest_fee_zat, serializer);
+        <String>::sse_encode(self.payee, serializer);
         <i64>::sse_encode(self.carrier_zat, serializer);
         <i64>::sse_encode(self.token_zat, serializer);
         <i64>::sse_encode(self.network_fee_zat, serializer);
@@ -2988,6 +3139,8 @@ impl SseEncode for crate::api::MintStatus {
         <i64>::sse_encode(self.fee_zat, serializer);
         <i64>::sse_encode(self.attest_fee_zat, serializer);
         <i64>::sse_encode(self.residual_zat, serializer);
+        <String>::sse_encode(self.payee, serializer);
+        <String>::sse_encode(self.attest_payee, serializer);
         <String>::sse_encode(self.bundle_seqs, serializer);
         <String>::sse_encode(self.carrier_txid, serializer);
         <String>::sse_encode(self.main_txid, serializer);
@@ -3000,6 +3153,16 @@ impl SseEncode for crate::api::MintStatus {
         <bool>::sse_encode(self.can_finish, serializer);
         <bool>::sse_encode(self.can_sweep, serializer);
         <String>::sse_encode(self.note, serializer);
+    }
+}
+
+impl SseEncode for crate::api::MintTerms {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i64>::sse_encode(self.collateral_zat, serializer);
+        <i64>::sse_encode(self.fee_zat, serializer);
+        <String>::sse_encode(self.payee, serializer);
+        <String>::sse_encode(self.term_class, serializer);
     }
 }
 
@@ -3048,6 +3211,26 @@ impl SseEncode for crate::api::Recipient {
     }
 }
 
+impl SseEncode for crate::api::RedeemPreview {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.preview_id, serializer);
+        <String>::sse_encode(self.vault_txid, serializer);
+        <String>::sse_encode(self.kind, serializer);
+        <i64>::sse_encode(self.burn_cents, serializer);
+        <i64>::sse_encode(self.extra_burn_cents, serializer);
+        <i64>::sse_encode(self.change_cents, serializer);
+        <u32>::sse_encode(self.yed_inputs, serializer);
+        <i64>::sse_encode(self.fee_zat, serializer);
+        <String>::sse_encode(self.payee, serializer);
+        <i64>::sse_encode(self.collateral_zat, serializer);
+        <String>::sse_encode(self.collateral_address, serializer);
+        <i64>::sse_encode(self.lock_time, serializer);
+        <i64>::sse_encode(self.expiry_height, serializer);
+        <String>::sse_encode(self.txid, serializer);
+    }
+}
+
 impl SseEncode for crate::api::RedeemResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -3058,6 +3241,7 @@ impl SseEncode for crate::api::RedeemResult {
         <i64>::sse_encode(self.extra_burn_cents, serializer);
         <i64>::sse_encode(self.change_cents, serializer);
         <i64>::sse_encode(self.fee_zat, serializer);
+        <String>::sse_encode(self.payee, serializer);
         <i64>::sse_encode(self.collateral_zat, serializer);
         <String>::sse_encode(self.collateral_address, serializer);
         <i64>::sse_encode(self.lock_time, serializer);

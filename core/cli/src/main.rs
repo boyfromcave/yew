@@ -587,10 +587,10 @@ async fn main() {
                 ),
                 _ => usage(),
             };
-            let (w, _, mut v, _) = synced(&o).await;
-            let e = fail(w.mint_estimate(&mut v, cents, lock).await);
+            let (w, _, mut v, r) = synced(&o).await;
+            let e = fail(w.mint_estimate(&mut v, cents, lock, r.tip).await);
             println!(
-                "mint {} class {} R {} lock {} claim {} | required {} zat -> collateral {} zat, fee {} zat, attestor fee {} zat, carrier {} zat | total {} zat, available {} zat: {}",
+                "mint {} class {} R {} lock {} claim {} | required {} zat -> collateral {} zat, fee {} zat to {:?}, attestor fee {} zat, carrier {} zat | total {} zat, available {} zat: {}",
                 dollars(e.cents as i64),
                 e.term_class,
                 e.ref_height,
@@ -599,6 +599,7 @@ async fn main() {
                 e.required_zat,
                 e.collateral_zat,
                 e.fee_zat,
+                e.payee,
                 e.attest_fee_zat,
                 yew_core::params::CARRIER_VALUE,
                 e.total_zat,
@@ -621,9 +622,30 @@ async fn main() {
                 _ => usage(),
             };
             let (w, mut c, mut v, r) = synced(&o).await;
+            // The CLI confirms the estimate it just printed (audit G-2): the start's answer
+            // must match it.
+            let e = fail(w.mint_estimate(&mut v, cents, lock, r.tip).await);
+            println!(
+                "estimate: collateral {} zat, fee {} zat to {:?}, class {}",
+                e.collateral_zat, e.fee_zat, e.payee, e.term_class
+            );
+            let confirmed = yew_core::build::mint::ConfirmedTerms {
+                collateral_zat: e.collateral_zat,
+                fee_zat: e.fee_zat,
+                payee: e.payee.clone(),
+                term_class: e.term_class.clone(),
+            };
             let id = fail(
-                w.mint_start(&mut c, &mut v, cents, lock, r.tip, r.branch_id)
-                    .await,
+                w.mint_start(
+                    &mut c,
+                    &mut v,
+                    cents,
+                    lock,
+                    Some(&confirmed),
+                    r.tip,
+                    r.branch_id,
+                )
+                .await,
             );
             let m = fail(w.store.mint(id)).expect("row");
             println!("mint {id} started: carrier {} sent (window closes at {}); after one block: sync, then mint-finish {id}", txid_hex(&m.carrier_txid), m.expiry_height);
@@ -681,7 +703,18 @@ async fn main() {
         "redeem" => {
             let txid = parse_txid(o.rest.get(1).unwrap_or_else(|| usage()));
             let (w, mut c, mut v, r) = synced(&o).await;
-            let (sent, val, p) = fail(w.redeem(&mut c, &mut v, &txid, r.tip, r.branch_id).await);
+            // Preview first (audit G-2): the fee and payee are printed before the broadcast.
+            let p = fail(w.redeem_preview(&mut v, &txid, r.tip, r.branch_id).await);
+            println!(
+                "preview {}: burning {}, fee {} zat to {:?}, collateral {} zat back to {}",
+                p.kind,
+                dollars(p.burn_cents as i64),
+                p.fee_zat,
+                p.payee,
+                p.collateral_out,
+                p.collateral_address
+            );
+            let (sent, val) = fail(w.redeem_confirm(&mut c, &mut v, &p).await);
             println!(
                 "{} {}: burning {} ({} inputs, stage {}, extra {} cents, change {}), fee {} zat to {}, collateral {} zat to {}, lockTime {} expiry {}",
                 p.kind, sent, dollars(p.burn_cents as i64), p.yed_inputs.len(), p.stage.name(), p.extra_burn_cents,

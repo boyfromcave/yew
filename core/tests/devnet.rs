@@ -978,12 +978,12 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     assert_eq!(r.yec.0 + r.yec.1, 40 * 100_000_000, "{r:?}");
 
     // 1. The full two-step mint of $100.00 for 48 blocks.
-    let est = a.mint_estimate(&mut v, 10_000, 48).await.unwrap();
+    let est = a.mint_estimate(&mut v, 10_000, 48, r.tip).await.unwrap();
     println!("estimate: {est:?}");
     assert!(est.affordable() && est.armed && !est.bundle_seqs.is_empty());
     assert_eq!(est.claim_height, est.lock_height + grace);
     let id1 = a
-        .mint_start(&mut c, &mut v, 10_000, 48, r.tip, r.branch_id)
+        .mint_start(&mut c, &mut v, 10_000, 48, None, r.tip, r.branch_id)
         .await
         .unwrap();
     let m1 = a.store.mint(id1).unwrap().unwrap();
@@ -1097,7 +1097,7 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     // 2. Kill-and-resume: start a second mint, drop the wallet, reopen the file, sync, finish.
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     let id2 = a
-        .mint_start(&mut c, &mut v, 10_000, 48, r.tip, r.branch_id)
+        .mint_start(&mut c, &mut v, 10_000, 48, None, r.tip, r.branch_id)
         .await
         .unwrap();
     let carrier2 = txid_hex(&a.store.mint(id2).unwrap().unwrap().carrier_txid);
@@ -1150,7 +1150,7 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     //    swept. Meanwhile a bundle with one mutated signature is refused by bundle.rs.
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     let id3 = a
-        .mint_start(&mut c, &mut v, 10_000, 48, r.tip, r.branch_id)
+        .mint_start(&mut c, &mut v, 10_000, 48, None, r.tip, r.branch_id)
         .await
         .unwrap();
     let m3 = a.store.mint(id3).unwrap().unwrap();
@@ -1221,10 +1221,12 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
         wait_for_height(&mut c, h).await;
         r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     }
-    let (sent, val, p) = a
-        .redeem(&mut c, &mut v, &v1.txid, r.tip, r.branch_id)
+    let p = a
+        .redeem_preview(&mut v, &v1.txid, r.tip, r.branch_id)
         .await
         .unwrap();
+    assert_eq!(p.fee_zat, yew_core::params::fee_zat_for(v1.collateral_zat));
+    let (sent, val) = a.redeem_confirm(&mut c, &mut v, &p).await.unwrap();
     assert_eq!(
         (val.verdict.as_str(), val.path.as_str(), val.burned),
         ("ok", "owner", 10_000)

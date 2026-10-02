@@ -36,7 +36,7 @@ use crate::gate::{self, Validator};
 use crate::keys::{self, unhex};
 use crate::net::{CompactClient, Validation, YellowbackClient};
 use crate::params::{
-    BPS, CARRIER_VALUE, FEE_ZAT, REF_WINDOW, TOKEN_VALUE, TX_EXPIRING_SOON_THRESHOLD,
+    CARRIER_VALUE, FEE_MIN_ZAT, FEE_ZAT, REF_WINDOW, TOKEN_VALUE, TX_EXPIRING_SOON_THRESHOLD,
     TX_EXPIRY_DELTA,
 };
 use crate::payload::{self, Payload, FEE_VOUT_NONE};
@@ -45,6 +45,7 @@ use crate::store::{AddressRow, HistoryRow, MintKind, MintRow, MintState};
 use crate::tx::{txid_hex, OutPoint, Transaction, TxIn, TxOut};
 use crate::wallet::{dollars, Wallet, WalletError};
 
+use super::terms;
 use super::yec_send::MIN_CHANGE;
 
 /// Why a mint step could not proceed (the node's identifiers where one exists).
@@ -100,6 +101,55 @@ pub enum MintError {
     /// No such row.
     #[error("no mint with id {0}")]
     NoSuchMint(i64),
+    /// The server's terms do not follow the spec's rules for this network (audit G-1, G-2):
+    /// acting on them would lock the collateral in a VOID vault or overpay a fee.
+    #[error("inconsistent-server: the server answered an inconsistent vault ({what}); try another server")]
+    Inconsistent {
+        /// Which rule failed.
+        what: String,
+    },
+    /// The terms at `mint_start` differ from the estimate the user confirmed (audit G-2).
+    #[error("terms-changed: the mint's {what} changed since the estimate you confirmed ({was} → {now}); review the new estimate")]
+    TermsChanged {
+        /// Which term.
+        what: &'static str,
+        /// As confirmed.
+        was: String,
+        /// As the server answers now.
+        now: String,
+    },
+    /// `cents` outside `[MIN_MINT, MAX_MINT]` (MINT-2; audit G-9).
+    #[error("bad-amount: {cents} cents is outside the mint range [{min}, {max}] cents")]
+    BadAmount {
+        /// The cents asked for.
+        cents: u64,
+        /// `MIN_MINT`.
+        min: u64,
+        /// `MAX_MINT`.
+        max: u64,
+    },
+    /// `lock_blocks` inside no term class of the network.
+    #[error("bad-lock: a lock of {lock_blocks} blocks is inside no term class of {}", network.chain_name())]
+    BadLock {
+        /// The lock asked for.
+        lock_blocks: u32,
+        /// The network.
+        network: crate::params::Network,
+    },
+}
+
+/// The terms the user confirmed on the estimate, re-checked at `mint_start` (audit G-2): the
+/// server's second answer may not differ from what was shown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfirmedTerms {
+    /// `collateral_zat` of the estimate.
+    pub collateral_zat: i64,
+    /// `fee_zat` of the estimate.
+    pub fee_zat: i64,
+    /// `payee` of the estimate.
+    pub payee: String,
+    /// `term_class` of the estimate.
+    pub term_class: String,
 }
 
 /// What the Mint screen shows before anything is signed (plan §5.3).
@@ -125,6 +175,12 @@ pub struct MintEstimate {
     pub fee_zat: i64,
     /// The attestor fee (0 under AFEE-0).
     pub attest_fee_zat: i64,
+    /// The enforcement fee payee for `(R, ownerPubKey)` (`s…`), empty under FEE-0. Checked
+    /// against FEE-1 locally; its eligibility cannot be (`docs/trust.md`).
+    pub payee: String,
+    /// The owner key the estimate was made for (the next unused external key); `start`
+    /// takes the same key.
+    pub owner_hash160: [u8; 20],
     /// `pMint` at `R`, micro-USD per YEC.
     pub p_mint: i64,
     /// `armed` at `R`.
@@ -158,8 +214,9 @@ pub struct CarrierStep {
 }
 
 /// `FeeZat(collateral, feeMin, feeBps)` and the payee for `(R, selector)`, from `GetFeePayee`:
-/// `(fee_zat, payee)`; `payee` empty under FEE-0 (no eligible pool).
-async fn fee_payee(
+/// `(fee_zat, payee)`; `payee` empty under FEE-0 (no eligible pool). The fee is checked against
+/// FEE-1 locally (`terms::check_fee`, audit G-2); the payee's eligibility cannot be.
+pub(crate) async fn fee_payee(
     yb: &mut YellowbackClient,
     ref_height: u32,
     collateral_zat: i64,
@@ -175,7 +232,8 @@ async fn fee_payee(
     } else {
         String::new()
     };
-    Ok((p.fee_zat, payee))
+    let fee = terms::check_fee(collateral_zat, &payee, p.fee_zat)?;
+    Ok((fee, payee))
 }
 
 /// The seated set for bundle verification: `seq → attestorPubKey` from `ListAttestors`.
@@ -201,6 +259,19 @@ pub async fn verify_bundle(
     yb: &mut YellowbackClient,
     bundle: &[u8],
 ) -> Result<Vec<u16>, WalletError> {
+    Ok(verify_bundle_full(client, yb, bundle)
+        .await?
+        .iter()
+        .map(|a| a.seq)
+        .collect())
+}
+
+/// [`verify_bundle`], returning the verified attestations (prices included).
+pub async fn verify_bundle_full(
+    client: &mut CompactClient,
+    yb: &mut YellowbackClient,
+    bundle: &[u8],
+) -> Result<Vec<bundle::Attestation>, WalletError> {
     let seated = seated_set(yb).await?;
     let atts = bundle::decode(bundle).map_err(MintError::Bundle)?;
     let mut hashes = std::collections::HashMap::new();
@@ -213,11 +284,12 @@ pub async fn verify_bundle(
     }
     let verified =
         bundle::verify(bundle, &seated, |h| hashes.get(&h).copied()).map_err(MintError::Bundle)?;
-    Ok(verified.iter().map(|a| a.seq).collect())
+    Ok(verified)
 }
 
 /// The attestor payee (`bondKeyAddress`) and fee for a bundle of `seqs` at `(R, selector)`
-/// (`AttestFeeFor`): `("", 0)` under AFEE-0 (no bundle).
+/// (`AttestFeeFor`): `("", 0)` under AFEE-0 (no bundle). The fee is AFEE-1 with the local
+/// `ATTEST_FEE_BPS` (audit G-2), never the server's figure.
 pub async fn attest_payee(
     client: &mut CompactClient,
     yb: &mut YellowbackClient,
@@ -225,7 +297,6 @@ pub async fn attest_payee(
     selector: &[u8],
     seqs: &[u16],
     fee_zat: i64,
-    attest_fee_bps: i64,
 ) -> Result<(String, i64), WalletError> {
     if seqs.is_empty() {
         return Ok((String::new(), 0));
@@ -240,22 +311,13 @@ pub async fn attest_payee(
         .find(|a| a.seq as u16 == seq)
         .map(|a| a.bond_key_address)
         .ok_or_else(|| MintError::Relay(format!("attest-unknown-seq: attestor {seq}")))?;
-    Ok((addr, fee_zat * attest_fee_bps / BPS))
+    Ok((addr, terms::attest_fee(fee_zat, seqs)))
 }
 
-/// The `attestFeeBps` and `feeMinZat` of the node's parameter set.
-async fn params(yb: &mut YellowbackClient) -> Result<(i64, i64), WalletError> {
-    let info = yb.info().await?;
-    let p = info
-        .params
-        .ok_or_else(|| MintError::Relay("GetYellowbackInfo.params missing".into()))?;
-    let bps = p.attest.map(|a| a.attest_fee_bps).unwrap_or(0);
-    Ok((bps, p.fee_min_zat))
-}
-
-/// `BuildMint:1105-1106`: `max(required, 4 · feeMin)` rounded up to 1,000 zat (MINT-5, K14).
-pub fn collateral_for(required_zat: i64, fee_min_zat: i64) -> i64 {
-    let mut c = required_zat.max(4 * fee_min_zat);
+/// `BuildMint:1105-1106`: `max(required, 4 · FEE_MIN)` rounded up to 1,000 zat (MINT-5, K14);
+/// `FEE_MIN` is the local constant (audit G-2).
+pub fn collateral_for(required_zat: i64) -> i64 {
+    let mut c = required_zat.max(4 * FEE_MIN_ZAT);
     if c % 1000 != 0 {
         c += 1000 - c % 1000;
     }
@@ -263,24 +325,29 @@ pub fn collateral_for(required_zat: i64, fee_min_zat: i64) -> i64 {
 }
 
 /// `mint_estimate` (plan §3.4): the numbers the Mint screen shows, from `EstimateCollateral`
-/// and `GetFeePayee`. Nothing is signed or reserved.
+/// and `GetFeePayee`, each checked against the spec's rules for the network before it is
+/// shown (`terms::check_estimate`, audit G-1). Nothing is signed or reserved; the owner key
+/// is the next unused external key, which `start` then takes.
 pub async fn estimate(
     wallet: &Wallet,
     yb: &mut YellowbackClient,
     cents: u64,
     lock_blocks: u32,
+    tip: u64,
 ) -> Result<MintEstimate, WalletError> {
+    terms::check_cents(cents)?;
+    terms::class_for(wallet.network, lock_blocks)?;
     let e = yb.estimate_collateral(cents, lock_blocks, 0).await?;
-    let (attest_fee_bps, fee_min) = params(yb).await?;
-    let collateral_zat = collateral_for(e.required_zat, fee_min);
-    // The estimate has no owner key yet: the fee amount is the same for any selector.
-    let (fee_zat, _) = fee_payee(yb, e.ref_height as u32, collateral_zat, &[]).await?;
+    terms::check_estimate(wallet.network, tip, cents, lock_blocks, &e)?;
+    let collateral_zat = collateral_for(e.required_zat);
+    let owner_row = wallet.receive_address(false)?;
+    let owner_key = wallet
+        .key_for_hash(&owner_row.hash160)?
+        .ok_or_else(|| WalletError::Other("owner key".into()))?;
+    let (fee_zat, payee) =
+        fee_payee(yb, e.ref_height as u32, collateral_zat, &owner_key.pubkey).await?;
     let bundle_seqs: Vec<u16> = e.bundle_seqs.iter().map(|s| *s as u16).collect();
-    let attest_fee_zat = if bundle_seqs.is_empty() {
-        0
-    } else {
-        fee_zat * attest_fee_bps / BPS
-    };
+    let attest_fee_zat = terms::attest_fee(fee_zat, &bundle_seqs);
     let total_zat =
         collateral_zat + TOKEN_VALUE + fee_zat + attest_fee_zat + CARRIER_VALUE + 2 * FEE_ZAT;
     let (avail, reserved) = coins::yec_balances(&wallet.spendable_utxos()?);
@@ -295,6 +362,8 @@ pub async fn estimate(
         collateral_zat,
         fee_zat,
         attest_fee_zat,
+        payee,
+        owner_hash160: owner_row.hash160,
         p_mint: e.p_mint,
         armed: e.armed,
         bundle_seqs,
@@ -418,21 +487,28 @@ pub async fn carrier_step(
     })
 }
 
-/// `mint_start` (plan §3.4): estimate, bundle (verified), carrier step, and the `mints` row in
-/// state `CarrierSent`. Returns the row id.
+/// `mint_start` (plan §3.4): estimate (checked), bundle (verified, and `pMint` checked against
+/// its prices), carrier step, and the `mints` row in state `CarrierSent`. With `confirmed`,
+/// the collateral, fee, payee and class must equal what the user confirmed on the estimate
+/// (audit G-2). Returns the row id.
+#[allow(clippy::too_many_arguments)]
 pub async fn start(
     wallet: &Wallet,
     client: &mut CompactClient,
     validator: &mut Validator,
     cents: u64,
     lock_blocks: u32,
+    confirmed: Option<&ConfirmedTerms>,
     tip: u64,
     branch_id: u32,
 ) -> Result<i64, WalletError> {
     let yb = validator
         .client_mut()
         .ok_or(gate::GateError::YellowbackAbsent)?;
-    let est = estimate(wallet, yb, cents, lock_blocks).await?;
+    let est = estimate(wallet, yb, cents, lock_blocks, tip).await?;
+    if let Some(c) = confirmed {
+        check_confirmed(c, &est)?;
+    }
     if !est.affordable() {
         return Err(MintError::Unaffordable {
             need: est.total_zat,
@@ -448,16 +524,29 @@ pub async fn start(
     // The bundle for (R, "") — the mint's selector is empty (BuildMint:1095).
     let b = yb.build_bundle(r, "").await?;
     let bundle_bytes = unhex(&b.hex).map_err(|e| MintError::Relay(format!("bundle hex: {e}")))?;
-    let seqs = verify_bundle(client, yb, &bundle_bytes).await?;
+    let verified = verify_bundle_full(client, yb, &bundle_bytes).await?;
+    // The verified bundle bounds pMint (audit G-1): the node computes aMint from these prices.
+    if est.armed {
+        terms::check_bundle_price(est.p_mint, &verified)?;
+    }
+    let seqs: Vec<u16> = verified.iter().map(|a| a.seq).collect();
+    // The owner key the estimate was made for (the first unused external key), now taken.
     let owner_row = fresh_external(wallet)?;
+    if owner_row.hash160 != est.owner_hash160 {
+        return Err(MintError::TermsChanged {
+            what: "owner key",
+            was: keys::hex(&est.owner_hash160),
+            now: keys::hex(&owner_row.hash160),
+        }
+        .into());
+    }
     let owner_key = wallet
         .key_for_hash(&owner_row.hash160)?
         .ok_or_else(|| WalletError::Other("owner key".into()))?;
-    // The fee payee for (R, ownerPubKey) is fixed now, as the node does (BuildMint:1121).
-    let (fee_zat, payee) = fee_payee(yb, r, est.collateral_zat, &owner_key.pubkey).await?;
-    let (attest_fee_bps, _) = params(yb).await?;
+    // The fee payee for (R, ownerPubKey) is the estimate's (BuildMint:1121).
+    let (fee_zat, payee) = (est.fee_zat, est.payee.clone());
     let (attest_payee_addr, attest_fee_zat) =
-        attest_payee(client, yb, r, &[], &seqs, fee_zat, attest_fee_bps).await?;
+        attest_payee(client, yb, r, &[], &seqs, fee_zat).await?;
     let step = carrier_step(wallet, client, validator, &bundle_bytes, r, tip, branch_id).await?;
     let row = MintRow {
         id: 0,
@@ -494,6 +583,36 @@ pub async fn start(
         note: String::new(),
     };
     Ok(wallet.store.insert_mint(&row)?)
+}
+
+/// The estimate at `start` against the one the user confirmed (audit G-2).
+fn check_confirmed(c: &ConfirmedTerms, est: &MintEstimate) -> Result<(), MintError> {
+    let changed = |what, was: String, now: String| MintError::TermsChanged { what, was, now };
+    if est.term_class != c.term_class {
+        return Err(changed(
+            "term class",
+            c.term_class.clone(),
+            est.term_class.clone(),
+        ));
+    }
+    if est.collateral_zat != c.collateral_zat {
+        return Err(changed(
+            "collateral",
+            c.collateral_zat.to_string(),
+            est.collateral_zat.to_string(),
+        ));
+    }
+    if est.fee_zat != c.fee_zat {
+        return Err(changed(
+            "enforcement fee",
+            c.fee_zat.to_string(),
+            est.fee_zat.to_string(),
+        ));
+    }
+    if est.payee != c.payee {
+        return Err(changed("fee payee", c.payee.clone(), est.payee.clone()));
+    }
+    Ok(())
 }
 
 /// The carrier outpoint and redeem script of a row.
@@ -912,11 +1031,65 @@ mod tests {
 
     #[test]
     fn collateral_floor_and_rounding() {
-        assert_eq!(collateral_for(1_000_000_000, 50_000_000), 1_000_000_000);
-        assert_eq!(collateral_for(1_000_000_001, 50_000_000), 1_000_001_000);
-        assert_eq!(collateral_for(1, 50_000_000), 200_000_000);
+        assert_eq!(collateral_for(1_000_000_000), 1_000_000_000);
+        assert_eq!(collateral_for(1_000_000_001), 1_000_001_000);
+        assert_eq!(collateral_for(1), 200_000_000);
         assert!(window_open(480, 520));
         assert!(window_open(516, 520));
         assert!(!window_open(517, 520));
+    }
+
+    /// The second answer at `mint_start` may not differ from the confirmed estimate (audit G-2).
+    #[test]
+    fn changed_terms_are_refused() {
+        let est = MintEstimate {
+            cents: 10_000,
+            lock_blocks: 48,
+            term_class: "A".into(),
+            ref_height: 480,
+            lock_height: 528,
+            claim_height: 552,
+            required_zat: 96_153_846_154,
+            collateral_zat: 96_153_847_000,
+            fee_zat: 240_384_617,
+            attest_fee_zat: 60_096_154,
+            payee: "s1pool".into(),
+            owner_hash160: [1; 20],
+            p_mint: 520_000,
+            armed: true,
+            bundle_seqs: vec![0, 1],
+            total_zat: 0,
+            available_zat: 0,
+        };
+        let confirmed = ConfirmedTerms {
+            collateral_zat: est.collateral_zat,
+            fee_zat: est.fee_zat,
+            payee: est.payee.clone(),
+            term_class: est.term_class.clone(),
+        };
+        assert!(check_confirmed(&confirmed, &est).is_ok());
+        for bent in [
+            ConfirmedTerms {
+                fee_zat: est.fee_zat - 1,
+                ..confirmed.clone()
+            },
+            ConfirmedTerms {
+                payee: "s1other".into(),
+                ..confirmed.clone()
+            },
+            ConfirmedTerms {
+                collateral_zat: est.collateral_zat + 1_000,
+                ..confirmed.clone()
+            },
+            ConfirmedTerms {
+                term_class: "B".into(),
+                ..confirmed.clone()
+            },
+        ] {
+            assert!(matches!(
+                check_confirmed(&bent, &est),
+                Err(MintError::TermsChanged { .. })
+            ));
+        }
     }
 }

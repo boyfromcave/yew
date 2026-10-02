@@ -11,8 +11,8 @@ use std::collections::HashSet;
 use thiserror::Error;
 
 use crate::build::claim::{self, Claimable};
-use crate::build::mint::{self, Finished, MintError, MintEstimate};
-use crate::build::redeem::{self, RedeemPreview};
+use crate::build::mint::{self, ConfirmedTerms, Finished, MintError, MintEstimate};
+use crate::build::redeem::{self, RedeemBuild};
 use crate::build::yed_transfer::TransferError;
 use crate::coins::{self, CoinError, Utxo};
 use crate::gate::{GateError, Validator};
@@ -358,29 +358,44 @@ impl Wallet {
     // ---- Yellowback operations (plan §3.4, W4). Each takes the connected clients and the
     // last sync's `tip` / `branch_id`; every broadcast runs both gate layers (D-W-5).
 
-    /// `mint_estimate(cents, lockBlocks)`: what the Mint screen shows; nothing is signed.
+    /// `mint_estimate(cents, lockBlocks)`: what the Mint screen shows, checked against the
+    /// network's rules at `tip` (audit G-1); nothing is signed.
     pub async fn mint_estimate(
         &self,
         validator: &mut Validator,
         cents: u64,
         lock_blocks: u32,
+        tip: u64,
     ) -> Result<MintEstimate, WalletError> {
         let yb = validator.client_mut().ok_or(GateError::YellowbackAbsent)?;
-        mint::estimate(self, yb, cents, lock_blocks).await
+        mint::estimate(self, yb, cents, lock_blocks, tip).await
     }
 
-    /// `mint_start(...)`: bundle, carrier funding transaction, the `mints` row. Returns the
-    /// `mint_id` to pass to [`Wallet::mint_finish`] once a sync has seen the carrier confirm.
+    /// `mint_start(...)`: bundle, carrier funding transaction, the `mints` row. With
+    /// `confirmed`, the terms must equal the estimate the user confirmed (audit G-2). Returns
+    /// the `mint_id` to pass to [`Wallet::mint_finish`] once a sync has seen the carrier confirm.
+    #[allow(clippy::too_many_arguments)]
     pub async fn mint_start(
         &self,
         client: &mut CompactClient,
         validator: &mut Validator,
         cents: u64,
         lock_blocks: u32,
+        confirmed: Option<&ConfirmedTerms>,
         tip: u64,
         branch_id: u32,
     ) -> Result<i64, WalletError> {
-        mint::start(self, client, validator, cents, lock_blocks, tip, branch_id).await
+        mint::start(
+            self,
+            client,
+            validator,
+            cents,
+            lock_blocks,
+            confirmed,
+            tip,
+            branch_id,
+        )
+        .await
     }
 
     /// `mint_finish(mintId)`: the MINT (or, for a claim row, the CLAIM) over the confirmed
@@ -418,21 +433,30 @@ impl Wallet {
         Ok(self.store.vaults()?)
     }
 
-    /// `redeem(vaultTxid)`: build and broadcast the owner-path spend of an own open vault at
-    /// or past `lockHeight` (a VOID vault is released). Returns the txid, the node's
-    /// validation and the preview that was sent.
-    pub async fn redeem(
+    /// `redeem_preview(vaultTxid)`: build and sign the owner-path spend of an own open vault at
+    /// or past `lockHeight` (a VOID vault is released). Nothing is broadcast: the preview
+    /// carries the collateral returned, the enforcement fee and its payee, and the burn, for
+    /// the screen to show before the slider (audit G-2).
+    pub async fn redeem_preview(
         &self,
-        client: &mut CompactClient,
         validator: &mut Validator,
         vault_txid: &[u8; 32],
         tip: u64,
         branch_id: u32,
-    ) -> Result<(String, Validation, RedeemPreview), WalletError> {
+    ) -> Result<RedeemBuild, WalletError> {
         let yb = validator.client_mut().ok_or(GateError::YellowbackAbsent)?;
-        let p = redeem::build_redeem(self, yb, vault_txid, tip, branch_id).await?;
-        let (txid, v) = redeem::broadcast(self, client, validator, &p).await?;
-        Ok((txid, v, p))
+        redeem::build_redeem(self, yb, vault_txid, tip, branch_id).await
+    }
+
+    /// `redeem_confirm(preview)`: both gate layers, then broadcast the bytes of
+    /// [`Wallet::redeem_preview`]. Returns the txid and the node's validation.
+    pub async fn redeem_confirm(
+        &self,
+        client: &mut CompactClient,
+        validator: &mut Validator,
+        preview: &RedeemBuild,
+    ) -> Result<(String, Validation), WalletError> {
+        redeem::broadcast(self, client, validator, preview).await
     }
 
     /// `claimable()`: `ListClaimable` for the liquidator persona.

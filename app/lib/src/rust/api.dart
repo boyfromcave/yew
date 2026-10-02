@@ -9,7 +9,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `connect`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `hex_or_empty`, `history_item`, `locked`, `mint_status_of`, `new`, `open_wallet`, `parse_server`, `parse_txid`, `row_status`, `runtime`, `store_err`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `yellowback_status`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Conn`, `Open`, `Preview`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`
 
 /// The core's version.
 String coreVersion() => RustLib.instance.api.crateApiCoreVersion();
@@ -152,8 +152,9 @@ Future<AddressPair> importWif({required String wif, PlatformInt64? birthday}) =>
 /// or `Failed`. The returned error mirrors the `Failed` event.
 Stream<SyncEvent> syncNow() => RustLib.instance.api.crateApiSyncNow();
 
-/// The mint estimate (after a sync): collateral, fees, heights, term class, attestor seqs.
-/// Nothing is signed.
+/// The mint estimate (after a sync): collateral, fees, payee, heights, term class, attestor
+/// seqs, each checked against the network's rules (audit G-1, G-2). Nothing is signed. An
+/// amount outside `[MIN_MINT, MAX_MINT]` is [`ErrorKind::Input`] (audit G-9).
 Future<MintEstimate> mintEstimate({
   required PlatformInt64 cents,
   required int lockBlocks,
@@ -163,14 +164,17 @@ Future<MintEstimate> mintEstimate({
 );
 
 /// Start a mint (after a sync): verify the bundle, fund the carrier through the gate, record
-/// the row. Returns the row (`CARRIER_SENT`); [`mint_finish`] sends the MINT once a sync has
-/// seen the carrier confirm.
+/// the row. `confirmed` is the estimate the user confirmed: a server answer that differs in
+/// collateral, fee, payee or class is refused (`terms-changed`, audit G-2). Returns the row
+/// (`CARRIER_SENT`); [`mint_finish`] sends the MINT once a sync has seen the carrier confirm.
 Future<MintStatus> mintStart({
   required PlatformInt64 cents,
   required int lockBlocks,
+  required MintTerms confirmed,
 }) => RustLib.instance.api.crateApiMintStart(
   cents: cents,
   lockBlocks: lockBlocks,
+  confirmed: confirmed,
 );
 
 /// One row of the two-step table (no network; heights judged at the last synced height).
@@ -194,11 +198,17 @@ Future<MintStatus> mintSweep({required PlatformInt64 mintId}) =>
 /// The vaults this wallet owns, as the last sync left them (no network).
 Future<List<VaultSummary>> vaults() => RustLib.instance.api.crateApiVaults();
 
-/// Redeem an own `ACTIVE` vault at or past `lockHeight` (burning its debt from the wallet's
-/// YED), or release a `VOID` one (after a sync; both gate layers, the planned burn known to
-/// the remote layer).
-Future<RedeemResult> redeem({required String vaultTxid}) =>
-    RustLib.instance.api.crateApiRedeem(vaultTxid: vaultTxid);
+/// Build and sign the REDEEM of an own `ACTIVE` vault at or past `lockHeight` (burning its
+/// debt from the wallet's YED), or the release of a `VOID` one, after a sync. Nothing is
+/// broadcast: the preview shows the collateral returned, the enforcement fee and its payee
+/// (FEE-1, checked locally) and the burn before the slider (audit G-2).
+Future<RedeemPreview> redeemPreview({required String vaultTxid}) =>
+    RustLib.instance.api.crateApiRedeemPreview(vaultTxid: vaultTxid);
+
+/// Broadcast a redeem preview through both gate layers (the planned burn known to the
+/// remote layer).
+Future<RedeemResult> redeemConfirm({required String previewId}) =>
+    RustLib.instance.api.crateApiRedeemConfirm(previewId: previewId);
 
 /// `ListClaimable` at the node's tip (connects; the liquidator persona).
 Future<List<ClaimableItem>> claimable() =>
@@ -392,6 +402,9 @@ class ClaimableItem {
   /// What the claimant keeps, zat.
   final PlatformInt64 claimantZat;
 
+  /// The enforcement fee payee (`s…`), empty under FEE-0.
+  final String payee;
+
   const ClaimableItem({
     required this.vaultTxid,
     required this.ownerAddress,
@@ -404,6 +417,7 @@ class ClaimableItem {
     required this.attestFeeZat,
     required this.residualZat,
     required this.claimantZat,
+    required this.payee,
   });
 
   @override
@@ -418,7 +432,8 @@ class ClaimableItem {
       feeZat.hashCode ^
       attestFeeZat.hashCode ^
       residualZat.hashCode ^
-      claimantZat.hashCode;
+      claimantZat.hashCode ^
+      payee.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -435,7 +450,8 @@ class ClaimableItem {
           feeZat == other.feeZat &&
           attestFeeZat == other.attestFeeZat &&
           residualZat == other.residualZat &&
-          claimantZat == other.claimantZat;
+          claimantZat == other.claimantZat &&
+          payee == other.payee;
 }
 
 /// The result of [`create_wallet`].
@@ -727,6 +743,10 @@ class MintEstimate {
   /// The attestor fee, zat (0 under AFEE-0).
   final PlatformInt64 attestFeeZat;
 
+  /// The enforcement fee payee (`s…`), empty under FEE-0. The amount is checked against
+  /// FEE-1 locally; the payee's eligibility is the node's to judge (audit G-2).
+  final String payee;
+
   /// `CARRIER_VALUE`, zat.
   final PlatformInt64 carrierZat;
 
@@ -766,6 +786,7 @@ class MintEstimate {
     required this.collateralZat,
     required this.feeZat,
     required this.attestFeeZat,
+    required this.payee,
     required this.carrierZat,
     required this.tokenZat,
     required this.networkFeeZat,
@@ -790,6 +811,7 @@ class MintEstimate {
       collateralZat.hashCode ^
       feeZat.hashCode ^
       attestFeeZat.hashCode ^
+      payee.hashCode ^
       carrierZat.hashCode ^
       tokenZat.hashCode ^
       networkFeeZat.hashCode ^
@@ -816,6 +838,7 @@ class MintEstimate {
           collateralZat == other.collateralZat &&
           feeZat == other.feeZat &&
           attestFeeZat == other.attestFeeZat &&
+          payee == other.payee &&
           carrierZat == other.carrierZat &&
           tokenZat == other.tokenZat &&
           networkFeeZat == other.networkFeeZat &&
@@ -877,6 +900,12 @@ class MintStatus {
   /// A claim's residual to the vault owner, zat.
   final PlatformInt64 residualZat;
 
+  /// The enforcement fee payee (`s…`), empty under FEE-0.
+  final String payee;
+
+  /// The attestor fee payee (`s…`), empty under AFEE-0.
+  final String attestPayee;
+
   /// The bundle's `seq`s as `"0,1,2"`.
   final String bundleSeqs;
 
@@ -929,6 +958,8 @@ class MintStatus {
     required this.feeZat,
     required this.attestFeeZat,
     required this.residualZat,
+    required this.payee,
+    required this.attestPayee,
     required this.bundleSeqs,
     required this.carrierTxid,
     required this.mainTxid,
@@ -960,6 +991,8 @@ class MintStatus {
       feeZat.hashCode ^
       attestFeeZat.hashCode ^
       residualZat.hashCode ^
+      payee.hashCode ^
+      attestPayee.hashCode ^
       bundleSeqs.hashCode ^
       carrierTxid.hashCode ^
       mainTxid.hashCode ^
@@ -993,6 +1026,8 @@ class MintStatus {
           feeZat == other.feeZat &&
           attestFeeZat == other.attestFeeZat &&
           residualZat == other.residualZat &&
+          payee == other.payee &&
+          attestPayee == other.attestPayee &&
           bundleSeqs == other.bundleSeqs &&
           carrierTxid == other.carrierTxid &&
           mainTxid == other.mainTxid &&
@@ -1005,6 +1040,46 @@ class MintStatus {
           canFinish == other.canFinish &&
           canSweep == other.canSweep &&
           note == other.note;
+}
+
+/// The terms of a [`MintEstimate`] the user confirmed, passed back to [`mint_start`] so the
+/// server's second answer may not differ from what was shown (audit G-2).
+class MintTerms {
+  /// `MintEstimate::collateral_zat`.
+  final PlatformInt64 collateralZat;
+
+  /// `MintEstimate::fee_zat`.
+  final PlatformInt64 feeZat;
+
+  /// `MintEstimate::payee`.
+  final String payee;
+
+  /// `MintEstimate::term_class`.
+  final String termClass;
+
+  const MintTerms({
+    required this.collateralZat,
+    required this.feeZat,
+    required this.payee,
+    required this.termClass,
+  });
+
+  @override
+  int get hashCode =>
+      collateralZat.hashCode ^
+      feeZat.hashCode ^
+      payee.hashCode ^
+      termClass.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MintTerms &&
+          runtimeType == other.runtimeType &&
+          collateralZat == other.collateralZat &&
+          feeZat == other.feeZat &&
+          payee == other.payee &&
+          termClass == other.termClass;
 }
 
 /// The network a wallet is for.
@@ -1041,6 +1116,106 @@ class Recipient {
           cents == other.cents;
 }
 
+/// [`redeem_preview`]: the signed REDEEM (or VOID release) waiting for [`redeem_confirm`]
+/// (audit G-2): everything the Vault screen shows before the slider.
+class RedeemPreview {
+  /// Pass to [`redeem_confirm`].
+  final String previewId;
+
+  /// The vault's mint txid.
+  final String vaultTxid;
+
+  /// `redeem` (ACTIVE) or `release` (VOID).
+  final String kind;
+
+  /// Cents burned (the debt plus any sub-dollar remainder).
+  final PlatformInt64 burnCents;
+
+  /// The sub-dollar remainder burned on top of the debt.
+  final PlatformInt64 extraBurnCents;
+
+  /// YED change, cents.
+  final PlatformInt64 changeCents;
+
+  /// YED inputs spent.
+  final int yedInputs;
+
+  /// The enforcement fee, zat (FEE-1, checked locally).
+  final PlatformInt64 feeZat;
+
+  /// The enforcement fee payee (`s…`), empty under FEE-0.
+  final String payee;
+
+  /// The collateral returned, zat.
+  final PlatformInt64 collateralZat;
+
+  /// The own address it returns to.
+  final String collateralAddress;
+
+  /// `nLockTime` (= `lockHeight`).
+  final PlatformInt64 lockTime;
+
+  /// `nExpiryHeight`.
+  final PlatformInt64 expiryHeight;
+
+  /// The txid the broadcast will have.
+  final String txid;
+
+  const RedeemPreview({
+    required this.previewId,
+    required this.vaultTxid,
+    required this.kind,
+    required this.burnCents,
+    required this.extraBurnCents,
+    required this.changeCents,
+    required this.yedInputs,
+    required this.feeZat,
+    required this.payee,
+    required this.collateralZat,
+    required this.collateralAddress,
+    required this.lockTime,
+    required this.expiryHeight,
+    required this.txid,
+  });
+
+  @override
+  int get hashCode =>
+      previewId.hashCode ^
+      vaultTxid.hashCode ^
+      kind.hashCode ^
+      burnCents.hashCode ^
+      extraBurnCents.hashCode ^
+      changeCents.hashCode ^
+      yedInputs.hashCode ^
+      feeZat.hashCode ^
+      payee.hashCode ^
+      collateralZat.hashCode ^
+      collateralAddress.hashCode ^
+      lockTime.hashCode ^
+      expiryHeight.hashCode ^
+      txid.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RedeemPreview &&
+          runtimeType == other.runtimeType &&
+          previewId == other.previewId &&
+          vaultTxid == other.vaultTxid &&
+          kind == other.kind &&
+          burnCents == other.burnCents &&
+          extraBurnCents == other.extraBurnCents &&
+          changeCents == other.changeCents &&
+          yedInputs == other.yedInputs &&
+          feeZat == other.feeZat &&
+          payee == other.payee &&
+          collateralZat == other.collateralZat &&
+          collateralAddress == other.collateralAddress &&
+          lockTime == other.lockTime &&
+          expiryHeight == other.expiryHeight &&
+          txid == other.txid;
+}
+
 /// The result of [`redeem`]: the REDEEM (or the release of a VOID vault) was broadcast.
 class RedeemResult {
   /// The txid, display form.
@@ -1064,6 +1239,9 @@ class RedeemResult {
   /// The enforcement fee, zat.
   final PlatformInt64 feeZat;
 
+  /// The enforcement fee payee (`s…`), empty under FEE-0.
+  final String payee;
+
   /// The collateral returned, zat.
   final PlatformInt64 collateralZat;
 
@@ -1084,6 +1262,7 @@ class RedeemResult {
     required this.extraBurnCents,
     required this.changeCents,
     required this.feeZat,
+    required this.payee,
     required this.collateralZat,
     required this.collateralAddress,
     required this.lockTime,
@@ -1099,6 +1278,7 @@ class RedeemResult {
       extraBurnCents.hashCode ^
       changeCents.hashCode ^
       feeZat.hashCode ^
+      payee.hashCode ^
       collateralZat.hashCode ^
       collateralAddress.hashCode ^
       lockTime.hashCode ^
@@ -1116,6 +1296,7 @@ class RedeemResult {
           extraBurnCents == other.extraBurnCents &&
           changeCents == other.changeCents &&
           feeZat == other.feeZat &&
+          payee == other.payee &&
           collateralZat == other.collateralZat &&
           collateralAddress == other.collateralAddress &&
           lockTime == other.lockTime &&

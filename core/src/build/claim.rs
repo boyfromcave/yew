@@ -31,6 +31,7 @@ use crate::wallet::{dollars, Wallet, WalletError};
 
 use super::mint::{self, Finished, MintError};
 use super::redeem::{self, VaultSpendShape};
+use super::terms;
 
 /// One entry of `ListClaimable` as the Claimable screen shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,32 +58,72 @@ pub struct Claimable {
     pub residual_zat: i64,
     /// What the claimant keeps: collateral − fees − residual − network fee (+ the carrier).
     pub claimant_zat: i64,
+    /// The enforcement fee payee for `(R, vault)` (`s…`), empty under FEE-0 (audit G-2).
+    pub payee: String,
 }
 
-/// `claimable` (plan §3.4): `ListClaimable` mapped for the screen.
+/// `claimable` (plan §3.4): `ListClaimable` mapped for the screen. The fee is FEE-1 computed
+/// locally and the attestor fee AFEE-1 (audit G-2): a server quoting another figure is
+/// refused; the payee comes from `GetFeePayee` for the vault's selector at the index tip.
 pub async fn claimable(yb: &mut YellowbackClient) -> Result<Vec<Claimable>, WalletError> {
-    Ok(yb
-        .list_claimable()
-        .await?
-        .into_iter()
-        .map(|c| Claimable {
-            vault_txid: c.vault.split(':').next().unwrap_or("").to_string(),
+    let r = yb.info().await?.height as u32;
+    let mut out = Vec::new();
+    for c in yb.list_claimable().await? {
+        let vault_txid = c.vault.split(':').next().unwrap_or("").to_string();
+        let txid = crate::tx::txid_from_hex(&vault_txid)
+            .map_err(|e| MintError::Relay(format!("claimable vault {:?}: {e}", c.vault)))?;
+        let vout: u32 = c
+            .vault
+            .split(':')
+            .nth(1)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let selector = bundle::outpoint_selector(&txid, vout);
+        let (fee_zat, payee) = mint::fee_payee(yb, r, c.collateral_zat, &selector).await?;
+        if !payee.is_empty() && c.fee_zat != fee_zat {
+            return Err(MintError::Inconsistent {
+                what: format!(
+                    "ListClaimable feeZat {} for collateral {} (FEE-1 gives {fee_zat})",
+                    c.fee_zat, c.collateral_zat
+                ),
+            }
+            .into());
+        }
+        let attest_fee_zat = if c.attest_fee_zat == 0 {
+            0
+        } else {
+            let local = crate::params::attest_fee_zat_for(fee_zat);
+            if c.attest_fee_zat != local {
+                return Err(MintError::Inconsistent {
+                    what: format!(
+                        "ListClaimable attestFeeZat {} (AFEE-1 gives {local})",
+                        c.attest_fee_zat
+                    ),
+                }
+                .into());
+            }
+            local
+        };
+        out.push(Claimable {
+            vault_txid,
             owner_address: c.owner_address,
             minted_cents: c.minted_cents.max(0) as u64,
             collateral_zat: c.collateral_zat,
             claim_height: c.claim_height as u32,
             claim_path: c.claim_path,
             p_claim: c.p_claim,
-            fee_zat: c.fee_zat,
-            attest_fee_zat: c.attest_fee_zat,
+            fee_zat,
+            attest_fee_zat,
             residual_zat: c.residual_zat,
             claimant_zat: c.collateral_zat
-                - c.fee_zat
-                - c.attest_fee_zat
+                - fee_zat
+                - attest_fee_zat
                 - c.residual_zat
                 - crate::params::FEE_ZAT,
-        })
-        .collect())
+            payee,
+        });
+    }
+    Ok(out)
 }
 
 /// `claim` (plan §3.4; `BuildClaim`'s preflight and carrier step): start the two-step claim
@@ -116,6 +157,19 @@ pub async fn start(
             v.status
         )));
     }
+    // The vault's script terms and debt, as the node reports them, checked (audit G-1).
+    terms::check_vault(wallet.network, &v)?;
+    if v.minted_cents.max(0) as u64 != entry.minted_cents
+        || v.collateral_zat != entry.collateral_zat
+    {
+        return Err(MintError::Inconsistent {
+            what: format!(
+                "GetVault ({} cents, {} zat) disagrees with ListClaimable ({} cents, {} zat)",
+                v.minted_cents, v.collateral_zat, entry.minted_cents, entry.collateral_zat
+            ),
+        }
+        .into());
+    }
     let info = yb.info().await?;
     let r = info.height as u32;
     if tip < v.claim_height as u64 || (r as u64) < v.claim_height as u64 {
@@ -135,25 +189,18 @@ pub async fn start(
     let b = yb.build_bundle(r, &keys::hex(&selector)).await?;
     let bundle_bytes = unhex(&b.hex).map_err(|e| MintError::Relay(format!("bundle hex: {e}")))?;
     let seqs = mint::verify_bundle(client, yb, &bundle_bytes).await?;
-    let p = yb
-        .fee_payee(r, v.collateral_zat, &keys::hex(&selector))
-        .await?;
-    let payee = if !p.preferred.is_empty() {
-        p.preferred
-    } else if let Some(d) = p.default {
-        d.payout_address
-    } else {
-        String::new()
-    };
-    let attest_fee_bps = yb
-        .info()
-        .await?
-        .params
-        .and_then(|p| p.attest)
-        .map(|a| a.attest_fee_bps)
-        .unwrap_or(0);
+    // FEE-1 locally (audit G-2); the payee must be the one the Claimable screen showed.
+    let (fee_zat, payee) = mint::fee_payee(yb, r, v.collateral_zat, &selector).await?;
+    if payee != entry.payee {
+        return Err(MintError::TermsChanged {
+            what: "fee payee",
+            was: entry.payee.clone(),
+            now: payee,
+        }
+        .into());
+    }
     let (attest_payee, attest_fee_zat) =
-        mint::attest_payee(client, yb, r, &selector, &seqs, p.fee_zat, attest_fee_bps).await?;
+        mint::attest_payee(client, yb, r, &selector, &seqs, fee_zat).await?;
     let step =
         mint::carrier_step(wallet, client, validator, &bundle_bytes, r, tip, branch_id).await?;
     let row = MintRow {
@@ -168,7 +215,7 @@ pub async fn start(
         lock_height: v.lock_height as u32,
         claim_height: v.claim_height as u32,
         collateral_zat: v.collateral_zat,
-        fee_zat: if payee.is_empty() { 0 } else { p.fee_zat },
+        fee_zat,
         payee,
         attest_fee_zat,
         attest_payee,

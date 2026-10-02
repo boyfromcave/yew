@@ -18,7 +18,7 @@
 //!   `Send`, which is why the calls are not `async fn` themselves.
 //! - Every `*_confirm` goes through `gate::confirm` inside the core's `broadcast` (D-W-5);
 //!   nothing here builds a transaction and nothing here can skip the gate.
-//! - `mint_*`, `vaults`, `redeem`, `claimable`, `claim` (Phase W4) drive the core's two-step
+//! - `mint_*`, `vaults`, `redeem_preview` / `redeem_confirm`, `claimable`, `claim` (Phase W4) drive the core's two-step
 //!   state machine and the vault builders exactly as `yew-cli` does: sync first, then the
 //!   step with the sync's `tip` / `branch_id`; every broadcast runs both gate layers inside
 //!   the core. The rows come back as [`MintStatus`] (the `mints` table, plan §5.3) so a
@@ -150,6 +150,10 @@ impl From<WalletError> for YewError {
             WalletError::Mint(crate::build::mint::MintError::Unaffordable { .. }) => {
                 YewError::new(ErrorKind::NeedYecForFees, text)
             }
+            WalletError::Mint(
+                crate::build::mint::MintError::BadAmount { .. }
+                | crate::build::mint::MintError::BadLock { .. },
+            ) => YewError::new(ErrorKind::Input, text),
             WalletError::Mint(m) => YewError::new(ErrorKind::Refused, m.to_string()),
             other => YewError::new(ErrorKind::Other, other.to_string()),
         }
@@ -501,6 +505,9 @@ pub struct MintEstimate {
     pub fee_zat: i64,
     /// The attestor fee, zat (0 under AFEE-0).
     pub attest_fee_zat: i64,
+    /// The enforcement fee payee (`s…`), empty under FEE-0. The amount is checked against
+    /// FEE-1 locally; the payee's eligibility is the node's to judge (audit G-2).
+    pub payee: String,
     /// `CARRIER_VALUE`, zat.
     pub carrier_zat: i64,
     /// `TOKEN_VALUE` for the new YED output, zat.
@@ -557,6 +564,10 @@ pub struct MintStatus {
     pub attest_fee_zat: i64,
     /// A claim's residual to the vault owner, zat.
     pub residual_zat: i64,
+    /// The enforcement fee payee (`s…`), empty under FEE-0.
+    pub payee: String,
+    /// The attestor fee payee (`s…`), empty under AFEE-0.
+    pub attest_payee: String,
     /// The bundle's `seq`s as `"0,1,2"`.
     pub bundle_seqs: String,
     /// The carrier funding txid (display form).
@@ -653,6 +664,56 @@ pub struct ClaimableItem {
     pub residual_zat: i64,
     /// What the claimant keeps, zat.
     pub claimant_zat: i64,
+    /// The enforcement fee payee (`s…`), empty under FEE-0.
+    pub payee: String,
+}
+
+/// The terms of a [`MintEstimate`] the user confirmed, passed back to [`mint_start`] so the
+/// server's second answer may not differ from what was shown (audit G-2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MintTerms {
+    /// `MintEstimate::collateral_zat`.
+    pub collateral_zat: i64,
+    /// `MintEstimate::fee_zat`.
+    pub fee_zat: i64,
+    /// `MintEstimate::payee`.
+    pub payee: String,
+    /// `MintEstimate::term_class`.
+    pub term_class: String,
+}
+
+/// [`redeem_preview`]: the signed REDEEM (or VOID release) waiting for [`redeem_confirm`]
+/// (audit G-2): everything the Vault screen shows before the slider.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RedeemPreview {
+    /// Pass to [`redeem_confirm`].
+    pub preview_id: String,
+    /// The vault's mint txid.
+    pub vault_txid: String,
+    /// `redeem` (ACTIVE) or `release` (VOID).
+    pub kind: String,
+    /// Cents burned (the debt plus any sub-dollar remainder).
+    pub burn_cents: i64,
+    /// The sub-dollar remainder burned on top of the debt.
+    pub extra_burn_cents: i64,
+    /// YED change, cents.
+    pub change_cents: i64,
+    /// YED inputs spent.
+    pub yed_inputs: u32,
+    /// The enforcement fee, zat (FEE-1, checked locally).
+    pub fee_zat: i64,
+    /// The enforcement fee payee (`s…`), empty under FEE-0.
+    pub payee: String,
+    /// The collateral returned, zat.
+    pub collateral_zat: i64,
+    /// The own address it returns to.
+    pub collateral_address: String,
+    /// `nLockTime` (= `lockHeight`).
+    pub lock_time: i64,
+    /// `nExpiryHeight`.
+    pub expiry_height: i64,
+    /// The txid the broadcast will have.
+    pub txid: String,
 }
 
 /// The result of [`redeem`]: the REDEEM (or the release of a VOID vault) was broadcast.
@@ -672,6 +733,8 @@ pub struct RedeemResult {
     pub change_cents: i64,
     /// The enforcement fee, zat.
     pub fee_zat: i64,
+    /// The enforcement fee payee (`s…`), empty under FEE-0.
+    pub payee: String,
     /// The collateral returned, zat.
     pub collateral_zat: i64,
     /// The own address it returns to.
@@ -701,6 +764,7 @@ struct Conn {
 enum Preview {
     Yec(yec_send::YecSendPreview),
     Yed(yed_transfer::YedTransferPreview),
+    Redeem(crate::build::redeem::RedeemBuild),
 }
 
 /// The open wallet.
@@ -1563,6 +1627,8 @@ fn mint_status_of(m: &crate::store::MintRow, tip: u64) -> MintStatus {
         fee_zat: m.fee_zat,
         attest_fee_zat: m.attest_fee_zat,
         residual_zat: m.residual_zat,
+        payee: m.payee.clone(),
+        attest_payee: m.attest_payee.clone(),
         bundle_seqs: m.bundle_seqs.clone(),
         carrier_txid: hex_or_empty(&m.carrier_txid),
         main_txid: hex_or_empty(&m.main_txid),
@@ -1634,22 +1700,23 @@ fn row_status(o: &Open, id: i64) -> Result<MintStatus, YewError> {
     Ok(mint_status_of(&m, synced_tip(o)?))
 }
 
-/// The mint estimate (after a sync): collateral, fees, heights, term class, attestor seqs.
-/// Nothing is signed.
+/// The mint estimate (after a sync): collateral, fees, payee, heights, term class, attestor
+/// seqs, each checked against the network's rules (audit G-1, G-2). Nothing is signed. An
+/// amount outside `[MIN_MINT, MAX_MINT]` is [`ErrorKind::Input`] (audit G-9).
 pub fn mint_estimate(cents: i64, lock_blocks: u32) -> Result<MintEstimate, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
-            if cents <= 0 {
+            if cents <= 0 || cents > u32::MAX as i64 {
                 return Err(YewError::new(
                     ErrorKind::Input,
                     "Enter an amount in dollars to mint.",
                 ));
             }
-            o.sync().await?;
+            let r = o.sync().await?;
             let Open { wallet, conn, .. } = o;
             let conn = conn.as_mut().expect("connected");
             let e = wallet
-                .mint_estimate(&mut conn.validator, cents as u64, lock_blocks)
+                .mint_estimate(&mut conn.validator, cents as u64, lock_blocks, r.tip)
                 .await?;
             Ok(MintEstimate {
                 cents: e.cents as i64,
@@ -1663,6 +1730,7 @@ pub fn mint_estimate(cents: i64, lock_blocks: u32) -> Result<MintEstimate, YewEr
                 collateral_zat: e.collateral_zat,
                 fee_zat: e.fee_zat,
                 attest_fee_zat: e.attest_fee_zat,
+                payee: e.payee.clone(),
                 carrier_zat: params::CARRIER_VALUE,
                 token_zat: params::TOKEN_VALUE,
                 network_fee_zat: 2 * params::FEE_ZAT,
@@ -1678,18 +1746,29 @@ pub fn mint_estimate(cents: i64, lock_blocks: u32) -> Result<MintEstimate, YewEr
 }
 
 /// Start a mint (after a sync): verify the bundle, fund the carrier through the gate, record
-/// the row. Returns the row (`CARRIER_SENT`); [`mint_finish`] sends the MINT once a sync has
-/// seen the carrier confirm.
-pub fn mint_start(cents: i64, lock_blocks: u32) -> Result<MintStatus, YewError> {
+/// the row. `confirmed` is the estimate the user confirmed: a server answer that differs in
+/// collateral, fee, payee or class is refused (`terms-changed`, audit G-2). Returns the row
+/// (`CARRIER_SENT`); [`mint_finish`] sends the MINT once a sync has seen the carrier confirm.
+pub fn mint_start(
+    cents: i64,
+    lock_blocks: u32,
+    confirmed: MintTerms,
+) -> Result<MintStatus, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
-            if cents <= 0 {
+            if cents <= 0 || cents > u32::MAX as i64 {
                 return Err(YewError::new(
                     ErrorKind::Input,
                     "Enter an amount in dollars to mint.",
                 ));
             }
             let r = o.sync().await?;
+            let terms = crate::build::mint::ConfirmedTerms {
+                collateral_zat: confirmed.collateral_zat,
+                fee_zat: confirmed.fee_zat,
+                payee: confirmed.payee,
+                term_class: confirmed.term_class,
+            };
             let id = {
                 let Open { wallet, conn, .. } = &mut *o;
                 let conn = conn.as_mut().expect("connected");
@@ -1699,6 +1778,7 @@ pub fn mint_start(cents: i64, lock_blocks: u32) -> Result<MintStatus, YewError> 
                         &mut conn.validator,
                         cents as u64,
                         lock_blocks,
+                        Some(&terms),
                         r.tip,
                         r.branch_id,
                     )
@@ -1789,24 +1869,64 @@ pub fn vaults() -> Result<Vec<VaultSummary>, YewError> {
     })
 }
 
-/// Redeem an own `ACTIVE` vault at or past `lockHeight` (burning its debt from the wallet's
-/// YED), or release a `VOID` one (after a sync; both gate layers, the planned burn known to
-/// the remote layer).
-pub fn redeem(vault_txid: String) -> Result<RedeemResult, YewError> {
+/// Build and sign the REDEEM of an own `ACTIVE` vault at or past `lockHeight` (burning its
+/// debt from the wallet's YED), or the release of a `VOID` one, after a sync. Nothing is
+/// broadcast: the preview shows the collateral returned, the enforcement fee and its payee
+/// (FEE-1, checked locally) and the burn before the slider (audit G-2).
+pub fn redeem_preview(vault_txid: String) -> Result<RedeemPreview, YewError> {
     let txid = parse_txid(&vault_txid)?;
     with_open_async(|o| {
         Box::pin(async move {
             let r = o.sync().await?;
+            let p = {
+                let Open { wallet, conn, .. } = &mut *o;
+                let conn = conn.as_mut().expect("connected");
+                wallet
+                    .redeem_preview(&mut conn.validator, &txid, r.tip, r.branch_id)
+                    .await?
+            };
+            let id = txid_hex(&p.txid);
+            let out = RedeemPreview {
+                preview_id: id.clone(),
+                vault_txid: p.vault_txid.clone(),
+                kind: p.kind.into(),
+                burn_cents: p.burn_cents as i64,
+                extra_burn_cents: p.extra_burn_cents as i64,
+                change_cents: p.change_cents as i64,
+                yed_inputs: p.yed_inputs.len() as u32,
+                fee_zat: p.fee_zat,
+                payee: p.payee.clone(),
+                collateral_zat: p.collateral_out,
+                collateral_address: p.collateral_address.clone(),
+                lock_time: p.lock_time as i64,
+                expiry_height: p.expiry_height as i64,
+                txid: id.clone(),
+            };
+            o.previews.insert(id, Preview::Redeem(p));
+            Ok(out)
+        })
+    })
+}
+
+/// Broadcast a redeem preview through both gate layers (the planned burn known to the
+/// remote layer).
+pub fn redeem_confirm(preview_id: String) -> Result<RedeemResult, YewError> {
+    with_open_async(|o| {
+        Box::pin(async move {
+            let p = match o.previews.remove(&preview_id) {
+                Some(Preview::Redeem(p)) => p,
+                _ => {
+                    return Err(YewError::new(
+                        ErrorKind::PreviewExpired,
+                        "This preview is no longer valid. Start the redeem again.",
+                    ))
+                }
+            };
+            ensure_conn(o).await?;
             let Open { wallet, conn, .. } = o;
             let conn = conn.as_mut().expect("connected");
-            let (sent, v, p) = wallet
-                .redeem(
-                    &mut conn.compact,
-                    &mut conn.validator,
-                    &txid,
-                    r.tip,
-                    r.branch_id,
-                )
+            let (sent, v) = wallet
+                .redeem_confirm(&mut conn.compact, &mut conn.validator, &p)
                 .await?;
             Ok(RedeemResult {
                 txid: sent,
@@ -1816,6 +1936,7 @@ pub fn redeem(vault_txid: String) -> Result<RedeemResult, YewError> {
                 extra_burn_cents: p.extra_burn_cents as i64,
                 change_cents: p.change_cents as i64,
                 fee_zat: p.fee_zat,
+                payee: p.payee,
                 collateral_zat: p.collateral_out,
                 collateral_address: p.collateral_address,
                 lock_time: p.lock_time as i64,
@@ -1848,6 +1969,7 @@ pub fn claimable() -> Result<Vec<ClaimableItem>, YewError> {
                     attest_fee_zat: c.attest_fee_zat,
                     residual_zat: c.residual_zat,
                     claimant_zat: c.claimant_zat,
+                    payee: c.payee,
                 })
                 .collect())
         })
@@ -1910,7 +2032,14 @@ mod tests {
         assert_eq!(mints().unwrap_err().kind, ErrorKind::Locked);
         // A malformed vault txid is refused before the wallet is looked at.
         assert_eq!(claim("x".into()).unwrap_err().kind, ErrorKind::Input);
-        assert_eq!(redeem("zz".into()).unwrap_err().kind, ErrorKind::Input);
+        assert_eq!(
+            redeem_preview("zz".into()).unwrap_err().kind,
+            ErrorKind::Input
+        );
+        assert_eq!(
+            redeem_confirm("nope".into()).unwrap_err().kind,
+            ErrorKind::Locked
+        );
 
         // Default endpoints: none for mainnet or testnet, the devnet for regtest (W5).
         assert!(default_servers(NetworkId::Mainnet).is_empty());
@@ -1987,8 +2116,17 @@ mod tests {
         assert!(vaults().unwrap().is_empty());
         assert_eq!(mint_status(7).unwrap_err().kind, ErrorKind::Input);
         assert_eq!(mint_estimate(0, 10).unwrap_err().kind, ErrorKind::Input);
+        // Above u32 (audit G-9): refused before any network call.
+        assert_eq!(
+            mint_estimate(u32::MAX as i64 + 1, 48).unwrap_err().kind,
+            ErrorKind::Input
+        );
         assert_eq!(
             send_yec_confirm("nope".into()).unwrap_err().kind,
+            ErrorKind::PreviewExpired
+        );
+        assert_eq!(
+            redeem_confirm("nope".into()).unwrap_err().kind,
             ErrorKind::PreviewExpired
         );
         // No server behind 127.0.0.1:1: the network error surfaces as such.
