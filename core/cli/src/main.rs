@@ -245,9 +245,9 @@ async fn synced_both(o: &Opts) -> (Wallet, CompactClient, Validator, sync::SyncR
     let server = server_of(o);
     match yec_private::sync_shielded(&mut w, &server, &mut c, yec_private::no_progress()).await {
         Ok(z) => println!(
-            "private: scanned to {} (tip {}), {} blocks, {} outputs, {} notes received, {} spent, {} memos fetched, {} reorgs, {} ms{}",
+            "private: scanned to {} (tip {}), {} blocks, {} outputs, {} notes received, {} spent, {} memos fetched, {} reorgs ({} to the birthday), {} ms{}",
             z.scanned_height, z.tip, z.blocks, z.outputs, z.received_notes, z.spent_notes,
-            z.enhanced, z.reorgs, z.millis,
+            z.enhanced, z.reorgs, z.birthday_rewinds, z.millis,
             if z.sendable { "" } else { " (sending available at 100%)" }
         ),
         Err(e) => println!("private: not synced: {e}"),
