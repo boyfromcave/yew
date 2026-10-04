@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1000285762;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1890070908;
 
 // Section: executor
 
@@ -806,6 +806,73 @@ fn wire__crate__api__mints_impl(
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
                     let output_ok = crate::api::mints()?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__move_confirm_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "move_confirm",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_preview_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::YewError>((move || {
+                    let output_ok = crate::api::move_confirm(api_preview_id)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__move_preview_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "move_preview",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_direction = <crate::api::MoveDirection>::sse_decode(&mut deserializer);
+            let api_amount_zat = <Option<i64>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::YewError>((move || {
+                    let output_ok = crate::api::move_preview(api_direction, api_amount_zat)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -1884,6 +1951,18 @@ impl SseDecode for crate::api::MintTerms {
     }
 }
 
+impl SseDecode for crate::api::MoveDirection {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::MoveDirection::ToPrivate,
+            1 => crate::api::MoveDirection::ToPublic,
+            _ => unreachable!("Invalid variant for MoveDirection: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::api::NetworkId {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2379,21 +2458,23 @@ fn pde_ffi_dispatcher_primary_impl(
         21 => wire__crate__api__mint_status_impl(port, ptr, rust_vec_len, data_len),
         22 => wire__crate__api__mint_sweep_impl(port, ptr, rust_vec_len, data_len),
         23 => wire__crate__api__mints_impl(port, ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__new_shielded_address_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__params_status_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__probe_server_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__receive_address_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__redeem_confirm_impl(port, ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__redeem_preview_impl(port, ptr, rust_vec_len, data_len),
-        30 => wire__crate__api__send_yec_confirm_impl(port, ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__send_yec_preview_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__send_yed_confirm_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__send_yed_preview_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__set_server_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__status_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__api__sync_now_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__api__unlock_impl(port, ptr, rust_vec_len, data_len),
-        39 => wire__crate__api__vaults_impl(port, ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__move_confirm_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__move_preview_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__new_shielded_address_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__params_status_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__probe_server_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__receive_address_impl(port, ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__redeem_confirm_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__redeem_preview_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__send_yec_confirm_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__send_yec_preview_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__send_yed_confirm_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__send_yed_preview_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__set_server_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__status_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__api__sync_now_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__unlock_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__vaults_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2411,7 +2492,7 @@ fn pde_ffi_dispatcher_sync_impl(
         9 => wire__crate__api__default_servers_impl(ptr, rust_vec_len, data_len),
         12 => wire__crate__api__generate_seed_words_impl(ptr, rust_vec_len, data_len),
         16 => wire__crate__api__is_unlocked_impl(ptr, rust_vec_len, data_len),
-        38 => wire__crate__api__validate_address_impl(ptr, rust_vec_len, data_len),
+        40 => wire__crate__api__validate_address_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2728,6 +2809,22 @@ impl flutter_rust_bridge::IntoDart for crate::api::MintTerms {
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::MintTerms {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::MintTerms> for crate::api::MintTerms {
     fn into_into_dart(self) -> crate::api::MintTerms {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::MoveDirection {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::ToPrivate => 0.into_dart(),
+            Self::ToPublic => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::MoveDirection {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::MoveDirection> for crate::api::MoveDirection {
+    fn into_into_dart(self) -> crate::api::MoveDirection {
         self
     }
 }
@@ -3494,6 +3591,22 @@ impl SseEncode for crate::api::MintTerms {
         <i64>::sse_encode(self.fee_zat, serializer);
         <String>::sse_encode(self.payee, serializer);
         <String>::sse_encode(self.term_class, serializer);
+    }
+}
+
+impl SseEncode for crate::api::MoveDirection {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::MoveDirection::ToPrivate => 0,
+                crate::api::MoveDirection::ToPublic => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 

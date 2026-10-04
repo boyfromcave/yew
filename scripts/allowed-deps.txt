@@ -42,3 +42,8 @@ rand
 # yew-shielded plan S0-2 (2026-10-04): the Sapling proving parameters over HTTPS (core/src/sapling_params.rs);
 # tokio-rustls is the TLS stream tonic already links, the SHA-256 pins are the integrity check.
 tokio-rustls
+# yew-shielded plan S4 (2026-10-04): shield (t→z to the wallet's own ys1…) through the librustzcash6 builder
+# with `transparent-inputs` (core/src/shielded.rs `build_shield`). zcash_transparent supplies the builder's
+# transparent types; secp256k1 0.29.1 (renamed `secp256k1_zcash` in Cargo.toml, listed above under its
+# package name) is the version that builder signs with. Both were already in Cargo.lock.
+zcash_transparent

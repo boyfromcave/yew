@@ -64,15 +64,16 @@ class _SendScreenState extends State<SendScreen> {
     _needYec = false;
   });
 
-  /// The recipient is a private (`ys1…`) address.
-  bool _toPrivate(NetworkId network) => isPrivateAddress(network, _address.text);
+  /// The recipient is a private (`ys1…`) address of the wallet's network (the core decides).
+  bool _toPrivate(AppState app) =>
+      app.api.validateAddress(network: app.settings.network, address: _address.text.trim()).kind == 'sapling';
 
   int get _memoBytes => utf8.encode(_memo.text).length;
 
   Future<void> _preview() async {
     final app = AppScope.read(context);
     final to = _address.text.trim();
-    final private = _toPrivate(app.settings.network);
+    final private = _toPrivate(app);
     if (private && _asset == Asset.yed) {
       setState(() => _error = 'YED can only be sent to a public address (ye… or s…).');
       return;
@@ -160,7 +161,7 @@ class _SendScreenState extends State<SendScreen> {
     final t = Theme.of(context).textTheme;
     final accent = _asset == Asset.yed ? c.yed : c.yec;
     final hasPreview = _yed != null || _yec != null;
-    final private = _asset == Asset.yec && _toPrivate(app.settings.network);
+    final private = _asset == Asset.yec && _toPrivate(app);
     final b = app.balances;
     if (_result != null) return SendResultView(result: _result!, accent: accent);
     return Scaffold(

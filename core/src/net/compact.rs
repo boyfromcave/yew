@@ -66,6 +66,9 @@ pub struct RawTx {
 #[derive(Clone, Debug)]
 pub struct CompactClient {
     inner: CompactTxStreamerClient<Channel>,
+    /// The channel itself: the light library's shielded sync runs over it too (Z-3), so every
+    /// lightwalletd call uses YEW's TLS settings and certificate pin.
+    channel: Channel,
 }
 
 /// Page size for `GetAddressUtxos` (`maxEntries`; 0 means unlimited on the server, but a page
@@ -76,16 +79,20 @@ impl CompactClient {
     /// Connect to `server`.
     pub async fn connect(server: &Server) -> Result<CompactClient, NetError> {
         let channel = server.connect().await?;
-        Ok(CompactClient {
-            inner: CompactTxStreamerClient::new(channel),
-        })
+        Ok(CompactClient::from_channel(channel))
     }
 
     /// Wrap an existing channel (tests, or sharing with the Yellowback client).
     pub fn from_channel(channel: Channel) -> CompactClient {
         CompactClient {
-            inner: CompactTxStreamerClient::new(channel),
+            inner: CompactTxStreamerClient::new(channel.clone()),
+            channel,
         }
+    }
+
+    /// The channel this client runs over (YEW's TLS, roots and pin).
+    pub fn channel(&self) -> Channel {
+        self.channel.clone()
     }
 
     /// `GetLightdInfo`.

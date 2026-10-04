@@ -46,7 +46,12 @@ class SendErrorCard extends StatelessWidget {
                 icon: const Icon(Icons.qr_code_2_rounded),
                 label: const Text('Show my receive address'),
               ),
-              if (b.yecShieldedZat > 0) MovePublicHint(what: 'Sending YED', privateZat: b.yecShieldedZat),
+              if (b.yecShieldedZat > 0)
+                MovePublicHint(
+                  what: 'Sending YED',
+                  privateZat: b.yecShieldedZat,
+                  shortfallZat: b.yedSendMinZat - (b.yecZat + b.yecReservedZat),
+                ),
             ],
           ],
         ),

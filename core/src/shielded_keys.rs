@@ -192,6 +192,18 @@ impl SaplingAccount {
         Ok((index_u64(j), self.encode_address(&addr)))
     }
 
+    /// The default address as a typed payment address and the account's external outgoing
+    /// viewing key: what a shielding output to the wallet itself is made of (S4).
+    pub(crate) fn default_output(
+        &self,
+    ) -> (PaymentAddress, sapling_crypto::keys::OutgoingViewingKey) {
+        let dfvk = self.typed().to_diversifiable_full_viewing_key();
+        (
+            dfvk.default_address().1,
+            dfvk.to_ovk(zip32::Scope::External),
+        )
+    }
+
     fn encode_address(&self, addr: &PaymentAddress) -> String {
         encode_payment_address(self.network.sapling_address_hrp(), addr)
     }

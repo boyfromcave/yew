@@ -39,6 +39,7 @@ use std::time::{Duration, Instant};
 
 use rand::rngs::OsRng;
 use thiserror::Error;
+use tonic::transport::Channel;
 use x402_ycash_light::{Options as LightOptions, Wallet as LightWallet, YcashNetwork};
 use zcash_client_backend::data_api::wallet::{
     create_proposed_transactions, decrypt_and_store_transaction,
@@ -54,12 +55,17 @@ use zcash_client_sqlite::util::SystemClock;
 use zcash_client_sqlite::wallet::init::init_wallet_db;
 use zcash_client_sqlite::{AccountUuid, ReceivedNoteId, WalletDb};
 use zcash_keys::address::Address;
+use zcash_primitives::transaction::builder::{BuildConfig, Builder};
+use zcash_primitives::transaction::fees::zip317;
 use zcash_primitives::transaction::Transaction as ZTransaction;
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::consensus::{BlockHeight, BranchId, NetworkUpgrade, Parameters};
 use zcash_protocol::memo::{Memo, MemoBytes};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{ShieldedProtocol, TxId};
+use zcash_transparent::address::TransparentAddress;
+use zcash_transparent::builder::TransparentSigningSet;
+use zcash_transparent::bundle::{OutPoint, TxOut};
 
 use crate::net::{CompactClient, NetError};
 use crate::params::{Network, TOKEN_VALUE};
@@ -84,7 +90,18 @@ pub enum ShieldedError {
     Store(String),
     /// The light client (sync, registration).
     #[error("private sync: {0}")]
-    Light(#[from] x402_ycash_light::wallet::Error),
+    Light(x402_ycash_light::wallet::Error),
+    /// The server's compact-block cache trails its node for a moment: sync again shortly.
+    #[error("The server is still catching up (wallet at {wallet}, server at {server}); try again in a moment.")]
+    ServerBehind {
+        /// The wallet's tip (0 = none yet).
+        wallet: u64,
+        /// The server's tip.
+        server: u64,
+    },
+    /// Another open wallet holds this private store (one per store per process).
+    #[error("The private wallet is already open elsewhere in this app; close it and try again.")]
+    Busy,
     /// YEW's own network calls.
     #[error(transparent)]
     Net(#[from] NetError),
@@ -132,6 +149,20 @@ pub enum ShieldedError {
     /// Proving / signing failed.
     #[error("cannot build the private send: {0}")]
     Create(String),
+}
+
+impl From<x402_ycash_light::wallet::Error> for ShieldedError {
+    fn from(e: x402_ycash_light::wallet::Error) -> Self {
+        use x402_ycash_light::wallet::Error as L;
+        match e {
+            L::NotAtServerTip { wallet, server } => ShieldedError::ServerBehind {
+                wallet: wallet.unwrap_or(0) as u64,
+                server: server as u64,
+            },
+            L::Locked(_) => ShieldedError::Busy,
+            other => ShieldedError::Light(other),
+        }
+    }
 }
 
 fn store_err(e: impl std::fmt::Display) -> ShieldedError {
@@ -282,6 +313,25 @@ pub struct SpendBuilt {
     pub params_millis: u64,
     /// Milliseconds spent proving and signing.
     pub prove_millis: u64,
+}
+
+/// A transparent P2PKH coin a shielding transaction spends (selected by YEW's coin rules).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShieldInput {
+    /// Txid, internal byte order.
+    pub txid: [u8; 32],
+    /// Output index.
+    pub n: u32,
+    /// Value, zat.
+    pub value: u64,
+    /// The compressed public key of the P2PKH output.
+    pub pubkey: [u8; 33],
+    /// `HASH160(pubkey)`.
+    pub hash160: [u8; 20],
+}
+
+fn zat(v: u64) -> Result<Zatoshis, ShieldedError> {
+    Zatoshis::from_u64(v).map_err(|_| ShieldedError::Propose(format!("bad amount {v}")))
 }
 
 /// One shielded history row (from the store's `v_transactions` / `v_tx_outputs`).
@@ -453,17 +503,20 @@ impl Shielded {
         Ok(out)
     }
 
-    /// Open the light client against `lwd` (`grpc://h:p` / `grpcs://h:p`) if it is not open on
-    /// that endpoint already.
-    async fn light(&mut self, lwd: &str) -> Result<&mut LightWallet, ShieldedError> {
+    /// Open the light client over `channel` (YEW's own: its TLS settings, the webpki roots and
+    /// any pinned certificate; Z-3) if it is not open for `lwd` already. `lwd` is only the
+    /// label the light library reports; it never dials it. The light wallet locks the store
+    /// directory while open, so the previous one is dropped before the next is opened.
+    async fn light(
+        &mut self,
+        lwd: &str,
+        channel: &Channel,
+    ) -> Result<&mut LightWallet, ShieldedError> {
         if self.light.is_none() || self.light_lwd != lwd {
             self.light = None;
             let w = LightWallet::open(LightOptions {
-                data_dir: self.dir.clone(),
-                lwd: lwd.to_string(),
-                params: self.params,
-                proving_params_dir: None,
-                spending_key: None,
+                channel: Some(channel.clone()),
+                ..LightOptions::new(self.dir.clone(), lwd, self.params)
             })
             .await?;
             self.light = Some(w);
@@ -488,11 +541,12 @@ impl Shielded {
         client: &mut CompactClient,
         progress: ProgressFn,
     ) -> Result<ShieldedSyncReport, ShieldedError> {
+        let channel = client.channel();
         let started = Instant::now();
         let mut report = ShieldedSyncReport::default();
         if !self.registered()? {
             let extsk = self.account.extended_spending_key();
-            let light = self.light(lwd).await?;
+            let light = self.light(lwd, &channel).await?;
             light
                 .register_key(
                     extsk,
@@ -527,7 +581,7 @@ impl Shielded {
                 }
             })
         };
-        let light = self.light(lwd).await;
+        let light = self.light(lwd, &channel).await;
         let r = match light {
             Ok(l) => l
                 .sync(x402_ycash_light::sync::DEFAULT_CHUNK_BLOCKS)
@@ -792,21 +846,7 @@ impl Shielded {
         plan: &SpendPlan,
         params_dir: &Path,
     ) -> Result<SpendBuilt, ShieldedError> {
-        let t0 = Instant::now();
-        let cached = matches!(&self.prover, Some((d, _)) if d == params_dir);
-        if !cached {
-            sapling_params::ensure_verified(params_dir)?;
-            let prover = LocalTxProver::new(
-                &params_dir.join(sapling_params::SPEND.name),
-                &params_dir.join(sapling_params::OUTPUT.name),
-            );
-            self.prover = Some((params_dir.to_path_buf(), prover));
-        }
-        let params_millis = if cached {
-            0
-        } else {
-            t0.elapsed().as_millis() as u64
-        };
+        let params_millis = self.load_prover(params_dir)?;
         let t1 = Instant::now();
         let (_, prover) = self.prover.as_ref().expect("loaded above");
         let usk = x402_ycash_light::keys::usk_from_extsk(&self.account.extended_spending_key());
@@ -859,6 +899,142 @@ impl Shielded {
             params_millis,
             prove_millis,
         })
+    }
+
+    /// The builder of a shielding transaction (S4): `inputs` (YEW's selected transparent P2PKH
+    /// coins) pay `amount_zat` into one Sapling output to the wallet's own default address
+    /// (external OVK, empty memo) and `change` back to a transparent address, at `target`
+    /// (the next block; `nExpiryHeight` = target + 40, the builder's default).
+    fn shield_builder(
+        &self,
+        target: u32,
+        inputs: &[ShieldInput],
+        amount_zat: u64,
+        change: Option<([u8; 20], u64)>,
+    ) -> Result<Builder<'static, YcashNetwork, ()>, ShieldedError> {
+        let mut b = Builder::new(
+            self.params,
+            BlockHeight::from_u32(target),
+            BuildConfig::Standard {
+                sapling_anchor: Some(sapling_crypto::Anchor::empty_tree()),
+                orchard_anchor: None,
+            },
+        );
+        for i in inputs {
+            let pubkey = secp256k1_zcash::PublicKey::from_slice(&i.pubkey)
+                .map_err(|e| ShieldedError::Create(format!("bad input key: {e}")))?;
+            let coin = TxOut::new(
+                zat(i.value)?,
+                TransparentAddress::PublicKeyHash(i.hash160).script().into(),
+            );
+            b.add_transparent_p2pkh_input(pubkey, OutPoint::new(i.txid, i.n), coin)
+                .map_err(|e| ShieldedError::Create(e.to_string()))?;
+        }
+        let (to, ovk) = self.account.default_output();
+        b.add_sapling_output::<std::convert::Infallible>(
+            Some(ovk),
+            to,
+            zat(amount_zat)?,
+            MemoBytes::empty(),
+        )
+        .map_err(|e| ShieldedError::Create(e.to_string()))?;
+        if let Some((h, v)) = change {
+            b.add_transparent_output(&TransparentAddress::PublicKeyHash(h), zat(v)?)
+                .map_err(|e| ShieldedError::Create(e.to_string()))?;
+        }
+        Ok(b)
+    }
+
+    /// The ZIP-317 fee of the shielding transaction [`Shielded::build_shield`] would build with
+    /// these inputs and outputs (no proving; the value of the change does not matter).
+    pub fn shield_fee(
+        &self,
+        target: u32,
+        inputs: &[ShieldInput],
+        amount_zat: u64,
+        change: Option<[u8; 20]>,
+    ) -> Result<u64, ShieldedError> {
+        let b = self.shield_builder(target, inputs, amount_zat.max(1), change.map(|h| (h, 1)))?;
+        Ok(b.get_fee(&zip317::FeeRule::standard())
+            .map_err(|e| ShieldedError::Propose(format!("fee: {e:?}")))?
+            .into_u64())
+    }
+
+    /// Build the shielding transaction (S4): prove the Sapling output with the parameters in
+    /// `params_dir` (verified against their pins first) and sign the transparent inputs with
+    /// `secrets` (one 32-byte key per input, in order; used for this call only). The fee must
+    /// be exactly what [`Shielded::shield_fee`] said, or the builder refuses. Nothing is written
+    /// to the note store: the output is found by the next scan once mined.
+    pub fn build_shield(
+        &mut self,
+        target: u32,
+        inputs: &[ShieldInput],
+        secrets: &[[u8; 32]],
+        amount_zat: u64,
+        change: Option<([u8; 20], u64)>,
+        params_dir: &Path,
+    ) -> Result<SpendBuilt, ShieldedError> {
+        if inputs.is_empty() || secrets.len() != inputs.len() {
+            return Err(ShieldedError::Create(
+                "one key per transparent input".into(),
+            ));
+        }
+        let params_millis = self.load_prover(params_dir)?;
+        let t1 = Instant::now();
+        let b = self.shield_builder(target, inputs, amount_zat, change)?;
+        // The fee the builder charges (its own ZIP-317 computation; `fee_paid` cannot see the
+        // transparent input values once built).
+        let fee_zat = b
+            .get_fee(&zip317::FeeRule::standard())
+            .map_err(|e| ShieldedError::Propose(format!("fee: {e:?}")))?
+            .into_u64();
+        let mut keys = TransparentSigningSet::new();
+        for s in secrets {
+            let sk = secp256k1_zcash::SecretKey::from_slice(s)
+                .map_err(|e| ShieldedError::Create(format!("bad input key: {e}")))?;
+            keys.add_key(sk);
+        }
+        let (_, prover) = self.prover.as_ref().expect("loaded above");
+        let built = b
+            .build(
+                &keys,
+                &[],
+                &[],
+                OsRng,
+                prover,
+                prover,
+                &zip317::FeeRule::standard(),
+            )
+            .map_err(|e| ShieldedError::Create(e.to_string()))?;
+        drop(keys);
+        let tx = built.transaction();
+        let mut raw = Vec::new();
+        tx.write(&mut raw)
+            .map_err(|e| ShieldedError::Create(e.to_string()))?;
+        Ok(SpendBuilt {
+            raw,
+            txid: *tx.txid().as_ref(),
+            expiry_height: u32::from(tx.expiry_height()),
+            fee_zat,
+            params_millis,
+            prove_millis: t1.elapsed().as_millis() as u64,
+        })
+    }
+
+    /// Verify (once) and load the proving parameters from `params_dir`; returns the
+    /// milliseconds it took (0 when already loaded from that directory).
+    fn load_prover(&mut self, params_dir: &Path) -> Result<u64, ShieldedError> {
+        let t0 = Instant::now();
+        if matches!(&self.prover, Some((d, _)) if d == params_dir) {
+            return Ok(0);
+        }
+        sapling_params::ensure_verified(params_dir)?;
+        let prover = LocalTxProver::new(
+            &params_dir.join(sapling_params::SPEND.name),
+            &params_dir.join(sapling_params::OUTPUT.name),
+        );
+        self.prover = Some((params_dir.to_path_buf(), prover));
+        Ok(t0.elapsed().as_millis() as u64)
     }
 
     /// The shielded history, newest first (unmined first).
@@ -1046,6 +1222,25 @@ mod tests {
         // Reopening is fine; mainnet keys in the same directory are another network's store,
         // but an unregistered store has nothing to compare yet.
         Shielded::open(&dir, Network::Regtest, account(Network::Regtest, "")).unwrap();
+    }
+
+    /// The light wallet locks its directory: a second open in the same process is `Busy`
+    /// (showable), and dropping the first releases it. YEW holds one per open wallet and drops
+    /// it before reopening.
+    #[tokio::test]
+    async fn one_light_wallet_per_store() {
+        let dir = tmp("lock");
+        let mut a = Shielded::open(&dir, Network::Regtest, account(Network::Regtest, "")).unwrap();
+        let mut b = Shielded::open(&dir, Network::Regtest, account(Network::Regtest, "")).unwrap();
+        let ch = tonic::transport::Endpoint::from_static("http://127.0.0.1:9").connect_lazy();
+        a.light("grpc://a", &ch).await.unwrap();
+        // Reopening on another label drops the first light wallet before opening the next.
+        a.light("grpc://a2", &ch).await.unwrap();
+        let e = b.light("grpc://b", &ch).await.err().unwrap();
+        assert!(matches!(e, ShieldedError::Busy), "{e}");
+        assert!(e.to_string().contains("already open"));
+        a.disconnect();
+        b.light("grpc://b", &ch).await.unwrap();
     }
 
     #[test]

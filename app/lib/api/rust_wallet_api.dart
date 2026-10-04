@@ -116,6 +116,13 @@ class RustWalletApi implements WalletApi {
       rust.sendYecConfirm(previewId: previewId);
 
   @override
+  Future<YecPreview> movePreview({required MoveDirection direction, int? amountZat}) =>
+      rust.movePreview(direction: direction, amountZat: amountZat);
+
+  @override
+  Future<SendResult> moveConfirm({required String previewId}) => rust.moveConfirm(previewId: previewId);
+
+  @override
   Future<ParamsStatus> paramsStatus() => rust.paramsStatus();
 
   @override

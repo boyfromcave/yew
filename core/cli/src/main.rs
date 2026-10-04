@@ -629,11 +629,19 @@ async fn main() {
                         ""
                     }
                 ),
+                Funding::Shield(p) => println!(
+                    "move to private: amount {} fee {} change {} inputs {} expiry {}",
+                    yec(p.amount),
+                    p.fee,
+                    p.change,
+                    p.inputs.len(),
+                    p.expiry_height
+                ),
             }
             let sent = fail(
                 yec_private::confirm_yec_send(&mut w, &mut c, &mut v, &plan, &params_dir(&o)).await,
             );
-            if matches!(plan.funding, Funding::Shielded(_)) {
+            if plan.funding.needs_params() {
                 println!(
                     "proved in {} ms (parameters {} ms)",
                     sent.prove_millis, sent.params_millis

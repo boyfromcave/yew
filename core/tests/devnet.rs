@@ -1526,6 +1526,80 @@ async fn sync_both(
     (r, z)
 }
 
+/// A local copy of the Sapling proving parameters (`YEW_SAPLING_PARAMS`, or the ycashd
+/// `fetch-params.sh` locations).
+fn local_params_dir() -> String {
+    [
+        std::env::var("YEW_SAPLING_PARAMS").unwrap_or_default(),
+        format!(
+            "{}/Library/Application Support/ZcashParams",
+            std::env::var("HOME").unwrap()
+        ),
+        format!("{}/.zcash-params", std::env::var("HOME").unwrap()),
+    ]
+    .into_iter()
+    .find(|d| {
+        !d.is_empty()
+            && std::path::Path::new(d)
+                .join("sapling-spend.params")
+                .is_file()
+    })
+    .expect("Sapling parameters on this machine (YEW_SAPLING_PARAMS)")
+}
+
+/// Warm the price windows (pool blocks until `pMint` is defined at the tip and at `R`), then
+/// give node 0 at least $100 of YED (a $1000 mint, as W2) for the YED regressions.
+async fn warm_and_fund_node_yed(
+    dn: &Devnet,
+    c: &mut CompactClient,
+    v: &mut Validator,
+    availability: &Availability,
+) {
+    let ref_lag = match availability {
+        Availability::Present { info, .. } => {
+            info.params.as_ref().map(|p| p.ref_lag).unwrap_or(2) as u32
+        }
+        Availability::Absent => 2,
+    };
+    loop {
+        let yb = v.client_mut().unwrap();
+        let p = yb.price(0).await.unwrap();
+        let at_ref = yb
+            .price((p.height as u32).saturating_sub(ref_lag))
+            .await
+            .unwrap();
+        if p.p_mint > 0 && at_ref.p_mint > 0 {
+            break;
+        }
+        let h = dn.mine_pool();
+        wait_for_height(c, h).await;
+    }
+    let node_yed = |dn: &Devnet| {
+        dn.node_json(0, &["yed_getbalance"])["confirmedCents"]
+            .as_u64()
+            .unwrap()
+    };
+    if node_yed(dn) < 10_000 {
+        let mint = dn.node_json(0, &["yed_mint", "100000", "48", "", "", "false"]);
+        let carrier = mint["carrierTxid"].as_str().unwrap().to_string();
+        dn.wait_mempool(&carrier);
+        dn.mine_pool();
+        let start = Instant::now();
+        let mint_txid = loop {
+            let mp = dn.node_json(2, &["getrawmempool"]);
+            if let Some(t) = mp.as_array().unwrap().first() {
+                break t.as_str().unwrap().to_string();
+            }
+            assert!(start.elapsed() < Duration::from_secs(60), "no MINT");
+            std::thread::sleep(Duration::from_millis(300));
+        };
+        dn.wait_mempool(&mint_txid);
+        let h = dn.mine_pool();
+        wait_for_height(c, h).await;
+        assert!(node_yed(dn) >= 100_000, "node 0 minted");
+    }
+}
+
 #[tokio::test]
 #[ignore = "needs an ARMED regtest devnet of either line (scripts/devnet-s2.sh) and YEW_DEVNET=1"]
 async fn s2_shielded_receive_send_memo_and_regressions() {
@@ -1549,49 +1623,12 @@ async fn s2_shielded_receive_send_memo_and_regressions() {
     timings.insert("line".into(), line.clone().into());
 
     // Warm the price windows, then give node 0 YED for the regression (a $1000 mint, as W2).
-    let ref_lag = match &availability {
-        Availability::Present { info, .. } => {
-            info.params.as_ref().map(|p| p.ref_lag).unwrap_or(2) as u32
-        }
-        Availability::Absent => 2,
-    };
-    loop {
-        let yb = v.client_mut().unwrap();
-        let p = yb.price(0).await.unwrap();
-        let at_ref = yb
-            .price((p.height as u32).saturating_sub(ref_lag))
-            .await
-            .unwrap();
-        if p.p_mint > 0 && at_ref.p_mint > 0 {
-            break;
-        }
-        let h = dn.mine_pool();
-        wait_for_height(&mut c, h).await;
-    }
+    warm_and_fund_node_yed(&dn, &mut c, &mut v, &availability).await;
     let node_yed = |dn: &Devnet| {
         dn.node_json(0, &["yed_getbalance"])["confirmedCents"]
             .as_u64()
             .unwrap()
     };
-    if node_yed(&dn) < 10_000 {
-        let mint = dn.node_json(0, &["yed_mint", "100000", "48", "", "", "false"]);
-        let carrier = mint["carrierTxid"].as_str().unwrap().to_string();
-        dn.wait_mempool(&carrier);
-        dn.mine_pool();
-        let start = Instant::now();
-        let mint_txid = loop {
-            let mp = dn.node_json(2, &["getrawmempool"]);
-            if let Some(t) = mp.as_array().unwrap().first() {
-                break t.as_str().unwrap().to_string();
-            }
-            assert!(start.elapsed() < Duration::from_secs(60), "no MINT");
-            std::thread::sleep(Duration::from_millis(300));
-        };
-        dn.wait_mempool(&mint_txid);
-        let h = dn.mine_pool();
-        wait_for_height(&mut c, h).await;
-        assert!(node_yed(&dn) >= 100_000, "node 0 minted");
-    }
 
     // 1. A seed whose private address node 0 funds (with a memo) BEFORE the wallet exists:
     //    the restore case. The birthday is the tip before the funding.
@@ -1651,22 +1688,7 @@ async fn s2_shielded_receive_send_memo_and_regressions() {
 
     // 2. The proving parameters: "download" from a local copy (file://), pinned SHA-256s.
     let params = dir.join("sapling-params");
-    let local = [
-        std::env::var("YEW_SAPLING_PARAMS").unwrap_or_default(),
-        format!(
-            "{}/Library/Application Support/ZcashParams",
-            std::env::var("HOME").unwrap()
-        ),
-        format!("{}/.zcash-params", std::env::var("HOME").unwrap()),
-    ]
-    .into_iter()
-    .find(|d| {
-        !d.is_empty()
-            && std::path::Path::new(d)
-                .join("sapling-spend.params")
-                .is_file()
-    })
-    .expect("Sapling parameters on this machine (YEW_SAPLING_PARAMS)");
+    let local = local_params_dir();
     let t = Instant::now();
     let src = yew_core::sapling_params::ParamsSource::parse(&format!("file://{local}/")).unwrap();
     let st = yew_core::sapling_params::download(&src, &params, |_| {})
@@ -1899,5 +1921,200 @@ async fn s2_shielded_receive_send_memo_and_regressions() {
     if let Ok(f) = std::env::var("YEW_DEVNET_TIMINGS") {
         std::fs::write(f, serde_json::to_string_pretty(&out).unwrap()).unwrap();
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- yew-shielded plan S4: move YEC between the own public and private balances -------------
+
+#[tokio::test]
+#[ignore = "needs an ARMED regtest devnet of either line (scripts/devnet-s2.sh) and YEW_DEVNET=1"]
+async fn s4_move_to_private_and_public_then_mint() {
+    use yew_core::build::mint::MintError;
+    use yew_core::build::yec_move::{plan_move, Direction};
+    use yew_core::build::yec_private::{confirm_yec_send, Funding};
+    use yew_core::store::MintState;
+    if std::env::var("YEW_DEVNET").ok().as_deref() != Some("1") {
+        eprintln!("YEW_DEVNET is not 1; skipping");
+        return;
+    }
+    let line = env_or("YEW_DEVNET_LINE", "dd".into());
+    let dn = Devnet::new("yb-devnet-s2", "351");
+    let server =
+        Server::parse(&env_or("YEW_DEVNET_SERVER", "127.0.0.1:9418".into()), true).unwrap();
+    let channel = server.connect().await.expect("connect to lightwalletd");
+    let mut c = CompactClient::from_channel(channel.clone());
+    let (mut v, availability) = Validator::detect(YellowbackClient::from_channel(channel))
+        .await
+        .unwrap();
+    assert!(availability.usable(), "{availability:?}");
+    warm_and_fund_node_yed(&dn, &mut c, &mut v, &availability).await;
+
+    // A fresh wallet with three public coins (12 + 1 YEC and one reserve-sized coin) and $50.
+    let mnemonic = keys::generate_mnemonic(12).unwrap();
+    let birthday = c.latest_height().await.unwrap();
+    let dir = std::env::temp_dir().join(format!("yew-devnet-s4-{line}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("m.sqlite").to_string_lossy().to_string();
+    let mut w = Wallet::open(&path, Network::Regtest, &mnemonic, "", Some(birthday)).unwrap();
+    let a = w.receive_address(false).unwrap();
+    let mut funds = vec![];
+    for amount in ["12.0", "1.0", "0.001"] {
+        funds.push(dn.node(0, &["sendtoaddress", &a.address_s, amount]));
+    }
+    funds.push(
+        dn.node_json(0, &["yed_send", &a.address_ye, "5000"])["txid"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+    );
+    for t in &funds {
+        dn.wait_mempool(t);
+    }
+    let h = dn.mine_pool();
+    wait_for_height(&mut c, h).await;
+    let (r, z) = sync_both(&mut w, &server, &mut c, &mut v).await;
+    assert!(z.sendable, "{z:?}");
+    const RESERVE: i64 = 100_000; // the small coin: within the reserve target, so reserved
+    assert_eq!(r.yec, (1_300_000_000, RESERVE), "{r:?}");
+    assert_eq!(r.yed, (5_000, 0));
+    let params = dir.join("sapling-params");
+    let src =
+        yew_core::sapling_params::ParamsSource::parse(&format!("file://{}/", local_params_dir()))
+            .unwrap();
+    assert!(yew_core::sapling_params::download(&src, &params, |_| {})
+        .await
+        .unwrap()
+        .present());
+    let own_z = w.shielded().unwrap().default_address().1;
+
+    // 1. Move 1 YEC to private: plain YEC only (the 1-YEC coin falls short of amount + fee, so
+    //    both YEC coins), never the reserve or the token; change back to public.
+    let plan = plan_move(&mut w, Direction::ToPrivate, Some(100_000_000), r.tip).unwrap();
+    assert!(!plan.reveals_shielded);
+    let Funding::Shield(s) = &plan.funding else {
+        panic!("{plan:?}")
+    };
+    assert_eq!(s.to, own_z);
+    assert_eq!((s.inputs.len(), s.fee), (2, 20_000), "{s:?}");
+    assert!(s.inputs.iter().all(|u| u.class == UtxoClass::Yec));
+    let shield_fee = s.fee;
+    let sent = confirm_yec_send(&mut w, &mut c, &mut v, &plan, &params)
+        .await
+        .expect("shield accepted by the gate and the node");
+    println!("t→z {} (prove {} ms)", sent.txid, sent.prove_millis);
+    let raw = dn.node_json(0, &["getrawtransaction", &sent.txid, "1"]);
+    assert_eq!(raw["vin"].as_array().unwrap().len(), 2, "{raw}");
+    assert!(
+        !raw["vShieldedOutput"].as_array().unwrap().is_empty(),
+        "{raw}"
+    );
+    assert!(
+        raw["vShieldedSpend"].as_array().unwrap().is_empty(),
+        "{raw}"
+    );
+    dn.wait_mempool(&sent.txid);
+    let h = dn.mine_pool();
+    wait_for_height(&mut c, h).await;
+    let (r, z) = sync_both(&mut w, &server, &mut c, &mut v).await;
+    assert!(z.sendable && z.received_notes == 1, "{z:?}");
+    let zb = w.shielded().unwrap().balance().unwrap();
+    assert_eq!((zb.total_zat, zb.spendable_zat), (100_000_000, 100_000_000));
+    let public = 1_300_000_000 - 100_000_000 - shield_fee;
+    assert_eq!(r.yec, (public, RESERVE), "fee reserve untouched: {r:?}");
+    assert_eq!(r.yed, (5_000, 0), "YED untouched");
+
+    // 2. Move 0.5 YEC back to public: to the wallet's own address, the amount revealed.
+    let plan = plan_move(&mut w, Direction::ToPublic, Some(50_000_000), r.tip).unwrap();
+    assert!(plan.reveals_shielded);
+    let Funding::Shielded(p) = &plan.funding else {
+        panic!("{plan:?}")
+    };
+    assert!(p.transparent_recipient && w.row_for_address(&p.to).unwrap().is_some());
+    let unshield_fee = p.fee_zat as i64;
+    assert_eq!(unshield_fee, 15_000);
+    let sent = confirm_yec_send(&mut w, &mut c, &mut v, &plan, &params)
+        .await
+        .expect("unshield accepted");
+    dn.wait_mempool(&sent.txid);
+    let h = dn.mine_pool();
+    wait_for_height(&mut c, h).await;
+    let (r, _) = sync_both(&mut w, &server, &mut c, &mut v).await;
+    let private = 100_000_000 - 50_000_000 - unshield_fee;
+    assert_eq!(
+        w.shielded().unwrap().balance().unwrap().total_zat as i64,
+        private
+    );
+    let public = public + 50_000_000;
+    assert_eq!(r.yec, (public, RESERVE), "{r:?}");
+    assert_eq!(r.yed, (5_000, 0));
+
+    // 3. The S3 hint path: all public YEC to private, so a mint lacks public YEC; move exactly
+    //    the shortfall to public; the mint then goes through.
+    let plan = plan_move(&mut w, Direction::ToPrivate, None, r.tip).unwrap();
+    let Funding::Shield(s) = &plan.funding else {
+        panic!("{plan:?}")
+    };
+    assert_eq!((s.change, s.amount + s.fee), (0, public), "{s:?}");
+    let all_in = s.amount;
+    let sent = confirm_yec_send(&mut w, &mut c, &mut v, &plan, &params)
+        .await
+        .expect("move all to private");
+    dn.wait_mempool(&sent.txid);
+    let h = dn.mine_pool();
+    wait_for_height(&mut c, h).await;
+    let (r, _) = sync_both(&mut w, &server, &mut c, &mut v).await;
+    assert_eq!(r.yec, (0, RESERVE), "{r:?}");
+    let private = private + all_in;
+    assert_eq!(
+        w.shielded().unwrap().balance().unwrap().total_zat as i64,
+        private
+    );
+    let est = w.mint_estimate(&mut v, 10_000, 48, r.tip).await.unwrap();
+    assert!(!est.affordable(), "{est:?}");
+    let shortfall = est.total_zat - est.available_zat;
+    assert!(matches!(
+        w.mint_start(&mut c, &mut v, 10_000, 48, None, r.tip, r.branch_id)
+            .await
+            .unwrap_err(),
+        yew_core::wallet::WalletError::Mint(MintError::Unaffordable { .. })
+    ));
+    let plan = plan_move(&mut w, Direction::ToPublic, Some(shortfall), r.tip).unwrap();
+    let shortfall_fee = plan.fee_zat();
+    let sent = confirm_yec_send(&mut w, &mut c, &mut v, &plan, &params)
+        .await
+        .expect("unshield the shortfall");
+    dn.wait_mempool(&sent.txid);
+    let h = dn.mine_pool();
+    wait_for_height(&mut c, h).await;
+    let (r, _) = sync_both(&mut w, &server, &mut c, &mut v).await;
+    assert_eq!(r.yec, (shortfall, RESERVE), "{r:?}");
+    let est = w.mint_estimate(&mut v, 10_000, 48, r.tip).await.unwrap();
+    assert!(est.affordable(), "{est:?}");
+    let id = w
+        .mint_start(&mut c, &mut v, 10_000, 48, None, r.tip, r.branch_id)
+        .await
+        .expect("mint after the unshield");
+    let carrier = txid_hex(&w.store.mint(id).unwrap().unwrap().carrier_txid);
+    confirm(&dn, &mut c, &carrier).await;
+    let r = sync(&mut w, &mut c, v.client_mut()).await.unwrap();
+    let f = w
+        .mint_finish(&mut c, &mut v, id, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    assert_eq!(f.validation.verdict, "ok");
+    confirm(&dn, &mut c, &f.txid).await;
+    let (r, _) = sync_both(&mut w, &server, &mut c, &mut v).await;
+    assert_eq!(mint_state(&w, id), MintState::Done);
+    assert_eq!(r.yed, (5_000 + 10_000, 0), "{r:?}");
+    let private = private - shortfall - shortfall_fee;
+    assert_eq!(
+        w.shielded().unwrap().balance().unwrap().total_zat as i64,
+        private,
+        "the mint never touched private YEC"
+    );
+    println!(
+        "S4 devnet ({line}) ok: shield fee {shield_fee}, unshield fee {unshield_fee}, mint shortfall {shortfall} zat"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

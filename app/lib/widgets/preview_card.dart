@@ -42,8 +42,14 @@ class PreviewRow extends StatelessWidget {
 }
 
 class YecPreviewCard extends StatelessWidget {
-  const YecPreviewCard(this.p, {super.key});
+  const YecPreviewCard(this.p, {super.key, this.toLabel, this.revealText});
   final YecPreview p;
+
+  /// Shown instead of the address (a move to the wallet's own balance).
+  final String? toLabel;
+
+  /// The amber line's text when not a payment (a move to public).
+  final String? revealText;
 
   /// The amber of the reveal line: the YED accent, which reads as a caution, not an error.
   static const Color amber = yedAccent;
@@ -58,9 +64,10 @@ class YecPreviewCard extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            PreviewRow('To', shorten(p.to, head: 14, tail: 8)),
+            PreviewRow('To', toLabel ?? shorten(p.to, head: 14, tail: 8)),
             PreviewRow('Amount', '${formatYec(p.amountZat)} YEC', emphasis: true, color: c.yec),
-            if (p.amountBumped) const PreviewRow('', 'Raised by 1 zat: exactly 0.0001 YEC would look like a YED token'),
+            if (p.amountBumped)
+              PreviewRow('', toLabel == null ? 'Raised by 1 zat: exactly 0.0001 YEC would look like a YED token' : 'Raised to include change too small to keep public'),
             PreviewRow('From', private ? 'your private balance' : 'your public balance'),
             if (p.memo != null && p.memo!.isNotEmpty) PreviewRow('Message', p.memo!),
             PreviewRow('Fee', '${formatYec(p.feeZat)} YEC'),
@@ -83,7 +90,7 @@ class YecPreviewCard extends StatelessWidget {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'This payment leaves your private balance',
+                        revealText ?? 'This payment leaves your private balance',
                         style: t.bodyMedium?.copyWith(color: amber, fontWeight: FontWeight.w600),
                       ),
                     ),

@@ -23,6 +23,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::build::yec_move::ShieldPlan;
 use crate::build::yec_send::{self, YecSendPreview};
 use crate::gate::{self, Path as GatePath, Validator};
 use crate::net::{CompactClient, Server};
@@ -37,6 +38,16 @@ pub enum Funding {
     Transparent(YecSendPreview),
     /// Shielded notes (proposed; proved and signed at confirm). Boxed: the proposal is large.
     Shielded(Box<SpendPlan>),
+    /// Transparent `YEC` into the wallet's own private balance (a move, S4; proved and signed
+    /// at confirm).
+    Shield(Box<ShieldPlan>),
+}
+
+impl Funding {
+    /// Confirm needs the Sapling proving parameters.
+    pub fn needs_params(&self) -> bool {
+        !matches!(self, Funding::Transparent(_))
+    }
 }
 
 /// A planned YEC send.
@@ -54,6 +65,7 @@ impl YecSendPlan {
         match &self.funding {
             Funding::Transparent(p) => p.amount,
             Funding::Shielded(p) => p.amount_zat as i64,
+            Funding::Shield(p) => p.amount,
         }
     }
 
@@ -62,6 +74,7 @@ impl YecSendPlan {
         match &self.funding {
             Funding::Transparent(p) => p.fee,
             Funding::Shielded(p) => p.fee_zat as i64,
+            Funding::Shield(p) => p.fee,
         }
     }
 }
@@ -149,6 +162,9 @@ pub async fn confirm_yec_send(
     params_dir: &Path,
 ) -> Result<Confirmed, WalletError> {
     match &plan.funding {
+        Funding::Shield(p) => {
+            crate::build::yec_move::confirm_shield(wallet, client, validator, p, params_dir).await
+        }
         Funding::Transparent(p) => Ok(Confirmed {
             txid: yec_send::broadcast(wallet, client, validator, p).await?,
             params_millis: 0,
@@ -187,10 +203,11 @@ pub async fn confirm_yec_send(
     }
 }
 
-/// The shielded sync of `wallet` against `server` (the light library's endpoint for it) and
-/// `client` (YEW's channel, for memos and status), from the wallet's birthday. A server with a
-/// pinned certificate is refused for now: the light library opens its own TLS connection with
-/// the platform roots and cannot honour the pin (finding recorded in `docs/security-review.md`).
+/// The shielded sync of `wallet` from its birthday. The light library scans over `client`'s
+/// channel (YEW's TLS settings, roots and certificate pin, Z-3); `server` gives the label it
+/// reports. Memos and status go through `client` as well. A server with a pinned certificate
+/// is still refused here (the S2 rule); lifting it now that the channel carries the pin is
+/// an owner decision.
 pub async fn sync_shielded(
     wallet: &mut Wallet,
     server: &Server,
@@ -290,6 +307,62 @@ mod tests {
         let t = keys::encode_p2pkh(Network::Regtest, &[3; 20]);
         let e = plan_yec_send(&mut w, &t, 1_000, false, None, 100, 1).unwrap_err();
         assert!(matches!(e, WalletError::Coins(_)), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Z-3: the light library's scan runs over YEW's own channel, never a connection of its
+    /// own. The server label points at one listener, YEW's TLS channel at another: only the
+    /// channel's listener is dialed, and it receives a TLS ClientHello (YEW's TLS config).
+    #[tokio::test]
+    async fn shielded_sync_uses_the_wallets_channel() {
+        use tokio::io::AsyncReadExt;
+        let dir = std::env::temp_dir().join(format!("yew-yecchan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.sqlite");
+        let mut w = Wallet::open(
+            path.to_str().unwrap(),
+            Network::Regtest,
+            PHRASE,
+            "",
+            Some(5),
+        )
+        .unwrap();
+        let listen = || async { tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap() };
+        let (channel_side, label_side) = (listen().await, listen().await);
+        let first_bytes = |l: tokio::net::TcpListener| {
+            tokio::spawn(async move {
+                let (mut s, _) = l.accept().await.unwrap();
+                let mut b = [0u8; 3];
+                s.read_exact(&mut b).await.unwrap();
+                b
+            })
+        };
+        let channel_port = channel_side.local_addr().unwrap().port();
+        let label_addr = label_side.local_addr().unwrap();
+        let hello = first_bytes(channel_side);
+        let untouched = first_bytes(label_side);
+        let ours = Server::parse(&format!("localhost:{channel_port}"), false).unwrap();
+        let channel = ours.endpoint().unwrap().connect_lazy();
+        let mut client = CompactClient::from_channel(channel);
+        let label = Server::parse(&format!("127.0.0.1:{}", label_addr.port()), false).unwrap();
+        let r = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            sync_shielded(&mut w, &label, &mut client, no_progress()),
+        )
+        .await
+        .expect("the sync gives up on a server that never answers");
+        assert!(r.is_err());
+        let b = tokio::time::timeout(std::time::Duration::from_secs(5), hello)
+            .await
+            .expect("YEW's channel was dialed")
+            .unwrap();
+        assert_eq!(b, [0x16, 0x03, 0x01], "a TLS ClientHello on YEW's channel");
+        assert!(
+            !untouched.is_finished(),
+            "the label's address was never dialed"
+        );
+        untouched.abort();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

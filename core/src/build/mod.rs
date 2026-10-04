@@ -2,7 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
-//! Transaction builders: `yec_send`, `yec_private` (privacy-first funding, S2), `yed_transfer`, `mint`, `redeem`, `claim` (one file each,
+//! Transaction builders: `yec_send`, `yec_private` (privacy-first funding, S2), `yec_move` (shield / unshield, S4), `yed_transfer`, `mint`, `redeem`, `claim` (one file each,
 //! added by phase). Each produces the `preview` the screen renders and then signs the same bytes.
 //!
 //! Translation source (plan §3.6): `ycash-dd/src/yellowback/txbuilder.cpp` (MINT, TRANSFER,
@@ -14,6 +14,7 @@ pub mod claim;
 pub mod mint;
 pub mod redeem;
 pub mod terms;
+pub mod yec_move;
 pub mod yec_private;
 pub mod yec_send;
 pub mod yed_transfer;

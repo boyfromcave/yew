@@ -117,6 +117,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MintTerms dco_decode_mint_terms(dynamic raw);
 
   @protected
+  MoveDirection dco_decode_move_direction(dynamic raw);
+
+  @protected
   NetworkId dco_decode_network_id(dynamic raw);
 
   @protected
@@ -290,6 +293,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   MintTerms sse_decode_mint_terms(SseDeserializer deserializer);
+
+  @protected
+  MoveDirection sse_decode_move_direction(SseDeserializer deserializer);
 
   @protected
   NetworkId sse_decode_network_id(SseDeserializer deserializer);
@@ -500,6 +506,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_mint_terms(MintTerms self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_move_direction(MoveDirection self, SseSerializer serializer);
 
   @protected
   void sse_encode_network_id(NetworkId self, SseSerializer serializer);
