@@ -14,3 +14,12 @@ repository = "https://github.com/boyfromcave/yew"
 lto = true
 codegen-units = 1
 strip = true
+
+# Sapling proving (Groth16 over BLS12-381) takes minutes in an unoptimised build and ~9 s with
+# the dependencies' debug assertions and overflow checks on; keep every dependency optimised and
+# unchecked in dev and test builds too (x402-ycash/light measures in release). YEW's own crates stay
+# at opt-level 0 for compile speed and debuggability.
+[profile.dev.package."*"]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false

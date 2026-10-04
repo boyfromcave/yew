@@ -25,6 +25,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AnyhowException dco_decode_AnyhowException(dynamic raw);
 
   @protected
+  RustStreamSink<ParamsProgress> dco_decode_StreamSink_params_progress_Sse(
+    dynamic raw,
+  );
+
+  @protected
   RustStreamSink<SyncEvent> dco_decode_StreamSink_sync_event_Sse(dynamic raw);
 
   @protected
@@ -121,6 +126,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
 
   @protected
+  ParamsProgress dco_decode_params_progress(dynamic raw);
+
+  @protected
+  ParamsStatus dco_decode_params_status(dynamic raw);
+
+  @protected
+  ReceiveKind dco_decode_receive_kind(dynamic raw);
+
+  @protected
   Recipient dco_decode_recipient(dynamic raw);
 
   @protected
@@ -160,6 +174,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WifExport dco_decode_wif_export(dynamic raw);
 
   @protected
+  YecFunding dco_decode_yec_funding(dynamic raw);
+
+  @protected
   YecPreview dco_decode_yec_preview(dynamic raw);
 
   @protected
@@ -173,6 +190,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
+
+  @protected
+  RustStreamSink<ParamsProgress> sse_decode_StreamSink_params_progress_Sse(
+    SseDeserializer deserializer,
+  );
 
   @protected
   RustStreamSink<SyncEvent> sse_decode_StreamSink_sync_event_Sse(
@@ -279,6 +301,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
+  ParamsProgress sse_decode_params_progress(SseDeserializer deserializer);
+
+  @protected
+  ParamsStatus sse_decode_params_status(SseDeserializer deserializer);
+
+  @protected
+  ReceiveKind sse_decode_receive_kind(SseDeserializer deserializer);
+
+  @protected
   Recipient sse_decode_recipient(SseDeserializer deserializer);
 
   @protected
@@ -318,6 +349,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WifExport sse_decode_wif_export(SseDeserializer deserializer);
 
   @protected
+  YecFunding sse_decode_yec_funding(SseDeserializer deserializer);
+
+  @protected
   YecPreview sse_decode_yec_preview(SseDeserializer deserializer);
 
   @protected
@@ -332,6 +366,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_AnyhowException(
     AnyhowException self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_StreamSink_params_progress_Sse(
+    RustStreamSink<ParamsProgress> self,
     SseSerializer serializer,
   );
 
@@ -474,6 +514,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_params_progress(
+    ParamsProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_params_status(ParamsStatus self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_receive_kind(ReceiveKind self, SseSerializer serializer);
+
+  @protected
   void sse_encode_recipient(Recipient self, SseSerializer serializer);
 
   @protected
@@ -511,6 +563,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_wif_export(WifExport self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_yec_funding(YecFunding self, SseSerializer serializer);
 
   @protected
   void sse_encode_yec_preview(YecPreview self, SseSerializer serializer);

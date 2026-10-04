@@ -26,6 +26,13 @@ hardening; **Info** = a property worth recording. Every finding says what was do
 | A-4 | app / clipboard | The WIF screen has a Copy button (the user's action); the seed screen has none; nothing copies by itself. On Android < 13 the clipboard is readable by other apps | Low | accepted; the WIF warning text stays |
 | A-5 | app / semantics | The seed words are `Chip` labels: an accessibility service (screen reader) can read them. No `ExcludeSemantics` | Low | accepted: a blind user needs them read; the screen is behind the device prompt |
 | A-6 | app / telemetry | No crash reporter, analytics or network plugin: the only network user is the core's gRPC (`INTERNET` permission) | Info | verified; documented in `docs/release.md` §6 |
+| Z-1 | shielded / keys | Where the Ycash Sapling spending key lives (S2) | Info | verified: derived at unlock, held as wiped bytes, never written; tests scan every file of the private store |
+| Z-2 | shielded / params | Integrity of the 52 MB proving parameters fetched on first private send (S0-2) | Info | **by design**: length + SHA-256 pins, `.part` then rename, re-verified once per session before the prover loads; no URL compiled in |
+| Z-3 | shielded / TLS | The light library opens its own connection for the scan with the platform roots: a pinned certificate (S-3b) cannot be honoured there and iOS has no native-roots backend | Medium | **open**: YEW refuses private sync while a pin is set; the fix is an injected channel in `x402-ycash/light` (`Options`), before S3 ships TLS servers |
+| Z-4 | shielded / gate | A shielded spend must not reach any transparent output class | Info | **fixed by construction**: gate path `Shielded` refuses any transparent input, JoinSplit, `OP_RETURN` or `TOKEN_VALUE` output; the node's `ValidateRawTransaction` answered `ok` on both lines |
+| Z-5 | shielded / notes | A built spend is recorded (its notes count as spent) before the gate and `SendTransaction`; a refused broadcast leaves them unavailable until expiry (target + 40 blocks) | Low | accepted (the library's semantics; `zcash_client_sqlite` has no "forget this unmined transaction") |
+| Z-6 | shielded / server | What the server can do to the private side | Info | recorded (below) |
+| Z-7 | dependencies | `cargo audit`: RUSTSEC-2026-0009 (`time` 0.3.37, RFC 2822 parsing DoS); the fix is unreachable while librustzcash6's `zcash_client_backend` pins `time-core =0.1.2` | Low | **excepted** (`scripts/audit-exceptions.txt`): no linked crate parses RFC 2822 |
 | A-7 | app / passphrase | The BIP39 passphrase is stored in the keystore beside the seed so unlock needs no typing; the passphrase therefore adds nothing against a keystore compromise, only against a seed-only backup thief | Info | recorded (by design; the backup screen says the phrase alone restores only without a passphrase) |
 
 ## S-1 — where the seed and the keys live
@@ -169,6 +176,54 @@ excluded from backups on Android (S-6); on iOS the support directory is backed u
 unless excluded (`[owner]`: set `NSURLIsExcludedFromBackupKey` or accept — the file holds no
 secret, only privacy-relevant data).
 
+## Z — the shielded side (yew-shielded plan S2)
+
+**Z-1, keys.** `shielded_keys::SaplingAccount` derives the ZIP-32 account 0 key
+(`m/32'/347'/0'`) from the seed inside `Wallet::open` and keeps it as 169 serialized bytes,
+wiped on drop; the seed is wiped as before. The key is never written by YEW. Typed copies are
+transient: one is handed to the light library's `register_key` the first time the account is
+created (the library keeps it in memory, so YEW drops that library handle and reopens it
+without a key), and one is wrapped into a unified spending key for each spend
+(`create_proposed_transactions`) and dropped; `sapling-crypto` has no drop-time erasure, so
+those copies are best-effort like every other secret in Rust (S-1). What the private store
+(`<data dir>/shielded/<stem>/`, directory `0700`) does hold: the account's viewing key (the
+UFVK `import_account_ufvk` records: Sapling full viewing key only), received notes, nullifiers,
+the commitment tree, memos and the wallet's own transactions — a copy reveals the private
+history and balance, not the funds. `x402-ycash/light` itself writes no key file (its binary's
+`spending.key` is not used). `shielded::tests::another_seed_is_refused_once_registered` and the
+devnet test `s2_` (after real sends, on both node lines) scan every file under the store for
+the serialized key, its `ask` and `nsk` halves and the Bech32 `secret-extended-key-…` form. A
+store whose account is another seed's viewing key is refused at open.
+
+**Z-2, parameters.** `sapling_params.rs`: each file is streamed to `<name>.part`, its length
+capped at the pinned length (a longer body is cut off and refused), hashed, and renamed into
+place only on an exact length + SHA-256 match (`8e48ffd2…` spend, `2f0ebbcb…` output, the
+Sapling MPC files every Ycash node proves with). Before the prover loads, both files are hashed
+again once per session, so a file changed on disk after download is refused; `LocalTxProver`
+then checks its own BLAKE2b digests. Sources: `https://` (rustls via `tokio-rustls`, the Mozilla
+roots, redirects followed only to another `https` URL, five at most), `http://` only to a
+loopback host and `file://` (tests, a local copy). The base URL is the caller's: hosting is the
+owner's decision (S0-2) and none is compiled in.
+
+**Z-3, the light library's own connection.** `x402_ycash_light::Wallet::open` connects by
+itself (`lwd::connect`: `grpc://` plaintext, `grpcs://` with `with_native_roots()`), and the
+scan and the account registration (`GetTreeState`) use that connection. It therefore ignores
+YEW's certificate pin (S-3b) and, on iOS, would fail every TLS handshake (no native-roots
+backend; YEW's own channel adds the webpki roots, audit G-4). Broadcast, memo and status
+fetches and the branch-id check go through YEW's channel and keep every TLS property. Until the
+library accepts an injected channel (an `Options::channel`, a few lines in `x402-ycash/light`),
+`build::yec_private::sync_shielded` refuses private sync while a pin is set; regtest (plain) is
+unaffected. Must be closed before S3 ships against a TLS server.
+
+**Z-6, server trust on the private side.** Compact blocks, the birthday tree state, mempool
+and full transactions come from the chosen server. A lying server can hide incoming notes or
+make a balance look spent (privacy-preserving trial decryption cannot be forged into funds), or
+serve a wrong tree state, whose anchor the node then rejects at broadcast; it cannot spend.
+Fetched transactions are checked against the requested txid before they are decrypted. Before
+a spend is built, the server's next-block branch id (`GetChainInfo`, lightwalletd-dd 0b3448e+;
+the chaintip id from an older server) must equal what the wallet's Ycash parameters give, or
+the build is refused.
+
 ## S-7 — the bridge boundary
 
 | Dart passes | The core checks |
@@ -187,6 +242,10 @@ secret, only privacy-relevant data).
 | `wif` | Base58Check, 34 bytes, compressed flag, the network's prefix, curve order |
 | `preview_id` | a key into the in-memory preview map; a stale id is `NotFound` |
 | `page`, `page_size` | `page_size == 0` becomes the default; SQL `LIMIT/OFFSET` |
+| `kind` (receive) | an enum (`Transparent`, `Shielded`, `Yed`) |
+| `to` (YEC send) | a Sapling address of the wallet's network (`ys1…`, HRP checked) or `keys::parse_address`; anything else refused |
+| `memo` | Sapling recipients only; at most 512 bytes of UTF-8 (ZIP-302 text memo); whitespace-only is no memo |
+| `base_url` (parameters) | `https://`, loopback `http://` or `file://`; no userinfo; the bytes are pinned anyway (Z-2) |
 
 ## The app
 

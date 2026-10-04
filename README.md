@@ -94,6 +94,25 @@ Other things worth knowing before reading code:
   signed, addresses, mint/transfer/redeem templates and parameters, exported by the workspace's
   `yellowback-devnet vectors`; the core must reproduce them byte for byte.
 
+- **Shielded YEC lives in the core (yew-shielded plan S2; the screens are S3).** The same seed
+  derives one Ycash Sapling account at ZIP-32 `m/32'/347'/0'` (`shielded_keys.rs`,
+  YWallet-compatible). `shielded.rs` keeps it in a `zcash_client_sqlite` store under
+  `<data dir>/shielded/<wallet file stem>/`, synced by the Ycash light client
+  `x402_ycash_light` (boyfromcave/x402-ycash `light/`: compact blocks from lightwalletd-dd, the
+  `GetTreeState` birthday checkpoint, ten-block reorg rewinds). YEW itself fetches memos
+  (`GetTransaction` + `decrypt_and_store_transaction`), proposes, proves and signs spends, and
+  broadcasts through its own channel. `sync_now` runs the transparent sync and then the private
+  scan as one progress (`SyncEvent.percent`); a note is spendable only once the scan reaches the
+  tip (`Balances.shieldedSendable`, "sending available at 100%": Ycash has no
+  `GetSubtreeRoots`). `send_yec_preview` funds **privacy first** (`build/yec_private.rs`): a
+  `ys1…` recipient (optional memo, ≤ 512 bytes) from notes; a transparent recipient from notes
+  when they cover it (`revealsShielded`, the amber line), else from transparent YEC exactly as
+  before. A shielded spend has no transparent input at all (gate path `Shielded`), so the fee
+  reserve and every YED path never meet it. The Sapling proving parameters (52 MB) are fetched
+  on first private send (`params_status` / `download_params`, `sapling_params.rs`) from a
+  configurable HTTPS base URL and kept only if their SHA-256s match the pins; where they are
+  hosted is an owner decision (S0-2), so no URL is compiled in.
+
 The reasoning behind each rule, with the evidence from the devnet, is in
 [docs/design-notes.md](docs/design-notes.md).
 
@@ -103,7 +122,7 @@ The reasoning behind each rule, with the evidence from the devnet, is in
 Cargo.toml              Rust workspace: core (yew-core) and core/cli (yew-cli)
 core/src/               the core; api.rs is the bridge surface, frb_generated.rs is generated
 core/cli/               yew-cli: the developer's driver and what the devnet tests use
-core/tests/             vectors.rs (node vectors), devnet.rs (acceptance; YEW_DEVNET=1, ignored otherwise)
+core/tests/             vectors.rs (node vectors), devnet.rs (acceptance incl. s2_ shielded on both node lines; YEW_DEVNET=1, ignored otherwise)
 core/tests/vectors/     node-generated vectors (ywallet.json is pending an owner capture; sapling_keys_ycash.json is node-confirmed)
 app/                    Flutter project yew_app (org cash.ycash.yew)
 app/lib/api/            WalletApi interface + the one file that calls the bridge
@@ -223,6 +242,7 @@ were written smaller (see [What is left](#what-is-left)).
 | Node vectors | `core/tests/vectors.rs` | `cargo test`; twelve node-signed transactions, addresses, templates reproduced byte for byte |
 | Widget | `app/test/` | `flutter test`; 29 tests over the fake bridge |
 | Devnet acceptance | `core/tests/devnet.rs` | `scripts/devnet-w1.sh test`, `devnet-w2.sh test`, `devnet-w4.sh test`; YEC round trip and restore, YED transfer and gate refusal, mint/redeem/claim/lapse/resume; nightly, not CI |
+| Shielded devnet | `core/tests/devnet.rs` `s2_` | `scripts/devnet-s2.sh dd <seed>` and `scripts/devnet-s2.sh 6 <seed>` (the 4.5.0 and 6.21.0 node lines; builds lightwalletd-dd 0b3448e+, needs the Sapling parameters on the machine): restore with a memo, z→z with a memo confirmed by `z_listreceivedbyaddress`, z→t with `revealsShielded`, transparent fallback, transparent YEC and YED regressions, no spending key in any file |
 | Device integration | `app/integration_test/` | `scripts/run-ios.sh --test m1`, `run-android.sh --test m1` |
 
 `ywallet_derivation_vector` is `#[ignore]`d until `core/tests/vectors/ywallet.json` is filled
@@ -234,9 +254,10 @@ The CLI drives the same core the app does and is the fastest way to reproduce an
 
 ```
 yew-cli [--server host:port] [--plain] [--ca-pem PATH] [--wallet PATH] [--network regtest|testnet|mainnet]
-        [--seed-file PATH | YEW_SEED="<mnemonic>"] [--passphrase P] [--birthday H]
-        status | yed-info | price | address [--new] | balance | coins | sync | history
-        | send-yec <addr> <zat> [--all] | send-yed <addr> <cents> [<addr> <cents> ...]
+        [--seed-file PATH | YEW_SEED="<mnemonic>"] [--passphrase P] [--birthday H] [--params DIR]
+        status | yed-info | price | address [--new] [--shielded] | balance | coins | sync | history
+        | send-yec <addr> <zat> [--all] [--memo TEXT] | send-yed <addr> <cents> [<addr> <cents> ...]
+        | params-status | params-download <base-url>
         | export-wif <addr> | import-wif <wif>
         | mint-estimate <cents> <lockBlocks> | mint-start <cents> <lockBlocks>
         | mint-status [<id>] | mint-finish <id> | mint-sweep <id>
@@ -265,6 +286,13 @@ a redeem is previewed (fee and payee on screen) before it is confirmed, the serv
 backs TLS on iOS, a certificate can be pinned from Settings, and "device unlock" binds the seed
 to the platform's presence check. What is still not checked locally is the fee **payee**: the
 node, not the wallet, knows which miners are eligible (`docs/trust.md`).
+
+Shielded (S2): the Sapling spending key is derived at unlock and never written by YEW; the
+private store holds the account's viewing key, notes and memos (privacy, not funds); the
+proving parameters are SHA-256 pinned. One gap is open before S3 ships TLS servers: the light
+library opens its own TLS connection for the scan with the platform roots, so a pinned
+certificate cannot be honoured there (YEW refuses private sync while a pin is set) and iOS
+needs the library to accept YEW's channel — `docs/security-review.md` Z-3.
 
 ## What is left
 

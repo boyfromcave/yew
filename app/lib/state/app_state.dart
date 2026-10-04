@@ -50,7 +50,7 @@ class AppState extends ChangeNotifier {
     yedPendingCents: 0,
     heldCount: 0,
     syncHeight: 0,
-    yedSendMinZat: 21000,
+    yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false,
   );
   Status? status;
   List<HistoryItem> history = const [];

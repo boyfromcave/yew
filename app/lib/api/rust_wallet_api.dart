@@ -90,7 +90,7 @@ class RustWalletApi implements WalletApi {
   Future<Balances> balances() => rust.balances();
 
   @override
-  Future<AddressPair> receiveAddress({required bool fresh}) => rust.receiveAddress(fresh: fresh);
+  Future<AddressPair> receiveAddress({required bool fresh}) => rust.receiveAddress(kind: rust.ReceiveKind.transparent, fresh: fresh);
 
   @override
   Future<List<AddressPair>> addresses() => rust.addresses();

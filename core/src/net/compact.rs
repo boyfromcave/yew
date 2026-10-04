@@ -254,6 +254,51 @@ impl CompactClient {
         Ok(b.value_zat)
     }
 
+    /// `GetTransaction(txid)` (txid in internal byte order, as lightwalletd expects it): the raw
+    /// transaction and its height (0 while in the mempool). `Ok(None)` when the node does not
+    /// know the txid. Used for shielded memo enhancement and transaction status
+    /// (`shielded.rs`); a reply larger than [`limits::MAX_TX_BYTES_PER_ADDRESS`] is refused.
+    pub async fn get_transaction(
+        &mut self,
+        txid: &[u8; 32],
+    ) -> Result<Option<(Vec<u8>, u64)>, NetError> {
+        let r = self
+            .inner
+            .get_transaction(rpc::TxFilter {
+                block: None,
+                index: 0,
+                hash: txid.to_vec(),
+            })
+            .await;
+        match r {
+            Ok(resp) => {
+                let t = resp.into_inner();
+                if t.data.is_empty() {
+                    return Ok(None);
+                }
+                if t.data.len() > crate::net::limits::MAX_TX_BYTES_PER_ADDRESS {
+                    return Err(NetError::TooLarge {
+                        what: "transaction bytes",
+                        limit: crate::net::limits::MAX_TX_BYTES_PER_ADDRESS,
+                    });
+                }
+                // lightwalletd reports -1 (u64::MAX on the wire) or 0 for a mempool transaction.
+                let height = if t.height == u64::MAX { 0 } else { t.height };
+                Ok(Some((t.data, height)))
+            }
+            // The 0.4.6 lineage relays the node's error text as an Unknown/Internal status
+            // ("No such mempool or blockchain transaction", code -5).
+            Err(s)
+                if s.message()
+                    .contains("No such mempool or blockchain transaction")
+                    || s.message().contains("-5") =>
+            {
+                Ok(None)
+            }
+            Err(s) => Err(s.into()),
+        }
+    }
+
     /// `SendTransaction`: broadcast `raw`. Returns the node's reply text (the txid on success).
     pub async fn send_transaction(&mut self, raw: Vec<u8>) -> Result<String, NetError> {
         let r = self

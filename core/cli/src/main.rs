@@ -8,8 +8,9 @@
 //! yew-cli [--server host:port] [--plain] [--wallet PATH] [--network regtest|testnet|mainnet]
 //!         [--seed-file PATH | YEW_SEED=<mnemonic>] [--passphrase P | YEW_PASSPHRASE=P]
 //!         [--birthday H] <command>
-//! commands: status | yed-info | price | address [--new] | balance | sync | coins
-//!           | send-yec <addr> <zat> [--all] | send-yed <addr> <cents> [<addr> <cents> ...]
+//! commands: status | yed-info | price | address [--new] [--shielded] | balance | sync | coins
+//!           | send-yec <addr> <zat> [--all] [--memo TEXT] | send-yed <addr> <cents> [<addr> <cents> ...]
+//!           | params-status | params-download <base-url>
 //!           | export-wif <addr> | import-wif <wif> | history | version
 //!           | mint-estimate <cents> <lockBlocks> | mint-start <cents> <lockBlocks>
 //!           | mint-status [<id>] | mint-finish <id> | mint-sweep <id>
@@ -22,13 +23,20 @@
 //! `mint-finish` sends the CLAIM. `sync` sweeps every LAPSED row it finds (`mint-sweep` does
 //! one by hand). Every broadcast runs both gate layers (D-W-5).
 //!
+//! Shielded (yew-shielded plan S2): `sync` also scans the private (Sapling) pool; `balance`
+//! shows the private balance; `address --shielded [--new]` the `ys1…` addresses; `send-yec`
+//! takes `ys1…` recipients and `--memo`, funded privacy first (`build::yec_private`);
+//! `history` lists private transactions with their memos; `--params DIR` (default
+//! `<wallet dir>/sapling-params`) holds the proving parameters `params-download` fetches.
+//!
 //! No argument-parsing crate: the allow-list (plan §3.3) is the core's, and this binary keeps
 //! to the core's dependencies plus `tokio`. Every send goes through `gate::confirm` inside the
 //! core's `broadcast`; the CLI has no flag that skips it (D-W-5).
 
 use std::process::exit;
 
-use yew_core::build::{yec_send, yed_transfer};
+use yew_core::build::yec_private::{self, Funding};
+use yew_core::build::yed_transfer;
 use yew_core::coins::UtxoClass;
 use yew_core::gate::Validator;
 use yew_core::net::{Availability, CompactClient, Server, YellowbackClient};
@@ -47,15 +55,17 @@ struct Opts {
     seed_file: Option<String>,
     passphrase: Option<String>,
     birthday: Option<u64>,
+    params: Option<String>,
     rest: Vec<String>,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: yew-cli [--server host:port] [--plain] [--ca-pem PATH] [--wallet PATH] [--network N] \
-         [--seed-file PATH] [--passphrase P] [--birthday H] <command>\n\
-         commands: status | yed-info | price | address [--new] | balance | sync | coins\n\
-         \x20         | send-yec <addr> <zat> [--all] | send-yed <addr> <cents> [<addr> <cents> ...]\n\
+         [--seed-file PATH] [--passphrase P] [--birthday H] [--params DIR] <command>\n\
+         commands: status | yed-info | price | address [--new] [--shielded] | balance | sync | coins\n\
+         \x20         | send-yec <addr> <zat> [--all] [--memo TEXT] | send-yed <addr> <cents> [<addr> <cents> ...]\n\
+         \x20         | params-status | params-download <base-url>\n\
          \x20         | export-wif <addr> | import-wif <wif> | history | version\n\
          \x20         | mint-estimate <cents> <lockBlocks> | mint-start <cents> <lockBlocks>\n\
          \x20         | mint-status [<id>] | mint-finish <id> | mint-sweep <id>\n\
@@ -76,6 +86,7 @@ fn parse_opts() -> Opts {
         seed_file: None,
         passphrase: None,
         birthday: None,
+        params: None,
         rest: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
@@ -106,6 +117,7 @@ fn parse_opts() -> Opts {
             }
             "--seed-file" => o.seed_file = Some(value("--seed-file")),
             "--passphrase" => o.passphrase = Some(value("--passphrase")),
+            "--params" => o.params = Some(value("--params")),
             "--birthday" => {
                 o.birthday = Some(value("--birthday").parse().unwrap_or_else(|_| usage()))
             }
@@ -147,15 +159,31 @@ fn open_wallet(o: &Opts) -> Wallet {
     })
 }
 
-/// Connect once: the T0 client and, over the same channel, the Yellowback validator
-/// (contract rule 1 probed here; `Absent` hides YED).
-async fn clients(o: &Opts) -> (CompactClient, Validator, Availability) {
-    let server = Server::parse_for(o.network, &o.server, o.plain)
+fn server_of(o: &Opts) -> Server {
+    Server::parse_for(o.network, &o.server, o.plain)
         .unwrap_or_else(|e| {
             eprintln!("{e}");
             exit(2)
         })
-        .with_ca_pem(o.ca_pem.clone());
+        .with_ca_pem(o.ca_pem.clone())
+}
+
+/// The proving parameters' directory: `--params`, else `<wallet dir>/sapling-params`.
+fn params_dir(o: &Opts) -> std::path::PathBuf {
+    match &o.params {
+        Some(p) => p.into(),
+        None => std::path::Path::new(&o.wallet)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("sapling-params"),
+    }
+}
+
+/// Connect once: the T0 client and, over the same channel, the Yellowback validator
+/// (contract rule 1 probed here; `Absent` hides YED).
+async fn clients(o: &Opts) -> (CompactClient, Validator, Availability) {
+    let server = server_of(o);
     let channel = server.connect().await.unwrap_or_else(|e| {
         eprintln!("cannot connect to {}: {e}", server.uri());
         exit(1)
@@ -207,6 +235,22 @@ async fn synced(o: &Opts) -> (Wallet, CompactClient, Validator, sync::SyncReport
     let r = fail(sync::sync(&mut w, &mut c, v.client_mut()).await);
     for (id, state) in &r.mints_advanced {
         println!("mint {id}: now {}", state.as_str());
+    }
+    (w, c, v, r)
+}
+
+/// [`synced`], then the private (Sapling) sync; its failure is printed, not fatal.
+async fn synced_both(o: &Opts) -> (Wallet, CompactClient, Validator, sync::SyncReport) {
+    let (mut w, mut c, v, r) = synced(o).await;
+    let server = server_of(o);
+    match yec_private::sync_shielded(&mut w, &server, &mut c, yec_private::no_progress()).await {
+        Ok(z) => println!(
+            "private: scanned to {} (tip {}), {} blocks, {} outputs, {} notes received, {} spent, {} memos fetched, {} reorgs, {} ms{}",
+            z.scanned_height, z.tip, z.blocks, z.outputs, z.received_notes, z.spent_notes,
+            z.enhanced, z.reorgs, z.millis,
+            if z.sendable { "" } else { " (sending available at 100%)" }
+        ),
+        Err(e) => println!("private: not synced: {e}"),
     }
     (w, c, v, r)
 }
@@ -351,6 +395,68 @@ async fn main() {
                 p.x_mint
             );
         }
+        "address" if o.rest.iter().any(|a| a == "--shielded") => {
+            let w = open_wallet(&o);
+            let new = o.rest.iter().any(|a| a == "--new");
+            let sh = fail(w.shielded());
+            let last = fail(w.store.meta_u64("sapling_diversifier"));
+            let (j, addr) = if new {
+                let start = if last == 0 {
+                    sh.default_address().0 + 1
+                } else {
+                    last + 1
+                };
+                let (j, a) = fail(sh.address_at(start));
+                fail(w.store.set_meta("sapling_diversifier", &j.to_string()));
+                (j, a)
+            } else if last == 0 {
+                sh.default_address()
+            } else {
+                fail(sh.address_at(last))
+            };
+            println!("{addr}");
+            println!("m/32'/347'/0' diversifier {j}");
+        }
+        "params-status" => {
+            let dir = params_dir(&o);
+            let st = yew_core::sapling_params::status(&dir);
+            println!(
+                "{}: spend {} output {} ({} bytes missing)",
+                dir.display(),
+                if st.spend_present {
+                    "present"
+                } else {
+                    "missing"
+                },
+                if st.output_present {
+                    "present"
+                } else {
+                    "missing"
+                },
+                st.missing_bytes
+            );
+            if st.present() {
+                fail(yew_core::sapling_params::ensure_verified(&dir));
+                println!("verified against the pinned SHA-256s");
+            }
+        }
+        "params-download" => {
+            let url = o.rest.get(1).unwrap_or_else(|| usage());
+            let src = fail(yew_core::sapling_params::ParamsSource::parse(url));
+            let dir = params_dir(&o);
+            let st = fail(
+                yew_core::sapling_params::download(&src, &dir, |p| {
+                    eprint!("\r{} {}/{} bytes", p.file, p.done, p.total);
+                })
+                .await,
+            );
+            eprintln!();
+            println!(
+                "{}: verified ({} bytes missing)",
+                dir.display(),
+                st.missing_bytes
+            );
+        }
         "address" => {
             let w = open_wallet(&o);
             let new = o.rest.iter().any(|a| a == "--new");
@@ -372,6 +478,23 @@ async fn main() {
             println!("reserved       {} (for YED fees)", yec(b.yec_reserved_zat));
             if b.yec_pending_zat > 0 {
                 println!("YEC pending    {}", yec(b.yec_pending_zat));
+            }
+            if let Some(sh) = w.shielded.as_ref() {
+                let z = fail(sh.balance());
+                println!(
+                    "private YEC    {} (spendable {}, pending {}){}",
+                    yec(z.total_zat as i64),
+                    yec(z.spendable_zat as i64),
+                    yec((z.pending_change_zat + z.pending_incoming_zat) as i64),
+                    if z.registered && !z.sendable {
+                        format!(
+                            " scanned to {} of {}: sending available at 100%",
+                            z.scanned_height, z.tip_height
+                        )
+                    } else {
+                        String::new()
+                    }
+                );
             }
             let held: Vec<&yew_core::coins::Utxo> = utxos
                 .iter()
@@ -429,7 +552,7 @@ async fn main() {
             }
         }
         "sync" => {
-            let (w, mut c, mut v, r) = synced(&o).await;
+            let (w, mut c, mut v, r) = synced_both(&o).await;
             for m in fail(w.mints()) {
                 if m.state == MintState::Lapsed {
                     match w.mint_sweep(&mut c, &mut v, m.id, r.tip, r.branch_id).await {
@@ -458,31 +581,65 @@ async fn main() {
                 _ => usage(),
             };
             let all = o.rest.iter().any(|a| a == "--all");
-            let (w, mut c, mut v, r) = synced(&o).await;
-            let p = fail(yec_send::build_yec_send(
-                &w,
+            let memo = o
+                .rest
+                .iter()
+                .position(|a| a == "--memo")
+                .map(|i| o.rest.get(i + 1).cloned().unwrap_or_else(|| usage()));
+            let (mut w, mut c, mut v, r) = synced_both(&o).await;
+            let plan = fail(yec_private::plan_yec_send(
+                &mut w,
                 &to,
                 zat,
                 all,
+                memo.as_deref(),
                 r.tip,
                 r.branch_id,
             ));
-            println!(
-                "to {} amount {}{} fee {} change {} inputs {} expiry {}",
-                p.to,
-                yec(p.amount),
-                if p.amount_bumped {
-                    " (bumped +1 zat off TOKEN_VALUE)"
-                } else {
-                    ""
-                },
-                p.fee,
-                p.change,
-                p.inputs.len(),
-                p.expiry_height
+            match &plan.funding {
+                Funding::Transparent(p) => println!(
+                    "transparent funding: to {} amount {}{} fee {} change {} inputs {} expiry {}",
+                    p.to,
+                    yec(p.amount),
+                    if p.amount_bumped {
+                        " (bumped +1 zat off TOKEN_VALUE)"
+                    } else {
+                        ""
+                    },
+                    p.fee,
+                    p.change,
+                    p.inputs.len(),
+                    p.expiry_height
+                ),
+                Funding::Shielded(p) => println!(
+                    "private funding: to {} amount {} fee {} change {} notes {} expiry {}{}{}",
+                    p.to,
+                    yec(p.amount_zat as i64),
+                    p.fee_zat,
+                    p.change_zat,
+                    p.notes,
+                    p.expiry_height,
+                    p.memo
+                        .as_ref()
+                        .map(|m| format!(" memo {m:?}"))
+                        .unwrap_or_default(),
+                    if plan.reveals_shielded {
+                        " — this send leaves the private pool"
+                    } else {
+                        ""
+                    }
+                ),
+            }
+            let sent = fail(
+                yec_private::confirm_yec_send(&mut w, &mut c, &mut v, &plan, &params_dir(&o)).await,
             );
-            let txid = fail(yec_send::broadcast(&w, &mut c, &mut v, &p).await);
-            println!("sent {txid}");
+            if matches!(plan.funding, Funding::Shielded(_)) {
+                println!(
+                    "proved in {} ms (parameters {} ms)",
+                    sent.prove_millis, sent.params_millis
+                );
+            }
+            println!("sent {}", sent.txid);
         }
         "send-yed" => {
             let args = &o.rest[1..];
@@ -540,6 +697,26 @@ async fn main() {
         }
         "history" => {
             let w = open_wallet(&o);
+            if let Some(sh) = w.shielded.as_ref() {
+                for z in fail(sh.history()) {
+                    println!(
+                        "{} {:>8} {:>+14} zat private{}{}",
+                        txid_hex(&z.txid),
+                        if z.height == 0 {
+                            "pending".to_string()
+                        } else {
+                            z.height.to_string()
+                        },
+                        z.delta_zat,
+                        if z.memo.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" memo {:?}", z.memo)
+                        },
+                        if z.expired { " (expired)" } else { "" }
+                    );
+                }
+            }
             for h in fail(w.store.history()) {
                 println!(
                     "{} {:>8} {:>+14} zat {:>+12} {:<32}{}{}{}",

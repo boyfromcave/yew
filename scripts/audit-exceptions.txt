@@ -1,0 +1,3 @@
+# Advisories whose patched version cannot be reached because a pinned upstream holds the crate back.
+# One per line: <RUSTSEC id> <reason>. Each is analysed in docs/security-review.md ("Dependency audit").
+RUSTSEC-2026-0009 time 0.3.37 held by librustzcash6 zcash_client_backend (time-core =0.1.2); only RFC 2822 parsing is affected, which no linked crate uses
