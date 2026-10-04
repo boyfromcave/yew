@@ -26,7 +26,7 @@ jobs:
           git clone --filter=blob:none https://github.com/boyfromcave/librustzcash6.git "$GITHUB_WORKSPACE/../librustzcash6"
           git -C "$GITHUB_WORKSPACE/../librustzcash6" checkout --quiet ec525fae828ff67af0bf5d1995acfe445340ce66
           git clone --filter=blob:none https://github.com/boyfromcave/x402-ycash.git "$GITHUB_WORKSPACE/../x402-ycash"
-          git -C "$GITHUB_WORKSPACE/../x402-ycash" checkout --quiet 9ec43d977a6bb9aa4be1fbfef3b21dfaccc2aaad
+          git -C "$GITHUB_WORKSPACE/../x402-ycash" checkout --quiet 0c1d3015e48a316f2ef8f8583911e33ee02c0cea
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler && protoc --version
       - name: Rust toolchain (rust-toolchain.toml)
@@ -56,7 +56,7 @@ jobs:
           git clone --filter=blob:none https://github.com/boyfromcave/librustzcash6.git "$GITHUB_WORKSPACE/../librustzcash6"
           git -C "$GITHUB_WORKSPACE/../librustzcash6" checkout --quiet ec525fae828ff67af0bf5d1995acfe445340ce66
           git clone --filter=blob:none https://github.com/boyfromcave/x402-ycash.git "$GITHUB_WORKSPACE/../x402-ycash"
-          git -C "$GITHUB_WORKSPACE/../x402-ycash" checkout --quiet 9ec43d977a6bb9aa4be1fbfef3b21dfaccc2aaad
+          git -C "$GITHUB_WORKSPACE/../x402-ycash" checkout --quiet 0c1d3015e48a316f2ef8f8583911e33ee02c0cea
       - name: Install protoc
         run: brew install protobuf && protoc --version
       - name: Rust toolchain (rust-toolchain.toml)
