@@ -113,6 +113,14 @@ Other things worth knowing before reading code:
   on first private send (`params_status` / `download_params`, `sapling_params.rs`) from a
   configurable HTTPS base URL and kept only if their SHA-256s match the pins; where they are
   hosted is an owner decision (S0-2), so no URL is compiled in.
+- **Moving YEC between private and public (S4)** is one explicit action, Home → "Move…"
+  (`move_preview` / `move_confirm`, `build/yec_move.rs`). To private: plain `YEC` coins only
+  (never the fee reserve, a token, a vault, a carrier or a held output) into one Sapling output
+  to the wallet's own default `ys1…` address, transparent change back, ZIP-317 fee; built and
+  signed by the librustzcash6 builder (`transparent-inputs`), since YEW's own serializer makes
+  no Sapling outputs; gate path `Shield`. To public: a private spend to the wallet's own `s…`
+  address (the amount is visible on the chain, `revealsShielded`). "Move YEC to public first"
+  on Mint and Send YED opens Move → To public with the shortfall filled in.
 
 The reasoning behind each rule, with the evidence from the devnet, is in
 [docs/design-notes.md](docs/design-notes.md).
@@ -123,7 +131,7 @@ The reasoning behind each rule, with the evidence from the devnet, is in
 Cargo.toml              Rust workspace: core (yew-core) and core/cli (yew-cli)
 core/src/               the core; api.rs is the bridge surface, frb_generated.rs is generated
 core/cli/               yew-cli: the developer's driver and what the devnet tests use
-core/tests/             vectors.rs (node vectors), devnet.rs (acceptance incl. s2_ shielded on both node lines; YEW_DEVNET=1, ignored otherwise)
+core/tests/             vectors.rs (node vectors), devnet.rs (acceptance incl. s2_ shielded and s4_ moves on both node lines; YEW_DEVNET=1, ignored otherwise)
 core/tests/vectors/     node-generated vectors (ywallet.json is pending an owner capture; sapling_keys_ycash.json is node-confirmed)
 app/                    Flutter project yew_app (org cash.ycash.yew)
 app/lib/api/            WalletApi interface + the one file that calls the bridge
@@ -243,7 +251,7 @@ were written smaller (see [What is left](#what-is-left)).
 | Node vectors | `core/tests/vectors.rs` | `cargo test`; twelve node-signed transactions, addresses, templates reproduced byte for byte |
 | Widget | `app/test/` | `flutter test`; 29 tests over the fake bridge |
 | Devnet acceptance | `core/tests/devnet.rs` | `scripts/devnet-w1.sh test`, `devnet-w2.sh test`, `devnet-w4.sh test`; YEC round trip and restore, YED transfer and gate refusal, mint/redeem/claim/lapse/resume; nightly, not CI |
-| Shielded devnet | `core/tests/devnet.rs` `s2_` | `scripts/devnet-s2.sh dd <seed>` and `scripts/devnet-s2.sh 6 <seed>` (the 4.5.0 and 6.21.0 node lines; builds lightwalletd-dd 0b3448e+, needs the Sapling parameters on the machine): restore with a memo, z→z with a memo confirmed by `z_listreceivedbyaddress`, z→t with `revealsShielded`, transparent fallback, transparent YEC and YED regressions, no spending key in any file |
+| Shielded devnet | `core/tests/devnet.rs` `s2_` | `scripts/devnet-s2.sh dd <seed>` and `scripts/devnet-s2.sh 6 <seed>` (the 4.5.0 and 6.21.0 node lines; builds lightwalletd-dd 0b3448e+, needs the Sapling parameters on the machine): restore with a memo, z→z with a memo confirmed by `z_listreceivedbyaddress`, z→t with `revealsShielded`, transparent fallback, transparent YEC and YED regressions, no spending key in any file; `s4_`: move 1 YEC to private, 0.5 YEC to public, all to private, the mint shortfall to public and the mint, with YED and the fee reserve untouched and balances exact |
 | Device integration | `app/integration_test/` | `scripts/run-ios.sh --test m1`, `run-android.sh --test m1` |
 
 `ywallet_derivation_vector` is `#[ignore]`d until `core/tests/vectors/ywallet.json` is filled
