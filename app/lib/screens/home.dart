@@ -4,7 +4,8 @@
 
 // Home (plan §1.1, §5.1): YED balance (large; "+ pending" when any), one YEC total split into
 // Private (shielded) and Public (transparent, with the "reserved for fees" sub-line;
-// yew-shielded plan §3), the price line, a sync indicator, Receive / Send.
+// yew-shielded plan §3) with "Move…" between the two (S4), the price line, a sync indicator,
+// Receive / Send.
 import 'package:flutter/material.dart';
 
 import '../format.dart';
@@ -12,6 +13,7 @@ import '../state/app_scope.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
 import '../widgets/balance_card.dart';
+import '../widgets/move_sheet.dart';
 import 'receive.dart';
 import 'send.dart';
 import 'settings.dart';
@@ -81,7 +83,21 @@ class _HomeScreenState extends State<HomeScreen> {
               amount: formatYec(app.totalYecZat),
               unit: 'YEC',
               accent: c.yec,
-              child: _YecSplit(app: app),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _YecSplit(app: app),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton.icon(
+                      key: const Key('move'),
+                      onPressed: () => showMoveSheet(context),
+                      icon: const Icon(Icons.swap_vert_rounded),
+                      label: const Text('Move…'),
+                    ),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 12),
             Padding(

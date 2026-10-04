@@ -396,6 +396,25 @@ class FakeWalletApi implements WalletApi {
     return SendResult(txid: 'aa' * 32, verdict: 'ok');
   }
 
+  // ---- S4: moves between the own private and public balances.
+  Object? movePreviewError;
+
+  @override
+  Future<YecPreview> movePreview({required MoveDirection direction, int? amountZat}) async {
+    calls.add('movePreview ${direction.name} ${amountZat ?? 'all'}');
+    if (movePreviewError != null) throw movePreviewError!;
+    final toPrivate = direction == MoveDirection.toPrivate;
+    const fee = 15000;
+    final zat = amountZat ?? (toPrivate ? balancesAnswer.yecZat : balancesAnswer.yecShieldedSpendableZat) - fee;
+    return YecPreview(previewId: 'm1', to: toPrivate ? fakeZ : fakeS, amountZat: zat, amountBumped: false, feeZat: fee, changeZat: 0, inputs: 1, usesReserve: false, keepsReservedZat: balancesAnswer.yecReservedZat, expiryHeight: 525, txid: '', funding: toPrivate ? YecFunding.transparent : YecFunding.shielded, revealsShielded: !toPrivate, memo: null, paramsNeeded: paramsNeeded);
+  }
+
+  @override
+  Future<SendResult> moveConfirm({required String previewId}) async {
+    calls.add('moveConfirm $previewId');
+    return SendResult(txid: 'mm' * 32, verdict: 'ok');
+  }
+
   @override
   Future<YedPreview> sendYedPreview({required List<Recipient> recipients}) async {
     calls.add('yedPreview ${recipients.map((r) => '${r.address}:${r.cents}').join(',')}');
@@ -445,7 +464,9 @@ class FakeWalletApi implements WalletApi {
   }
 
   @override
-  AddressCheck validateAddress({required NetworkId network, required String address}) => address.startsWith('yr1') || address.startsWith('sm')
+  AddressCheck validateAddress({required NetworkId network, required String address}) => address.startsWith('yregtestsapling1')
+      ? const AddressCheck(valid: true, kind: 'sapling', yellowbackForm: false, message: '')
+      : address.startsWith('yr1') || address.startsWith('sm')
       ? AddressCheck(valid: true, kind: 'p2pkh', yellowbackForm: address.startsWith('yr1'), message: '')
       : const AddressCheck(valid: false, kind: '', yellowbackForm: false, message: 'not a Regtest address: bad base58check');
 

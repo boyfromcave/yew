@@ -22,6 +22,7 @@ export '../src/rust/api.dart'
         MintEstimate,
         MintStatus,
         MintTerms,
+        MoveDirection,
         NetworkId,
         ParamsProgress,
         ParamsStatus,
@@ -107,6 +108,12 @@ abstract class WalletApi {
 
   Future<SendResult> sendYecConfirm({required String previewId});
 
+  /// Move YEC between the wallet's own private and public balances (yew-shielded plan S4);
+  /// [amountZat] null = all, less the fee. The preview is a send preview to the own address.
+  Future<YecPreview> movePreview({required MoveDirection direction, int? amountZat});
+
+  Future<SendResult> moveConfirm({required String previewId});
+
   /// The Sapling proving files on this device (no network).
   Future<ParamsStatus> paramsStatus();
 
@@ -172,15 +179,3 @@ ErrorKind? kindOf(Object error) => error is YewError ? error.kind : null;
 
 /// The largest memo a private payment carries, in UTF-8 bytes (Sapling memo field).
 const int maxMemoBytes = 512;
-
-/// Whether [address] looks like a private (Sapling) address of [network]: `ys1…` on mainnet
-/// (`ytestsapling1…` / `yregtestsapling1…` off it; core `params.rs` `sapling_address_hrp`).
-/// A prefix test only, to show the memo field as the user types; the core parses and refuses.
-bool isPrivateAddress(NetworkId network, String address) {
-  final hrp = switch (network) {
-    NetworkId.mainnet => 'ys',
-    NetworkId.testnet => 'ytestsapling',
-    NetworkId.regtest => 'yregtestsapling',
-  };
-  return address.trim().toLowerCase().startsWith('${hrp}1');
-}

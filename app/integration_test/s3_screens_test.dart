@@ -2,7 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
-// yew-shielded plan S3 on a device against a regtest devnet with private (Sapling) support
+// yew-shielded plan S3 (and the S4 Move sheet, shots 13-15) on a device against a regtest devnet with private (Sapling) support
 // (`KEEP=1 scripts/devnet-s2.sh dd|6 <seed>` leaves one up; lightwalletd-dd on 9067 + seed).
 // Written against the real core. Drives the private screens and prints two kinds of markers
 // for a host-side helper:
@@ -196,5 +196,32 @@ void main() {
     await waitForKey(tester, 'unaffordable');
     await expectVisible(tester, find.byKey(const Key('move-public')));
     await shot(tester, '12-mint-move-public');
+
+    // S4: the hint opens Move → To public with the shortfall filled in (capped at the private
+    // balance); then Home → Move… → To private, previewed and sent.
+    await tester.ensureVisible(find.byKey(const Key('move-public-open')));
+    await tester.pumpAndSettle();
+    await tapKey(tester, 'move-public-open');
+    await tester.pumpAndSettle();
+    expect(find.text('Move YEC'), findsOneWidget);
+    await shot(tester, '13-move-public-prefilled');
+    Navigator.of(tester.element(find.byKey(const Key('move-amount')))).pop();
+    await tester.pumpAndSettle();
+    await tester.pageBack(); // the mint screen
+    await tester.pumpAndSettle();
+    await tapKey(tester, 'tab-home');
+    await tester.pumpAndSettle();
+    await tapKey(tester, 'move');
+    await tester.pumpAndSettle();
+    await enterKey(tester, 'move-amount', '0.1');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tapKey(tester, 'move-preview');
+    await waitForKey(tester, 'slide-to-confirm');
+    await shot(tester, '14-move-private-preview');
+    await longPressKey(tester, 'slide-to-confirm');
+    await waitFor(tester, () => find.byKey(const Key('move-txid')).evaluate().isNotEmpty, timeout: const Duration(minutes: 3));
+    await shot(tester, '15-moved');
+    await tapKey(tester, 'move-done');
+    await tester.pumpAndSettle();
   });
 }

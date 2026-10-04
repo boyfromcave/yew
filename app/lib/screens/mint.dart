@@ -227,7 +227,7 @@ class _MintScreenState extends State<MintScreen> {
                   ),
                 ),
               if (!e.affordable && app.balances.yecShieldedZat > 0)
-                MovePublicHint(what: 'Minting', privateZat: app.balances.yecShieldedZat),
+                MovePublicHint(what: 'Minting', privateZat: app.balances.yecShieldedZat, shortfallZat: e.totalZat - e.availableZat),
               const SizedBox(height: 8),
               TextButton(key: const Key('cancel'), onPressed: _reset, child: const Text('Change the amount')),
             ],
