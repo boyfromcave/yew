@@ -253,7 +253,7 @@ were written smaller (see [What is left](#what-is-left)).
 | Node vectors | `core/tests/vectors.rs` | `cargo test`; twelve node-signed transactions, addresses, templates reproduced byte for byte |
 | Widget | `app/test/` | `flutter test`; 29 tests over the fake bridge |
 | Devnet acceptance | `core/tests/devnet.rs` | `scripts/devnet-w1.sh test`, `devnet-w2.sh test`, `devnet-w4.sh test`; YEC round trip and restore, YED transfer and gate refusal, mint/redeem/claim/lapse/resume; nightly, not CI |
-| Shielded devnet | `core/tests/devnet.rs` `s2_` | `scripts/devnet-s2.sh dd <seed>` and `scripts/devnet-s2.sh 6 <seed>` (the 4.5.0 and 6.21.0 node lines; builds lightwalletd-dd 0b3448e+, needs the Sapling parameters on the machine): restore with a memo, z→z with a memo confirmed by `z_listreceivedbyaddress`, z→t with `revealsShielded`, transparent fallback, transparent YEC and YED regressions, no spending key in any file; `s4_`: move 1 YEC to private, 0.5 YEC to public, all to private, the mint shortfall to public and the mint, with YED and the fee reserve untouched and balances exact |
+| Shielded devnet | `core/tests/devnet.rs` `s2_` | `scripts/devnet-s2.sh dd <seed>` and `scripts/devnet-s2.sh 6 <seed>` (the 4.5.0 and 6.21.0 node lines; builds lightwalletd-dd 0b3448e+, needs the Sapling parameters on the machine): restore with a memo, z→z with a memo confirmed by `z_listreceivedbyaddress`, z→t with `revealsShielded`, transparent fallback, transparent YEC and YED regressions, no spending key in any file; `s4_`: move 1 YEC to private, 0.5 YEC to public, all to private, the mint shortfall to public and the mint, with YED and the fee reserve untouched and balances exact; `s5_`: restore with a birthday (at, after and without one), reorgs under a synced wallet (re-mined, dropped and re-mined, a send dropped past its expiry) with lightwalletd-dd following, an interrupted sync (future dropped, process killed) resuming to the same state |
 | Device integration | `app/integration_test/` | `scripts/run-ios.sh --test m1`, `run-android.sh --test m1` |
 
 `ywallet_derivation_vector` is `#[ignore]`d until `core/tests/vectors/ywallet.json` is filled
@@ -323,9 +323,9 @@ Everything below needs a device, an account, a public server or a decision:
 6. **Private (Sapling) YEC, hardening (plan S5, `docs/plans/yew-shielded-plan.md`)**: the HTTPS
    host for the 52 MB proving files (no default is compiled in; Settings asks for one); a
    YWallet-built `ys1…` address for the test seed to pin YWallet compatibility from a real
-   binary; restore-from-seed with a birthday and a reorg test on both node lines; the 6.21.0
-   line on a device; sync time, proving time and battery on real phones; `lite.ycash.xyz`
-   upgraded to lightwalletd-dd with `GetChainInfo`.
+   binary; sync time, proving time and battery on real phones; `lite.ycash.xyz` upgraded to
+   lightwalletd-dd with `GetChainInfo`. (Restore with a birthday, reorgs and interrupted sync
+   run on both node lines in `s5_`; the S3/S4 flow ran on the iOS simulator against both.)
 
 ## Further reading
 

@@ -81,6 +81,33 @@ pub const MAX_MEMO_BYTES: usize = 512;
 const MAX_ENHANCE_PER_SYNC: usize = 500;
 /// How often the progress ticker reads the store during a scan.
 const PROGRESS_EVERY: Duration = Duration::from_millis(400);
+/// Reorg rewinds the light library may have refused below the store's safe height, re-run
+/// from that height per sync (S5; see [`Shielded::sync`]).
+const MAX_CLAMPED_REWINDS: u32 = 3;
+
+/// Stops the progress ticker when the sync that started it ends, returns early or is dropped
+/// mid-await (an abandoned sync must not keep reading the store; S5).
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// A reorg rewind the store refused: the light library's sync rewinds ten blocks under a
+/// mismatch (`truncate_to_height(at - 10)`), and the store refuses a height under its oldest
+/// checkpoint with a block row — within ten blocks of the account birthday, i.e. a new or freshly
+/// restored wallet's first blocks (S5, found on the devnet on both lines).
+fn refused_rewind(e: &ShieldedError) -> bool {
+    use zcash_client_sqlite::error::SqliteClientError as E;
+    matches!(
+        e,
+        ShieldedError::Light(x402_ycash_light::wallet::Error::Wallet(
+            E::RequestedRewindInvalid { .. }
+        ))
+    )
+}
 
 /// Shielded errors. The text is showable.
 #[derive(Debug, Error)]
@@ -559,6 +586,7 @@ impl Shielded {
         }
 
         let stop = Arc::new(AtomicBool::new(false));
+        let stop_guard = StopOnDrop(stop.clone());
         let ticker = {
             let stop = stop.clone();
             let path = self.dir.join("wallet.sqlite");
@@ -581,15 +609,26 @@ impl Shielded {
                 }
             })
         };
-        let light = self.light(lwd, &channel).await;
-        let r = match light {
-            Ok(l) => l
-                .sync(x402_ycash_light::sync::DEFAULT_CHUNK_BLOCKS)
-                .await
-                .map_err(ShieldedError::from),
-            Err(e) => Err(e),
+        let mut clamped = 0u32;
+        let r = loop {
+            let r = match self.light(lwd, &channel).await {
+                Ok(l) => l
+                    .sync(x402_ycash_light::sync::DEFAULT_CHUNK_BLOCKS)
+                    .await
+                    .map_err(ShieldedError::from),
+                Err(e) => Err(e),
+            };
+            // A reorg within ten blocks of the birthday: rewind to the birthday instead (no
+            // note predates it) and scan again from there.
+            match &r {
+                Err(e) if refused_rewind(e) && clamped < MAX_CLAMPED_REWINDS => {
+                    self.rewind_to_birthday(&channel).await?;
+                    clamped += 1;
+                }
+                _ => break r,
+            }
         };
-        stop.store(true, Ordering::SeqCst);
+        drop(stop_guard);
         let _ = ticker.await;
         let r = match r {
             Ok(r) => r,
@@ -604,7 +643,7 @@ impl Shielded {
         report.outputs = r.outputsScanned;
         report.received_notes = r.receivedNotes as u64;
         report.spent_notes = r.spentNotes as u64;
-        report.reorgs = r.reorgs as u64;
+        report.reorgs = r.reorgs as u64 + u64::from(clamped);
 
         let b = self.balance()?;
         progress(ShieldedProgress {
@@ -627,6 +666,26 @@ impl Shielded {
             enhancing: false,
         });
         Ok(report)
+    }
+
+    /// Rewind the store to the block before the account birthday, with that block's chain
+    /// state from the server (`GetTreeState`, over YEW's channel): the server's current chain,
+    /// so this is right even when the reorg reaches the birthday block itself. The next scan
+    /// starts at the birthday again.
+    async fn rewind_to_birthday(&mut self, channel: &Channel) -> Result<(), ShieldedError> {
+        let id = self
+            .account_id()?
+            .ok_or_else(|| store_err("no account to rewind"))?;
+        let birthday = self.db.get_account_birthday(id).map_err(store_err)?;
+        let below = birthday - 1;
+        let mut lwd = x402_ycash_light::lwd::client(channel.clone());
+        let state = x402_ycash_light::lwd::tree_state(&mut lwd, below)
+            .await
+            .map_err(|e| store_err(format!("tree state at {below}: {e}")))?
+            .to_chain_state()
+            .map_err(|e| store_err(format!("bad tree state at {below}: {e}")))?;
+        self.db.truncate_to_chain_state(state).map_err(store_err)?;
+        Ok(())
     }
 
     /// Answer the store's transaction data requests: full transactions for memos

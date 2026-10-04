@@ -179,9 +179,15 @@ impl Devnet {
     /// Wait until every pool's mempool holds `txid` (a `generate` before it arrives would mine
     /// a block without it; mapping.md §15).
     fn wait_mempool(&self, txid: &str) {
+        self.wait_mempool_on(txid, &[2, 3, 4]);
+    }
+
+    /// Wait until the mempool of every node in `nodes` holds `txid` (a split network: only the
+    /// nodes on one side will ever see it).
+    fn wait_mempool_on(&self, txid: &str, nodes: &[usize]) {
         let start = Instant::now();
         loop {
-            let all = (2..5).all(|n| {
+            let all = nodes.iter().all(|&n| {
                 self.node_json(n, &["getrawmempool"])
                     .as_array()
                     .unwrap()
@@ -1432,10 +1438,34 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
 /// waiting for the operation; returns the txid. The 6.21.0 line needs a privacy policy for the
 /// transparent change (x402 X-F12); the 4.5.0 line takes an explicit fee.
 fn z_fund_from_node0(dn: &Devnet, line: &str, to: &str, amount: &str, memo: &str) -> String {
-    let taddr = dn.node(0, &["getnewaddress"]);
-    let coin = dn.node(0, &["sendtoaddress", &taddr, "3.0"]);
-    dn.wait_mempool(&coin);
+    let taddr = node0_coins(dn, 1).remove(0);
+    z_send_from_node0(dn, line, &taddr, to, amount, memo)
+}
+
+/// `n` fresh transparent addresses of node 0, each holding one confirmed 3-YEC coin (one pool
+/// block mines them all), for later `z_sendmany` calls that must not mine a block of their own.
+/// Pool node 2 pays them: a `sendtoaddress` on node 0 could spend a coin set aside earlier.
+fn node0_coins(dn: &Devnet, n: usize) -> Vec<String> {
+    let taddrs: Vec<String> = (0..n).map(|_| dn.node(0, &["getnewaddress"])).collect();
+    for taddr in &taddrs {
+        let coin = dn.node(2, &["sendtoaddress", taddr, "3.0"]);
+        dn.wait_mempool(&coin);
+    }
     dn.mine_pool();
+    taddrs
+}
+
+/// `z_sendmany` from node 0's transparent address `taddr` (a confirmed coin of
+/// [`node0_coins`]) to `to` with a text memo, waiting for the operation; returns the txid.
+fn z_send_from_node0(
+    dn: &Devnet,
+    line: &str,
+    taddr: &str,
+    to: &str,
+    amount: &str,
+    memo: &str,
+) -> String {
+    let taddr = taddr.to_string();
     let amounts = serde_json::json!([{ "address": to, "amount": amount.parse::<f64>().unwrap(),
         "memo": keys::hex(memo.as_bytes()) }])
     .to_string();
@@ -2117,4 +2147,879 @@ async fn s4_move_to_private_and_public_then_mint() {
         "S4 devnet ({line}) ok: shield fee {shield_fee}, unshield fee {unshield_fee}, mint shortfall {shortfall} zat"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- yew-shielded plan S5: restore with a birthday, reorgs, interrupted sync -----------------
+
+/// One S5 test's devnet handles (the S2 setup without the YED warm-up).
+struct S5 {
+    line: String,
+    dn: Devnet,
+    server: Server,
+    c: CompactClient,
+    v: Validator,
+    timings: serde_json::Map<String, Value>,
+}
+
+async fn s5_setup() -> Option<S5> {
+    if std::env::var("YEW_DEVNET").ok().as_deref() != Some("1") {
+        eprintln!("YEW_DEVNET is not 1; skipping");
+        return None;
+    }
+    let line = env_or("YEW_DEVNET_LINE", "dd".into());
+    let dn = Devnet::new("yb-devnet-s2", "351");
+    let server =
+        Server::parse(&env_or("YEW_DEVNET_SERVER", "127.0.0.1:9418".into()), true).unwrap();
+    let channel = server.connect().await.expect("connect to lightwalletd");
+    let c = CompactClient::from_channel(channel.clone());
+    let (v, availability) = Validator::detect(YellowbackClient::from_channel(channel))
+        .await
+        .unwrap();
+    assert!(availability.usable(), "{availability:?}");
+    let mut timings = serde_json::Map::new();
+    timings.insert("line".into(), line.clone().into());
+    Some(S5 {
+        line,
+        dn,
+        server,
+        c,
+        v,
+        timings,
+    })
+}
+
+fn time_into(t: &mut serde_json::Map<String, Value>, key: &str, since: Instant) -> u64 {
+    let ms = since.elapsed().as_millis() as u64;
+    t.insert(key.into(), ms.into());
+    ms
+}
+
+impl S5 {
+    /// Print the timings and write them beside the S2 file (`s5-<test>-<line>.json`).
+    fn finish(self, test: &str) {
+        let out = Value::Object(self.timings);
+        println!("S5 {test} ({}) ok: {out}", self.line);
+        if let Ok(f) = std::env::var("YEW_DEVNET_TIMINGS") {
+            let dir = std::path::Path::new(&f).parent().unwrap().to_path_buf();
+            let path = dir.join(format!("s5-{test}-{}.json", self.line));
+            std::fs::write(path, serde_json::to_string_pretty(&out).unwrap()).unwrap();
+        }
+    }
+}
+
+fn s5_dir(test: &str, line: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("yew-devnet-{test}-{line}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn open_at(dir: &std::path::Path, name: &str, mnemonic: &str, birthday: Option<u64>) -> Wallet {
+    let path = dir
+        .join(format!("{name}.sqlite"))
+        .to_string_lossy()
+        .to_string();
+    Wallet::open(&path, Network::Regtest, mnemonic, "", birthday).unwrap()
+}
+
+/// `(txid display hex, height, delta, memo, expired)` of every private history row, sorted.
+fn private_rows(w: &Wallet) -> Vec<(String, u64, i64, String, bool)> {
+    let mut rows: Vec<_> = w
+        .shielded()
+        .unwrap()
+        .history()
+        .unwrap()
+        .into_iter()
+        .map(|x| (txid_hex(&x.txid), x.height, x.delta_zat, x.memo, x.expired))
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// The devnet's node count (`devnet.json`).
+fn node_count(dn: &Devnet) -> usize {
+    let s = std::fs::read_to_string(format!("{}/devnet.json", dn.dir)).unwrap();
+    serde_json::from_str::<Value>(&s).unwrap()["num_nodes"]
+        .as_u64()
+        .unwrap() as usize
+}
+
+/// Node `n`'s P2P address (`port=` in its `ycash.conf`).
+fn p2p_addr(dn: &Devnet, n: usize) -> String {
+    let conf = std::fs::read_to_string(format!("{}/node{n}/ycash.conf", dn.dir)).unwrap();
+    let port = conf
+        .lines()
+        .find_map(|l| l.strip_prefix("port="))
+        .unwrap()
+        .trim()
+        .to_string();
+    format!("127.0.0.1:{port}")
+}
+
+fn tip_of(dn: &Devnet, n: usize) -> (u64, String) {
+    let h = dn.node(n, &["getblockcount"]).parse().unwrap();
+    (h, dn.node(n, &["getbestblockhash"]))
+}
+
+/// Wait until every node in `nodes` stands on `hash`.
+fn wait_tip(dn: &Devnet, nodes: &[usize], hash: &str) {
+    let start = Instant::now();
+    while !nodes
+        .iter()
+        .all(|&n| dn.node(n, &["getbestblockhash"]) == hash)
+    {
+        assert!(
+            start.elapsed() < Duration::from_secs(120),
+            "nodes {nodes:?} never reached {hash}"
+        );
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+/// Mine `n` blocks on `node` alone, after re-quoting the pools; no devnet-wide block sync (the
+/// network may be split). Returns the node's new tip.
+fn mine_alone(dn: &Devnet, node: usize, n: u64) -> (u64, String) {
+    let price = dn.price.borrow().clone();
+    dn.run(&["price", &price]);
+    dn.node(node, &["generate", &n.to_string()]);
+    tip_of(dn, node)
+}
+
+fn connected(dn: &Devnet, a: usize, b: usize) -> bool {
+    let addr = p2p_addr(dn, b);
+    dn.node_json(a, &["getpeerinfo"])
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["addr"].as_str() == Some(addr.as_str()))
+}
+
+/// Split `node` off the devnet: it bans 127.0.0.1 (every peer), as x402-ycash's devnet suite
+/// does. [`Rejoin`] undoes it.
+fn isolate(dn: &Devnet, node: usize) {
+    dn.node(node, &["setban", "127.0.0.1", "add", "3600"]);
+    let start = Instant::now();
+    while !dn
+        .node_json(node, &["getpeerinfo"])
+        .as_array()
+        .unwrap()
+        .is_empty()
+    {
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "node{node} kept its peers"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Re-add every missing pair of peers (x402-ycash X-F105: v4.5.0 drops a peer that relays
+/// transactions expired by two blocks, so a reorg past an expiry can split the mesh).
+fn heal_mesh(dn: &Devnet) {
+    let n = node_count(dn);
+    for a in 0..n {
+        for b in (a + 1)..n {
+            if !connected(dn, a, b) && !connected(dn, b, a) {
+                let _ = dn.node_try(a, &["addnode", &p2p_addr(dn, b), "onetry"]);
+            }
+        }
+    }
+}
+
+/// Unbans and reconnects an [`isolate`]d node when dropped (also on a failed assertion).
+struct Rejoin<'a> {
+    dn: &'a Devnet,
+    node: usize,
+    done: bool,
+}
+
+impl Rejoin<'_> {
+    fn now(&mut self) {
+        if self.done {
+            return;
+        }
+        self.done = true;
+        let _ = self
+            .dn
+            .node_try(self.node, &["setban", "127.0.0.1", "remove"]);
+        let _ = self.dn.node_try(self.node, &["clearbanned"]);
+        for m in (0..node_count(self.dn)).filter(|&m| m != self.node) {
+            let addr = p2p_addr(self.dn, m);
+            let _ = self.dn.node_try(self.node, &["addnode", &addr, "onetry"]);
+        }
+    }
+}
+
+impl Drop for Rejoin<'_> {
+    fn drop(&mut self) {
+        self.now();
+    }
+}
+
+/// Wait until lightwalletd's tip is node 0's tip, block hash included (it follows a reorg by
+/// noticing the next block's `prev_hash`, one block back at a time).
+async fn wait_lwd_follows(dn: &Devnet, c: &mut CompactClient) -> u64 {
+    let start = Instant::now();
+    loop {
+        let (h, hash) = tip_of(dn, 0);
+        if c.latest_height().await.unwrap() == h
+            && txid_hex(&c.block_hash(h).await.unwrap()) == hash
+        {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            return h;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(120),
+            "lightwalletd did not follow node 0 to {h} {hash}"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
+/// Item 2(a): restore from seed with a birthday. Four private receipts with memos in four
+/// consecutive blocks (two before the birthday, one in the birthday block, one after) and two
+/// public ones (before and in the birthday block); then three restores of the same seed.
+#[tokio::test]
+#[ignore = "needs an ARMED regtest devnet of either line (scripts/devnet-s2.sh) and YEW_DEVNET=1"]
+async fn s5_restore_with_birthday() {
+    use yew_core::shielded_keys::SaplingAccount;
+    let Some(mut s) = s5_setup().await else {
+        return;
+    };
+    let line = s.line.clone();
+    let mnemonic = keys::generate_mnemonic(12).unwrap();
+    let acct = SaplingAccount::from_mnemonic(&mnemonic, "", Network::Regtest).unwrap();
+    let (_, zaddr) = acct.default_address();
+    let dir = s5_dir("s5-restore", &line);
+    let taddr = open_at(&dir, "probe", &mnemonic, Some(1))
+        .receive_address(false)
+        .unwrap()
+        .address_s;
+
+    let memos = [
+        "two blocks before the birthday",
+        "one block before the birthday",
+        "in the birthday block",
+        "after the birthday",
+    ];
+    let amounts: [u64; 4] = [110_000_000, 120_000_000, 130_000_000, 140_000_000];
+    let public: [Option<&str>; 4] = [None, Some("0.7"), Some("0.8"), None];
+    let coins = node0_coins(&s.dn, 4);
+    let mut heights = vec![];
+    let mut txids = vec![];
+    for i in 0..4 {
+        let z = z_send_from_node0(
+            &s.dn,
+            &line,
+            &coins[i],
+            &zaddr,
+            &format!("{}", amounts[i] as f64 / 1e8),
+            memos[i],
+        );
+        s.dn.wait_mempool(&z);
+        if let Some(a) = public[i] {
+            let t = s.dn.node(2, &["sendtoaddress", &taddr, a]);
+            s.dn.wait_mempool(&t);
+        }
+        heights.push(s.dn.mine_pool());
+        txids.push(z);
+    }
+    assert!(heights.windows(2).all(|w| w[1] == w[0] + 1), "{heights:?}");
+    wait_for_height(&mut s.c, heights[3]).await;
+    let birthday = heights[2];
+
+    // (name, birthday, notes expected, public zat expected)
+    let cases: [(&str, Option<u64>, &[usize], i64); 3] = [
+        ("at-birthday", Some(birthday), &[2, 3], 80_000_000),
+        ("birthday-after-a-note", Some(birthday + 1), &[3], 0),
+        ("no-birthday", None, &[0, 1, 2, 3], 150_000_000),
+    ];
+    for (name, bday, expect, public_zat) in cases {
+        let mut w = open_at(&dir, name, &mnemonic, bday);
+        let t = Instant::now();
+        let (r, z) = sync_both(&mut w, &s.server, &mut s.c, &mut s.v).await;
+        time_into(&mut s.timings, &format!("{name}Millis"), t);
+        s.timings.insert(format!("{name}Blocks"), z.blocks.into());
+        println!("restore {name} (birthday {bday:?}): {z:?}");
+        assert!(z.registered_now && z.sendable, "{name}: {z:?}");
+        assert_eq!(z.received_notes, expect.len() as u64, "{name}: {z:?}");
+        let want: u64 = expect.iter().map(|&i| amounts[i]).sum();
+        let zb = w.shielded().unwrap().balance().unwrap();
+        assert_eq!(
+            (zb.total_zat, zb.spendable_zat),
+            (want, want),
+            "{name}: {zb:?}"
+        );
+        let mut got: Vec<(String, u64, i64, String)> = private_rows(&w)
+            .into_iter()
+            .map(|(t, h, d, m, _)| (t, h, d, m))
+            .collect();
+        got.sort();
+        let mut exp: Vec<(String, u64, i64, String)> = expect
+            .iter()
+            .map(|&i| {
+                (
+                    txids[i].clone(),
+                    heights[i],
+                    amounts[i] as i64,
+                    memos[i].to_string(),
+                )
+            })
+            .collect();
+        exp.sort();
+        assert_eq!(
+            got, exp,
+            "{name}: exactly the notes at or after the birthday, all memos"
+        );
+        // The public side follows the same birthday rule (`GetAddressUtxos` from the birthday).
+        assert_eq!(r.yec.0 + r.yec.1, public_zat, "{name}: {r:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    s.finish("restore");
+}
+
+/// Item 2(b): reorgs under a synced wallet, with lightwalletd-dd following node 0.
+///
+/// - R1: the block holding a private and a public receipt is invalidated on every node, the
+///   wallet syncs while the node stands below it, the receipts are re-mined in a competing
+///   block, the old block is reconsidered (shorter branch, no switch back).
+/// - R2: a pool node split off mines a longer branch without the block holding a private and a
+///   public receipt; the receipts disappear, then reappear when re-mined.
+/// - R3: a private send mined on the main side is dropped by a longer branch that runs past its
+///   expiry height; its notes come back, and they spend again.
+#[tokio::test]
+#[ignore = "needs an ARMED regtest devnet of either line (scripts/devnet-s2.sh) and YEW_DEVNET=1"]
+async fn s5_reorg_private_and_public() {
+    use yew_core::build::yec_private::{confirm_yec_send, plan_yec_send, Funding};
+    let Some(mut s) = s5_setup().await else {
+        return;
+    };
+    let line = s.line.clone();
+    let n = node_count(&s.dn);
+    let all: Vec<usize> = (0..n).collect();
+    const LONER: usize = 4;
+    let main_side: Vec<usize> = all.iter().copied().filter(|&m| m != LONER).collect();
+    let dir = s5_dir("s5-reorg", &line);
+    let mnemonic = keys::generate_mnemonic(12).unwrap();
+    let birthday = s.c.latest_height().await.unwrap();
+    let mut w = open_at(&dir, "w", &mnemonic, Some(birthday));
+    let zaddr = w.shielded().unwrap().default_address().1;
+    let taddr = w.receive_address(false).unwrap().address_s;
+    let coins = node0_coins(&s.dn, 3);
+    let z0 = z_fund_from_node0(&s.dn, &line, &zaddr, "2.0", "base");
+    let t0 = s.dn.node(2, &["sendtoaddress", &taddr, "1.0"]);
+    s.dn.wait_mempool(&z0);
+    s.dn.wait_mempool(&t0);
+    let h = s.dn.mine_pool();
+    wait_for_height(&mut s.c, h).await;
+    let (r, z) = sync_both(&mut w, &s.server, &mut s.c, &mut s.v).await;
+    assert!(z.sendable);
+    let zbal = |w: &Wallet| {
+        let b = w.shielded().unwrap().balance().unwrap();
+        (b.total_zat, b.spendable_zat)
+    };
+    assert_eq!(zbal(&w), (200_000_000, 200_000_000));
+    assert_eq!(r.yec.0 + r.yec.1, 100_000_000);
+    let params = dir.join("sapling-params");
+    let src =
+        yew_core::sapling_params::ParamsSource::parse(&format!("file://{}/", local_params_dir()))
+            .unwrap();
+    assert!(yew_core::sapling_params::download(&src, &params, |_| {})
+        .await
+        .unwrap()
+        .present());
+
+    // ---- R1: invalidateblock / competing block / reconsiderblock -----------------------------
+    let z1 = z_send_from_node0(&s.dn, &line, &coins[0], &zaddr, "0.5", "r1: re-mined");
+    let t1 = s.dn.node(2, &["sendtoaddress", &taddr, "0.25"]);
+    s.dn.wait_mempool(&z1);
+    s.dn.wait_mempool(&t1);
+    let hb = s.dn.mine_pool();
+    wait_for_height(&mut s.c, hb).await;
+    let (r, _) = sync_both(&mut w, &s.server, &mut s.c, &mut s.v).await;
+    assert_eq!(zbal(&w), (250_000_000, 250_000_000));
+    assert_eq!(r.yec.0 + r.yec.1, 125_000_000);
+    let block_b = s.dn.node(0, &["getblockhash", &hb.to_string()]);
+    for &m in &all {
+        s.dn.node(m, &["invalidateblock", &block_b]);
+    }
+    let below = s.dn.node(0, &["getblockhash", &(hb - 1).to_string()]);
+    wait_tip(&s.dn, &all, &below);
+    // A sync while the node stands below the wallet's scanned height (lightwalletd has not
+    // seen a new block yet, so it still serves B): nothing may fail or double.
+    let t = Instant::now();
+    let (r, z) = sync_both(&mut w, &s.server, &mut s.c, &mut s.v).await;
+    time_into(&mut s.timings, "r1DuringSyncMillis", t);
+    let during = (zbal(&w), r.yec);
+    println!(
+        "R1 during the reorg: private {:?} public {:?}; {z:?}",
+        during.0, during.1
+    );
+    s.timings.insert(
+        "r1DuringObserved".into(),
+        format!(
+            "private {:?} public {:?} reorgs {}",
+            during.0, during.1, z.reorgs
+        )
+        .into(),
+    );
+    assert!(during.0 .0 <= 250_000_000 && r.yec.0 + r.yec.1 <= 125_000_000);
+    s.dn.wait_mempool(&z1);
+    s.dn.wait_mempool(&t1);
+    let hb2 = s.dn.mine_pool();
+    assert_eq!(hb2, hb, "the competing block sits at B's height");
+    let mined: Vec<String> = s.dn.node_json(
+        0,
+        &[
+            "getblock",
+            &s.dn.node(0, &["getblockhash", &hb.to_string()]),
+        ],
+    )["tx"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        mined.contains(&z1) && mined.contains(&t1),
+        "re-mined in B': {mined:?}"
+    );
+    s.dn.mine_pool();
+    wait_lwd_follows(&s.dn, &mut s.c).await;
+    let t = Instant::now();
+    let (r, z) = sync_both(&mut w, &s.server, &mut s.c, &mut s.v).await;
+    time_into(&mut s.timings, "r1AfterSyncMillis", t);
+    println!("R1 after: {z:?}");
+    assert!(
+        z.reorgs >= 1 && z.sendable,
+        "the light library rewound: {z:?}"
+    );
+    assert_eq!(zbal(&w), (250_000_000, 250_000_000), "nothing doubled");
+    assert_eq!(r.yec.0 + r.yec.1, 125_000_000, "{r:?}");
+    let rows = private_rows(&w);
+    assert_eq!(rows.iter().filter(|x| x.0 == z1).count(), 1, "{rows:?}");
+    assert!(rows
+        .iter()
+        .any(|x| x.0 == z1 && x.1 == hb && x.3 == "r1: re-mined"));
+    let t1_row = w
+        .store
+        .history_row(&txid_from_hex(&t1).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!((t1_row.height, t1_row.pending), (hb, false), "{t1_row:?}");
+    let tip_before = tip_of(&s.dn, 0);
+    for &m in &all {
+        s.dn.node(m, &["reconsiderblock", &block_b]);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(
+        tip_of(&s.dn, 0),
+        tip_before,
+        "B is the shorter branch: no switch back"
+    );
+    let (r, z) = sync_both(&mut w, &s.server, &mut s.c, &mut s.v).await;
+    assert_eq!(
+        (z.reorgs, zbal(&w), r.yec.0 + r.yec.1),
+        (0, (250_000_000, 250_000_000), 125_000_000)
+    );
+
+    // ---- R2: a receipt dropped by a longer branch, then re-mined -----------------------------
+    let mut rejoin = Rejoin {
+        dn: &s.dn,
+        node: LONER,
+        done: false,
+    };
+    isolate(&s.dn, LONER);
+    let z2 = z_send_from_node0(
+        &s.dn,
+        &line,
+        &coins[1],
+        &zaddr,
+        "0.75",
+        "r2: dropped, then back",
+    );
+    let t2 = s.dn.node(2, &["sendtoaddress", &taddr, "0.4"]);
+    s.dn.wait_mempool_on(&z2, &[0, 2, 3]);
+    s.dn.wait_mempool_on(&t2, &[0, 2, 3]);
+    let (h2, main_tip) = mine_alone(&s.dn, 2, 1);
+    wait_tip(&s.dn, &main_side, &main_tip);
+    wait_lwd_follows(&s.dn, &mut s.c).await;
+    let (r, _) = sync_both(&mut w, &s.server, &mut s.c, &mut s.v).await;
+    assert_eq!(zbal(&w), (325_000_000, 325_000_000));
+    assert_eq!(r.yec.0 + r.yec.1, 165_000_000);
+    let (lh, loner_tip) = mine_alone(&s.dn, LONER, 2);
+    assert_eq!(lh, h2 + 1);
+    rejoin.now();
+    wait_tip(&s.dn, &all, &loner_tip);
+    wait_lwd_follows(&s.dn, &mut s.c).await;
+    let t = Instant::now();
+    let (r, z) = sync_both(&mut w, &s.server, &mut s.c, &mut s.v).await;
+    time_into(&mut s.timings, "r2DroppedSyncMillis", t);
+    let dropped = (zbal(&w), r.yec, private_rows(&w));
+    println!(
+        "R2 dropped: private {:?} public {:?}; {z:?}\n{:?}",
+        dropped.0, dropped.1, dropped.2
+    );
+    assert!(z.reorgs >= 1, "{z:?}");
+    assert_eq!(
+        dropped.0 .1, 250_000_000,
+        "the dropped receipt is not spendable"
+    );
+    s.timings.insert(
+        "r2DroppedObserved".into(),
+        format!(
+            "private (total, spendable) {:?} public {:?}",
+            dropped.0, dropped.1
+        )
+        .into(),
+    );
+    // The receipt is unmined again but back in the mempools (resurrected by the switch): the
+    // store keeps its note as pending incoming, out of the spendable balance, until it is mined
+    // again or expires. Its history row shows height 0.
+    let b = w.shielded().unwrap().balance().unwrap();
+    assert_eq!(
+        (b.total_zat, b.spendable_zat, b.pending_incoming_zat),
+        (325_000_000, 250_000_000, 75_000_000),
+        "the dropped receipt is pending, not spendable: {b:?}"
+    );
+    assert!(
+        dropped.2.iter().any(|x| x.0 == z2 && x.1 == 0),
+        "unmined in history"
+    );
+    // The public history re-reads its last ten blocks: the dropped receipt is pending again,
+    // not confirmed at a height it no longer has.
+    let t2_row = w
+        .store
+        .history_row(&txid_from_hex(&t2).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (t2_row.height, t2_row.pending, t2_row.yec_delta),
+        (0, true, 40_000_000),
+        "{t2_row:?}"
+    );
+    assert_eq!(
+        r.yec.0 + r.yec.1,
+        125_000_000,
+        "the dropped public receipt left too"
+    );
+    // Re-mined: node 2 resurrected both into its mempool when it switched branches.
+    s.dn.wait_mempool_on(&z2, &[2]);
+    s.dn.wait_mempool_on(&t2, &[2]);
+    s.dn.run(&["price", &s.dn.price.borrow().clone()]);
+    s.dn.run(&["mine", "1", "2"]);
+    wait_lwd_follows(&s.dn, &mut s.c).await;
+    let (r, z) = sync_both(&mut w, &s.server, &mut s.c, &mut s.v).await;
+    println!("R2 re-mined: {z:?}");
+    assert_eq!(zbal(&w), (325_000_000, 325_000_000), "back once re-mined");
+    assert_eq!(r.yec.0 + r.yec.1, 165_000_000, "{r:?}");
+    let rows = private_rows(&w);
+    let z2rows: Vec<_> = rows.iter().filter(|x| x.0 == z2).collect();
+    assert_eq!(z2rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        (z2rows[0].1 > h2, z2rows[0].3.as_str()),
+        (true, "r2: dropped, then back")
+    );
+    let t2_row = w
+        .store
+        .history_row(&txid_from_hex(&t2).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (t2_row.height, t2_row.pending),
+        (z2rows[0].1, false),
+        "{t2_row:?}"
+    );
+
+    drop(rejoin);
+
+    // ---- R3: a private send dropped by a branch that runs past its expiry ---------------------
+    let before = zbal(&w);
+    let (public_before, tip) = (r.yec.0 + r.yec.1, r.tip);
+    let mut rejoin = Rejoin {
+        dn: &s.dn,
+        node: LONER,
+        done: false,
+    };
+    isolate(&s.dn, LONER);
+    let node_z = s.dn.node(0, &["z_getnewaddress", "sapling"]);
+    let plan = plan_yec_send(
+        &mut w,
+        &node_z,
+        60_000_000,
+        false,
+        Some("r3: dropped send"),
+        tip,
+        r.branch_id,
+    )
+    .unwrap();
+    let Funding::Shielded(p) = &plan.funding else {
+        panic!("{plan:?}")
+    };
+    let (expiry, fee) = (p.expiry_height as u64, p.fee_zat);
+    let sent = confirm_yec_send(&mut w, &mut s.c, &mut s.v, &plan, &params)
+        .await
+        .expect("z→z accepted");
+    s.dn.wait_mempool_on(&sent.txid, &[0, 2, 3]);
+    let (h3, main_tip) = mine_alone(&s.dn, 2, 1);
+    wait_tip(&s.dn, &main_side, &main_tip);
+    wait_lwd_follows(&s.dn, &mut s.c).await;
+    let (_, z) = sync_both(&mut w, &s.server, &mut s.c, &mut s.v).await;
+    assert!(z.sendable);
+    assert_eq!(zbal(&w).0, before.0 - 60_000_000 - fee, "the send is mined");
+    assert!(private_rows(&w)
+        .iter()
+        .any(|x| x.0 == sent.txid && x.1 == h3));
+    // The loner runs past the expiry height: the block after nExpiryHeight drops the send from
+    // every mempool it was resurrected into.
+    let mut loner = tip_of(&s.dn, LONER);
+    assert_eq!(loner.0, h3 - 1);
+    while loner.0 <= expiry {
+        loner = mine_alone(&s.dn, LONER, (expiry + 1 - loner.0).min(10));
+    }
+    s.timings
+        .insert("r3BranchBlocks".into(), (loner.0 - (h3 - 1)).into());
+    rejoin.now();
+    wait_tip(&s.dn, &all, &loner.1);
+    std::thread::sleep(Duration::from_secs(2));
+    heal_mesh(&s.dn);
+    for &m in &all {
+        let mp = s.dn.node_json(m, &["getrawmempool"]);
+        assert!(
+            !mp.as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t.as_str() == Some(sent.txid.as_str())),
+            "node{m} still holds the expired send"
+        );
+    }
+    wait_lwd_follows(&s.dn, &mut s.c).await;
+    let t = Instant::now();
+    let (r, z) = sync_both(&mut w, &s.server, &mut s.c, &mut s.v).await;
+    time_into(&mut s.timings, "r3ExpiredSyncMillis", t);
+    println!("R3 after expiry: {z:?} {:?}", zbal(&w));
+    assert!(z.reorgs >= 1 && z.sendable, "{z:?}");
+    assert_eq!(
+        zbal(&w),
+        before,
+        "the dropped send's notes are back, nothing doubled"
+    );
+    assert_eq!(
+        r.yec.0 + r.yec.1,
+        public_before,
+        "the public side is untouched"
+    );
+    let rows = private_rows(&w);
+    let srow = rows
+        .iter()
+        .find(|x| x.0 == sent.txid)
+        .expect("the send stays in history");
+    assert_eq!((srow.1, srow.4), (0, true), "unmined and expired: {srow:?}");
+    // The returned notes spend again.
+    let plan = plan_yec_send(
+        &mut w,
+        &node_z,
+        60_000_000,
+        false,
+        Some("r3: sent again"),
+        r.tip,
+        r.branch_id,
+    )
+    .unwrap();
+    let again = confirm_yec_send(&mut w, &mut s.c, &mut s.v, &plan, &params)
+        .await
+        .expect("the returned notes spend");
+    s.dn.wait_mempool(&again.txid);
+    let h = s.dn.mine_pool();
+    wait_for_height(&mut s.c, h).await;
+    let got =
+        s.dn.node_json(0, &["z_listreceivedbyaddress", &node_z, "1"]);
+    let notes = got.as_array().unwrap();
+    assert_eq!(
+        notes.len(),
+        1,
+        "node 0 holds exactly the second send: {got}"
+    );
+    assert_eq!(notes[0]["txid"].as_str(), Some(again.txid.as_str()));
+    let (_, z) = sync_both(&mut w, &s.server, &mut s.c, &mut s.v).await;
+    assert!(z.sendable);
+    assert_eq!(zbal(&w).0, before.0 - 60_000_000 - plan.fee_zat() as u64);
+    drop(rejoin);
+    let _ = std::fs::remove_dir_all(&dir);
+    s.finish("reorg");
+}
+
+/// Item 2(c): an interrupted private sync resumes to the same state. A reference wallet syncs
+/// uninterrupted; a second file is synced under ever longer timeouts (the future dropped at an
+/// await point, as an app that abandons a sync would); a third is synced by `yew-cli sync`
+/// killed with SIGKILL after ever longer delays (a phone killing the app mid-scan), then
+/// resumed. Both must end equal to the reference.
+#[tokio::test]
+#[ignore = "needs an ARMED regtest devnet of either line (scripts/devnet-s2.sh) and YEW_DEVNET=1"]
+async fn s5_interrupted_sync_resumes() {
+    use std::sync::Arc;
+    let Some(mut s) = s5_setup().await else {
+        return;
+    };
+    let line = s.line.clone();
+    let dir = s5_dir("s5-interrupt", &line);
+    let mnemonic = keys::generate_mnemonic(12).unwrap();
+    let zaddr = open_at(&dir, "probe", &mnemonic, Some(1))
+        .shielded()
+        .unwrap()
+        .default_address()
+        .1;
+    let taddr = open_at(&dir, "probe2", &mnemonic, Some(1))
+        .receive_address(false)
+        .unwrap()
+        .address_s;
+    let coins = node0_coins(&s.dn, 3);
+    for (i, coin) in coins.iter().enumerate() {
+        let z = z_send_from_node0(
+            &s.dn,
+            &line,
+            coin,
+            &zaddr,
+            "0.3",
+            &format!("interrupted {i}"),
+        );
+        s.dn.wait_mempool(&z);
+        if i == 1 {
+            let t = s.dn.node(2, &["sendtoaddress", &taddr, "0.6"]);
+            s.dn.wait_mempool(&t);
+        }
+        s.dn.mine_pool();
+    }
+    let h = s.dn.mine_pool();
+    wait_for_height(&mut s.c, h).await;
+
+    // The reference (no birthday: the scan runs from Sapling activation, the longest one).
+    let mut reference = open_at(&dir, "reference", &mnemonic, None);
+    let t = Instant::now();
+    let (rr, rz) = sync_both(&mut reference, &s.server, &mut s.c, &mut s.v).await;
+    time_into(&mut s.timings, "referenceMillis", t);
+    println!("reference: {rz:?}");
+    assert_eq!(rz.received_notes, 3);
+    let want = (
+        reference.shielded().unwrap().balance().unwrap(),
+        private_rows(&reference),
+        rr.yec,
+    );
+    assert_eq!(want.0.total_zat, 90_000_000);
+    assert_eq!(
+        want.1
+            .iter()
+            .filter(|x| x.3.starts_with("interrupted"))
+            .count(),
+        3
+    );
+    drop(reference);
+
+    // 1. In-process: the sync future dropped after 1, 2, 4, … ms.
+    let ticks = Arc::new(AtomicUsize::new(0));
+    let progress: yew_core::shielded::ProgressFn = {
+        let ticks = ticks.clone();
+        Arc::new(move |_| {
+            ticks.fetch_add(1, Ordering::SeqCst);
+        })
+    };
+    let mut w = open_at(&dir, "dropped", &mnemonic, None);
+    let mut interrupted = vec![];
+    let mut ms = 1u64;
+    let t = Instant::now();
+    loop {
+        let run = async {
+            let r = sync(&mut w, &mut s.c, s.v.client_mut()).await.unwrap();
+            let z = yew_core::build::yec_private::sync_shielded(
+                &mut w,
+                &s.server,
+                &mut s.c,
+                progress.clone(),
+            )
+            .await
+            .unwrap();
+            (r, z)
+        };
+        match tokio::time::timeout(Duration::from_millis(ms), run).await {
+            Ok((r, z)) => {
+                assert_eq!(r.yec, want.2);
+                println!("dropped-future sync completed at {ms} ms: {z:?}");
+                break;
+            }
+            Err(_) => {
+                let b = w.shielded().unwrap().balance().unwrap();
+                interrupted.push(format!("{ms}ms:{}", b.scanned_height));
+                // The progress ticker of the abandoned sync must stop with it.
+                let at = ticks.load(Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+                assert_eq!(
+                    ticks.load(Ordering::SeqCst),
+                    at,
+                    "an abandoned sync keeps ticking"
+                );
+            }
+        }
+        ms *= 2;
+        assert!(ms < 120_000, "never completed");
+    }
+    time_into(&mut s.timings, "droppedTotalMillis", t);
+    println!("dropped-future interruptions (timeout:scanned height): {interrupted:?}");
+    s.timings
+        .insert("droppedInterruptions".into(), interrupted.join(" ").into());
+    assert_eq!(w.shielded().unwrap().balance().unwrap(), want.0);
+    assert_eq!(private_rows(&w), want.1);
+    drop(w);
+
+    // 2. A real process killed with SIGKILL after 100, 250, 400, … ms, then resumed here.
+    let cli =
+        std::env::var("YEW_CLI_BIN").expect("YEW_CLI_BIN (scripts/devnet-s2.sh builds yew-cli)");
+    let killed_path = dir.join("killed.sqlite").to_string_lossy().to_string();
+    let server_arg = env_or("YEW_DEVNET_SERVER", "127.0.0.1:9418".into());
+    let mut kills = vec![];
+    let mut delay = 100u64;
+    let t = Instant::now();
+    loop {
+        let mut child = Command::new(&cli)
+            .args([
+                "--server",
+                &server_arg,
+                "--plain",
+                "--wallet",
+                &killed_path,
+                "--network",
+                "regtest",
+                "sync",
+            ])
+            .env("YEW_SEED", &mnemonic)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success(), "yew-cli sync failed: {status}");
+            println!("yew-cli sync completed before the {delay} ms kill");
+            break;
+        }
+        child.kill().unwrap(); // SIGKILL
+        child.wait().unwrap();
+        let w = open_at(&dir, "killed", &mnemonic, None);
+        let b = w.shielded().unwrap().balance().unwrap();
+        kills.push(format!("{delay}ms:{}", b.scanned_height));
+        drop(w);
+        delay += 150;
+        assert!(delay < 60_000, "never completed");
+    }
+    time_into(&mut s.timings, "killedTotalMillis", t);
+    println!("SIGKILL interruptions (delay:scanned height): {kills:?}");
+    s.timings
+        .insert("killedInterruptions".into(), kills.join(" ").into());
+    let mut w = open_at(&dir, "killed", &mnemonic, None);
+    let (r, z) = sync_both(&mut w, &s.server, &mut s.c, &mut s.v).await;
+    println!("resumed after the kills: {z:?}");
+    assert_eq!(r.yec, want.2);
+    assert_eq!(w.shielded().unwrap().balance().unwrap(), want.0);
+    assert_eq!(private_rows(&w), want.1);
+    let _ = std::fs::remove_dir_all(&dir);
+    s.finish("interrupt");
 }
