@@ -29,7 +29,10 @@ void main() {
     expect(h.api.calls, contains('sync'));
     expect(find.text('\$12,345.67'.replaceAll(',', '')), findsOneWidget);
     expect(find.text('+ \$2.50 pending'), findsOneWidget);
-    expect(find.text('1.23456789'), findsOneWidget);
+    // One YEC total (private + public, the reserve included), then the two-line split.
+    expect(find.text('1.23561789'), findsOneWidget);
+    expect(find.text('0.00000000 YEC'), findsOneWidget); // private
+    expect(find.text('1.23561789 YEC'), findsOneWidget); // public
     expect(find.text('0.00105000 YEC reserved for fees'), findsOneWidget);
     expect(find.text('0.00050000 YEC pending'), findsOneWidget);
     expect(find.textContaining('1 output held'), findsOneWidget);

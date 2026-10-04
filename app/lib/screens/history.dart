@@ -2,7 +2,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
-// History (plan §5.1): one list, both assets, verdict labels; tap for details.
+// History (plan §5.1): one list, both assets, verdict labels; tap for details. Private rows
+// carry a lock and their message shows on tap (yew-shielded plan §3: messaging = memos).
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -66,9 +67,23 @@ class _Row extends StatelessWidget {
         ),
       ),
       title: Text(h.label.isEmpty ? (incoming ? 'received' : 'sent') : h.label),
-      subtitle: Text(
-        h.pending ? 'pending' : 'height ${h.height}${h.verdict.isNotEmpty ? ' · ${h.verdict}' : ''}',
-        style: t.bodySmall,
+      subtitle: Row(
+        children: [
+          if (h.shielded) ...[
+            Icon(Icons.lock_rounded, key: Key('lock-${h.txid}'), size: 14, color: c.pending),
+            const SizedBox(width: 4),
+          ],
+          if (h.memo.isNotEmpty) ...[
+            Icon(Icons.chat_bubble_outline_rounded, size: 14, color: c.pending),
+            const SizedBox(width: 4),
+          ],
+          Flexible(
+            child: Text(
+              h.pending ? 'pending' : 'height ${h.height}${h.verdict.isNotEmpty ? ' · ${h.verdict}' : ''}',
+              style: t.bodySmall,
+            ),
+          ),
+        ],
       ),
       trailing: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -116,7 +131,13 @@ class _Details extends StatelessWidget {
           if (h.kind.isNotEmpty) row('kind', h.kind),
           if (h.verdict.isNotEmpty) row('verdict', h.verdict),
           if (h.hasPayload) row('payload', h.kind.isEmpty ? 'OP_RETURN present (not a Yellowback verdict)' : 'Yellowback'),
-          if (h.shielded) row('note', 'this transaction also has shielded parts YEW cannot read'),
+          if (h.shielded) row('privacy', 'has a private part, hidden on the chain'),
+          if (h.memo.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text('Message', style: t.bodySmall),
+            const SizedBox(height: 4),
+            SelectableText(h.memo, key: const Key('memo-text'), style: t.bodyLarge),
+          ],
           const SizedBox(height: 12),
           OutlinedButton.icon(
             onPressed: () async {

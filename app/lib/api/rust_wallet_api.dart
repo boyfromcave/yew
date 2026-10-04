@@ -90,7 +90,11 @@ class RustWalletApi implements WalletApi {
   Future<Balances> balances() => rust.balances();
 
   @override
-  Future<AddressPair> receiveAddress({required bool fresh}) => rust.receiveAddress(kind: rust.ReceiveKind.transparent, fresh: fresh);
+  Future<AddressPair> receiveAddress({ReceiveKind kind = ReceiveKind.transparent, required bool fresh}) =>
+      rust.receiveAddress(kind: kind, fresh: fresh);
+
+  @override
+  Future<AddressPair> newShieldedAddress() => rust.newShieldedAddress();
 
   @override
   Future<List<AddressPair>> addresses() => rust.addresses();
@@ -104,11 +108,18 @@ class RustWalletApi implements WalletApi {
     required String to,
     required int zat,
     required bool sendEverything,
-  }) => rust.sendYecPreview(to: to, zat: zat, sendEverything: sendEverything);
+    String? memo,
+  }) => rust.sendYecPreview(to: to, zat: zat, sendEverything: sendEverything, memo: memo);
 
   @override
   Future<SendResult> sendYecConfirm({required String previewId}) =>
       rust.sendYecConfirm(previewId: previewId);
+
+  @override
+  Future<ParamsStatus> paramsStatus() => rust.paramsStatus();
+
+  @override
+  Stream<ParamsProgress> downloadParams({required String baseUrl}) => rust.downloadParams(baseUrl: baseUrl);
 
   @override
   Future<YedPreview> sendYedPreview({required List<Recipient> recipients}) =>

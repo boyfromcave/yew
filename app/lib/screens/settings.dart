@@ -3,12 +3,14 @@
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
 // Settings (plan §5.1): server, trust statement, seed backup, export private key (WIF, per
-// address), import private key, lock, about (build, rpcversion), forget wallet.
+// address), import private key, private sending files (download address), lock, about
+// (build, rpcversion), forget wallet.
 import 'package:flutter/material.dart';
 
 import '../state/app_scope.dart';
 import '../theme.dart';
 import '../trust_text.dart';
+import '../widgets/params_sheet.dart';
 import 'keys.dart';
 import 'seed_backup.dart';
 import 'server.dart';
@@ -31,6 +33,13 @@ class SettingsScreen extends StatelessWidget {
             title: const Text('Server'),
             subtitle: Text('${s.server}${s.plain ? ' (plain)' : ''}${s.caPem.isNotEmpty ? ' (pinned)' : ''} · ${s.network.name}'),
             onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const ServerScreen())),
+          ),
+          ListTile(
+            key: const Key('params-url'),
+            leading: const Icon(Icons.lock_outline_rounded),
+            title: const Text('Private sending files'),
+            subtitle: Text(s.paramsUrl.isEmpty ? 'Download address not set (needed once, for the first private send)' : s.paramsUrl),
+            onTap: () => editParamsUrl(context, app),
           ),
           ListTile(
             key: const Key('trust'),
@@ -162,7 +171,7 @@ class _AboutScreenState extends State<AboutScreen> {
       appBar: AppBar(title: const Text('About')),
       body: ListView(
         children: [
-          row('YEW', 'Your Electronic Wallet · transparent-only · MIT'),
+          row('YEW', 'Your Electronic Wallet · public and private YEC · MIT'),
           row('yew-core', app.api.coreVersion()),
           if (s == null) const ListTile(title: Text('Connecting…')),
           if (s != null) ...[

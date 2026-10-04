@@ -200,6 +200,7 @@ class WalletSettings {
     this.birthday,
     this.trustAccepted = false,
     this.biometrics = false,
+    this.paramsUrl = '',
   });
 
   /// No built-in endpoint: the list is the core's `default_servers(network)` (empty for
@@ -218,6 +219,10 @@ class WalletSettings {
   final bool trustAccepted;
   final bool biometrics;
 
+  /// Where the private-sending files are downloaded from (`https://host/dir/`). No host is
+  /// compiled in (yew-shielded plan S0-2: hosting is the owner's decision); empty = not set.
+  final String paramsUrl;
+
   WalletSettings copyWith({
     String? server,
     bool? plain,
@@ -226,6 +231,7 @@ class WalletSettings {
     int? birthday,
     bool? trustAccepted,
     bool? biometrics,
+    String? paramsUrl,
   }) => WalletSettings(
     server: server ?? this.server,
     plain: plain ?? this.plain,
@@ -234,6 +240,7 @@ class WalletSettings {
     birthday: birthday ?? this.birthday,
     trustAccepted: trustAccepted ?? this.trustAccepted,
     biometrics: biometrics ?? this.biometrics,
+    paramsUrl: paramsUrl ?? this.paramsUrl,
   );
 
   String encode() => jsonEncode({
@@ -244,6 +251,7 @@ class WalletSettings {
     'birthday': birthday,
     'trustAccepted': trustAccepted,
     'biometrics': biometrics,
+    'paramsUrl': paramsUrl,
   });
 
   static WalletSettings decode(String s) {
@@ -259,6 +267,7 @@ class WalletSettings {
       birthday: m['birthday'] as int?,
       trustAccepted: m['trustAccepted'] as bool? ?? false,
       biometrics: m['biometrics'] as bool? ?? false,
+      paramsUrl: m['paramsUrl'] as String? ?? '',
     );
   }
 }

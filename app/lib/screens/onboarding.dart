@@ -3,7 +3,7 @@
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
 // Onboarding (plan §5.1): create / restore a 12-word seed, birthday height (default: the
-// server's tip), the trust statement, the transparent-only notice, biometric unlock.
+// server's tip), the trust statement, the private/public notice, biometric unlock.
 import 'package:flutter/material.dart';
 
 import '../api/wallet_api.dart';
@@ -153,8 +153,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 child: Padding(
                   padding: const EdgeInsets.all(16),
                   child: Text(
-                    'Transparent only. Everything this wallet does is public on the chain: '
-                    'addresses, balances and every transaction. It holds nothing shielded.',
+                    'Two kinds of YEC. Private YEC is hidden on the chain: amounts, addresses and messages. '
+                    'Public YEC and all YED are visible to anyone: addresses, balances and every transaction.',
                     style: t.bodyMedium,
                   ),
                 ),

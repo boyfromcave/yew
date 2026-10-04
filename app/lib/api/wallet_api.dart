@@ -87,19 +87,32 @@ abstract class WalletApi {
 
   Future<Balances> balances();
 
-  Future<AddressPair> receiveAddress({required bool fresh});
+  /// The receive address of [kind]: `s…` (transparent), `ye…` (YED) or `ys1…` (private).
+  Future<AddressPair> receiveAddress({ReceiveKind kind = ReceiveKind.transparent, required bool fresh});
+
+  /// A new private address of the same private balance (Receive → "New private address").
+  Future<AddressPair> newShieldedAddress();
 
   Future<List<AddressPair>> addresses();
 
   Future<HistoryPage> history({required int page, required int pageSize});
 
+  /// Funded privacy first by the core; [memo] only for a private (`ys1…`) recipient.
   Future<YecPreview> sendYecPreview({
     required String to,
     required int zat,
     required bool sendEverything,
+    String? memo,
   });
 
   Future<SendResult> sendYecConfirm({required String previewId});
+
+  /// The Sapling proving files on this device (no network).
+  Future<ParamsStatus> paramsStatus();
+
+  /// Fetch the proving files from [baseUrl] (Settings; no host is compiled in), each kept only
+  /// if its SHA-256 matches the core's pin. Ends with a `finished` event.
+  Stream<ParamsProgress> downloadParams({required String baseUrl});
 
   Future<YedPreview> sendYedPreview({required List<Recipient> recipients});
 
@@ -156,3 +169,18 @@ String messageOf(Object error) => error is YewError ? error.message : error.toSt
 
 /// The kind of a bridge error, or `null` for anything else.
 ErrorKind? kindOf(Object error) => error is YewError ? error.kind : null;
+
+/// The largest memo a private payment carries, in UTF-8 bytes (Sapling memo field).
+const int maxMemoBytes = 512;
+
+/// Whether [address] looks like a private (Sapling) address of [network]: `ys1…` on mainnet
+/// (`ytestsapling1…` / `yregtestsapling1…` off it; core `params.rs` `sapling_address_hrp`).
+/// A prefix test only, to show the memo field as the user types; the core parses and refuses.
+bool isPrivateAddress(NetworkId network, String address) {
+  final hrp = switch (network) {
+    NetworkId.mainnet => 'ys',
+    NetworkId.testnet => 'ytestsapling',
+    NetworkId.regtest => 'yregtestsapling',
+  };
+  return address.trim().toLowerCase().startsWith('${hrp}1');
+}

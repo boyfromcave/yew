@@ -17,6 +17,8 @@ import 'package:yew_app/state/secrets.dart';
 
 const fakeYe = 'yr1qkfcjyqz9y4d3qz9v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8';
 const fakeS = 'smV6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v';
+const fakeZ = 'yregtestsapling1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfake';
+const fakeZ2 = 'yregtestsapling1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzsecond';
 const fakeWords = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
 class FakeWalletApi implements WalletApi {
@@ -40,6 +42,23 @@ class FakeWalletApi implements WalletApi {
   DryRun dryRun = const DryRun(valid: true, verdict: 'ok', burnedCents: 0, wouldBeRejected: false, yedInCents: 5000, yedOutCents: 5000, accepted: true);
   AddressPair address = const AddressPair(ye: fakeYe, s: fakeS, path: "m/44'/347'/0'/0/0", coveredBySeed: true, address: fakeS, kind: ReceiveKind.transparent);
   int fresh = 0;
+
+  // ---- S3: private (shielded) answers, scripted.
+  AddressPair privateAddress = const AddressPair(ye: '', s: '', path: "m/32'/347'/0'", coveredBySeed: true, address: fakeZ, kind: ReceiveKind.shielded);
+  int freshPrivate = 0;
+  YecFunding yecFunding = YecFunding.transparent;
+  bool revealsShielded = false;
+  bool paramsNeeded = false;
+  Object? yecConfirmError;
+  List<ParamsProgress> paramsEvents = const [
+    ParamsProgress(file: 'sapling-spend.params', doneBytes: 25000000, totalBytes: 51551256, finished: false),
+    ParamsProgress(file: 'sapling-output.params', doneBytes: 51551256, totalBytes: 51551256, finished: true),
+  ];
+  Object? paramsError;
+  StreamController<ParamsProgress>? paramsController;
+
+  /// When set, `syncNow` streams from it (a test drives the private-scan states).
+  StreamController<SyncEvent>? syncController;
 
   // ---- W4: the two-step table and the vaults, scripted.
   List<MintStatus> mintsAnswer = [];
@@ -326,9 +345,30 @@ class FakeWalletApi implements WalletApi {
   Future<Balances> balances() async => balancesAnswer;
 
   @override
-  Future<AddressPair> receiveAddress({required bool fresh}) async {
+  Future<AddressPair> receiveAddress({ReceiveKind kind = ReceiveKind.transparent, required bool fresh}) async {
+    if (kind == ReceiveKind.shielded) return privateAddress;
     if (fresh) this.fresh++;
     return address;
+  }
+
+  @override
+  Future<AddressPair> newShieldedAddress() async {
+    freshPrivate++;
+    calls.add('newShieldedAddress');
+    privateAddress = const AddressPair(ye: '', s: '', path: "m/32'/347'/0'", coveredBySeed: true, address: fakeZ2, kind: ReceiveKind.shielded);
+    return privateAddress;
+  }
+
+  @override
+  Future<ParamsStatus> paramsStatus() async => ParamsStatus(ready: !paramsNeeded, verified: false, missingBytes: paramsNeeded ? 51551256 : 0, totalBytes: 51551256);
+
+  @override
+  Stream<ParamsProgress> downloadParams({required String baseUrl}) {
+    calls.add('downloadParams $baseUrl');
+    if (paramsController != null) return paramsController!.stream;
+    if (paramsError != null) return Stream.error(paramsError!);
+    paramsNeeded = false;
+    return Stream.fromIterable(paramsEvents);
   }
 
   @override
@@ -338,15 +378,21 @@ class FakeWalletApi implements WalletApi {
   Future<HistoryPage> history({required int page, required int pageSize}) async => HistoryPage(rows: historyAnswer, page: page, total: historyAnswer.length);
 
   @override
-  Future<YecPreview> sendYecPreview({required String to, required int zat, required bool sendEverything}) async {
-    calls.add('yecPreview $to $zat $sendEverything');
+  Future<YecPreview> sendYecPreview({required String to, required int zat, required bool sendEverything, String? memo}) async {
+    calls.add('yecPreview $to $zat $sendEverything${memo == null ? '' : ' memo=$memo'}');
     if (yecPreviewError != null) throw yecPreviewError!;
-    return YecPreview(previewId: 'p1', to: to, amountZat: zat, amountBumped: zat == 10000, feeZat: 1000, changeZat: 150000000 - zat - 1000, inputs: 1, usesReserve: sendEverything, keepsReservedZat: 105000, expiryHeight: 524, txid: 'aa' * 32, funding: YecFunding.transparent, revealsShielded: false, paramsNeeded: false);
+    final private = yecFunding == YecFunding.shielded;
+    return YecPreview(previewId: 'p1', to: to, amountZat: zat, amountBumped: zat == 10000, feeZat: private ? 10000 : 1000, changeZat: 150000000 - zat - 1000, inputs: 1, usesReserve: sendEverything, keepsReservedZat: 105000, expiryHeight: 524, txid: private ? '' : 'aa' * 32, funding: yecFunding, revealsShielded: revealsShielded, memo: memo, paramsNeeded: private && paramsNeeded);
   }
 
   @override
   Future<SendResult> sendYecConfirm({required String previewId}) async {
     calls.add('yecConfirm $previewId');
+    if (yecConfirmError != null) {
+      final e = yecConfirmError!;
+      yecConfirmError = null;
+      throw e;
+    }
     return SendResult(txid: 'aa' * 32, verdict: 'ok');
   }
 
@@ -380,6 +426,7 @@ class FakeWalletApi implements WalletApi {
   @override
   Stream<SyncEvent> syncNow() {
     calls.add('sync');
+    if (syncController != null) return syncController!.stream;
     return Stream.fromIterable(const [
       SyncEvent(stage: SyncStage.connecting, message: 'Connecting', tip: 0, syncHeight: 0, yellowbackUsable: false, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
       SyncEvent(stage: SyncStage.probing, message: 'Yellowback service present', tip: 484, syncHeight: 0, yellowbackUsable: true, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),

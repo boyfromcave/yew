@@ -13,6 +13,7 @@ import '../format.dart';
 import '../state/app_scope.dart';
 import '../term_classes.dart';
 import '../theme.dart';
+import '../widgets/move_public_hint.dart';
 import '../widgets/preview_card.dart';
 import 'mint_progress.dart';
 import 'receive.dart';
@@ -196,10 +197,11 @@ class _MintScreenState extends State<MintScreen> {
                         const SizedBox(height: 8),
                         OutlinedButton.icon(
                           key: const Key('show-receive'),
-                          onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const ReceiveScreen())),
+                          onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const ReceiveScreen(kind: ReceiveKind.yed))),
                           icon: const Icon(Icons.qr_code_2_rounded),
                           label: const Text('Show my receive address'),
                         ),
+                        if (app.balances.yecShieldedZat > 0) MovePublicHint(what: 'Minting', privateZat: app.balances.yecShieldedZat),
                       ],
                     ],
                   ),
@@ -219,11 +221,13 @@ class _MintScreenState extends State<MintScreen> {
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
                   child: Text(
-                    'Not enough YEC: this mint needs ${formatYec(e.totalZat)} YEC and the wallet has ${formatYec(e.availableZat)}.',
+                    'Not enough YEC: this mint needs ${formatYec(e.totalZat)} YEC and the wallet has ${formatYec(e.availableZat)} public YEC.',
                     key: const Key('unaffordable'),
                     style: t.bodySmall?.copyWith(color: c.danger),
                   ),
                 ),
+              if (!e.affordable && app.balances.yecShieldedZat > 0)
+                MovePublicHint(what: 'Minting', privateZat: app.balances.yecShieldedZat),
               const SizedBox(height: 8),
               TextButton(key: const Key('cancel'), onPressed: _reset, child: const Text('Change the amount')),
             ],
