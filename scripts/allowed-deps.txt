@@ -18,3 +18,8 @@ thiserror
 flutter_rust_bridge
 # Audit G-4 (2026-10-01): the Mozilla root bundle, needed on iOS where rustls-native-certs has no backend.
 webpki-roots
+# yew-shielded plan S0-1 (2026-10-04): Sapling key derivation (core/src/shielded_keys.rs). The exact
+# versions boyfromcave/librustzcash6 (miodragpop/librustzcash @ ec525fae, what ycashd 6.21.0 pins) locks;
+# `zcash_keys` by path is blocked by its ripemd pre-release pin (core/Cargo.toml) until the light core lands.
+sapling-crypto
+zip32

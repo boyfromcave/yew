@@ -25,6 +25,7 @@ pub mod net;
 pub mod params;
 pub mod payload;
 pub mod script;
+pub mod shielded_keys;
 pub mod store;
 pub mod sync;
 pub mod tx;

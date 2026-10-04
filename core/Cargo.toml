@@ -42,6 +42,17 @@ thiserror = "=2.0.21"
 # The bridge (api.rs): the crate and flutter_rust_bridge_codegen are the same version (W0a); the
 # Dart package in app/pubspec.yaml is pinned to it too.
 flutter_rust_bridge = "=2.13.0"
+# Sapling key derivation (yew-shielded plan S0-1, `shielded_keys.rs`): ZIP-32 over the BIP39
+# seed and the Sapling key/address types. `sapling-crypto` 0.7.0 and `zip32` 0.2.0 are the exact
+# versions boyfromcave/librustzcash6 (= miodragpop/librustzcash @ ec525fae, the Ycash-aware
+# librustzcash ycashd 6.21.0 pins) locks and the whole of what its `zcash_keys::keys::sapling::
+# spending_key` wraps. `zcash_keys` itself cannot be used yet: through `zcash_transparent` it pins
+# `bip32 0.6.0-pre.1` → `ripemd =0.2.0-pre.4`, which Cargo cannot hold beside YEW's `ripemd 0.2.0`
+# (same 0.2 range); S2's light-core integration must settle that first. Bech32 is written in
+# `shielded_keys.rs` (BIP-173, as `keys.rs` writes BIP32), so no encoding crate is added.
+# No `circuit`/`multicore` features: no prover here, proving arrives with the light core.
+sapling-crypto = { version = "=0.7.0", default-features = false, features = ["std"] }
+zip32 = { version = "=0.2.0", default-features = false }
 
 # flutter_rust_bridge's macros test `cfg(frb_expand)`.
 [lints.rust]
