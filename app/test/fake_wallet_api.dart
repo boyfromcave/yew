@@ -31,14 +31,14 @@ class FakeWalletApi implements WalletApi {
     priceMicroUsd: 520000,
     heldCount: 0,
     syncHeight: 484,
-    yedSendMinZat: 21000,
+    yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false,
   );
   List<HistoryItem> historyAnswer = const [];
   Object? yedPreviewError;
   Object? yedConfirmError;
   Object? yecPreviewError;
   DryRun dryRun = const DryRun(valid: true, verdict: 'ok', burnedCents: 0, wouldBeRejected: false, yedInCents: 5000, yedOutCents: 5000, accepted: true);
-  AddressPair address = const AddressPair(ye: fakeYe, s: fakeS, path: "m/44'/347'/0'/0/0", coveredBySeed: true);
+  AddressPair address = const AddressPair(ye: fakeYe, s: fakeS, path: "m/44'/347'/0'/0/0", coveredBySeed: true, address: fakeS, kind: ReceiveKind.transparent);
   int fresh = 0;
 
   // ---- W4: the two-step table and the vaults, scripted.
@@ -332,7 +332,7 @@ class FakeWalletApi implements WalletApi {
   }
 
   @override
-  Future<List<AddressPair>> addresses() async => [address, const AddressPair(ye: 'yr1second', s: 'smSecond', path: 'imported', coveredBySeed: false)];
+  Future<List<AddressPair>> addresses() async => [address, const AddressPair(ye: 'yr1second', s: 'smSecond', path: 'imported', coveredBySeed: false, address: 'smSecond', kind: ReceiveKind.transparent)];
 
   @override
   Future<HistoryPage> history({required int page, required int pageSize}) async => HistoryPage(rows: historyAnswer, page: page, total: historyAnswer.length);
@@ -341,7 +341,7 @@ class FakeWalletApi implements WalletApi {
   Future<YecPreview> sendYecPreview({required String to, required int zat, required bool sendEverything}) async {
     calls.add('yecPreview $to $zat $sendEverything');
     if (yecPreviewError != null) throw yecPreviewError!;
-    return YecPreview(previewId: 'p1', to: to, amountZat: zat, amountBumped: zat == 10000, feeZat: 1000, changeZat: 150000000 - zat - 1000, inputs: 1, usesReserve: sendEverything, keepsReservedZat: 105000, expiryHeight: 524, txid: 'aa' * 32);
+    return YecPreview(previewId: 'p1', to: to, amountZat: zat, amountBumped: zat == 10000, feeZat: 1000, changeZat: 150000000 - zat - 1000, inputs: 1, usesReserve: sendEverything, keepsReservedZat: 105000, expiryHeight: 524, txid: 'aa' * 32, funding: YecFunding.transparent, revealsShielded: false, paramsNeeded: false);
   }
 
   @override
@@ -374,16 +374,16 @@ class FakeWalletApi implements WalletApi {
   @override
   Future<AddressPair> importWif({required String wif, int? birthday}) async {
     calls.add('importWif $birthday');
-    return const AddressPair(ye: 'yr1imported', s: 'smImported', path: 'imported', coveredBySeed: false);
+    return const AddressPair(ye: 'yr1imported', s: 'smImported', path: 'imported', coveredBySeed: false, address: 'smImported', kind: ReceiveKind.transparent);
   }
 
   @override
   Stream<SyncEvent> syncNow() {
     calls.add('sync');
     return Stream.fromIterable(const [
-      SyncEvent(stage: SyncStage.connecting, message: 'Connecting', tip: 0, syncHeight: 0, yellowbackUsable: false),
-      SyncEvent(stage: SyncStage.probing, message: 'Yellowback service present', tip: 484, syncHeight: 0, yellowbackUsable: true),
-      SyncEvent(stage: SyncStage.done, message: 'Synced to 484', tip: 484, syncHeight: 484, yellowbackUsable: true),
+      SyncEvent(stage: SyncStage.connecting, message: 'Connecting', tip: 0, syncHeight: 0, yellowbackUsable: false, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
+      SyncEvent(stage: SyncStage.probing, message: 'Yellowback service present', tip: 484, syncHeight: 0, yellowbackUsable: true, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
+      SyncEvent(stage: SyncStage.done, message: 'Synced to 484', tip: 484, syncHeight: 484, yellowbackUsable: true, percent: 100, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
     ]);
   }
 

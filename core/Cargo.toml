@@ -38,7 +38,7 @@ tonic = { version = "=0.14.6", default-features = false, features = ["codegen", 
 webpki-roots = "=1.0.9"
 tonic-prost = "=0.14.6"
 prost = "=0.14.4"
-tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 rusqlite = { version = "=0.37.0", features = ["bundled"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
@@ -55,6 +55,27 @@ flutter_rust_bridge = "=2.13.0"
 zcash_keys = { version = "=0.14.0", path = "../../librustzcash6/zcash_keys", default-features = false, features = ["std", "sapling"] }
 sapling-crypto = { version = "=0.7.0", default-features = false, features = ["std"] }
 zip32 = { version = "=0.2.0", default-features = false }
+# The Ycash Sapling light client (yew-shielded plan S1/S2): compact-block sync from lightwalletd-dd,
+# the note store (`zcash_client_sqlite`), reorg handling, broadcast. The library crate of
+# `boyfromcave/x402-ycash` (`light/`, crate `x402-ycash-light`, lib `x402_ycash_light`), by path from
+# the workspace checkout beside this repo; a release switches it to a git rev of that repository.
+x402-ycash-light = { version = "=0.1.0", path = "../../x402-ycash/light" }
+# The shielded spend path and the note store, read beside the light client (`core/src/shielded.rs`):
+# the light library syncs, YEW proposes/proves/signs (privacy-first funding, transparent recipients,
+# memos, the fee preview) and fetches memos (`decrypt_and_store_transaction`) itself, on the same
+# `zcash_client_sqlite` database. All from boyfromcave/librustzcash6 by path, at the versions the
+# light library locks; no feature beyond what it already enables. `rand` (0.8, `OsRng`) is the RNG
+# type `WalletDb` is generic over, already in the graph through the same crates.
+zcash_client_backend = { version = "=0.22.0", path = "../../librustzcash6/zcash_client_backend", default-features = false }
+zcash_client_sqlite = { version = "=0.20.2", path = "../../librustzcash6/zcash_client_sqlite", default-features = false }
+zcash_primitives = { version = "=0.28.0", path = "../../librustzcash6/zcash_primitives", default-features = false, features = ["std"] }
+zcash_proofs = { version = "=0.28.0", path = "../../librustzcash6/zcash_proofs", default-features = false, features = ["local-prover"] }
+zcash_protocol = { version = "=0.9.0", path = "../../librustzcash6/components/zcash_protocol", default-features = false, features = ["std"] }
+rand = { version = "=0.8.8", default-features = false, features = ["std", "std_rng", "getrandom"] }
+# The Sapling proving parameters are downloaded over HTTPS on first shielded send (S0-2,
+# `core/src/sapling_params.rs`): rustls through `tokio-rustls` (the version tonic's TLS already
+# links) with the Mozilla roots above; the SHA-256 pins, not the transport, are the integrity check.
+tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring"] }
 
 # flutter_rust_bridge's macros test `cfg(frb_expand)`.
 [lints.rust]

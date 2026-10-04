@@ -114,7 +114,7 @@ void main() {
 
   testWidgets('an unaffordable estimate disables the start and says how much YEC is missing', (tester) async {
     final h = Harness(withWallet: true);
-    h.api.balancesAnswer = const Balances(yecZat: 100000, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0, priceMicroUsd: 520000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000);
+    h.api.balancesAnswer = const Balances(yecZat: 100000, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0, priceMicroUsd: 520000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false);
     await openMint(tester, h);
     await tester.enterText(find.byKey(const Key('amount')), '25');
     await tester.tap(find.byKey(const Key('estimate')));

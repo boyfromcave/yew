@@ -25,8 +25,10 @@
 //! `zcash_keys` (boyfromcave/librustzcash6, the Ycash-aware librustzcash ycashd 6.21.0 pins:
 //! `keys::sapling::spending_key` is exactly the path above, `encoding::*` the Bech32 the node's
 //! `KeyIO` writes) and the `sapling-crypto` crate under it, with Ycash's HRPs and coin type
-//! supplied from [`crate::params`]. None of their types cross this module's boundary: the
-//! surface is strings, byte arrays and integers, so `api.rs` (the bridge) stays free of them.
+//! supplied from [`crate::params`]. None of their types cross this module's public boundary:
+//! the surface is strings, byte arrays and integers, so `api.rs` (the bridge) stays free of them;
+//! the one crate-internal exception is [`SaplingAccount::extended_spending_key`] for
+//! `crate::shielded` (the light client's account registration and the spend signer).
 //!
 //! **Wiping** (docs/security-review.md S-1). `sapling_crypto::zip32::ExtendedSpendingKey` has no
 //! drop-time erasure, so this module keeps the key as its 169 serialized bytes, rebuilds the
@@ -134,6 +136,19 @@ impl SaplingAccount {
 
     fn typed(&self) -> ExtendedSpendingKey {
         ExtendedSpendingKey::from_bytes(&self.extsk).expect("169 bytes we serialized ourselves")
+    }
+
+    /// The typed extended spending key, for the shielded wallet (`crate::shielded`) only: it
+    /// registers the account's viewing key and signs a spend with a transient copy, which is
+    /// dropped when the operation ends. Never stored, never handed to the bridge.
+    pub(crate) fn extended_spending_key(&self) -> ExtendedSpendingKey {
+        self.typed()
+    }
+
+    /// The diversifiable full viewing key, serialized (128 bytes): what the shielded store
+    /// holds for the account, compared at open so a store of another seed is refused.
+    pub fn viewing_key_bytes(&self) -> [u8; 128] {
+        self.typed().to_diversifiable_full_viewing_key().to_bytes()
     }
 
     fn fvk(&self) -> ExtendedFullViewingKey {

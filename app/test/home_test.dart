@@ -21,7 +21,7 @@ void main() {
       priceMicroUsd: 520000,
       heldCount: 1,
       syncHeight: 484,
-      yedSendMinZat: 21000,
+      yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false,
     );
     await h.pump(tester);
     // The lock screen auto-unlocks (no biometrics) and Home syncs once.
@@ -40,9 +40,9 @@ void main() {
   testWidgets('history tab lists verdict labels from the bridge', (tester) async {
     final h = Harness(withWallet: true);
     h.api.historyAnswer = [
-      HistoryItem(txid: 'ab' * 32, height: 0, pending: true, yecDeltaZat: -1000, yedDeltaCents: -1234, label: 'sending \$12.34', verdict: '', kind: 'transfer', hasPayload: true, shielded: false),
-      HistoryItem(txid: 'cd' * 32, height: 470, pending: false, yecDeltaZat: 100000000, yedDeltaCents: 5000, label: 'received \$50.00', verdict: 'ok', kind: 'transfer', hasPayload: true, shielded: false),
-      HistoryItem(txid: 'ef' * 32, height: 460, pending: false, yecDeltaZat: 50000000, yedDeltaCents: 0, label: 'received YEC', verdict: '', kind: '', hasPayload: false, shielded: false),
+      HistoryItem(txid: 'ab' * 32, height: 0, pending: true, yecDeltaZat: -1000, yedDeltaCents: -1234, label: 'sending \$12.34', verdict: '', kind: 'transfer', hasPayload: true, shielded: false, memo: ''),
+      HistoryItem(txid: 'cd' * 32, height: 470, pending: false, yecDeltaZat: 100000000, yedDeltaCents: 5000, label: 'received \$50.00', verdict: 'ok', kind: 'transfer', hasPayload: true, shielded: false, memo: ''),
+      HistoryItem(txid: 'ef' * 32, height: 460, pending: false, yecDeltaZat: 50000000, yedDeltaCents: 0, label: 'received YEC', verdict: '', kind: '', hasPayload: false, shielded: false, memo: ''),
     ];
     await h.pump(tester);
     await tester.tap(find.byKey(const Key('tab-history')));

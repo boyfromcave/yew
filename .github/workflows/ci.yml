@@ -18,6 +18,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # The Sapling crates are path dependencies on sibling checkouts (core/Cargo.toml):
+      # librustzcash6 (boyfromcave, = miodragpop/librustzcash @ ec525fae) and the x402-ycash light
+      # library. actions/checkout cannot write outside the workspace, so plain clones put them there.
+      - name: clone librustzcash6 and x402-ycash beside the repo
+        run: |
+          git clone --filter=blob:none https://github.com/boyfromcave/librustzcash6.git "$GITHUB_WORKSPACE/../librustzcash6"
+          git -C "$GITHUB_WORKSPACE/../librustzcash6" checkout --quiet ec525fae828ff67af0bf5d1995acfe445340ce66
+          git clone --filter=blob:none https://github.com/boyfromcave/x402-ycash.git "$GITHUB_WORKSPACE/../x402-ycash"
+          git -C "$GITHUB_WORKSPACE/../x402-ycash" checkout --quiet f0a881558481f217973d7b4b2873685cf8c46ec6
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler && protoc --version
       - name: Rust toolchain (rust-toolchain.toml)
@@ -39,6 +48,15 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # The Sapling crates are path dependencies on sibling checkouts (core/Cargo.toml):
+      # librustzcash6 (boyfromcave, = miodragpop/librustzcash @ ec525fae) and the x402-ycash light
+      # library. actions/checkout cannot write outside the workspace, so plain clones put them there.
+      - name: clone librustzcash6 and x402-ycash beside the repo
+        run: |
+          git clone --filter=blob:none https://github.com/boyfromcave/librustzcash6.git "$GITHUB_WORKSPACE/../librustzcash6"
+          git -C "$GITHUB_WORKSPACE/../librustzcash6" checkout --quiet ec525fae828ff67af0bf5d1995acfe445340ce66
+          git clone --filter=blob:none https://github.com/boyfromcave/x402-ycash.git "$GITHUB_WORKSPACE/../x402-ycash"
+          git -C "$GITHUB_WORKSPACE/../x402-ycash" checkout --quiet f0a881558481f217973d7b4b2873685cf8c46ec6
       - name: Install protoc
         run: brew install protobuf && protoc --version
       - name: Rust toolchain (rust-toolchain.toml)

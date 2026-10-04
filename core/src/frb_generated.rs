@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -978630303;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1000285762;
 
 // Section: executor
 
@@ -343,6 +343,43 @@ fn wire__crate__api__default_servers_impl(
                 let output_ok = Ok::<_, ()>(crate::api::default_servers(api_network))?;
                 std::result::Result::Ok(output_ok)
             })())
+        },
+    )
+}
+fn wire__crate__api__download_params_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "download_params",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_base_url = <String>::sse_decode(&mut deserializer);
+            let api_sink = <StreamSink<
+                crate::api::ParamsProgress,
+                flutter_rust_bridge::for_generated::SseCodec,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::YewError>((move || {
+                    let output_ok = crate::api::download_params(api_base_url, api_sink)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
         },
     )
 }
@@ -775,6 +812,70 @@ fn wire__crate__api__mints_impl(
         },
     )
 }
+fn wire__crate__api__new_shielded_address_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "new_shielded_address",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::YewError>((move || {
+                    let output_ok = crate::api::new_shielded_address()?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__params_status_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "params_status",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::YewError>((move || {
+                    let output_ok = crate::api::params_status()?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__probe_server_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -834,11 +935,12 @@ fn wire__crate__api__receive_address_impl(
             };
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_kind = <crate::api::ReceiveKind>::sse_decode(&mut deserializer);
             let api_fresh = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
-                    let output_ok = crate::api::receive_address(api_fresh)?;
+                    let output_ok = crate::api::receive_address(api_kind, api_fresh)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -969,11 +1071,16 @@ fn wire__crate__api__send_yec_preview_impl(
             let api_to = <String>::sse_decode(&mut deserializer);
             let api_zat = <i64>::sse_decode(&mut deserializer);
             let api_send_everything = <bool>::sse_decode(&mut deserializer);
+            let api_memo = <Option<String>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
-                    let output_ok =
-                        crate::api::send_yec_preview(api_to, api_zat, api_send_everything)?;
+                    let output_ok = crate::api::send_yec_preview(
+                        api_to,
+                        api_zat,
+                        api_send_everything,
+                        api_memo,
+                    )?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -1271,6 +1378,16 @@ impl SseDecode for flutter_rust_bridge::for_generated::anyhow::Error {
     }
 }
 
+impl SseDecode
+    for StreamSink<crate::api::ParamsProgress, flutter_rust_bridge::for_generated::SseCodec>
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <String>::sse_decode(deserializer);
+        return StreamSink::deserialize(inner);
+    }
+}
+
 impl SseDecode for StreamSink<crate::api::SyncEvent, flutter_rust_bridge::for_generated::SseCodec> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -1310,11 +1427,15 @@ impl SseDecode for crate::api::AddressPair {
         let mut var_s = <String>::sse_decode(deserializer);
         let mut var_path = <String>::sse_decode(deserializer);
         let mut var_coveredBySeed = <bool>::sse_decode(deserializer);
+        let mut var_address = <String>::sse_decode(deserializer);
+        let mut var_kind = <crate::api::ReceiveKind>::sse_decode(deserializer);
         return crate::api::AddressPair {
             ye: var_ye,
             s: var_s,
             path: var_path,
             covered_by_seed: var_coveredBySeed,
+            address: var_address,
+            kind: var_kind,
         };
     }
 }
@@ -1331,6 +1452,11 @@ impl SseDecode for crate::api::Balances {
         let mut var_heldCount = <i64>::sse_decode(deserializer);
         let mut var_syncHeight = <i64>::sse_decode(deserializer);
         let mut var_yedSendMinZat = <i64>::sse_decode(deserializer);
+        let mut var_yecShieldedZat = <i64>::sse_decode(deserializer);
+        let mut var_yecShieldedSpendableZat = <i64>::sse_decode(deserializer);
+        let mut var_yecShieldedPendingZat = <i64>::sse_decode(deserializer);
+        let mut var_shieldedScannedHeight = <i64>::sse_decode(deserializer);
+        let mut var_shieldedSendable = <bool>::sse_decode(deserializer);
         return crate::api::Balances {
             yec_zat: var_yecZat,
             yec_reserved_zat: var_yecReservedZat,
@@ -1341,6 +1467,11 @@ impl SseDecode for crate::api::Balances {
             held_count: var_heldCount,
             sync_height: var_syncHeight,
             yed_send_min_zat: var_yedSendMinZat,
+            yec_shielded_zat: var_yecShieldedZat,
+            yec_shielded_spendable_zat: var_yecShieldedSpendableZat,
+            yec_shielded_pending_zat: var_yecShieldedPendingZat,
+            shielded_scanned_height: var_shieldedScannedHeight,
+            shielded_sendable: var_shieldedSendable,
         };
     }
 }
@@ -1447,7 +1578,9 @@ impl SseDecode for crate::api::ErrorKind {
             7 => crate::api::ErrorKind::NeedYecForFees,
             8 => crate::api::ErrorKind::Input,
             9 => crate::api::ErrorKind::PreviewExpired,
-            10 => crate::api::ErrorKind::Other,
+            10 => crate::api::ErrorKind::ShieldedNotReady,
+            11 => crate::api::ErrorKind::ParamsMissing,
+            12 => crate::api::ErrorKind::Other,
             _ => unreachable!("Invalid variant for ErrorKind: {}", inner),
         };
     }
@@ -1466,6 +1599,7 @@ impl SseDecode for crate::api::HistoryItem {
         let mut var_kind = <String>::sse_decode(deserializer);
         let mut var_hasPayload = <bool>::sse_decode(deserializer);
         let mut var_shielded = <bool>::sse_decode(deserializer);
+        let mut var_memo = <String>::sse_decode(deserializer);
         return crate::api::HistoryItem {
             txid: var_txid,
             height: var_height,
@@ -1477,6 +1611,7 @@ impl SseDecode for crate::api::HistoryItem {
             kind: var_kind,
             has_payload: var_hasPayload,
             shielded: var_shielded,
+            memo: var_memo,
         };
     }
 }
@@ -1784,6 +1919,51 @@ impl SseDecode for Option<i64> {
     }
 }
 
+impl SseDecode for crate::api::ParamsProgress {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_file = <String>::sse_decode(deserializer);
+        let mut var_doneBytes = <i64>::sse_decode(deserializer);
+        let mut var_totalBytes = <i64>::sse_decode(deserializer);
+        let mut var_finished = <bool>::sse_decode(deserializer);
+        return crate::api::ParamsProgress {
+            file: var_file,
+            done_bytes: var_doneBytes,
+            total_bytes: var_totalBytes,
+            finished: var_finished,
+        };
+    }
+}
+
+impl SseDecode for crate::api::ParamsStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_ready = <bool>::sse_decode(deserializer);
+        let mut var_verified = <bool>::sse_decode(deserializer);
+        let mut var_missingBytes = <i64>::sse_decode(deserializer);
+        let mut var_totalBytes = <i64>::sse_decode(deserializer);
+        return crate::api::ParamsStatus {
+            ready: var_ready,
+            verified: var_verified,
+            missing_bytes: var_missingBytes,
+            total_bytes: var_totalBytes,
+        };
+    }
+}
+
+impl SseDecode for crate::api::ReceiveKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::ReceiveKind::Transparent,
+            1 => crate::api::ReceiveKind::Shielded,
+            2 => crate::api::ReceiveKind::Yed,
+            _ => unreachable!("Invalid variant for ReceiveKind: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::api::Recipient {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -1938,12 +2118,20 @@ impl SseDecode for crate::api::SyncEvent {
         let mut var_tip = <i64>::sse_decode(deserializer);
         let mut var_syncHeight = <i64>::sse_decode(deserializer);
         let mut var_yellowbackUsable = <bool>::sse_decode(deserializer);
+        let mut var_percent = <i32>::sse_decode(deserializer);
+        let mut var_shieldedHeight = <i64>::sse_decode(deserializer);
+        let mut var_shieldedSendable = <bool>::sse_decode(deserializer);
+        let mut var_shieldedMessage = <String>::sse_decode(deserializer);
         return crate::api::SyncEvent {
             stage: var_stage,
             message: var_message,
             tip: var_tip,
             sync_height: var_syncHeight,
             yellowback_usable: var_yellowbackUsable,
+            percent: var_percent,
+            shielded_height: var_shieldedHeight,
+            shielded_sendable: var_shieldedSendable,
+            shielded_message: var_shieldedMessage,
         };
     }
 }
@@ -1956,8 +2144,10 @@ impl SseDecode for crate::api::SyncStage {
             0 => crate::api::SyncStage::Connecting,
             1 => crate::api::SyncStage::Probing,
             2 => crate::api::SyncStage::Scanning,
-            3 => crate::api::SyncStage::Done,
-            4 => crate::api::SyncStage::Failed,
+            3 => crate::api::SyncStage::ShieldedScanning,
+            4 => crate::api::SyncStage::ShieldedMemos,
+            5 => crate::api::SyncStage::Done,
+            6 => crate::api::SyncStage::Failed,
             _ => unreachable!("Invalid variant for SyncStage: {}", inner),
         };
     }
@@ -2046,6 +2236,18 @@ impl SseDecode for crate::api::WifExport {
     }
 }
 
+impl SseDecode for crate::api::YecFunding {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::YecFunding::Transparent,
+            1 => crate::api::YecFunding::Shielded,
+            _ => unreachable!("Invalid variant for YecFunding: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::api::YecPreview {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2060,6 +2262,10 @@ impl SseDecode for crate::api::YecPreview {
         let mut var_keepsReservedZat = <i64>::sse_decode(deserializer);
         let mut var_expiryHeight = <u32>::sse_decode(deserializer);
         let mut var_txid = <String>::sse_decode(deserializer);
+        let mut var_funding = <crate::api::YecFunding>::sse_decode(deserializer);
+        let mut var_revealsShielded = <bool>::sse_decode(deserializer);
+        let mut var_memo = <Option<String>>::sse_decode(deserializer);
+        let mut var_paramsNeeded = <bool>::sse_decode(deserializer);
         return crate::api::YecPreview {
             preview_id: var_previewId,
             to: var_to,
@@ -2072,6 +2278,10 @@ impl SseDecode for crate::api::YecPreview {
             keeps_reserved_zat: var_keepsReservedZat,
             expiry_height: var_expiryHeight,
             txid: var_txid,
+            funding: var_funding,
+            reveals_shielded: var_revealsShielded,
+            memo: var_memo,
+            params_needed: var_paramsNeeded,
         };
     }
 }
@@ -2157,30 +2367,33 @@ fn pde_ffi_dispatcher_primary_impl(
         5 => wire__crate__api__claim_impl(port, ptr, rust_vec_len, data_len),
         6 => wire__crate__api__claimable_impl(port, ptr, rust_vec_len, data_len),
         8 => wire__crate__api__create_wallet_impl(port, ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__export_wif_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__history_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__import_wif_impl(port, ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__init_app_impl(port, ptr, rust_vec_len, data_len),
-        16 => wire__crate__api__lock_impl(port, ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__mint_estimate_impl(port, ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__mint_finish_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__mint_start_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__mint_status_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__mint_sweep_impl(port, ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__mints_impl(port, ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__probe_server_impl(port, ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__receive_address_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__redeem_confirm_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__redeem_preview_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__send_yec_confirm_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__send_yec_preview_impl(port, ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__send_yed_confirm_impl(port, ptr, rust_vec_len, data_len),
-        30 => wire__crate__api__send_yed_preview_impl(port, ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__set_server_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__status_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__sync_now_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__unlock_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__api__vaults_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__download_params_impl(port, ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__export_wif_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__history_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__import_wif_impl(port, ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__init_app_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__lock_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__mint_estimate_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__mint_finish_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__mint_start_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__mint_status_impl(port, ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__mint_sweep_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__mints_impl(port, ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__new_shielded_address_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__params_status_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__probe_server_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__receive_address_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__redeem_confirm_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__redeem_preview_impl(port, ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__send_yec_confirm_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__send_yec_preview_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__send_yed_confirm_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__send_yed_preview_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__set_server_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__status_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__sync_now_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__unlock_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__vaults_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2196,9 +2409,9 @@ fn pde_ffi_dispatcher_sync_impl(
         4 => wire__crate__api__check_seed_words_impl(ptr, rust_vec_len, data_len),
         7 => wire__crate__api__core_version_impl(ptr, rust_vec_len, data_len),
         9 => wire__crate__api__default_servers_impl(ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__generate_seed_words_impl(ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__is_unlocked_impl(ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__validate_address_impl(ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__generate_seed_words_impl(ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__is_unlocked_impl(ptr, rust_vec_len, data_len),
+        38 => wire__crate__api__validate_address_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2231,6 +2444,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::AddressPair {
             self.s.into_into_dart().into_dart(),
             self.path.into_into_dart().into_dart(),
             self.covered_by_seed.into_into_dart().into_dart(),
+            self.address.into_into_dart().into_dart(),
+            self.kind.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -2254,6 +2469,11 @@ impl flutter_rust_bridge::IntoDart for crate::api::Balances {
             self.held_count.into_into_dart().into_dart(),
             self.sync_height.into_into_dart().into_dart(),
             self.yed_send_min_zat.into_into_dart().into_dart(),
+            self.yec_shielded_zat.into_into_dart().into_dart(),
+            self.yec_shielded_spendable_zat.into_into_dart().into_dart(),
+            self.yec_shielded_pending_zat.into_into_dart().into_dart(),
+            self.shielded_scanned_height.into_into_dart().into_dart(),
+            self.shielded_sendable.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -2360,7 +2580,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::ErrorKind {
             Self::NeedYecForFees => 7.into_dart(),
             Self::Input => 8.into_dart(),
             Self::PreviewExpired => 9.into_dart(),
-            Self::Other => 10.into_dart(),
+            Self::ShieldedNotReady => 10.into_dart(),
+            Self::ParamsMissing => 11.into_dart(),
+            Self::Other => 12.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -2385,6 +2607,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::HistoryItem {
             self.kind.into_into_dart().into_dart(),
             self.has_payload.into_into_dart().into_dart(),
             self.shielded.into_into_dart().into_dart(),
+            self.memo.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -2522,6 +2745,59 @@ impl flutter_rust_bridge::IntoDart for crate::api::NetworkId {
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::NetworkId {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::NetworkId> for crate::api::NetworkId {
     fn into_into_dart(self) -> crate::api::NetworkId {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::ParamsProgress {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.file.into_into_dart().into_dart(),
+            self.done_bytes.into_into_dart().into_dart(),
+            self.total_bytes.into_into_dart().into_dart(),
+            self.finished.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::ParamsProgress {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::ParamsProgress> for crate::api::ParamsProgress {
+    fn into_into_dart(self) -> crate::api::ParamsProgress {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::ParamsStatus {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.ready.into_into_dart().into_dart(),
+            self.verified.into_into_dart().into_dart(),
+            self.missing_bytes.into_into_dart().into_dart(),
+            self.total_bytes.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::ParamsStatus {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::ParamsStatus> for crate::api::ParamsStatus {
+    fn into_into_dart(self) -> crate::api::ParamsStatus {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::ReceiveKind {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Transparent => 0.into_dart(),
+            Self::Shielded => 1.into_dart(),
+            Self::Yed => 2.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::ReceiveKind {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::ReceiveKind> for crate::api::ReceiveKind {
+    fn into_into_dart(self) -> crate::api::ReceiveKind {
         self
     }
 }
@@ -2667,6 +2943,10 @@ impl flutter_rust_bridge::IntoDart for crate::api::SyncEvent {
             self.tip.into_into_dart().into_dart(),
             self.sync_height.into_into_dart().into_dart(),
             self.yellowback_usable.into_into_dart().into_dart(),
+            self.percent.into_into_dart().into_dart(),
+            self.shielded_height.into_into_dart().into_dart(),
+            self.shielded_sendable.into_into_dart().into_dart(),
+            self.shielded_message.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -2684,8 +2964,10 @@ impl flutter_rust_bridge::IntoDart for crate::api::SyncStage {
             Self::Connecting => 0.into_dart(),
             Self::Probing => 1.into_dart(),
             Self::Scanning => 2.into_dart(),
-            Self::Done => 3.into_dart(),
-            Self::Failed => 4.into_dart(),
+            Self::ShieldedScanning => 3.into_dart(),
+            Self::ShieldedMemos => 4.into_dart(),
+            Self::Done => 5.into_dart(),
+            Self::Failed => 6.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -2749,6 +3031,22 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::WifExport> for crate::api::Wi
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::YecFunding {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Transparent => 0.into_dart(),
+            Self::Shielded => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::YecFunding {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::YecFunding> for crate::api::YecFunding {
+    fn into_into_dart(self) -> crate::api::YecFunding {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::YecPreview {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -2763,6 +3061,10 @@ impl flutter_rust_bridge::IntoDart for crate::api::YecPreview {
             self.keeps_reserved_zat.into_into_dart().into_dart(),
             self.expiry_height.into_into_dart().into_dart(),
             self.txid.into_into_dart().into_dart(),
+            self.funding.into_into_dart().into_dart(),
+            self.reveals_shielded.into_into_dart().into_dart(),
+            self.memo.into_into_dart().into_dart(),
+            self.params_needed.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -2846,6 +3148,15 @@ impl SseEncode for flutter_rust_bridge::for_generated::anyhow::Error {
     }
 }
 
+impl SseEncode
+    for StreamSink<crate::api::ParamsProgress, flutter_rust_bridge::for_generated::SseCodec>
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        unimplemented!("")
+    }
+}
+
 impl SseEncode for StreamSink<crate::api::SyncEvent, flutter_rust_bridge::for_generated::SseCodec> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -2877,6 +3188,8 @@ impl SseEncode for crate::api::AddressPair {
         <String>::sse_encode(self.s, serializer);
         <String>::sse_encode(self.path, serializer);
         <bool>::sse_encode(self.covered_by_seed, serializer);
+        <String>::sse_encode(self.address, serializer);
+        <crate::api::ReceiveKind>::sse_encode(self.kind, serializer);
     }
 }
 
@@ -2892,6 +3205,11 @@ impl SseEncode for crate::api::Balances {
         <i64>::sse_encode(self.held_count, serializer);
         <i64>::sse_encode(self.sync_height, serializer);
         <i64>::sse_encode(self.yed_send_min_zat, serializer);
+        <i64>::sse_encode(self.yec_shielded_zat, serializer);
+        <i64>::sse_encode(self.yec_shielded_spendable_zat, serializer);
+        <i64>::sse_encode(self.yec_shielded_pending_zat, serializer);
+        <i64>::sse_encode(self.shielded_scanned_height, serializer);
+        <bool>::sse_encode(self.shielded_sendable, serializer);
     }
 }
 
@@ -2965,7 +3283,9 @@ impl SseEncode for crate::api::ErrorKind {
                 crate::api::ErrorKind::NeedYecForFees => 7,
                 crate::api::ErrorKind::Input => 8,
                 crate::api::ErrorKind::PreviewExpired => 9,
-                crate::api::ErrorKind::Other => 10,
+                crate::api::ErrorKind::ShieldedNotReady => 10,
+                crate::api::ErrorKind::ParamsMissing => 11,
+                crate::api::ErrorKind::Other => 12,
                 _ => {
                     unimplemented!("");
                 }
@@ -2988,6 +3308,7 @@ impl SseEncode for crate::api::HistoryItem {
         <String>::sse_encode(self.kind, serializer);
         <bool>::sse_encode(self.has_payload, serializer);
         <bool>::sse_encode(self.shielded, serializer);
+        <String>::sse_encode(self.memo, serializer);
     }
 }
 
@@ -3213,6 +3534,43 @@ impl SseEncode for Option<i64> {
     }
 }
 
+impl SseEncode for crate::api::ParamsProgress {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.file, serializer);
+        <i64>::sse_encode(self.done_bytes, serializer);
+        <i64>::sse_encode(self.total_bytes, serializer);
+        <bool>::sse_encode(self.finished, serializer);
+    }
+}
+
+impl SseEncode for crate::api::ParamsStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.ready, serializer);
+        <bool>::sse_encode(self.verified, serializer);
+        <i64>::sse_encode(self.missing_bytes, serializer);
+        <i64>::sse_encode(self.total_bytes, serializer);
+    }
+}
+
+impl SseEncode for crate::api::ReceiveKind {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::ReceiveKind::Transparent => 0,
+                crate::api::ReceiveKind::Shielded => 1,
+                crate::api::ReceiveKind::Yed => 2,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for crate::api::Recipient {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -3306,6 +3664,10 @@ impl SseEncode for crate::api::SyncEvent {
         <i64>::sse_encode(self.tip, serializer);
         <i64>::sse_encode(self.sync_height, serializer);
         <bool>::sse_encode(self.yellowback_usable, serializer);
+        <i32>::sse_encode(self.percent, serializer);
+        <i64>::sse_encode(self.shielded_height, serializer);
+        <bool>::sse_encode(self.shielded_sendable, serializer);
+        <String>::sse_encode(self.shielded_message, serializer);
     }
 }
 
@@ -3317,8 +3679,10 @@ impl SseEncode for crate::api::SyncStage {
                 crate::api::SyncStage::Connecting => 0,
                 crate::api::SyncStage::Probing => 1,
                 crate::api::SyncStage::Scanning => 2,
-                crate::api::SyncStage::Done => 3,
-                crate::api::SyncStage::Failed => 4,
+                crate::api::SyncStage::ShieldedScanning => 3,
+                crate::api::SyncStage::ShieldedMemos => 4,
+                crate::api::SyncStage::Done => 5,
+                crate::api::SyncStage::Failed => 6,
                 _ => {
                     unimplemented!("");
                 }
@@ -3383,6 +3747,22 @@ impl SseEncode for crate::api::WifExport {
     }
 }
 
+impl SseEncode for crate::api::YecFunding {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::YecFunding::Transparent => 0,
+                crate::api::YecFunding::Shielded => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for crate::api::YecPreview {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -3397,6 +3777,10 @@ impl SseEncode for crate::api::YecPreview {
         <i64>::sse_encode(self.keeps_reserved_zat, serializer);
         <u32>::sse_encode(self.expiry_height, serializer);
         <String>::sse_encode(self.txid, serializer);
+        <crate::api::YecFunding>::sse_encode(self.funding, serializer);
+        <bool>::sse_encode(self.reveals_shielded, serializer);
+        <Option<String>>::sse_encode(self.memo, serializer);
+        <bool>::sse_encode(self.params_needed, serializer);
     }
 }
 

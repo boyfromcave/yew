@@ -1425,3 +1425,479 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- yew-shielded plan S2: Sapling receive / send / memo on either node line ----------------
+
+/// `z_sendmany` from a fresh, funded transparent address of node 0 to `to` with a text memo,
+/// waiting for the operation; returns the txid. The 6.21.0 line needs a privacy policy for the
+/// transparent change (x402 X-F12); the 4.5.0 line takes an explicit fee.
+fn z_fund_from_node0(dn: &Devnet, line: &str, to: &str, amount: &str, memo: &str) -> String {
+    let taddr = dn.node(0, &["getnewaddress"]);
+    let coin = dn.node(0, &["sendtoaddress", &taddr, "3.0"]);
+    dn.wait_mempool(&coin);
+    dn.mine_pool();
+    let amounts = serde_json::json!([{ "address": to, "amount": amount.parse::<f64>().unwrap(),
+        "memo": keys::hex(memo.as_bytes()) }])
+    .to_string();
+    let opid = if line == "dd" {
+        dn.node(0, &["z_sendmany", &taddr, &amounts, "1", "0.0001"])
+    } else {
+        dn.node(
+            0,
+            &[
+                "z_sendmany",
+                &taddr,
+                &amounts,
+                "1",
+                "null",
+                "AllowFullyTransparent",
+            ],
+        )
+    };
+    let start = Instant::now();
+    loop {
+        let res = dn.node_json(0, &["z_getoperationresult", &format!("[\"{opid}\"]")]);
+        if let Some(op) = res.as_array().and_then(|a| a.first()) {
+            assert_eq!(op["status"], "success", "z_sendmany failed: {op}");
+            return op["result"]["txid"].as_str().unwrap().to_string();
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(120),
+            "z_sendmany never finished"
+        );
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+/// Every file under `dir` is free of the account's spending key (raw, its `ask`/`nsk`
+/// halves, the Bech32 form).
+fn assert_no_spending_key(dir: &std::path::Path, a: &yew_core::shielded_keys::SaplingAccount) {
+    let raw = a.spending_key_bytes();
+    let bech = a.spending_key().to_string();
+    let needles: [(&str, &[u8]); 4] = [
+        ("extsk", &raw[..]),
+        ("ask", &raw[41..73]),
+        ("nsk", &raw[73..105]),
+        ("bech32", bech.as_bytes()),
+    ];
+    let mut stack = vec![dir.to_path_buf()];
+    let mut files = 0;
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            files += 1;
+            let bytes = std::fs::read(&p).unwrap();
+            for (what, n) in needles {
+                assert!(
+                    !bytes.windows(n.len()).any(|w| w == n),
+                    "{} holds the spending key ({what})",
+                    p.display()
+                );
+            }
+        }
+    }
+    assert!(files > 0);
+}
+
+/// Sync both pools: the transparent §3.2 loop, then the private scan; returns the transparent
+/// report and the private one.
+async fn sync_both(
+    w: &mut Wallet,
+    server: &Server,
+    c: &mut CompactClient,
+    v: &mut Validator,
+) -> (
+    yew_core::sync::SyncReport,
+    yew_core::shielded::ShieldedSyncReport,
+) {
+    let r = sync(w, c, v.client_mut()).await.unwrap();
+    let z = yew_core::build::yec_private::sync_shielded(
+        w,
+        server,
+        c,
+        yew_core::build::yec_private::no_progress(),
+    )
+    .await
+    .unwrap();
+    (r, z)
+}
+
+#[tokio::test]
+#[ignore = "needs an ARMED regtest devnet of either line (scripts/devnet-s2.sh) and YEW_DEVNET=1"]
+async fn s2_shielded_receive_send_memo_and_regressions() {
+    use yew_core::build::yec_private::{confirm_yec_send, plan_yec_send, Funding};
+    use yew_core::shielded_keys::SaplingAccount;
+    if std::env::var("YEW_DEVNET").ok().as_deref() != Some("1") {
+        eprintln!("YEW_DEVNET is not 1; skipping");
+        return;
+    }
+    let line = env_or("YEW_DEVNET_LINE", "dd".into());
+    let dn = Devnet::new("yb-devnet-s2", "351");
+    let server =
+        Server::parse(&env_or("YEW_DEVNET_SERVER", "127.0.0.1:9418".into()), true).unwrap();
+    let channel = server.connect().await.expect("connect to lightwalletd");
+    let mut c = CompactClient::from_channel(channel.clone());
+    let (mut v, availability) = Validator::detect(YellowbackClient::from_channel(channel))
+        .await
+        .unwrap();
+    assert!(availability.usable(), "{availability:?}");
+    let mut timings = serde_json::Map::new();
+    timings.insert("line".into(), line.clone().into());
+
+    // Warm the price windows, then give node 0 YED for the regression (a $1000 mint, as W2).
+    let ref_lag = match &availability {
+        Availability::Present { info, .. } => {
+            info.params.as_ref().map(|p| p.ref_lag).unwrap_or(2) as u32
+        }
+        Availability::Absent => 2,
+    };
+    loop {
+        let yb = v.client_mut().unwrap();
+        let p = yb.price(0).await.unwrap();
+        let at_ref = yb
+            .price((p.height as u32).saturating_sub(ref_lag))
+            .await
+            .unwrap();
+        if p.p_mint > 0 && at_ref.p_mint > 0 {
+            break;
+        }
+        let h = dn.mine_pool();
+        wait_for_height(&mut c, h).await;
+    }
+    let node_yed = |dn: &Devnet| {
+        dn.node_json(0, &["yed_getbalance"])["confirmedCents"]
+            .as_u64()
+            .unwrap()
+    };
+    if node_yed(&dn) < 10_000 {
+        let mint = dn.node_json(0, &["yed_mint", "100000", "48", "", "", "false"]);
+        let carrier = mint["carrierTxid"].as_str().unwrap().to_string();
+        dn.wait_mempool(&carrier);
+        dn.mine_pool();
+        let start = Instant::now();
+        let mint_txid = loop {
+            let mp = dn.node_json(2, &["getrawmempool"]);
+            if let Some(t) = mp.as_array().unwrap().first() {
+                break t.as_str().unwrap().to_string();
+            }
+            assert!(start.elapsed() < Duration::from_secs(60), "no MINT");
+            std::thread::sleep(Duration::from_millis(300));
+        };
+        dn.wait_mempool(&mint_txid);
+        let h = dn.mine_pool();
+        wait_for_height(&mut c, h).await;
+        assert!(node_yed(&dn) >= 100_000, "node 0 minted");
+    }
+
+    // 1. A seed whose private address node 0 funds (with a memo) BEFORE the wallet exists:
+    //    the restore case. The birthday is the tip before the funding.
+    let mnemonic = keys::generate_mnemonic(12).unwrap();
+    let acct = SaplingAccount::from_mnemonic(&mnemonic, "", Network::Regtest).unwrap();
+    let (_, zaddr) = acct.default_address();
+    let birthday = c.latest_height().await.unwrap();
+    let memo_in = "hello from node 0 to a YEW wallet";
+    let zfund = z_fund_from_node0(&dn, &line, &zaddr, "2.0", memo_in);
+    dn.wait_mempool(&zfund);
+    dn.mine_pool();
+
+    let dir = std::env::temp_dir().join(format!("yew-devnet-s2-{line}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("a.sqlite").to_string_lossy().to_string();
+    let mut w = Wallet::open(&path, Network::Regtest, &mnemonic, "", Some(birthday)).unwrap();
+
+    // Transparent YEC and YED for the regressions.
+    let a_addr = w.receive_address(false).unwrap();
+    let tfund = dn.node(0, &["sendtoaddress", &a_addr.address_s, "3.0"]);
+    let yfund = dn.node_json(0, &["yed_send", &a_addr.address_ye, "5000"])["txid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    dn.wait_mempool(&tfund);
+    dn.wait_mempool(&yfund);
+    let h = dn.mine_pool();
+    wait_for_height(&mut c, h).await;
+
+    let t = Instant::now();
+    let (r, z) = sync_both(&mut w, &server, &mut c, &mut v).await;
+    timings.insert(
+        "restoreSyncMillis".into(),
+        (t.elapsed().as_millis() as u64).into(),
+    );
+    timings.insert("restoreShieldedMillis".into(), z.millis.into());
+    timings.insert("restoreBlocks".into(), z.blocks.into());
+    println!("restore: transparent {r:?}\nprivate {z:?}");
+    assert!(z.registered_now && z.sendable, "{z:?}");
+    assert_eq!(z.received_notes, 1, "{z:?}");
+    assert!(z.enhanced >= 1, "the memo was fetched: {z:?}");
+    assert_eq!(r.yec.0 + r.yec.1, 300_000_000);
+    assert_eq!(r.yed, (5_000, 0));
+    let zb = w.shielded().unwrap().balance().unwrap();
+    assert_eq!(
+        (zb.total_zat, zb.spendable_zat, zb.sendable),
+        (200_000_000, 200_000_000, true),
+        "{zb:?}"
+    );
+    let zh = w.shielded().unwrap().history().unwrap();
+    let row = zh
+        .iter()
+        .find(|x| txid_hex(&x.txid) == zfund)
+        .expect("the funding in the private history");
+    assert_eq!((row.delta_zat, row.memo.as_str()), (200_000_000, memo_in));
+
+    // 2. The proving parameters: "download" from a local copy (file://), pinned SHA-256s.
+    let params = dir.join("sapling-params");
+    let local = [
+        std::env::var("YEW_SAPLING_PARAMS").unwrap_or_default(),
+        format!(
+            "{}/Library/Application Support/ZcashParams",
+            std::env::var("HOME").unwrap()
+        ),
+        format!("{}/.zcash-params", std::env::var("HOME").unwrap()),
+    ]
+    .into_iter()
+    .find(|d| {
+        !d.is_empty()
+            && std::path::Path::new(d)
+                .join("sapling-spend.params")
+                .is_file()
+    })
+    .expect("Sapling parameters on this machine (YEW_SAPLING_PARAMS)");
+    let t = Instant::now();
+    let src = yew_core::sapling_params::ParamsSource::parse(&format!("file://{local}/")).unwrap();
+    let st = yew_core::sapling_params::download(&src, &params, |_| {})
+        .await
+        .unwrap();
+    assert!(st.present() && st.verified);
+    timings.insert(
+        "paramsCopyMillis".into(),
+        (t.elapsed().as_millis() as u64).into(),
+    );
+
+    // 3. Shielded → shielded with a memo to node 0's Sapling address.
+    let node_z = dn.node(0, &["z_getnewaddress", "sapling"]);
+    let memo_out = "hi node 0, private YEC from YEW";
+    let t = Instant::now();
+    let plan = plan_yec_send(
+        &mut w,
+        &node_z,
+        50_000_000,
+        false,
+        Some(memo_out),
+        r.tip,
+        r.branch_id,
+    )
+    .unwrap();
+    timings.insert(
+        "zzPlanMillis".into(),
+        (t.elapsed().as_millis() as u64).into(),
+    );
+    assert!(!plan.reveals_shielded);
+    let Funding::Shielded(p) = &plan.funding else {
+        panic!("a ys1 recipient is paid from notes: {plan:?}")
+    };
+    assert_eq!((p.fee_zat, p.notes, p.change_zat), (10_000, 1, 149_990_000));
+    let t = Instant::now();
+    let sent = confirm_yec_send(&mut w, &mut c, &mut v, &plan, &params)
+        .await
+        .expect("z→z accepted by the gate and the node");
+    timings.insert(
+        "zzConfirmMillis".into(),
+        (t.elapsed().as_millis() as u64).into(),
+    );
+    timings.insert("zzParamsLoadMillis".into(), sent.params_millis.into());
+    timings.insert("zzProveMillis".into(), sent.prove_millis.into());
+    let zz = sent.txid;
+    println!("z→z {zz}");
+    dn.wait_mempool(&zz);
+    let h = dn.mine_pool();
+    wait_for_height(&mut c, h).await;
+    let got = dn.node_json(0, &["z_listreceivedbyaddress", &node_z, "1"]);
+    let note = got
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["txid"] == zz.as_str())
+        .unwrap_or_else(|| panic!("node 0 received {zz}: {got}"));
+    assert_eq!(note["amount"].as_f64().unwrap(), 0.5, "{note}");
+    assert!(
+        note["memo"]
+            .as_str()
+            .unwrap()
+            .starts_with(&keys::hex(memo_out.as_bytes())),
+        "{note}"
+    );
+    let t = Instant::now();
+    let (r, z) = sync_both(&mut w, &server, &mut c, &mut v).await;
+    timings.insert(
+        "catchUpSyncMillis".into(),
+        (t.elapsed().as_millis() as u64).into(),
+    );
+    assert!(z.sendable);
+    let zb = w.shielded().unwrap().balance().unwrap();
+    assert_eq!(zb.total_zat, 149_990_000, "{zb:?}");
+    let row = w
+        .shielded()
+        .unwrap()
+        .history()
+        .unwrap()
+        .into_iter()
+        .find(|x| txid_hex(&x.txid) == zz)
+        .unwrap();
+    assert_eq!(
+        (row.delta_zat, row.memo.as_str(), row.height > 0),
+        (-50_010_000, memo_out, true)
+    );
+
+    // 4. Shielded → transparent: privacy first pays from notes and says it reveals them; a memo
+    //    to a transparent address is refused.
+    let node_t = dn.node(0, &["getnewaddress"]);
+    assert!(plan_yec_send(
+        &mut w,
+        &node_t,
+        1_000,
+        false,
+        Some("no"),
+        r.tip,
+        r.branch_id
+    )
+    .is_err());
+    let plan = plan_yec_send(&mut w, &node_t, 30_000_000, false, None, r.tip, r.branch_id).unwrap();
+    assert!(plan.reveals_shielded, "{plan:?}");
+    // ZIP-317: one spend, two Sapling outputs (change + padding) and one transparent output are
+    // three logical actions.
+    let zt_fee = plan.fee_zat();
+    assert!(matches!(plan.funding, Funding::Shielded(_)));
+    assert_eq!(zt_fee, 15_000);
+    let t = Instant::now();
+    let sent = confirm_yec_send(&mut w, &mut c, &mut v, &plan, &params)
+        .await
+        .expect("z→t accepted");
+    timings.insert(
+        "ztConfirmMillis".into(),
+        (t.elapsed().as_millis() as u64).into(),
+    );
+    timings.insert("ztParamsLoadMillis".into(), sent.params_millis.into());
+    timings.insert("ztProveMillis".into(), sent.prove_millis.into());
+    let zt = sent.txid;
+    dn.wait_mempool(&zt);
+    let h = dn.mine_pool();
+    wait_for_height(&mut c, h).await;
+    assert_eq!(
+        dn.node(0, &["getreceivedbyaddress", &node_t, "1"])
+            .parse::<f64>()
+            .unwrap(),
+        0.3
+    );
+    let (r, _) = sync_both(&mut w, &server, &mut c, &mut v).await;
+    let zb = w.shielded().unwrap().balance().unwrap();
+    let after_zt = 149_990_000 - 30_000_000 - zt_fee as u64;
+    assert_eq!(zb.total_zat, after_zt, "{zb:?}");
+    assert_eq!(
+        r.yec.0 + r.yec.1,
+        300_000_000,
+        "transparent untouched by private sends"
+    );
+
+    // 5. Regression: more than the notes hold falls back to the transparent path, unchanged
+    //    (same builder, same gate path); a direct transparent send and a YED send still work.
+    let plan = plan_yec_send(
+        &mut w,
+        &node_t,
+        150_000_000,
+        false,
+        None,
+        r.tip,
+        r.branch_id,
+    )
+    .unwrap();
+    assert!(!plan.reveals_shielded);
+    let Funding::Transparent(tp) = &plan.funding else {
+        panic!("{plan:?}")
+    };
+    assert_eq!(tp.fee, FEE_ZAT);
+    let tt = confirm_yec_send(&mut w, &mut c, &mut v, &plan, &params)
+        .await
+        .unwrap()
+        .txid;
+    dn.wait_mempool(&tt);
+    let h = dn.mine_pool();
+    wait_for_height(&mut c, h).await;
+    let (r, _) = sync_both(&mut w, &server, &mut c, &mut v).await;
+    assert_eq!(r.yec.0 + r.yec.1, 300_000_000 - 150_000_000 - FEE_ZAT);
+    // Node 0's transparent address in its Yellowback form (same key, `ye…` encoding).
+    let node_ye = keys::encode_yellowback(
+        Network::Regtest,
+        &keys::parse_address(Network::Regtest, &node_t)
+            .unwrap()
+            .hash(),
+    );
+    let node_yed_before = node_yed(&dn);
+    let yp = yed_transfer::build_yed_transfer(&w, &[(node_ye.clone(), 1_234)], r.tip, r.branch_id)
+        .unwrap();
+    let (yt, val) = yed_transfer::broadcast(&w, &mut c, &mut v, &yp)
+        .await
+        .expect("YED transfer accepted");
+    assert_eq!((val.verdict.as_str(), val.burned), ("ok", 0));
+    dn.wait_mempool(&yt);
+    let h = dn.mine_pool();
+    wait_for_height(&mut c, h).await;
+    let (r, _) = sync_both(&mut w, &server, &mut c, &mut v).await;
+    assert_eq!(r.yed.0, 5_000 - 1_234, "{r:?}");
+    assert_eq!(
+        node_yed(&dn),
+        node_yed_before + 1_234,
+        "node 0 received the YED"
+    );
+    let yec_before = r.yec.0 + r.yec.1;
+    let p = yec_send::build_yec_send(&w, &node_t, 10_000_000, false, r.tip, r.branch_id).unwrap();
+    let t2 = yec_send::broadcast(&w, &mut c, &mut v, &p).await.unwrap();
+    dn.wait_mempool(&t2);
+    let h = dn.mine_pool();
+    wait_for_height(&mut c, h).await;
+    let (r, _) = sync_both(&mut w, &server, &mut c, &mut v).await;
+    assert_eq!(r.yec.0 + r.yec.1, yec_before - 10_000_000 - p.fee, "{r:?}");
+    let zb = w.shielded().unwrap().balance().unwrap();
+    assert_eq!(
+        zb.total_zat, after_zt,
+        "private untouched by YEC/YED: {zb:?}"
+    );
+
+    // 6. A second restore of the same seed into a fresh file reproduces the private balance
+    //    and the memos; no file under either private store holds the spending key.
+    let path2 = dir.join("b.sqlite").to_string_lossy().to_string();
+    let mut w2 = Wallet::open(&path2, Network::Regtest, &mnemonic, "", Some(birthday)).unwrap();
+    let t = Instant::now();
+    let (_, z2) = sync_both(&mut w2, &server, &mut c, &mut v).await;
+    timings.insert(
+        "secondRestoreMillis".into(),
+        (t.elapsed().as_millis() as u64).into(),
+    );
+    assert!(z2.sendable);
+    assert_eq!(w2.shielded().unwrap().balance().unwrap(), zb);
+    let memos: Vec<String> = w2
+        .shielded()
+        .unwrap()
+        .history()
+        .unwrap()
+        .into_iter()
+        .map(|x| x.memo)
+        .collect();
+    assert!(memos.iter().any(|m| m == memo_in), "{memos:?}");
+    assert!(
+        memos.iter().any(|m| m == memo_out),
+        "sent memo recovered by the OVK: {memos:?}"
+    );
+    assert_no_spending_key(&dir.join("shielded"), &acct);
+
+    let out = serde_json::Value::Object(timings);
+    println!("S2 devnet ({line}) ok: {out}");
+    if let Ok(f) = std::env::var("YEW_DEVNET_TIMINGS") {
+        std::fs::write(f, serde_json::to_string_pretty(&out).unwrap()).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

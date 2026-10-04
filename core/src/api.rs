@@ -24,25 +24,37 @@
 //!   the core. The rows come back as [`MintStatus`] (the `mints` table, plan §5.3) so a
 //!   screen reopened mid-mint renders the state the file holds.
 //!
+//! - Shielded YEC (yew-shielded plan S2): [`Balances`] carries the private balance and the
+//!   "sending available" flag, [`receive_address`] / [`new_shielded_address`] the `ys1…`
+//!   addresses, [`send_yec_preview`] accepts `ys1…` recipients and a memo and picks the funding
+//!   privacy first (`build::yec_private`), [`HistoryItem::memo`] shows memos, [`sync_now`]
+//!   streams one combined progress, [`params_status`] / [`download_params`] fetch the proving
+//!   parameters on first shielded send. No `zcash_*` type crosses this file: DTOs only.
+//!
 //! `yew-cli` (`core/cli/src/main.rs`) is the other driver of the same core; the two agree on
 //! every step (connect → probe → sync → build → broadcast).
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use flutter_rust_bridge::frb;
 
 use crate::frb_generated::StreamSink;
 use tokio::sync::Mutex;
 
-use crate::build::{yec_send, yed_transfer};
+use crate::build::yec_private::{self, Funding, YecSendPlan};
+use crate::build::yed_transfer;
 use crate::coins::UtxoClass;
 use crate::gate::{GateError, Validator};
 use crate::keys;
 use crate::net::{Availability, CompactClient, NetError, Server, YellowbackClient};
 use crate::params::{self, Network};
+use crate::sapling_params;
+use crate::shielded::{ShieldedError, ShieldedProgress, ShieldedSyncReport};
 use crate::sync;
 use crate::tx::txid_hex;
 use crate::wallet::{Wallet, WalletError};
@@ -103,6 +115,12 @@ pub enum ErrorKind {
     Input,
     /// A preview id that no longer exists.
     PreviewExpired,
+    /// Private (shielded) sending needs the wallet scanned to the tip ("syncing… sending
+    /// available at 100%"): sync, then try again.
+    ShieldedNotReady,
+    /// The Sapling proving parameters are not downloaded yet: call [`download_params`] (the
+    /// one-time "Preparing private sending (52 MB)" sheet), then confirm again.
+    ParamsMissing,
     /// Anything else (storage, key derivation).
     Other,
 }
@@ -155,7 +173,30 @@ impl From<WalletError> for YewError {
                 | crate::build::mint::MintError::BadLock { .. },
             ) => YewError::new(ErrorKind::Input, text),
             WalletError::Mint(m) => YewError::new(ErrorKind::Refused, m.to_string()),
+            WalletError::Shielded(s) => YewError::from(s),
             other => YewError::new(ErrorKind::Other, other.to_string()),
+        }
+    }
+}
+
+impl From<ShieldedError> for YewError {
+    fn from(e: ShieldedError) -> YewError {
+        let text = e.to_string();
+        match e {
+            ShieldedError::NotSynced { .. } => YewError::new(ErrorKind::ShieldedNotReady, text),
+            ShieldedError::Params(sapling_params::ParamsError::Missing(_)) => {
+                YewError::new(ErrorKind::ParamsMissing, text)
+            }
+            ShieldedError::Address(_) | ShieldedError::Memo(_) => {
+                YewError::new(ErrorKind::Input, text)
+            }
+            ShieldedError::Net(n) => YewError::from(n),
+            ShieldedError::Light(_) => YewError::new(ErrorKind::Network, text),
+            ShieldedError::Insufficient { .. }
+            | ShieldedError::Branch { .. }
+            | ShieldedError::Propose(_)
+            | ShieldedError::Create(_) => YewError::new(ErrorKind::Refused, text),
+            _ => YewError::new(ErrorKind::Other, text),
         }
     }
 }
@@ -280,9 +321,31 @@ pub struct Balances {
     pub sync_height: i64,
     /// The YEC a YED send needs at least (`fee + 2 · TOKEN_VALUE`), zat.
     pub yed_send_min_zat: i64,
+    /// Private (shielded, Sapling) YEC: every unspent note, zat. Never used for YED or fees.
+    pub yec_shielded_zat: i64,
+    /// Private YEC spendable now, zat (0 until the scan reaches the tip).
+    pub yec_shielded_spendable_zat: i64,
+    /// Private YEC waiting for a confirmation or for the scan, zat (own change + incoming).
+    pub yec_shielded_pending_zat: i64,
+    /// The height the private wallet is scanned to without gaps (0 = never).
+    pub shielded_scanned_height: i64,
+    /// Scanned to the tip: private sending is available ("sending available at 100%").
+    pub shielded_sendable: bool,
 }
 
-/// A receive address in both forms.
+/// Which receive address [`receive_address`] returns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReceiveKind {
+    /// The transparent `s…` form (YEC from any wallet).
+    Transparent,
+    /// The private Sapling `ys1…` address (shielded YEC, memos).
+    Shielded,
+    /// The Yellowback `ye…` form of the transparent address (YED, mint).
+    Yed,
+}
+
+/// A receive address: `address` is the one of `kind`; for the transparent kinds `ye` and `s`
+/// are the two forms of the same key, for a shielded address both are empty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AddressPair {
     /// The Yellowback form (`ye…` / `yt…` / `yr…`).
@@ -293,6 +356,10 @@ pub struct AddressPair {
     pub path: String,
     /// `false` for an imported key (not covered by the seed backup).
     pub covered_by_seed: bool,
+    /// The address of `kind` (`s…`, `ye…` or `ys1…`).
+    pub address: String,
+    /// The kind of `address`.
+    pub kind: ReceiveKind,
 }
 
 /// One history row.
@@ -317,8 +384,11 @@ pub struct HistoryItem {
     pub kind: String,
     /// The transaction carries an `OP_RETURN`.
     pub has_payload: bool,
-    /// The transaction has shielded components (a transparent leg of a shielded tx).
+    /// The transaction has shielded components (a transparent leg of a shielded tx, or a
+    /// private send / receipt).
     pub shielded: bool,
+    /// The memo of a private receipt or send (text), empty when none.
+    pub memo: String,
 }
 
 /// One page of [`history`].
@@ -355,8 +425,54 @@ pub struct YecPreview {
     pub keeps_reserved_zat: i64,
     /// `nExpiryHeight`.
     pub expiry_height: u32,
-    /// The txid the transaction will have.
+    /// The txid the transaction will have (empty for a private send: its proofs are made at
+    /// confirm, so the txid is known only then).
     pub txid: String,
+    /// Where the money comes from (privacy first, `build::yec_private`).
+    pub funding: YecFunding,
+    /// Private funds go to a transparent address: the amber line "This send leaves the
+    /// private pool".
+    pub reveals_shielded: bool,
+    /// The memo that will be sent (private recipients only).
+    pub memo: Option<String>,
+    /// A private send whose proving parameters are not downloaded yet: run
+    /// [`download_params`] before [`send_yec_confirm`].
+    pub params_needed: bool,
+}
+
+/// The funding of a YEC send.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum YecFunding {
+    /// Transparent `YEC` (and, with `send_everything`, `FEE_RESERVE`) outputs.
+    Transparent,
+    /// Private (Sapling) notes.
+    Shielded,
+}
+
+/// [`params_status`]: the Sapling proving parameters on this device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParamsStatus {
+    /// Both files are present (pinned lengths): a private send can be proved.
+    pub ready: bool,
+    /// Both were hashed against their SHA-256 pins in this session.
+    pub verified: bool,
+    /// Bytes still to download.
+    pub missing_bytes: i64,
+    /// Bytes of a full download (51,551,256).
+    pub total_bytes: i64,
+}
+
+/// One event of [`download_params`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParamsProgress {
+    /// The file being fetched (`sapling-spend.params` / `sapling-output.params`).
+    pub file: String,
+    /// Bytes received so far in this call.
+    pub done_bytes: i64,
+    /// Bytes this call fetches.
+    pub total_bytes: i64,
+    /// The last event: both files verified and in place.
+    pub finished: bool,
 }
 
 /// The node's dry run of a preview (`ValidateRawTransaction`).
@@ -461,6 +577,10 @@ pub enum SyncStage {
     Probing,
     /// The §3.2 loop.
     Scanning,
+    /// The private (Sapling) scan: `percent`, `shielded_height` move.
+    ShieldedScanning,
+    /// Fetching the memos and status of private transactions.
+    ShieldedMemos,
     /// Finished; `tip` and `sync_height` are set.
     Done,
     /// Failed; `message` is set.
@@ -480,6 +600,15 @@ pub struct SyncEvent {
     pub sync_height: i64,
     /// Yellowback usable on this server (from `Probing` on).
     pub yellowback_usable: bool,
+    /// Overall progress 0..=100 (transparent scan to 10, private scan 10..95, memos, done).
+    pub percent: i32,
+    /// The height the private wallet is scanned to.
+    pub shielded_height: i64,
+    /// Private sending is available (scanned to the tip).
+    pub shielded_sendable: bool,
+    /// On `Done`: why the private sync did not run or failed, empty when it succeeded (the
+    /// transparent sync still counts; YED and transparent YEC are unaffected).
+    pub shielded_message: String,
 }
 
 /// [`mint_estimate`]: what the Mint screen shows before anything is signed (plan §5.3).
@@ -764,7 +893,7 @@ struct Conn {
 
 /// A signed preview waiting for its confirm.
 enum Preview {
-    Yec(yec_send::YecSendPreview),
+    Yec(Box<YecSendPlan>),
     Yed(yed_transfer::YedTransferPreview),
     Redeem(crate::build::redeem::RedeemBuild),
 }
@@ -775,6 +904,16 @@ struct Open {
     server: Server,
     conn: Option<Conn>,
     previews: HashMap<String, Preview>,
+    /// `<data_dir>/sapling-params`: the proving parameters (S0-2).
+    params_dir: PathBuf,
+}
+
+/// Ids for private-send previews (their txid exists only after proving).
+static PREVIEW_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// The proving parameters' directory under the app's data directory.
+fn params_dir_of(data_dir: &str) -> PathBuf {
+    PathBuf::from(data_dir.trim_end_matches('/')).join("sapling-params")
 }
 
 /// The single wallet handle.
@@ -906,6 +1045,25 @@ impl Open {
             }
         }
     }
+
+    /// The private (Sapling) sync after [`Open::sync`] (connected): the light client's scan,
+    /// then memos and status through YEW's channel. `progress` ticks during the scan.
+    async fn sync_shielded(
+        &mut self,
+        progress: crate::shielded::ProgressFn,
+    ) -> Result<ShieldedSyncReport, YewError> {
+        ensure_conn(self).await?;
+        let Open {
+            wallet,
+            server,
+            conn,
+            ..
+        } = self;
+        let conn = conn.as_mut().expect("connected");
+        yec_private::sync_shielded(wallet, server, &mut conn.compact, progress)
+            .await
+            .map_err(YewError::from)
+    }
 }
 
 /// `host:port`, `plain` (regtest only) and an optional pinned certificate (PEM; the only trust
@@ -942,6 +1100,10 @@ fn open_wallet(
     let words = keys::SecretString::new(mnemonic.split_whitespace().collect::<Vec<_>>().join(" "));
     Wallet::open(&path, network, &words, passphrase, birthday).map_err(|e| match e {
         WalletError::Key(k) => YewError::new(ErrorKind::Input, k.to_string()),
+        WalletError::Shielded(ShieldedError::OtherSeed) => YewError::new(
+            ErrorKind::Other,
+            "wallet file belongs to another seed (private store)",
+        ),
         other => YewError::new(ErrorKind::Other, other.to_string()),
     })
 }
@@ -1094,11 +1256,17 @@ pub fn create_wallet(
         )?;
         let id = wallet_id(&wallet)?;
         let primary = wallet.receive_address(false)?;
+        if generated.is_some() {
+            // A seed generated here has no history: the private account starts at the tip
+            // when no birthday was given (`build::yec_private::sync_shielded`).
+            wallet.store.set_meta("new_seed", "1").map_err(store_err)?;
+        }
         *guard = Some(Open {
             wallet,
             server,
             conn: None,
             previews: HashMap::new(),
+            params_dir: params_dir_of(&data_dir),
         });
         Ok(Created {
             wallet_id: id,
@@ -1137,6 +1305,7 @@ pub fn unlock(
             server,
             conn: None,
             previews: HashMap::new(),
+            params_dir: params_dir_of(&data_dir),
         });
         Ok(id)
     })
@@ -1162,6 +1331,9 @@ pub fn set_server(server: String, plain: bool, ca_pem: Option<String>) -> Result
         o.server = parse_server(&server, plain, ca_pem, o.wallet.network)?;
         o.conn = None;
         o.previews.clear();
+        if let Some(sh) = o.wallet.shielded.as_mut() {
+            sh.disconnect();
+        }
         Ok(())
     })
 }
@@ -1223,6 +1395,10 @@ pub fn balances() -> Result<Balances, YewError> {
             .store
             .meta_u64("last_synced_height")
             .map_err(|e| YewError::new(ErrorKind::Other, e.to_string()))?;
+        let z = match o.wallet.shielded.as_ref() {
+            Some(sh) => sh.balance()?,
+            None => Default::default(),
+        };
         Ok(Balances {
             yec_zat: b.yec_zat,
             yec_reserved_zat: b.yec_reserved_zat,
@@ -1233,20 +1409,92 @@ pub fn balances() -> Result<Balances, YewError> {
             held_count: held as i64,
             sync_height: sync_height as i64,
             yed_send_min_zat: params::FEE_ZAT + 2 * params::TOKEN_VALUE,
+            yec_shielded_zat: z.total_zat as i64,
+            yec_shielded_spendable_zat: z.spendable_zat as i64,
+            yec_shielded_pending_zat: (z.pending_change_zat + z.pending_incoming_zat) as i64,
+            shielded_scanned_height: z.scanned_height as i64,
+            shielded_sendable: z.sendable,
         })
     })
 }
 
-/// The receive address (first unused external). `fresh` marks the current one used first.
-pub fn receive_address(fresh: bool) -> Result<AddressPair, YewError> {
+/// The receive address of `kind`. Transparent kinds: the first unused external address
+/// (`fresh` marks the current one used first). Shielded: the address last handed out by
+/// [`new_shielded_address`], or the default `ys1…` address (`fresh` is ignored; diversified
+/// addresses all reach the same account).
+pub fn receive_address(kind: ReceiveKind, fresh: bool) -> Result<AddressPair, YewError> {
+    with_open(|o| match kind {
+        ReceiveKind::Shielded => {
+            let index = o
+                .wallet
+                .store
+                .meta_u64("sapling_diversifier")
+                .map_err(store_err)?;
+            shielded_pair(o, index)
+        }
+        _ => {
+            let row = o.wallet.receive_address(fresh)?;
+            Ok(AddressPair {
+                address: if kind == ReceiveKind::Yed {
+                    row.address_ye.clone()
+                } else {
+                    row.address_s.clone()
+                },
+                kind,
+                ye: row.address_ye,
+                s: row.address_s,
+                path: format!("m/44'/347'/0'/{}/{}", row.chain, row.index),
+                covered_by_seed: true,
+            })
+        }
+    })
+}
+
+/// The shielded address at the first valid diversifier index at or after `index`.
+fn shielded_pair(o: &Open, index: u64) -> Result<AddressPair, YewError> {
+    let sh = o.wallet.shielded()?;
+    let (j, address) = if index == 0 {
+        sh.default_address()
+    } else {
+        sh.address_at(index)?
+    };
+    Ok(AddressPair {
+        ye: String::new(),
+        s: String::new(),
+        path: format!("m/32'/347'/0' diversifier {j}"),
+        covered_by_seed: true,
+        address,
+        kind: ReceiveKind::Shielded,
+    })
+}
+
+/// A new diversified `ys1…` address of the same private account (Receive → "new address"):
+/// unlinkable to the others on chain, received into the same balance. Remembered, so
+/// [`receive_address`] with [`ReceiveKind::Shielded`] shows it until the next one.
+pub fn new_shielded_address() -> Result<AddressPair, YewError> {
     with_open(|o| {
-        let row = o.wallet.receive_address(fresh)?;
-        Ok(AddressPair {
-            ye: row.address_ye,
-            s: row.address_s,
-            path: format!("m/44'/347'/0'/{}/{}", row.chain, row.index),
-            covered_by_seed: true,
-        })
+        let last = o
+            .wallet
+            .store
+            .meta_u64("sapling_diversifier")
+            .map_err(store_err)?;
+        let start = if last == 0 {
+            o.wallet.shielded()?.default_address().0 + 1
+        } else {
+            last + 1
+        };
+        let pair = shielded_pair(o, start)?;
+        let j: u64 = pair
+            .path
+            .rsplit(' ')
+            .next()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(start);
+        o.wallet
+            .store
+            .set_meta("sapling_diversifier", &j.to_string())
+            .map_err(store_err)?;
+        Ok(pair)
     })
 }
 
@@ -1259,6 +1507,8 @@ pub fn addresses() -> Result<Vec<AddressPair>, YewError> {
             .map(|r| {
                 let hd = r.hd_chain().is_some();
                 AddressPair {
+                    address: r.address_s.clone(),
+                    kind: ReceiveKind::Transparent,
                     ye: r.address_ye,
                     s: r.address_s,
                     path: if hd {
@@ -1303,7 +1553,44 @@ fn history_item(h: &crate::store::HistoryRow) -> HistoryItem {
         kind: h.kind.clone(),
         has_payload: h.has_payload,
         shielded: h.shielded,
+        memo: String::new(),
     }
+}
+
+/// The history row of a private transaction (merged into its transparent row when the same
+/// transaction also moved transparent funds of this wallet).
+fn merge_shielded(rows: &mut Vec<HistoryItem>, z: &crate::shielded::ShieldedTx) {
+    let txid = txid_hex(&z.txid);
+    if let Some(r) = rows.iter_mut().find(|r| r.txid == txid) {
+        r.yec_delta_zat += z.delta_zat;
+        r.shielded = true;
+        if r.memo.is_empty() {
+            r.memo = z.memo.clone();
+        }
+        if z.height > 0 && r.height == 0 {
+            r.height = z.height as i64;
+            r.pending = false;
+        }
+        return;
+    }
+    rows.push(HistoryItem {
+        txid,
+        height: z.height as i64,
+        pending: z.height == 0,
+        yec_delta_zat: z.delta_zat,
+        yed_delta_cents: 0,
+        label: if z.delta_zat < 0 {
+            "sent private YEC"
+        } else {
+            "received private YEC"
+        }
+        .into(),
+        verdict: String::new(),
+        kind: String::new(),
+        has_payload: false,
+        shielded: true,
+        memo: z.memo.clone(),
+    });
 }
 
 /// One page of history (pending first, then newest first). `page_size` 0 = 50.
@@ -1319,62 +1606,113 @@ pub fn history(page: u32, page_size: u32) -> Result<HistoryPage, YewError> {
         } else {
             page_size as usize
         };
-        let rows = all
-            .iter()
+        let mut merged: Vec<HistoryItem> = all.iter().map(history_item).collect();
+        if let Some(sh) = o.wallet.shielded.as_ref() {
+            for z in sh.history()?.iter().filter(|z| !z.expired) {
+                merge_shielded(&mut merged, z);
+            }
+            // Pending first, then newest first (a stable sort keeps the store's order within).
+            merged.sort_by_key(|r| (!r.pending, std::cmp::Reverse(r.height)));
+        }
+        let total = merged.len() as i64;
+        let rows = merged
+            .into_iter()
             .skip(page as usize * size)
             .take(size)
-            .map(history_item)
             .collect();
-        Ok(HistoryPage {
-            rows,
-            page,
-            total: all.len() as i64,
-        })
+        Ok(HistoryPage { rows, page, total })
     })
 }
 
-/// Build and sign a YEC send (after a sync). Nothing is broadcast.
+/// Plan a YEC send (after a sync of both pools), funded **privacy first**
+/// (`build::yec_private`): a `ys1…` recipient (optionally with a text `memo` of at most 512
+/// bytes) from private notes; a transparent recipient from private notes when they cover it
+/// (`reveals_shielded` set: the amber line), else from transparent YEC exactly as before.
+/// A transparent preview is signed already; a private one is proved and signed at confirm.
+/// Nothing is broadcast.
 pub fn send_yec_preview(
     to: String,
     zat: i64,
     send_everything: bool,
+    memo: Option<String>,
 ) -> Result<YecPreview, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
             let r = o.sync().await?;
-            let p =
-                yec_send::build_yec_send(&o.wallet, &to, zat, send_everything, r.tip, r.branch_id)?;
-            let txid = txid_hex(&p.txid);
-            let reserved_spent: i64 = p
-                .inputs
-                .iter()
-                .filter(|u| u.class == UtxoClass::FeeReserve)
-                .map(|u| u.value)
-                .sum();
-            let out = YecPreview {
-                preview_id: txid.clone(),
-                to: p.to.clone(),
-                amount_zat: p.amount,
-                amount_bumped: p.amount_bumped,
-                fee_zat: p.fee,
-                change_zat: p.change,
-                inputs: p.inputs.len() as u32,
-                uses_reserve: p.uses_reserve,
-                keeps_reserved_zat: r.yec.1 - reserved_spent,
-                expiry_height: p.expiry_height,
-                txid: txid.clone(),
+            // The private side is synced too; its failure only matters for a private recipient
+            // (a transparent one falls back to transparent funds).
+            let shielded = o.sync_shielded(yec_private::no_progress()).await;
+            if crate::shielded_keys::is_sapling_address(o.wallet.network, to.trim()) {
+                shielded?;
+            }
+            let plan = yec_private::plan_yec_send(
+                &mut o.wallet,
+                &to,
+                zat,
+                send_everything,
+                memo.as_deref(),
+                r.tip,
+                r.branch_id,
+            )?;
+            let out = match &plan.funding {
+                Funding::Transparent(p) => {
+                    let txid = txid_hex(&p.txid);
+                    let reserved_spent: i64 = p
+                        .inputs
+                        .iter()
+                        .filter(|u| u.class == UtxoClass::FeeReserve)
+                        .map(|u| u.value)
+                        .sum();
+                    YecPreview {
+                        preview_id: txid.clone(),
+                        to: p.to.clone(),
+                        amount_zat: p.amount,
+                        amount_bumped: p.amount_bumped,
+                        fee_zat: p.fee,
+                        change_zat: p.change,
+                        inputs: p.inputs.len() as u32,
+                        uses_reserve: p.uses_reserve,
+                        keeps_reserved_zat: r.yec.1 - reserved_spent,
+                        expiry_height: p.expiry_height,
+                        txid,
+                        funding: YecFunding::Transparent,
+                        reveals_shielded: false,
+                        memo: None,
+                        params_needed: false,
+                    }
+                }
+                Funding::Shielded(p) => YecPreview {
+                    preview_id: format!("z{}", PREVIEW_SEQ.fetch_add(1, Ordering::SeqCst)),
+                    to: p.to.clone(),
+                    amount_zat: p.amount_zat as i64,
+                    amount_bumped: p.amount_bumped,
+                    fee_zat: p.fee_zat as i64,
+                    change_zat: p.change_zat as i64,
+                    inputs: p.notes,
+                    uses_reserve: false,
+                    keeps_reserved_zat: r.yec.1,
+                    expiry_height: p.expiry_height,
+                    txid: String::new(),
+                    funding: YecFunding::Shielded,
+                    reveals_shielded: plan.reveals_shielded,
+                    memo: p.memo.clone(),
+                    params_needed: !sapling_params::status(&o.params_dir).present(),
+                },
             };
-            o.previews.insert(txid, Preview::Yec(p));
+            o.previews
+                .insert(out.preview_id.clone(), Preview::Yec(Box::new(plan)));
             Ok(out)
         })
     })
 }
 
-/// Broadcast a YEC preview through the gate (D-W-5).
+/// Broadcast a YEC preview through the gate (D-W-5). A private send is proved and signed
+/// here (seconds), with the proving parameters verified first ([`ErrorKind::ParamsMissing`]
+/// when they are not downloaded: the preview stays valid, download, then confirm again).
 pub fn send_yec_confirm(preview_id: String) -> Result<SendResult, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
-            let p = match o.previews.remove(&preview_id) {
+            let plan = match o.previews.remove(&preview_id) {
                 Some(Preview::Yec(p)) => p,
                 _ => {
                     return Err(YewError::new(
@@ -1383,11 +1721,33 @@ pub fn send_yec_confirm(preview_id: String) -> Result<SendResult, YewError> {
                     ))
                 }
             };
+            if matches!(plan.funding, Funding::Shielded(_))
+                && !sapling_params::status(&o.params_dir).present()
+            {
+                let e = YewError::new(
+                    ErrorKind::ParamsMissing,
+                    "Private sending needs a one-time download of 52 MB (the Sapling proving parameters).",
+                );
+                o.previews.insert(preview_id, Preview::Yec(plan));
+                return Err(e);
+            }
             ensure_conn(o).await?;
-            let Open { wallet, conn, .. } = o;
+            let Open {
+                wallet,
+                conn,
+                params_dir,
+                ..
+            } = o;
             let conn = conn.as_mut().expect("connected");
-            let txid =
-                yec_send::broadcast(wallet, &mut conn.compact, &mut conn.validator, &p).await?;
+            let txid = yec_private::confirm_yec_send(
+                wallet,
+                &mut conn.compact,
+                &mut conn.validator,
+                &plan,
+                params_dir,
+            )
+            .await?
+            .txid;
             Ok(SendResult {
                 txid,
                 verdict: match &conn.validator {
@@ -1397,6 +1757,58 @@ pub fn send_yec_confirm(preview_id: String) -> Result<SendResult, YewError> {
             })
         })
     })
+}
+
+/// Where the proving parameters stand on this device (no network).
+pub fn params_status() -> Result<ParamsStatus, YewError> {
+    let dir = with_open(|o| Ok(o.params_dir.clone()))?;
+    Ok(params_status_of(&dir))
+}
+
+fn params_status_of(dir: &std::path::Path) -> ParamsStatus {
+    let st = sapling_params::status(dir);
+    ParamsStatus {
+        ready: st.present(),
+        verified: st.verified,
+        missing_bytes: st.missing_bytes as i64,
+        total_bytes: sapling_params::TOTAL_BYTES as i64,
+    }
+}
+
+/// Download the Sapling proving parameters from `base_url` (`https://host/dir/`; S0-2: the
+/// owner's host; `file://` or a loopback `http://` for tests) into the app's data directory,
+/// each file verified against its pinned SHA-256 before it is kept. Progress on `sink`, ending
+/// with a `finished` event ([`params_status`] then says `ready`); the wallet stays usable
+/// meanwhile (the download does not hold the wallet).
+pub fn download_params(base_url: String, sink: StreamSink<ParamsProgress>) -> Result<(), YewError> {
+    static DOWNLOADING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let Ok(_guard) = DOWNLOADING.try_lock() else {
+        return Err(YewError::new(
+            ErrorKind::Refused,
+            "The proving parameters are already downloading.",
+        ));
+    };
+    let source = sapling_params::ParamsSource::parse(&base_url)
+        .map_err(|e| YewError::new(ErrorKind::Input, e.to_string()))?;
+    let dir = with_open(|o| Ok(o.params_dir.clone()))?;
+    let progress_sink = sink.clone();
+    let st = runtime()
+        .block_on(sapling_params::download(&source, &dir, move |p| {
+            let _ = progress_sink.add(ParamsProgress {
+                file: p.file.to_string(),
+                done_bytes: p.done as i64,
+                total_bytes: p.total as i64,
+                finished: false,
+            });
+        }))
+        .map_err(|e| YewError::new(ErrorKind::Network, e.to_string()))?;
+    let _ = sink.add(ParamsProgress {
+        file: String::new(),
+        done_bytes: (sapling_params::TOTAL_BYTES - st.missing_bytes) as i64,
+        total_bytes: sapling_params::TOTAL_BYTES as i64,
+        finished: true,
+    });
+    Ok(())
 }
 
 /// Build and sign a YED transfer (after a sync) and dry-run it on the node. Nothing is
@@ -1527,6 +1939,8 @@ pub fn import_wif(wif: String, birthday: Option<i64>) -> Result<AddressPair, Yew
             }
         }
         Ok(AddressPair {
+            address: row.address_s.clone(),
+            kind: ReceiveKind::Transparent,
             ye: row.address_ye,
             s: row.address_s,
             path: "imported".into(),
@@ -1536,24 +1950,38 @@ pub fn import_wif(wif: String, birthday: Option<i64>) -> Result<AddressPair, Yew
 }
 
 /// Sync now, reporting progress on `sink` (Dart: a `Stream<SyncEvent>`), ending with `Done`
-/// or `Failed`. The returned error mirrors the `Failed` event.
+/// or `Failed`: the transparent sync (addresses, YED) and then the private (Sapling) scan, as
+/// one progress (`percent`). A failed private sync does not fail the call: `Done` carries it
+/// in `shielded_message` (transparent YEC and YED are synced either way). The returned error
+/// mirrors the `Failed` event.
 pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
     let emit = |e: SyncEvent| {
         let _ = sink.add(e);
     };
+    let event = |stage, message: String, tip: i64, percent: i32| SyncEvent {
+        stage,
+        message,
+        tip,
+        sync_height: 0,
+        yellowback_usable: false,
+        percent,
+        shielded_height: 0,
+        shielded_sendable: false,
+        shielded_message: String::new(),
+    };
     let inner = sink.clone();
-    let result: Result<sync::SyncReport, YewError> = with_open_async(|o| {
+    type Both = (sync::SyncReport, Result<ShieldedSyncReport, YewError>);
+    let result: Result<Both, YewError> = with_open_async(|o| {
         Box::pin(async move {
             let emit = |e: SyncEvent| {
                 let _ = inner.add(e);
             };
-            emit(SyncEvent {
-                stage: SyncStage::Connecting,
-                message: format!("Connecting to {}:{}", o.server.host, o.server.port),
-                tip: 0,
-                sync_height: 0,
-                yellowback_usable: false,
-            });
+            emit(event(
+                SyncStage::Connecting,
+                format!("Connecting to {}:{}", o.server.host, o.server.port),
+                0,
+                0,
+            ));
             let network = o.wallet.network;
             if o.conn.is_none() {
                 o.conn = Some(connect(&o.server, network).await?);
@@ -1563,48 +1991,97 @@ pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
                 (c.tip as i64, c.availability.usable())
             };
             emit(SyncEvent {
-                stage: SyncStage::Probing,
-                message: if usable {
-                    "Yellowback service present".into()
-                } else {
-                    "No usable Yellowback service: YED hidden".into()
-                },
-                tip,
-                sync_height: 0,
                 yellowback_usable: usable,
+                ..event(
+                    SyncStage::Probing,
+                    if usable {
+                        "Yellowback service present".into()
+                    } else {
+                        "No usable Yellowback service: YED hidden".into()
+                    },
+                    tip,
+                    2,
+                )
             });
             emit(SyncEvent {
-                stage: SyncStage::Scanning,
-                message: "Scanning addresses".into(),
-                tip,
-                sync_height: 0,
                 yellowback_usable: usable,
+                ..event(SyncStage::Scanning, "Scanning addresses".into(), tip, 5)
             });
-            o.sync().await
+            let r = o.sync().await?;
+            emit(SyncEvent {
+                yellowback_usable: r.yellowback,
+                ..event(
+                    SyncStage::ShieldedScanning,
+                    "Scanning private notes".into(),
+                    r.tip as i64,
+                    10,
+                )
+            });
+            let tick_sink = inner.clone();
+            let usable = r.yellowback;
+            let tip = r.tip as i64;
+            let progress: crate::shielded::ProgressFn = Arc::new(move |p: ShieldedProgress| {
+                let (stage, message, percent) = if p.enhancing {
+                    (
+                        SyncStage::ShieldedMemos,
+                        "Reading private memos".to_string(),
+                        97,
+                    )
+                } else {
+                    (
+                        SyncStage::ShieldedScanning,
+                        format!(
+                            "Scanning private notes: {}% (block {} of {}); sending available at 100%",
+                            p.percent, p.scanned_height, p.tip_height
+                        ),
+                        10 + (p.percent as i32 * 85) / 100,
+                    )
+                };
+                let _ = tick_sink.add(SyncEvent {
+                    stage,
+                    message,
+                    tip,
+                    sync_height: 0,
+                    yellowback_usable: usable,
+                    percent,
+                    shielded_height: p.scanned_height as i64,
+                    shielded_sendable: p.percent == 100,
+                    shielded_message: String::new(),
+                });
+            });
+            let z = o.sync_shielded(progress).await;
+            Ok((r, z))
         })
     });
     match result {
-        Ok(r) => {
+        Ok((r, z)) => {
+            let (shielded_height, shielded_sendable, shielded_message, extra) = match &z {
+                Ok(z) => (
+                    z.scanned_height as i64,
+                    z.sendable,
+                    String::new(),
+                    format!(", private scan to {}", z.scanned_height),
+                ),
+                Err(e) => (0, false, e.message.clone(), ", private sync failed".into()),
+            };
             emit(SyncEvent {
                 stage: SyncStage::Done,
                 message: format!(
-                    "Synced to {}: {} transactions, {} outputs, {} tokens",
+                    "Synced to {}: {} transactions, {} outputs, {} tokens{extra}",
                     r.tip, r.transactions, r.utxos, r.tokens
                 ),
                 tip: r.tip as i64,
                 sync_height: r.tip as i64,
                 yellowback_usable: r.yellowback,
+                percent: 100,
+                shielded_height,
+                shielded_sendable,
+                shielded_message,
             });
             Ok(())
         }
         Err(e) => {
-            emit(SyncEvent {
-                stage: SyncStage::Failed,
-                message: e.message.clone(),
-                tip: 0,
-                sync_height: 0,
-                yellowback_usable: false,
-            });
+            emit(event(SyncStage::Failed, e.message.clone(), 0, 0));
             Err(e)
         }
     }
@@ -2044,7 +2521,14 @@ mod tests {
         lock();
         assert!(!is_unlocked());
         assert_eq!(balances().unwrap_err().kind, ErrorKind::Locked);
-        assert_eq!(receive_address(false).unwrap_err().kind, ErrorKind::Locked);
+        assert_eq!(
+            receive_address(ReceiveKind::Transparent, false)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Locked
+        );
+        assert_eq!(new_shielded_address().unwrap_err().kind, ErrorKind::Locked);
+        assert_eq!(params_status().unwrap_err().kind, ErrorKind::Locked);
         assert_eq!(history(0, 10).unwrap_err().kind, ErrorKind::Locked);
         assert_eq!(mint_estimate(100, 10).unwrap_err().kind, ErrorKind::Locked);
         assert_eq!(vaults().unwrap_err().kind, ErrorKind::Locked);
@@ -2131,10 +2615,41 @@ mod tests {
         let b = balances().unwrap();
         assert_eq!(b.yed_cents, 0);
         assert_eq!(b.yed_send_min_zat, 21_000);
-        let a = receive_address(false).unwrap();
+        let a = receive_address(ReceiveKind::Transparent, false).unwrap();
         assert_eq!(a.ye, c.address_ye);
         assert!(a.s.starts_with("sm"));
+        assert_eq!(a.address, a.s);
         assert_eq!(a.path, "m/44'/347'/0'/0/0");
+        let y = receive_address(ReceiveKind::Yed, false).unwrap();
+        assert_eq!(
+            (y.address.as_str(), y.kind),
+            (a.ye.as_str(), ReceiveKind::Yed)
+        );
+        // Shielded (S2): the default ys1… address of the same seed, then diversified ones that
+        // stick until the next "new address"; offline, before any sync.
+        let z0 = receive_address(ReceiveKind::Shielded, false).unwrap();
+        assert!(z0.address.starts_with("yregtestsapling1"), "{}", z0.address);
+        assert!(z0.ye.is_empty() && z0.s.is_empty() && z0.covered_by_seed);
+        assert!(z0.path.starts_with("m/32'/347'/0' diversifier "));
+        let z1 = new_shielded_address().unwrap();
+        assert_ne!(z1.address, z0.address);
+        assert_eq!(receive_address(ReceiveKind::Shielded, true).unwrap(), z1);
+        let z2 = new_shielded_address().unwrap();
+        assert!(z2.address != z1.address && z2.address != z0.address);
+        // No private balance yet, nothing sendable; the parameters are not downloaded.
+        let b = balances().unwrap();
+        assert_eq!((b.yec_shielded_zat, b.shielded_sendable), (0, false));
+        let ps = params_status().unwrap();
+        assert!(!ps.ready && ps.missing_bytes == ps.total_bytes && ps.total_bytes == 51_551_256);
+        // A bad parameters source is an input error before anything is fetched.
+        assert_eq!(
+            download_params_checked("ftp://nowhere/").unwrap_err().kind,
+            ErrorKind::Input
+        );
+        // The private store sits beside the transparent file.
+        assert!(std::path::Path::new(&dir)
+            .join("shielded/yew-regtest/wallet.sqlite")
+            .is_file());
         let e = export_wif(a.ye.clone()).unwrap();
         assert_eq!(e.address_s, a.s);
         assert!(e.covered_by_seed);
@@ -2193,6 +2708,13 @@ mod tests {
         .unwrap_err();
         assert!(e.message.contains("another seed"), "{e}");
         lock();
+    }
+
+    /// [`download_params`]'s checks before the sink is used (a `StreamSink` needs the bridge).
+    fn download_params_checked(base_url: &str) -> Result<(), YewError> {
+        sapling_params::ParamsSource::parse(base_url)
+            .map(|_| ())
+            .map_err(|e| YewError::new(ErrorKind::Input, e.to_string()))
     }
 
     #[test]

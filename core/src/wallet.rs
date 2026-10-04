@@ -5,6 +5,13 @@
 //! The wallet: the key ring, the store and the network bound together. This is what `sync`,
 //! the builders and (in W3) `api.rs` operate on. Keys are derived on demand and never stored;
 //! imported keys (D-W-11) are stored wrapped under a key derived from the seed (`store.rs`).
+//!
+//! **Shielded (yew-shielded plan S2).** A wallet opened from a file also holds the Ycash Sapling
+//! side ([`crate::shielded::Shielded`]): its own `zcash_client_sqlite` store in
+//! `shielded/<file stem>/` beside the transparent file, the Sapling account of the same seed
+//! (`m/32'/347'/0'`, [`crate::shielded_keys`]) injected at open and never written, synced by the
+//! light client. The two sides never share an input: every transparent builder and the gate's
+//! transparent paths see only the UTXO table, the shielded path only notes.
 
 use std::collections::HashSet;
 
@@ -19,6 +26,8 @@ use crate::gate::{GateError, Validator};
 use crate::keys::{self, AddressKey, Chain, KeyError, KeyRing};
 use crate::net::{CompactClient, NetError, Validation};
 use crate::params::{Network, GAP_LIMIT};
+use crate::shielded::{Shielded, ShieldedError};
+use crate::shielded_keys::{SaplingAccount, ShieldedKeyError};
 use crate::store::{AddressRow, MintRow, Store, StoreError, VaultRow, CHAIN_IMPORTED};
 use crate::tx::TxError;
 
@@ -49,6 +58,9 @@ pub enum WalletError {
     /// A mint / claim step could not proceed (W4).
     #[error(transparent)]
     Mint(#[from] MintError),
+    /// The shielded side (yew-shielded plan S2).
+    #[error(transparent)]
+    Shielded(#[from] ShieldedError),
     /// Anything else, with a message.
     #[error("{0}")]
     Other(String),
@@ -88,6 +100,8 @@ pub struct Wallet {
     keyring: KeyRing,
     /// Wrapping key for imported secrets: `HMAC-SHA256("yew-wrap", seed)`.
     wrap_secret: WrapSecret,
+    /// The Sapling side (`None` for a wallet over an in-memory store, as the unit tests use).
+    pub shielded: Option<Shielded>,
 }
 
 /// The wrapping key, wiped on drop (`Wallet` itself stays `Drop`-free so a test can move its
@@ -120,9 +134,33 @@ impl Wallet {
         let store = Store::open(path);
         let w = store
             .map_err(WalletError::from)
-            .and_then(|store| Wallet::from_parts(store, network, &seed, birthday));
+            .and_then(|store| Wallet::from_parts(store, network, &seed, birthday))
+            .and_then(|mut w| {
+                // The Sapling side, beside the file (`shielded/<stem>/`), from the same seed.
+                let account = SaplingAccount::from_seed(&seed, network).map_err(|e| match e {
+                    ShieldedKeyError::Key(k) => WalletError::Key(k),
+                    other => WalletError::Other(other.to_string()),
+                })?;
+                let dir = crate::shielded::shielded_dir(std::path::Path::new(path));
+                w.shielded = Some(Shielded::open(&dir, network, account)?);
+                Ok(w)
+            });
         keys::wipe(&mut seed);
         w
+    }
+
+    /// The shielded side, or an error for a wallet without one (in-memory test wallets).
+    pub fn shielded_mut(&mut self) -> Result<&mut Shielded, WalletError> {
+        self.shielded
+            .as_mut()
+            .ok_or_else(|| WalletError::Other("this wallet has no shielded store".into()))
+    }
+
+    /// The shielded side, read-only.
+    pub fn shielded(&self) -> Result<&Shielded, WalletError> {
+        self.shielded
+            .as_ref()
+            .ok_or_else(|| WalletError::Other("this wallet has no shielded store".into()))
     }
 
     /// Open over an existing store (tests use an in-memory one).
@@ -168,6 +206,7 @@ impl Wallet {
             store,
             keyring,
             wrap_secret,
+            shielded: None,
         };
         w.ensure_gap()?;
         Ok(w)

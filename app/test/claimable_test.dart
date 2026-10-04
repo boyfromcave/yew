@@ -65,7 +65,7 @@ void main() {
   testWidgets('a claim needs the debt in YED; the carrier refusal is verbatim', (tester) async {
     final h = Harness(withWallet: true);
     h.api.claimableAnswer = const [claimable1];
-    h.api.balancesAnswer = const Balances(yecZat: 150000000, yecReservedZat: 105000, yecPendingZat: 0, yedCents: 500, yedPendingCents: 0, priceMicroUsd: 100000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000);
+    h.api.balancesAnswer = const Balances(yecZat: 150000000, yecReservedZat: 105000, yecPendingZat: 0, yedCents: 500, yedPendingCents: 0, priceMicroUsd: 100000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false);
     await openClaimable(tester, h);
     await tester.tap(find.byKey(Key('claimable-${claimable1.vaultTxid}')));
     await tester.pumpAndSettle();
@@ -74,7 +74,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(h.api.calls.where((c) => c.startsWith('claim ')), isEmpty);
 
-    h.api.balancesAnswer = const Balances(yecZat: 150000000, yecReservedZat: 105000, yecPendingZat: 0, yedCents: 5000, yedPendingCents: 0, priceMicroUsd: 100000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000);
+    h.api.balancesAnswer = const Balances(yecZat: 150000000, yecReservedZat: 105000, yecPendingZat: 0, yedCents: 5000, yedPendingCents: 0, priceMicroUsd: 100000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false);
     const refusal = 'insufficient-yec: the mint needs 10023000 zat of YEC (collateral 0, token 10000, fees 3000, carrier 10000), have 5000 zat spendable';
     h.api.claimError = const YewError(kind: ErrorKind.needYecForFees, message: refusal);
     await h.state.refresh();

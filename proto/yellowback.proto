@@ -169,6 +169,21 @@ message YedAttestor {
   string status = 17; int64 statusHeight = 18; string weight = 19;
 }
 
+// ---- getblockchaininfo (the stock node RPC; the one message here not backed by a yed_* RPC) --
+
+// One network upgrade as the node's getblockchaininfo.upgrades lists it (key = branch id).
+message YedUpgrade { string branchId = 1; string name = 2; int64 activationHeight = 3; string status = 4; }
+// GetChainInfo: what a client needs to SIGN correctly. GetLightdInfo (service.proto, frozen) carries
+// consensus.chaintip only; a transaction built for the NEXT block must use consensus.nextblock, which
+// differs from chaintip exactly on the block before a network upgrade. Names follow LightdInfo's.
+message YedChainInfo {
+  string chainName = 1; uint64 blockHeight = 2; string bestBlockHash = 3;
+  string consensusBranchId = 4;                                     // getblockchaininfo.consensus.chaintip
+  string nextBlockBranchId = 5;                                     // getblockchaininfo.consensus.nextblock
+  uint64 saplingActivationHeight = 6;                               // upgrades["76b809bb"].activationheight, as LightdInfo reads it
+  repeated YedUpgrade upgrades = 7;                                 // every upgrade the node knows, by activationHeight then branchId
+}
+
 // ---- the service ---------------------------------------------------------------------------
 
 service YellowbackStreamer {
@@ -191,4 +206,5 @@ service YellowbackStreamer {
   rpc GetAttestations(Empty) returns (stream YedAttestation) {}
   rpc ListAttestors(HeightFilter) returns (stream YedAttestor) {}
   rpc GetAddressTokens(YedAddressList) returns (stream YedToken) {}     // Phase L2: yed_listtokens (node N1)
+  rpc GetChainInfo(Empty) returns (YedChainInfo) {}                      // x402 X-F71: getblockchaininfo.consensus.nextblock
 }

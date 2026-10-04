@@ -7,9 +7,9 @@ import 'frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `connect`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `hex_or_empty`, `history_item`, `locked`, `mint_status_of`, `new`, `open_wallet`, `parse_server`, `parse_txid`, `row_status`, `runtime`, `store_err`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `yellowback_status`
+// These functions are ignored because they are not marked as `pub`: `connect`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `hex_or_empty`, `history_item`, `locked`, `merge_shielded`, `mint_status_of`, `new`, `open_wallet`, `params_dir_of`, `params_status_of`, `parse_server`, `parse_txid`, `row_status`, `runtime`, `shielded_pair`, `store_err`, `sync_shielded`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `yellowback_status`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Conn`, `Open`, `Preview`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
 
 /// The core's version.
 String coreVersion() => RustLib.instance.api.crateApiCoreVersion();
@@ -115,9 +115,20 @@ Future<Status> status() => RustLib.instance.api.crateApiStatus();
 /// The balances from the store (no network).
 Future<Balances> balances() => RustLib.instance.api.crateApiBalances();
 
-/// The receive address (first unused external). `fresh` marks the current one used first.
-Future<AddressPair> receiveAddress({required bool fresh}) =>
-    RustLib.instance.api.crateApiReceiveAddress(fresh: fresh);
+/// The receive address of `kind`. Transparent kinds: the first unused external address
+/// (`fresh` marks the current one used first). Shielded: the address last handed out by
+/// [`new_shielded_address`], or the default `ys1…` address (`fresh` is ignored; diversified
+/// addresses all reach the same account).
+Future<AddressPair> receiveAddress({
+  required ReceiveKind kind,
+  required bool fresh,
+}) => RustLib.instance.api.crateApiReceiveAddress(kind: kind, fresh: fresh);
+
+/// A new diversified `ys1…` address of the same private account (Receive → "new address"):
+/// unlinkable to the others on chain, received into the same balance. Remembered, so
+/// [`receive_address`] with [`ReceiveKind::Shielded`] shows it until the next one.
+Future<AddressPair> newShieldedAddress() =>
+    RustLib.instance.api.crateApiNewShieldedAddress();
 
 /// Every address of the wallet (Settings → export private key picks one).
 Future<List<AddressPair>> addresses() =>
@@ -127,20 +138,41 @@ Future<List<AddressPair>> addresses() =>
 Future<HistoryPage> history({required int page, required int pageSize}) =>
     RustLib.instance.api.crateApiHistory(page: page, pageSize: pageSize);
 
-/// Build and sign a YEC send (after a sync). Nothing is broadcast.
+/// Plan a YEC send (after a sync of both pools), funded **privacy first**
+/// (`build::yec_private`): a `ys1…` recipient (optionally with a text `memo` of at most 512
+/// bytes) from private notes; a transparent recipient from private notes when they cover it
+/// (`reveals_shielded` set: the amber line), else from transparent YEC exactly as before.
+/// A transparent preview is signed already; a private one is proved and signed at confirm.
+/// Nothing is broadcast.
 Future<YecPreview> sendYecPreview({
   required String to,
   required PlatformInt64 zat,
   required bool sendEverything,
+  String? memo,
 }) => RustLib.instance.api.crateApiSendYecPreview(
   to: to,
   zat: zat,
   sendEverything: sendEverything,
+  memo: memo,
 );
 
-/// Broadcast a YEC preview through the gate (D-W-5).
+/// Broadcast a YEC preview through the gate (D-W-5). A private send is proved and signed
+/// here (seconds), with the proving parameters verified first ([`ErrorKind::ParamsMissing`]
+/// when they are not downloaded: the preview stays valid, download, then confirm again).
 Future<SendResult> sendYecConfirm({required String previewId}) =>
     RustLib.instance.api.crateApiSendYecConfirm(previewId: previewId);
+
+/// Where the proving parameters stand on this device (no network).
+Future<ParamsStatus> paramsStatus() =>
+    RustLib.instance.api.crateApiParamsStatus();
+
+/// Download the Sapling proving parameters from `base_url` (`https://host/dir/`; S0-2: the
+/// owner's host; `file://` or a loopback `http://` for tests) into the app's data directory,
+/// each file verified against its pinned SHA-256 before it is kept. Progress on `sink`, ending
+/// with a `finished` event ([`params_status`] then says `ready`); the wallet stays usable
+/// meanwhile (the download does not hold the wallet).
+Stream<ParamsProgress> downloadParams({required String baseUrl}) =>
+    RustLib.instance.api.crateApiDownloadParams(baseUrl: baseUrl);
 
 /// Build and sign a YED transfer (after a sync) and dry-run it on the node. Nothing is
 /// broadcast. With too little YEC for the fee the error is [`ErrorKind::NeedYecForFees`].
@@ -163,7 +195,10 @@ Future<AddressPair> importWif({required String wif, PlatformInt64? birthday}) =>
     RustLib.instance.api.crateApiImportWif(wif: wif, birthday: birthday);
 
 /// Sync now, reporting progress on `sink` (Dart: a `Stream<SyncEvent>`), ending with `Done`
-/// or `Failed`. The returned error mirrors the `Failed` event.
+/// or `Failed`: the transparent sync (addresses, YED) and then the private (Sapling) scan, as
+/// one progress (`percent`). A failed private sync does not fail the call: `Done` carries it
+/// in `shielded_message` (transparent YEC and YED are synced either way). The returned error
+/// mirrors the `Failed` event.
 Stream<SyncEvent> syncNow() => RustLib.instance.api.crateApiSyncNow();
 
 /// The mint estimate (after a sync): collateral, fees, payee, heights, term class, attestor
@@ -273,7 +308,8 @@ class AddressCheck {
           message == other.message;
 }
 
-/// A receive address in both forms.
+/// A receive address: `address` is the one of `kind`; for the transparent kinds `ye` and `s`
+/// are the two forms of the same key, for a shielded address both are empty.
 class AddressPair {
   /// The Yellowback form (`ye…` / `yt…` / `yr…`).
   final String ye;
@@ -287,16 +323,29 @@ class AddressPair {
   /// `false` for an imported key (not covered by the seed backup).
   final bool coveredBySeed;
 
+  /// The address of `kind` (`s…`, `ye…` or `ys1…`).
+  final String address;
+
+  /// The kind of `address`.
+  final ReceiveKind kind;
+
   const AddressPair({
     required this.ye,
     required this.s,
     required this.path,
     required this.coveredBySeed,
+    required this.address,
+    required this.kind,
   });
 
   @override
   int get hashCode =>
-      ye.hashCode ^ s.hashCode ^ path.hashCode ^ coveredBySeed.hashCode;
+      ye.hashCode ^
+      s.hashCode ^
+      path.hashCode ^
+      coveredBySeed.hashCode ^
+      address.hashCode ^
+      kind.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -306,7 +355,9 @@ class AddressPair {
           ye == other.ye &&
           s == other.s &&
           path == other.path &&
-          coveredBySeed == other.coveredBySeed;
+          coveredBySeed == other.coveredBySeed &&
+          address == other.address &&
+          kind == other.kind;
 }
 
 /// [`balances`] (plan §3.4 shape; computed from classes, §3.7).
@@ -338,6 +389,21 @@ class Balances {
   /// The YEC a YED send needs at least (`fee + 2 · TOKEN_VALUE`), zat.
   final PlatformInt64 yedSendMinZat;
 
+  /// Private (shielded, Sapling) YEC: every unspent note, zat. Never used for YED or fees.
+  final PlatformInt64 yecShieldedZat;
+
+  /// Private YEC spendable now, zat (0 until the scan reaches the tip).
+  final PlatformInt64 yecShieldedSpendableZat;
+
+  /// Private YEC waiting for a confirmation or for the scan, zat (own change + incoming).
+  final PlatformInt64 yecShieldedPendingZat;
+
+  /// The height the private wallet is scanned to without gaps (0 = never).
+  final PlatformInt64 shieldedScannedHeight;
+
+  /// Scanned to the tip: private sending is available ("sending available at 100%").
+  final bool shieldedSendable;
+
   const Balances({
     required this.yecZat,
     required this.yecReservedZat,
@@ -348,6 +414,11 @@ class Balances {
     required this.heldCount,
     required this.syncHeight,
     required this.yedSendMinZat,
+    required this.yecShieldedZat,
+    required this.yecShieldedSpendableZat,
+    required this.yecShieldedPendingZat,
+    required this.shieldedScannedHeight,
+    required this.shieldedSendable,
   });
 
   static Future<Balances> default_() =>
@@ -363,7 +434,12 @@ class Balances {
       priceMicroUsd.hashCode ^
       heldCount.hashCode ^
       syncHeight.hashCode ^
-      yedSendMinZat.hashCode;
+      yedSendMinZat.hashCode ^
+      yecShieldedZat.hashCode ^
+      yecShieldedSpendableZat.hashCode ^
+      yecShieldedPendingZat.hashCode ^
+      shieldedScannedHeight.hashCode ^
+      shieldedSendable.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -378,7 +454,12 @@ class Balances {
           priceMicroUsd == other.priceMicroUsd &&
           heldCount == other.heldCount &&
           syncHeight == other.syncHeight &&
-          yedSendMinZat == other.yedSendMinZat;
+          yedSendMinZat == other.yedSendMinZat &&
+          yecShieldedZat == other.yecShieldedZat &&
+          yecShieldedSpendableZat == other.yecShieldedSpendableZat &&
+          yecShieldedPendingZat == other.yecShieldedPendingZat &&
+          shieldedScannedHeight == other.shieldedScannedHeight &&
+          shieldedSendable == other.shieldedSendable;
 }
 
 /// One `ListClaimable` row (the liquidator persona, plan §5.3).
@@ -612,6 +693,14 @@ enum ErrorKind {
   /// A preview id that no longer exists.
   previewExpired,
 
+  /// Private (shielded) sending needs the wallet scanned to the tip ("syncing… sending
+  /// available at 100%"): sync, then try again.
+  shieldedNotReady,
+
+  /// The Sapling proving parameters are not downloaded yet: call [`download_params`] (the
+  /// one-time "Preparing private sending (52 MB)" sheet), then confirm again.
+  paramsMissing,
+
   /// Anything else (storage, key derivation).
   other,
 }
@@ -646,8 +735,12 @@ class HistoryItem {
   /// The transaction carries an `OP_RETURN`.
   final bool hasPayload;
 
-  /// The transaction has shielded components (a transparent leg of a shielded tx).
+  /// The transaction has shielded components (a transparent leg of a shielded tx, or a
+  /// private send / receipt).
   final bool shielded;
+
+  /// The memo of a private receipt or send (text), empty when none.
+  final String memo;
 
   const HistoryItem({
     required this.txid,
@@ -660,6 +753,7 @@ class HistoryItem {
     required this.kind,
     required this.hasPayload,
     required this.shielded,
+    required this.memo,
   });
 
   @override
@@ -673,7 +767,8 @@ class HistoryItem {
       verdict.hashCode ^
       kind.hashCode ^
       hasPayload.hashCode ^
-      shielded.hashCode;
+      shielded.hashCode ^
+      memo.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -689,7 +784,8 @@ class HistoryItem {
           verdict == other.verdict &&
           kind == other.kind &&
           hasPayload == other.hasPayload &&
-          shielded == other.shielded;
+          shielded == other.shielded &&
+          memo == other.memo;
 }
 
 /// One page of [`history`].
@@ -1108,6 +1204,96 @@ enum NetworkId {
   mainnet,
 }
 
+/// One event of [`download_params`].
+class ParamsProgress {
+  /// The file being fetched (`sapling-spend.params` / `sapling-output.params`).
+  final String file;
+
+  /// Bytes received so far in this call.
+  final PlatformInt64 doneBytes;
+
+  /// Bytes this call fetches.
+  final PlatformInt64 totalBytes;
+
+  /// The last event: both files verified and in place.
+  final bool finished;
+
+  const ParamsProgress({
+    required this.file,
+    required this.doneBytes,
+    required this.totalBytes,
+    required this.finished,
+  });
+
+  @override
+  int get hashCode =>
+      file.hashCode ^
+      doneBytes.hashCode ^
+      totalBytes.hashCode ^
+      finished.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ParamsProgress &&
+          runtimeType == other.runtimeType &&
+          file == other.file &&
+          doneBytes == other.doneBytes &&
+          totalBytes == other.totalBytes &&
+          finished == other.finished;
+}
+
+/// [`params_status`]: the Sapling proving parameters on this device.
+class ParamsStatus {
+  /// Both files are present (pinned lengths): a private send can be proved.
+  final bool ready;
+
+  /// Both were hashed against their SHA-256 pins in this session.
+  final bool verified;
+
+  /// Bytes still to download.
+  final PlatformInt64 missingBytes;
+
+  /// Bytes of a full download (51,551,256).
+  final PlatformInt64 totalBytes;
+
+  const ParamsStatus({
+    required this.ready,
+    required this.verified,
+    required this.missingBytes,
+    required this.totalBytes,
+  });
+
+  @override
+  int get hashCode =>
+      ready.hashCode ^
+      verified.hashCode ^
+      missingBytes.hashCode ^
+      totalBytes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ParamsStatus &&
+          runtimeType == other.runtimeType &&
+          ready == other.ready &&
+          verified == other.verified &&
+          missingBytes == other.missingBytes &&
+          totalBytes == other.totalBytes;
+}
+
+/// Which receive address [`receive_address`] returns.
+enum ReceiveKind {
+  /// The transparent `s…` form (YEC from any wallet).
+  transparent,
+
+  /// The private Sapling `ys1…` address (shielded YEC, memos).
+  shielded,
+
+  /// The Yellowback `ye…` form of the transparent address (YED, mint).
+  yed,
+}
+
 /// One recipient of a YED send.
 class Recipient {
   /// `ye…` / `yr…` / `s…`.
@@ -1501,12 +1687,29 @@ class SyncEvent {
   /// Yellowback usable on this server (from `Probing` on).
   final bool yellowbackUsable;
 
+  /// Overall progress 0..=100 (transparent scan to 10, private scan 10..95, memos, done).
+  final int percent;
+
+  /// The height the private wallet is scanned to.
+  final PlatformInt64 shieldedHeight;
+
+  /// Private sending is available (scanned to the tip).
+  final bool shieldedSendable;
+
+  /// On `Done`: why the private sync did not run or failed, empty when it succeeded (the
+  /// transparent sync still counts; YED and transparent YEC are unaffected).
+  final String shieldedMessage;
+
   const SyncEvent({
     required this.stage,
     required this.message,
     required this.tip,
     required this.syncHeight,
     required this.yellowbackUsable,
+    required this.percent,
+    required this.shieldedHeight,
+    required this.shieldedSendable,
+    required this.shieldedMessage,
   });
 
   @override
@@ -1515,7 +1718,11 @@ class SyncEvent {
       message.hashCode ^
       tip.hashCode ^
       syncHeight.hashCode ^
-      yellowbackUsable.hashCode;
+      yellowbackUsable.hashCode ^
+      percent.hashCode ^
+      shieldedHeight.hashCode ^
+      shieldedSendable.hashCode ^
+      shieldedMessage.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1526,7 +1733,11 @@ class SyncEvent {
           message == other.message &&
           tip == other.tip &&
           syncHeight == other.syncHeight &&
-          yellowbackUsable == other.yellowbackUsable;
+          yellowbackUsable == other.yellowbackUsable &&
+          percent == other.percent &&
+          shieldedHeight == other.shieldedHeight &&
+          shieldedSendable == other.shieldedSendable &&
+          shieldedMessage == other.shieldedMessage;
 }
 
 /// A stage of [`sync_now`].
@@ -1539,6 +1750,12 @@ enum SyncStage {
 
   /// The §3.2 loop.
   scanning,
+
+  /// The private (Sapling) scan: `percent`, `shielded_height` move.
+  shieldedScanning,
+
+  /// Fetching the memos and status of private transactions.
+  shieldedMemos,
 
   /// Finished; `tip` and `sync_height` are set.
   done,
@@ -1721,6 +1938,15 @@ class WifExport {
           coveredBySeed == other.coveredBySeed;
 }
 
+/// The funding of a YEC send.
+enum YecFunding {
+  /// Transparent `YEC` (and, with `send_everything`, `FEE_RESERVE`) outputs.
+  transparent,
+
+  /// Private (Sapling) notes.
+  shielded,
+}
+
 /// A YEC send, before confirmation.
 class YecPreview {
   /// Pass to [`send_yec_confirm`].
@@ -1753,8 +1979,23 @@ class YecPreview {
   /// `nExpiryHeight`.
   final int expiryHeight;
 
-  /// The txid the transaction will have.
+  /// The txid the transaction will have (empty for a private send: its proofs are made at
+  /// confirm, so the txid is known only then).
   final String txid;
+
+  /// Where the money comes from (privacy first, `build::yec_private`).
+  final YecFunding funding;
+
+  /// Private funds go to a transparent address: the amber line "This send leaves the
+  /// private pool".
+  final bool revealsShielded;
+
+  /// The memo that will be sent (private recipients only).
+  final String? memo;
+
+  /// A private send whose proving parameters are not downloaded yet: run
+  /// [`download_params`] before [`send_yec_confirm`].
+  final bool paramsNeeded;
 
   const YecPreview({
     required this.previewId,
@@ -1768,6 +2009,10 @@ class YecPreview {
     required this.keepsReservedZat,
     required this.expiryHeight,
     required this.txid,
+    required this.funding,
+    required this.revealsShielded,
+    this.memo,
+    required this.paramsNeeded,
   });
 
   @override
@@ -1782,7 +2027,11 @@ class YecPreview {
       usesReserve.hashCode ^
       keepsReservedZat.hashCode ^
       expiryHeight.hashCode ^
-      txid.hashCode;
+      txid.hashCode ^
+      funding.hashCode ^
+      revealsShielded.hashCode ^
+      memo.hashCode ^
+      paramsNeeded.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1799,7 +2048,11 @@ class YecPreview {
           usesReserve == other.usesReserve &&
           keepsReservedZat == other.keepsReservedZat &&
           expiryHeight == other.expiryHeight &&
-          txid == other.txid;
+          txid == other.txid &&
+          funding == other.funding &&
+          revealsShielded == other.revealsShielded &&
+          memo == other.memo &&
+          paramsNeeded == other.paramsNeeded;
 }
 
 /// A YED send, before confirmation.

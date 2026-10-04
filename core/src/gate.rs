@@ -15,7 +15,11 @@
 //!    plus `TOKEN`s and one `CARRIER` at `vin[last]`, the sweep path `CARRIER`s only — never
 //!    `PENDING_TOKEN`, `HELD`, `UNKNOWN_P2SH`, `FOREIGN` or unknown; transparent-only; the
 //!    payload matches the path (none on the YEC, carrier and sweep paths; exactly one TRANSFER,
-//!    MINT or REDEEM on the others, the transfer path spending at least one token).
+//!    MINT or REDEEM on the others, the transfer path spending at least one token). The one
+//!    path that is not transparent-only is the shielded spend (yew-shielded plan S2): it must
+//!    spend Sapling notes and **no transparent input at all** (so no YED, fee-reserve, vault or
+//!    carrier output can ever leave through it), carry no Sprout JoinSplit and no `OP_RETURN`,
+//!    and pay no transparent output of exactly `TOKEN_VALUE` (it would look like a token).
 //! 2. **Remote** (client contract rule 4, lightwalletd plan §5): `ValidateRawTransaction` on the
 //!    same bytes, refused unless `valid && verdict == "ok" && burned == <the planned burn> &&
 //!    !wouldBeRejected` — the planned burn is 0 on every path but redeem and claim, which burn
@@ -78,6 +82,10 @@ pub enum GateError {
     /// The path needs the vault at `vin[0]`.
     #[error("gate: the {0} path needs the vault {1} at vin[0]")]
     VaultShape(&'static str, String),
+    /// The shielded path's shape rule was broken (transparent input, JoinSplit, no spend,
+    /// token-valued output).
+    #[error("gate: shielded spend refused: {0}")]
+    ShieldedShape(&'static str),
     /// The carrier-funding path pays `vout[0]` as something other than a P2SH carrier.
     #[error("gate: the carrier path needs vout[0] = P2SH of CARRIER_VALUE")]
     CarrierOutput,
@@ -122,6 +130,8 @@ pub enum Path {
     Claim(OutPoint),
     /// The sweep of lapsed carriers (`build::mint::sweep`).
     Sweep,
+    /// A spend of the wallet's Sapling notes (`shielded.rs`): no transparent input.
+    Shielded,
 }
 
 impl Path {
@@ -135,6 +145,7 @@ impl Path {
             Path::Release => "release",
             Path::Claim(_) => "claim",
             Path::Sweep => "sweep",
+            Path::Shielded => "shielded",
         }
     }
 
@@ -147,12 +158,13 @@ impl Path {
             Path::Release => c == UtxoClass::Vault,
             Path::Claim(_) => c.claim_spendable(),
             Path::Sweep => c == UtxoClass::Carrier,
+            Path::Shielded => false,
         }
     }
 
     /// True when the path's YED side is the node's business (the remote layer is mandatory).
     fn needs_yellowback(self) -> bool {
-        !matches!(self, Path::Yec)
+        !matches!(self, Path::Yec | Path::Shielded)
     }
 }
 
@@ -164,6 +176,9 @@ pub fn check(
     class_of: impl Fn(&OutPoint) -> Option<UtxoClass>,
 ) -> Result<Transaction, GateError> {
     let (tx, _) = Transaction::parse(raw).map_err(GateError::Parse)?;
+    if path == Path::Shielded {
+        return check_shielded(tx);
+    }
     if tx.shielded.any() {
         return Err(GateError::Shielded);
     }
@@ -278,6 +293,37 @@ pub fn check(
             }
         }
         Path::Sweep => no_payload(&tx)?,
+        Path::Shielded => unreachable!("checked by check_shielded above"),
+    }
+    Ok(tx)
+}
+
+/// The local layer of [`Path::Shielded`].
+fn check_shielded(tx: Transaction) -> Result<Transaction, GateError> {
+    if !tx.vin.is_empty() {
+        return Err(GateError::ShieldedShape("it spends a transparent input"));
+    }
+    if tx.shielded.joinsplits > 0 {
+        return Err(GateError::ShieldedShape("it carries a Sprout JoinSplit"));
+    }
+    if tx.shielded.spends == 0 {
+        return Err(GateError::ShieldedShape("it spends no Sapling note"));
+    }
+    if let Some(i) = tx
+        .vout
+        .iter()
+        .position(|o| script::is_op_return(&o.script_pubkey))
+    {
+        return Err(GateError::PayloadOnYecPath(i));
+    }
+    if tx
+        .vout
+        .iter()
+        .any(|o| o.value == crate::params::TOKEN_VALUE)
+    {
+        return Err(GateError::ShieldedShape(
+            "a transparent output of exactly TOKEN_VALUE would look like a YED token",
+        ));
     }
     Ok(tx)
 }
@@ -883,5 +929,96 @@ mod tests {
         assert!(check(Path::Sweep, &build(&[carrier], None, None), class).is_ok());
         assert!(check(Path::Sweep, &build(&[carrier, yec], None, None), class).is_err());
         assert!(check(Path::Sweep, &build(&[carrier], Some(mint_p), None), class).is_err());
+    }
+
+    /// A v4 transaction with `vin` transparent inputs, the given transparent outputs, `spends`
+    /// Sapling spends, one Sapling output and `joinsplits` (always 0 here; a v4 JoinSplit is
+    /// refused by the parser's size rules anyway, so the count is written only when 0).
+    fn raw_shielded(vin: &[OutPoint], vout: &[(i64, Vec<u8>)], spends: u8) -> Vec<u8> {
+        use crate::params::{SAPLING_VERSION_GROUP_ID, TX_HEADER_V4};
+        let mut b = Vec::new();
+        b.extend_from_slice(&TX_HEADER_V4.to_le_bytes());
+        b.extend_from_slice(&SAPLING_VERSION_GROUP_ID.to_le_bytes());
+        b.push(vin.len() as u8);
+        for op in vin {
+            b.extend_from_slice(&op.txid);
+            b.extend_from_slice(&op.n.to_le_bytes());
+            b.push(0); // empty scriptSig
+            b.extend_from_slice(&0xffff_ffffu32.to_le_bytes());
+        }
+        b.push(vout.len() as u8);
+        for (v, spk) in vout {
+            b.extend_from_slice(&v.to_le_bytes());
+            b.push(spk.len() as u8);
+            b.extend_from_slice(spk);
+        }
+        b.extend_from_slice(&0u32.to_le_bytes()); // nLockTime
+        b.extend_from_slice(&100u32.to_le_bytes()); // nExpiryHeight
+        b.extend_from_slice(&0i64.to_le_bytes()); // valueBalance
+        b.push(spends);
+        b.extend(std::iter::repeat_n(0x11u8, 384 * spends as usize));
+        b.push(1);
+        b.extend(std::iter::repeat_n(0x22u8, 948));
+        b.push(0); // joinsplits
+        b.extend(std::iter::repeat_n(0x33u8, 64)); // bindingSig
+        b
+    }
+
+    #[test]
+    fn shielded_path_spends_notes_only() {
+        let yec = OutPoint {
+            txid: [7; 32],
+            n: 0,
+        };
+        let class = |op: &OutPoint| (*op == yec).then_some(UtxoClass::Yec);
+        let p2pkh = script::p2pkh_script(&[5; 20]);
+        // z→z (no transparent output) and z→t: accepted.
+        assert!(check(Path::Shielded, &raw_shielded(&[], &[], 1), class).is_ok());
+        assert!(check(
+            Path::Shielded,
+            &raw_shielded(&[], &[(50_000, p2pkh.clone())], 2),
+            class
+        )
+        .is_ok());
+        // Any transparent input, even plain YEC, is refused: the YED machinery never meets this path.
+        assert!(matches!(
+            check(Path::Shielded, &raw_shielded(&[yec], &[], 1), class),
+            Err(GateError::ShieldedShape(_))
+        ));
+        // No Sapling spend: not a shielded spend.
+        assert!(matches!(
+            check(Path::Shielded, &raw_shielded(&[], &[], 0), class),
+            Err(GateError::ShieldedShape(_))
+        ));
+        // A payload, or an output that looks like a token.
+        let op_return = transfer_payload_script();
+        assert!(matches!(
+            check(
+                Path::Shielded,
+                &raw_shielded(&[], &[(0, op_return)], 1),
+                class
+            ),
+            Err(GateError::PayloadOnYecPath(0))
+        ));
+        assert!(matches!(
+            check(
+                Path::Shielded,
+                &raw_shielded(&[], &[(crate::params::TOKEN_VALUE, p2pkh.clone())], 1),
+                class
+            ),
+            Err(GateError::ShieldedShape(_))
+        ));
+        // And the transparent paths still refuse shielded components.
+        assert_eq!(
+            check(
+                Path::Yec,
+                &raw_shielded(&[yec], &[(50_000, p2pkh)], 1),
+                class
+            )
+            .unwrap_err(),
+            GateError::Shielded
+        );
+        assert!(!Path::Shielded.needs_yellowback());
+        assert!(ALL.iter().all(|c| !Path::Shielded.allows(*c)));
     }
 }

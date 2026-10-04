@@ -252,6 +252,29 @@ impl YellowbackClient {
             .into_inner())
     }
 
+    /// `GetChainInfo` (lightwalletd-dd 0b3448e+, x402 X-F71): the next block's consensus branch
+    /// id (`getblockchaininfo.consensus.nextblock`) and the server's height. `None` when the
+    /// server predates it (`UNIMPLEMENTED`); then the chaintip id of `GetLightdInfo` is the best
+    /// available, wrong only on the block before a network upgrade. Used by the shielded spend
+    /// path (`shielded.rs`) to refuse building with branch-id parameters the next block rejects.
+    pub async fn chain_info(&mut self) -> Result<Option<(u64, u32)>, NetError> {
+        match self.inner.get_chain_info(rpc::Empty {}).await {
+            Ok(r) => {
+                let c = r.into_inner();
+                let id = u32::from_str_radix(c.next_block_branch_id.trim_start_matches("0x"), 16)
+                    .map_err(|_| {
+                    NetError::Mismatch(format!(
+                        "bad nextBlockBranchId {:?}",
+                        c.next_block_branch_id
+                    ))
+                })?;
+                Ok(Some((c.block_height, id)))
+            }
+            Err(s) if s.code() == Code::Unimplemented => Ok(None),
+            Err(s) => Err(map_status(s)),
+        }
+    }
+
     /// `ValidateRawTransaction` (`yed_validaterawtransaction <hex>`): the dry run of §3.8 at
     /// the tip plus script verification. Never commits anything.
     pub async fn validate_raw(&mut self, raw: Vec<u8>) -> Result<Validation, NetError> {

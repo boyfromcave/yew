@@ -25,3 +25,20 @@ webpki-roots
 zcash_keys
 sapling-crypto
 zip32
+# yew-shielded plan S2 (2026-10-04): the Ycash Sapling light client, library `x402_ycash_light` of
+# boyfromcave/x402-ycash (`light/`), by path from the workspace checkout; a release switches it to a
+# git rev of that repository. It brings librustzcash6's zcash_client_backend/zcash_client_sqlite/
+# zcash_proofs transitively (sync, note store, prover), the versions x402-ycash/light locks.
+x402-ycash-light
+# yew-shielded plan S2 (2026-10-04): the shielded spend path, memos and balances beside the light client
+# (core/src/shielded.rs), on the same zcash_client_sqlite database; all librustzcash6 by path at the light
+# library's locked versions (no new crate in Cargo.lock). `rand` 0.8 is WalletDb's RNG type parameter.
+zcash_client_backend
+zcash_client_sqlite
+zcash_primitives
+zcash_proofs
+zcash_protocol
+rand
+# yew-shielded plan S0-2 (2026-10-04): the Sapling proving parameters over HTTPS (core/src/sapling_params.rs);
+# tokio-rustls is the TLS stream tonic already links, the SHA-256 pins are the integrity check.
+tokio-rustls
