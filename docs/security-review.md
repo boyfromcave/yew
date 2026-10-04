@@ -28,7 +28,7 @@ hardening; **Info** = a property worth recording. Every finding says what was do
 | A-6 | app / telemetry | No crash reporter, analytics or network plugin: the only network user is the core's gRPC (`INTERNET` permission) | Info | verified; documented in `docs/release.md` §6 |
 | Z-1 | shielded / keys | Where the Ycash Sapling spending key lives (S2) | Info | verified: derived at unlock, held as wiped bytes, never written; tests scan every file of the private store |
 | Z-2 | shielded / params | Integrity of the 52 MB proving parameters fetched on first private send (S0-2) | Info | **by design**: length + SHA-256 pins, `.part` then rename, re-verified once per session before the prover loads; no URL compiled in |
-| Z-3 | shielded / TLS | The light library opens its own connection for the scan with the platform roots: a pinned certificate (S-3b) cannot be honoured there and iOS has no native-roots backend | Medium | **channel injected (S4)**: the scan and registration now run over YEW's own channel (`Options::channel`, x402-ycash `lightchan`), so iOS gets the webpki roots; the refusal of private sync while a pin is set is still in place — lifting it (the injected channel carries the pin) awaits an owner decision |
+| Z-3 | shielded / TLS | The light library opens its own connection for the scan with the platform roots: a pinned certificate (S-3b) cannot be honoured there and iOS has no native-roots backend | Medium | **Closed 2026-10-04**: the scan and registration run over YEW's own channel (`Options::channel`, x402-ycash `lightchan`), so iOS gets the webpki roots and a pinned certificate applies to the private scan; the S2 refusal of private sync while a pin is set was removed on the owner's decision (`yec_private::tests::pinned_server_syncs_privately_over_the_pinned_channel`) |
 | Z-4 | shielded / gate | A shielded spend must not reach any transparent output class | Info | **fixed by construction**: gate path `Shielded` refuses any transparent input, JoinSplit, `OP_RETURN` or `TOKEN_VALUE` output; the node's `ValidateRawTransaction` answered `ok` on both lines |
 | Z-5 | shielded / notes | A built spend is recorded (its notes count as spent) before the gate and `SendTransaction`; a refused broadcast leaves them unavailable until expiry (target + 40 blocks) | Low | accepted (the library's semantics; `zcash_client_sqlite` has no "forget this unmined transaction") |
 | Z-6 | shielded / server | What the server can do to the private side | Info | recorded (below) |
@@ -71,9 +71,9 @@ seed backup, and anything that reads the seed at unlock, now also controls shiel
 can view every shielded payment. The Sapling extended spending key is held as 169 serialized
 bytes, wiped on drop (`SaplingAccount`); `sapling-crypto`'s typed key has no erasure of its
 own, so its transient copies are best effort like `secp256k1::SecretKey`. The Sapling keys are
-not yet used by the wallet (no sync, no send; plan S2–S3). The user-facing statement
-(`docs/trust.md`, "holds no shielded funds and never will") is left unchanged until shielded
-funds ship (plan S3/S5), since the app does not hold them yet.
+used by the private sync and send since S2–S4 (2026-10-04); the user-facing statement in
+`docs/trust.md` and `app/lib/trust_text.dart` was rewritten in S3 to describe the two kinds of
+YEC.
 
 **What stays in memory, and for how long.** While a wallet is unlocked: the account key
 `m/44'/347'/0'` (`KeyRing`) and the wrap key, for the whole session — D-W-6 says "derived keys
@@ -213,8 +213,9 @@ library takes a host channel (`Options::channel`) and never dials when one is gi
 (`light/src/wallet.rs` `open`); `Shielded::sync` passes `CompactClient::channel()`, YEW's own
 (webpki + native roots, or the pinned certificate alone). `yec_private::tests::
 shielded_sync_uses_the_wallets_channel` checks that only YEW's endpoint is dialed and that it
-receives YEW's TLS ClientHello. The S2 rule that refuses private sync while a pin is set is
-still in place: removing it is an owner decision. The light wallet also locks its store
+receives YEW's TLS ClientHello. The S2 rule that refused private sync while a pin is set was
+removed on 2026-10-04 (owner decision): `pinned_server_syncs_privately_over_the_pinned_channel`
+checks that a pinned server is synced over the pinned channel and is no longer refused. The light wallet also locks its store
 directory (`wallet.lock`); a second open in one process is `ShieldedError::Busy` (YEW keeps one
 per open wallet and drops it before reopening; `shielded::tests::one_light_wallet_per_store`).
 

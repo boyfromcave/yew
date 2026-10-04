@@ -205,21 +205,15 @@ pub async fn confirm_yec_send(
 
 /// The shielded sync of `wallet` from its birthday. The light library scans over `client`'s
 /// channel (YEW's TLS settings, roots and certificate pin, Z-3); `server` gives the label it
-/// reports. Memos and status go through `client` as well. A server with a pinned certificate
-/// is still refused here (the S2 rule); lifting it now that the channel carries the pin is
-/// an owner decision.
+/// reports. Memos and status go through `client` as well. A pinned certificate applies to the
+/// private scan like every other call, because the light library never opens a connection of
+/// its own when given a channel (owner decision 2026-10-04 lifted the S2 refusal).
 pub async fn sync_shielded(
     wallet: &mut Wallet,
     server: &Server,
     client: &mut CompactClient,
     progress: shielded::ProgressFn,
 ) -> Result<ShieldedSyncReport, WalletError> {
-    if server.ca_pem.is_some() {
-        return Err(WalletError::Other(
-            "Private sync cannot use a pinned certificate yet; remove the pin to sync private YEC."
-                .into(),
-        ));
-    }
     // The restore field (the wallet's birthday) seeds the private account's birthday; a seed
     // this wallet generated without one starts at the current tip (nothing can predate it).
     let birthday = wallet.birthday()?;
@@ -363,6 +357,62 @@ mod tests {
             "the label's address was never dialed"
         );
         untouched.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// A throwaway self-signed certificate (CN yew-test-pin), used only as a pin in tests.
+    const TEST_PIN_PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIBhTCCASugAwIBAgIUV5hAw6sxIYAVibjpt6cCniXzq4YwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMeWV3LXRlc3QtcGluMCAXDTI2MTAwNDIwMDgxOFoYDzIxMjYw\nOTEwMjAwODE4WjAXMRUwEwYDVQQDDAx5ZXctdGVzdC1waW4wWTATBgcqhkjOPQIB\nBggqhkjOPQMBBwNCAAQVdts5Asg7wV1QYFq1Il7u8Q/QzUqXed6J6efe9dZTmCk2\nO9ogWaNhgftkcn4OelTbUOaZr2733fgLKim1t6emo1MwUTAdBgNVHQ4EFgQUA97Z\nvomsi5vBvcBm+ad4PtTxITEwHwYDVR0jBBgwFoAUA97Zvomsi5vBvcBm+ad4PtTx\nITEwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiBWQe93bcx5W2c7\nF6myElZ58G2114aIbSRB3N2pEdDkdAIhANpRDx0mrF2ANwWGLBhVrjkVCOQtcYXK\nGicOdMB5rzAR\n-----END CERTIFICATE-----";
+
+    /// Z-3 closed: a server with a pinned certificate is no longer refused. The private scan
+    /// dials YEW's pinned channel (and only it) and opens with YEW's TLS ClientHello.
+    #[tokio::test]
+    async fn pinned_server_syncs_privately_over_the_pinned_channel() {
+        use tokio::io::AsyncReadExt;
+        let dir = std::env::temp_dir().join(format!("yew-yecpin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.sqlite");
+        let mut w = Wallet::open(
+            path.to_str().unwrap(),
+            Network::Regtest,
+            PHRASE,
+            "",
+            Some(5),
+        )
+        .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hello = tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut b = [0u8; 3];
+            s.read_exact(&mut b).await.unwrap();
+            b
+        });
+        let pinned = Server::parse(&format!("localhost:{port}"), false)
+            .unwrap()
+            .with_ca_pem(Some(TEST_PIN_PEM.to_string()));
+        assert!(pinned.ca_pem.is_some());
+        let channel = pinned.endpoint().unwrap().connect_lazy();
+        let mut client = CompactClient::from_channel(channel);
+        let r = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            sync_shielded(&mut w, &pinned, &mut client, no_progress()),
+        )
+        .await
+        .expect("the sync gives up on a server that never answers");
+        let e = r.expect_err("the stub server never answers");
+        assert!(
+            !e.to_string().contains("pinned certificate"),
+            "no longer refused for the pin: {e}"
+        );
+        let b = tokio::time::timeout(std::time::Duration::from_secs(5), hello)
+            .await
+            .expect("the pinned channel was dialed")
+            .unwrap();
+        assert_eq!(
+            b,
+            [0x16, 0x03, 0x01],
+            "a TLS ClientHello on the pinned channel"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

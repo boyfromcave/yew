@@ -84,7 +84,9 @@ Other things worth knowing before reading code:
 - **Sync is per address, not per block.** The wallet derives its addresses
   (`m/44'/347'/0'/{0,1}/i`, Ywallet-compatible, gap limit 20), asks the server for their UTXOs
   and transaction history, and asks the Yellowback service which of those outputs are YED.
-  No compact blocks, no shielded scanning.
+  The private (Sapling) balance is synced differently: the `x402_ycash_light` library scans
+  compact blocks from the account's birthday on the phone, over YEW's own connection, so the
+  server never learns which private payments are the wallet's.
 - **A mint is a persisted state machine, not a process.** Minting takes two transactions (a
   carrier holding the price attestations, then the mint itself) inside a 40-block window. The
   `mints` table holds every fact the second step needs, only the sync loop advances a row, and
@@ -298,10 +300,9 @@ node, not the wallet, knows which miners are eligible (`docs/trust.md`).
 
 Shielded (S2): the Sapling spending key is derived at unlock and never written by YEW; the
 private store holds the account's viewing key, notes and memos (privacy, not funds); the
-proving parameters are SHA-256 pinned. One gap is open before S3 ships TLS servers: the light
-library opens its own TLS connection for the scan with the platform roots, so a pinned
-certificate cannot be honoured there (YEW refuses private sync while a pin is set) and iOS
-needs the library to accept YEW's channel — `docs/security-review.md` Z-3.
+proving parameters are SHA-256 pinned. The private scan runs over YEW's own connection, so the
+server's pinned certificate (if set) and iOS's webpki roots apply to it like every other call
+(`docs/security-review.md` Z-3, closed 2026-10-04).
 
 ## What is left
 
@@ -319,6 +320,12 @@ Everything below needs a device, an account, a public server or a decision:
    -insightexplorer` behind TLS, entered in `net/tls.rs` `default_servers` (mainnet and testnet
    ship empty; the app asks for a server until then).
 5. **Testnet run**, store metadata and signing: `docs/release.md`.
+6. **Private (Sapling) YEC, hardening (plan S5, `docs/plans/yew-shielded-plan.md`)**: the HTTPS
+   host for the 52 MB proving files (no default is compiled in; Settings asks for one); a
+   YWallet-built `ys1…` address for the test seed to pin YWallet compatibility from a real
+   binary; restore-from-seed with a birthday and a reorg test on both node lines; the 6.21.0
+   line on a device; sync time, proving time and battery on real phones; `lite.ycash.xyz`
+   upgraded to lightwalletd-dd with `GetChainInfo`.
 
 ## Further reading
 

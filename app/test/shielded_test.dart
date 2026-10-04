@@ -148,7 +148,7 @@ void main() {
     expect(find.text('16 / 512 bytes'), findsOneWidget);
     await tester.tap(find.byKey(const Key('preview')));
     await tester.pumpAndSettle();
-    // validateAddress (transparent-only in the core) is not asked; the core parses ys1….
+    // The send preview parses the ys1… recipient in the core (validate_address kind sapling).
     expect(h.api.calls, contains('yecPreview $fakeZ 25000000 false memo=thanks for lunch'));
     expect(find.text('your private balance'), findsOneWidget);
     expect(find.widgetWithText(PreviewRow, 'thanks for lunch'), findsOneWidget);

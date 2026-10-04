@@ -2,8 +2,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
-//! `yew-core`: the Rust core of YEW ("Your Electronic Wallet"), a transparent-only mobile
-//! wallet for YEC and Ycash Yellowback (YED).
+//! `yew-core`: the Rust core of YEW ("Your Electronic Wallet"), a mobile wallet for YEC —
+//! public (transparent) and private (Sapling) — and Ycash Yellowback (YED), which is public only.
 //!
 //! Every wire byte, script byte, key and signature of the wallet lives here; the Flutter app is a
 //! view over [`api`]. Plan: `docs/plans/yellowback-wallet-plan.md` (workspace), §3.
