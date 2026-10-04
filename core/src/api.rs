@@ -1851,8 +1851,9 @@ fn params_status_of(dir: &std::path::Path) -> ParamsStatus {
     }
 }
 
-/// Download the Sapling proving parameters from `base_url` (`https://host/dir/`; S0-2: the
-/// owner's host; `file://` or a loopback `http://` for tests) into the app's data directory,
+/// Download the Sapling proving parameters from `base_url` (`https://host/dir/`; `file://` or a
+/// loopback `http://` for tests), or, when `base_url` is empty, from
+/// [`sapling_params::DEFAULT_SOURCES`] in order (the next is tried when one fails), into the app's data directory,
 /// each file verified against its pinned SHA-256 before it is kept. Progress on `sink`, ending
 /// with a `finished` event ([`params_status`] then says `ready`); the wallet stays usable
 /// meanwhile (the download does not hold the wallet).
@@ -1864,20 +1865,42 @@ pub fn download_params(base_url: String, sink: StreamSink<ParamsProgress>) -> Re
             "The proving parameters are already downloading.",
         ));
     };
-    let source = sapling_params::ParamsSource::parse(&base_url)
-        .map_err(|e| YewError::new(ErrorKind::Input, e.to_string()))?;
+    let urls: Vec<String> = if base_url.trim().is_empty() {
+        sapling_params::DEFAULT_SOURCES
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        vec![base_url]
+    };
+    let mut sources = Vec::with_capacity(urls.len());
+    for u in &urls {
+        sources.push(
+            sapling_params::ParamsSource::parse(u)
+                .map_err(|e| YewError::new(ErrorKind::Input, e.to_string()))?,
+        );
+    }
     let dir = with_open(|o| Ok(o.params_dir.clone()))?;
-    let progress_sink = sink.clone();
-    let st = runtime()
-        .block_on(sapling_params::download(&source, &dir, move |p| {
+    let mut last_err = String::new();
+    let mut done = None;
+    for source in &sources {
+        let progress_sink = sink.clone();
+        match runtime().block_on(sapling_params::download(source, &dir, move |p| {
             let _ = progress_sink.add(ParamsProgress {
                 file: p.file.to_string(),
                 done_bytes: p.done as i64,
                 total_bytes: p.total as i64,
                 finished: false,
             });
-        }))
-        .map_err(|e| YewError::new(ErrorKind::Network, e.to_string()))?;
+        })) {
+            Ok(st) => {
+                done = Some(st);
+                break;
+            }
+            Err(e) => last_err = e.to_string(),
+        }
+    }
+    let st = done.ok_or_else(|| YewError::new(ErrorKind::Network, last_err))?;
     let _ = sink.add(ParamsProgress {
         file: String::new(),
         done_bytes: (sapling_params::TOTAL_BYTES - st.missing_bytes) as i64,

@@ -20,8 +20,11 @@
 //! (rustls over `tokio-rustls`, the Mozilla roots of `webpki-roots`, up to five redirects to
 //! another `https` URL), `http://` only to a loopback host (tests), and `file:///dir/` (tests,
 //! and a copy already on the device). The HTTP/1.1 client is deliberately small (one `GET`,
-//! `Content-Length`, chunked or close-delimited bodies) because the bytes are verified anyway;
-//! where the files are hosted is the owner's decision (S0-2), so no default URL is compiled in.
+//! `Content-Length`, chunked or close-delimited bodies) because the bytes are verified anyway.
+//! With no address in Settings, [`DEFAULT_SOURCES`] are tried in order (owner decision
+//! 2026-10-04): a Ycash-hosted mirror first as soon as one exists, then the source ycashd's own
+//! `zcutil/fetch-params.sh` uses today. The pinned SHA-256s make the host a question of
+//! availability, not trust.
 
 use std::fs::{self, File};
 use std::io::Write;
@@ -60,6 +63,13 @@ pub const OUTPUT: ParamFile = ParamFile {
 
 /// Both files, in download order.
 pub const FILES: [ParamFile; 2] = [SPEND, OUTPUT];
+
+/// Where the files are fetched when Settings names no address, tried in order. A Ycash-hosted
+/// mirror is listed first as soon as one exists (owner, 2026-10-04: the Ycash Foundation is
+/// being asked). Until then the only entry is the base URL ycashd's own parameter fetcher
+/// downloads from (`DOWNLOAD_URL`, `ycash/zcutil/fetch-params.sh:20`). Every file is checked
+/// against [`FILES`]' pinned SHA-256 whatever its source.
+pub const DEFAULT_SOURCES: &[&str] = &["https://download.z.cash/downloads/"];
 
 /// Total bytes of a download from nothing.
 pub const TOTAL_BYTES: u64 = SPEND.bytes + OUTPUT.bytes;
