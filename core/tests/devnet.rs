@@ -2601,6 +2601,12 @@ async fn s5_reorg_private_and_public() {
     assert!(rows
         .iter()
         .any(|x| x.0 == z1 && x.1 == hb && x.3 == "r1: re-mined"));
+    let t1_row = w
+        .store
+        .history_row(&txid_from_hex(&t1).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!((t1_row.height, t1_row.pending), (hb, false), "{t1_row:?}");
     let tip_before = tip_of(&s.dn, 0);
     for &m in &all {
         s.dn.node(m, &["reconsiderblock", &block_b]);
@@ -2680,11 +2686,17 @@ async fn s5_reorg_private_and_public() {
         dropped.2.iter().any(|x| x.0 == z2 && x.1 == 0),
         "unmined in history"
     );
-    let t2_row = w.store.history_row(&txid_from_hex(&t2).unwrap()).unwrap();
-    println!("R2 dropped: public history row of the dropped receipt {t2_row:?}");
-    s.timings.insert(
-        "r2PublicHistoryRowAfterDrop".into(),
-        format!("{:?}", t2_row.map(|r| (r.height, r.yec_delta, r.pending))).into(),
+    // The public history re-reads its last ten blocks: the dropped receipt is pending again,
+    // not confirmed at a height it no longer has.
+    let t2_row = w
+        .store
+        .history_row(&txid_from_hex(&t2).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (t2_row.height, t2_row.pending, t2_row.yec_delta),
+        (0, true, 40_000_000),
+        "{t2_row:?}"
     );
     assert_eq!(
         r.yec.0 + r.yec.1,
@@ -2707,6 +2719,16 @@ async fn s5_reorg_private_and_public() {
     assert_eq!(
         (z2rows[0].1 > h2, z2rows[0].3.as_str()),
         (true, "r2: dropped, then back")
+    );
+    let t2_row = w
+        .store
+        .history_row(&txid_from_hex(&t2).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (t2_row.height, t2_row.pending),
+        (z2rows[0].1, false),
+        "{t2_row:?}"
     );
 
     drop(rejoin);

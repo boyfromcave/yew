@@ -43,6 +43,10 @@ use crate::store::{HistoryRow, MintState, VaultRow};
 use crate::tx::{txid_from_hex, txid_hex, OutPoint, Transaction};
 use crate::wallet::{dollars, Wallet, WalletError};
 
+/// Blocks of history read again on every sync, so a reorg that drops or moves a transaction
+/// inside them corrects its row (the private side's light library rewinds the same ten).
+pub const REORG_WINDOW: u64 = 10;
+
 /// What one sync did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SyncReport {
@@ -99,16 +103,17 @@ pub async fn sync(
     };
 
     // 1-3. Addresses and history, extending the gap until no address in the last GAP_LIMIT
-    // of either chain turns out used.
+    // of either chain turns out used. The last REORG_WINDOW blocks already scanned are read
+    // again, so a reorg there corrects the history (yew-shielded plan S5).
+    let window_from = if scanned == 0 {
+        birthday
+    } else {
+        (scanned + 1).saturating_sub(REORG_WINDOW).max(birthday)
+    };
     let mut pending: Vec<(String, u64)> = wallet
         .addresses()?
         .into_iter()
-        .map(|a| {
-            (
-                a.address_s,
-                if scanned == 0 { birthday } else { scanned + 1 },
-            )
-        })
+        .map(|a| (a.address_s, window_from))
         .collect();
     let mut seen_txids: HashSet<[u8; 32]> = HashSet::new();
     while !pending.is_empty() {
@@ -140,6 +145,26 @@ pub async fn sync(
         }
     }
     let _ = GAP_LIMIT; // the gap rule lives in Wallet::ensure_gap
+
+    // A row recorded confirmed inside the re-read window that no address listed again left the
+    // chain in a reorg: it is unconfirmed again (back in the mempool, or gone), so it shows as
+    // pending until a later sync sees it mined, rather than confirmed at a height it is not at.
+    // Its locks and own outputs are untouched: the UTXO set below is re-read in full anyway.
+    if scanned > 0 {
+        for row in wallet.store.history()? {
+            if !row.pending
+                && row.height >= window_from
+                && row.height <= scanned
+                && !seen_txids.contains(&row.txid)
+            {
+                wallet.store.upsert_history(&HistoryRow {
+                    height: 0,
+                    pending: true,
+                    ..row
+                })?;
+            }
+        }
+    }
 
     // 4a. The token set (D-W-8): the only source of class TOKEN.
     let own = wallet.own_hashes()?;

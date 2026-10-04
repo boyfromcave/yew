@@ -2,7 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
-// yew-shielded plan S3 (and the S4 Move sheet, shots 13-15) on a device against a regtest devnet with private (Sapling) support
+// yew-shielded plan S3 (and the S4 Move sheet, shots 13-15; the S5 restore with a birthday, shot 16) on a device against a regtest devnet with private (Sapling) support
 // (`KEEP=1 scripts/devnet-s2.sh dd|6 <seed>` leaves one up; lightwalletd-dd on 9067 + seed).
 // Written against the real core. Drives the private screens and prints two kinds of markers
 // for a host-side helper:
@@ -86,6 +86,7 @@ void main() {
     await tapKey(tester, 'done');
     await waitFor(tester, () => !state.syncing && state.balances.syncHeight > 0);
 
+    final birthday = state.balances.syncHeight; // the tip before any funding
     final z = state.receivePrivate!.address;
     final t = state.receive!.s;
     final ye = state.receive!.ye;
@@ -223,5 +224,57 @@ void main() {
     await shot(tester, '15-moved');
     await tapKey(tester, 'move-done');
     await tester.pumpAndSettle();
+
+    // S5: restore the same seed with a birthday (the tip before the funding) into a second
+    // wallet directory; the private balance and the incoming message come back.
+    // ignore: avoid_print
+    print('YEW-S3 MINE');
+    final settled = DateTime.now().add(fundWait);
+    do {
+      expect(DateTime.now().isBefore(settled), isTrue, reason: 'no block within $fundWait');
+      await Future<void>.delayed(const Duration(seconds: 5));
+      await state.sync();
+      await tester.pumpAndSettle();
+    } while (state.balances.yecShieldedPendingZat > 0 || !state.balances.shieldedSendable);
+    final privateA = state.balances.yecShieldedZat;
+    final words = (await state.seedWordsForBackup())!;
+    await state.lock();
+    final restored = AppState(api: api, secrets: MemorySecretStore(), auth: const NoAuthenticator(), dirs: FixedDataDirs('$dataDir/b'));
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpWidget(YewApp(state: restored));
+    await tester.pumpAndSettle();
+    await tapKey(tester, 'restore');
+    await tester.pumpAndSettle();
+    await enterKey(tester, 'words', words);
+    await enterKey(tester, 'birthday', '$birthday');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+    await tapKey(tester, 'next');
+    await tester.pumpAndSettle();
+    await tapKey(tester, 'trust-check');
+    await tester.pumpAndSettle();
+    await tapKey(tester, 'next');
+    await tester.pumpAndSettle();
+    await tapKey(tester, 'network');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('regtest').last);
+    await tester.pumpAndSettle();
+    await enterKey(tester, 'server', devnetServer);
+    await setSwitchKey(tester, 'plain', true);
+    await tester.pumpAndSettle();
+    await tapKey(tester, 'probe');
+    await tester.pumpAndSettle(const Duration(seconds: 2));
+    await tapKey(tester, 'next');
+    await tester.pumpAndSettle();
+    await tapKey(tester, 'finish');
+    final restoreDeadline = DateTime.now().add(fundWait);
+    while (!restored.unlocked || restored.syncing || restored.balances.yecShieldedZat != privateA || !restored.balances.shieldedSendable) {
+      expect(DateTime.now().isBefore(restoreDeadline), isTrue, reason: 'restore never reached $privateA zat private');
+      await tester.pump(const Duration(seconds: 2));
+      if (restored.unlocked && !restored.syncing) await restored.sync();
+    }
+    await tester.pumpAndSettle();
+    expect(restored.history.any((h) => h.shielded && h.memo == memo), isTrue);
+    await shot(tester, '16-restored-home');
   });
 }
