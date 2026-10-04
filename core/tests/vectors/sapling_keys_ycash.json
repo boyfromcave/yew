@@ -1,0 +1,112 @@
+{
+  "cases": [
+    {
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      "networks": {
+        "main": {
+          "defaultAddress": "ys10e8r2m9w2chdyfr39rfw5sjejmhqn4s6p4a45l0udpz3hfp6kkmkgmyjnkq4ke3500tpgje39wt",
+          "defaultIndex": 8,
+          "fullViewingKey": "zxviews1qvtvhtgnqqqqpq9jm4zhhypkws9qtnpze572cvqweq4anft84855lzh9f62fk9syk7p3h0r0yqaqdmtvnstrujx9cuqfx5gap4wyapptr22hkrfe43468fv05c63s2c7t2jr9l4hnr7ayw20sfexj0rclzz4n0wy44zpyqf95dk8fay2s94dds45hydnmaqc5g3sffcperfsq9vv4hqx6rlumczc6w368c4dfww2v03mp4h2nlremqdh3g98spdmcu7e4njzly0v0mqwa07u3",
+          "nextAddress": "ys1qg4u4vlaejghm4vsc6s8ftfmuehz2a75pz3zh0ymjfc6grceh47dyl4wka0yjjypyngazypw8vf",
+          "nextIndex": 9,
+          "spendingKey": "secret-extended-key-main1qvtvhtgnqqqqpq9jm4zhhypkws9qtnpze572cvqweq4anft84855lzh9f62fk9sykuxhph0m844sx2vyxd2l7w2ugnf9a9t567g3n4cr4jal3x6nt2xs2nkcrs04g3vrvzudtju33a0q0ctwx3skw0duqkcrc8g8z5nzfpcg5dk8fay2s94dds45hydnmaqc5g3sffcperfsq9vv4hqx6rlumczc6w368c4dfww2v03mp4h2nlremqdh3g98spdmcu7e4njzly0v0mqknk06c"
+        },
+        "regtest": {
+          "defaultAddress": "yregtestsapling10e8r2m9w2chdyfr39rfw5sjejmhqn4s6p4a45l0udpz3hfp6kkmkgmyjnkq4ke3500tpgawyklu",
+          "defaultIndex": 8,
+          "fullViewingKey": "zxviewregtestsapling1qvtvhtgnqqqqpq9jm4zhhypkws9qtnpze572cvqweq4anft84855lzh9f62fk9syk7p3h0r0yqaqdmtvnstrujx9cuqfx5gap4wyapptr22hkrfe43468fv05c63s2c7t2jr9l4hnr7ayw20sfexj0rclzz4n0wy44zpyqf95dk8fay2s94dds45hydnmaqc5g3sffcperfsq9vv4hqx6rlumczc6w368c4dfww2v03mp4h2nlremqdh3g98spdmcu7e4njzly0v0mq75y037",
+          "nextAddress": "yregtestsapling1qg4u4vlaejghm4vsc6s8ftfmuehz2a75pz3zh0ymjfc6grceh47dyl4wka0yjjypyngaztkm5a7",
+          "nextIndex": 9,
+          "spendingKey": "secret-extended-key-regtest1qvtvhtgnqqqqpq9jm4zhhypkws9qtnpze572cvqweq4anft84855lzh9f62fk9sykuxhph0m844sx2vyxd2l7w2ugnf9a9t567g3n4cr4jal3x6nt2xs2nkcrs04g3vrvzudtju33a0q0ctwx3skw0duqkcrc8g8z5nzfpcg5dk8fay2s94dds45hydnmaqc5g3sffcperfsq9vv4hqx6rlumczc6w368c4dfww2v03mp4h2nlremqdh3g98spdmcu7e4njzly0v0mqdgrm49"
+        },
+        "test": {
+          "defaultAddress": "ytestsapling10e8r2m9w2chdyfr39rfw5sjejmhqn4s6p4a45l0udpz3hfp6kkmkgmyjnkq4ke3500tpgs3lk4n",
+          "defaultIndex": 8,
+          "fullViewingKey": "zxviewtestsapling1qvtvhtgnqqqqpq9jm4zhhypkws9qtnpze572cvqweq4anft84855lzh9f62fk9syk7p3h0r0yqaqdmtvnstrujx9cuqfx5gap4wyapptr22hkrfe43468fv05c63s2c7t2jr9l4hnr7ayw20sfexj0rclzz4n0wy44zpyqf95dk8fay2s94dds45hydnmaqc5g3sffcperfsq9vv4hqx6rlumczc6w368c4dfww2v03mp4h2nlremqdh3g98spdmcu7e4njzly0v0mq0l7y66",
+          "nextAddress": "ytestsapling1qg4u4vlaejghm4vsc6s8ftfmuehz2a75pz3zh0ymjfc6grceh47dyl4wka0yjjypyngazxfq5h3",
+          "nextIndex": 9,
+          "spendingKey": "secret-extended-key-test1qvtvhtgnqqqqpq9jm4zhhypkws9qtnpze572cvqweq4anft84855lzh9f62fk9sykuxhph0m844sx2vyxd2l7w2ugnf9a9t567g3n4cr4jal3x6nt2xs2nkcrs04g3vrvzudtju33a0q0ctwx3skw0duqkcrc8g8z5nzfpcg5dk8fay2s94dds45hydnmaqc5g3sffcperfsq9vv4hqx6rlumczc6w368c4dfww2v03mp4h2nlremqdh3g98spdmcu7e4njzly0v0mqa0jdzc"
+        }
+      },
+      "passphrase": "",
+      "path": "m/32'/347'/0'",
+      "spendingKeyBytes": "0316cbad1300000080b2dd457b9036740a05cc22cd3cac300ec82bd9a567a9e94f8ae54e949b1604b70d70ddfb3d6b0329843355ff395c44d25e9574d79119d703acbbf89b535a8d054ed81c1f54458360b8d5cb918f5e07e16e3461673dbc05b03c1d071526248708a36c74f48a816ad6c2b4b91b3df418a22304a701c8d300158cadc06d0ffcde058d3a3a3e2ad4b9ca63e3b0d6ea9fc79d81b78a0a7805bbc73d9ace42f91ec7ec"
+    },
+    {
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+      "networks": {
+        "main": {
+          "defaultAddress": "ys1aauca54mge838hfeu6n6u8xhmarrqzrjmktljumsckrvypld7az0wg2qu6yx94yl6zljya79m8r",
+          "defaultIndex": 1,
+          "fullViewingKey": "zxviews1q000t3f7qqqqpqx78t006029gxayf3q9azml94t5ylvr6rxsctp62xj3kyw6f9tzcxzrmzyqkphl3cv9e6z06z4rqcqvvrx6j832e899hapj7cx5a305aauqwuv85s94jmnvs3askfazw6svqavgvy9a8rnl8zxw5zxhm547mfjamf2yayr873dvk4w4addc6hqk6p0nagagnx5swgaytehh94p7rr4mulrl25resm2evqgly3z3j54ln5sgd0cfwvhu3mvgjdkjv4czkksq9",
+          "nextAddress": "ys1eg8c8hdm46jn6z7xdvde6gk76zgewdndmrqz8dy3jun7y0vz3hrtps99m6f0fymxuvj2gmg0qta",
+          "nextIndex": 5,
+          "spendingKey": "secret-extended-key-main1q000t3f7qqqqpqx78t006029gxayf3q9azml94t5ylvr6rxsctp62xj3kyw6f9tzc9qy604m7smpsu7nrlqxs7z87n8rgt0sr7ln7fg38l9wrd9q2tnsf3jcz6kjnd7ye0ccupwdd42qym8uxx0hl0p4r4msmw3my83kedsvmfjamf2yayr873dvk4w4addc6hqk6p0nagagnx5swgaytehh94p7rr4mulrl25resm2evqgly3z3j54ln5sgd0cfwvhu3mvgjdkjv4cqkhsz6"
+        },
+        "regtest": {
+          "defaultAddress": "yregtestsapling1aauca54mge838hfeu6n6u8xhmarrqzrjmktljumsckrvypld7az0wg2qu6yx94yl6zljyjfsgk5",
+          "defaultIndex": 1,
+          "fullViewingKey": "zxviewregtestsapling1q000t3f7qqqqpqx78t006029gxayf3q9azml94t5ylvr6rxsctp62xj3kyw6f9tzcxzrmzyqkphl3cv9e6z06z4rqcqvvrx6j832e899hapj7cx5a305aauqwuv85s94jmnvs3askfazw6svqavgvy9a8rnl8zxw5zxhm547mfjamf2yayr873dvk4w4addc6hqk6p0nagagnx5swgaytehh94p7rr4mulrl25resm2evqgly3z3j54ln5sgd0cfwvhu3mvgjdkjv4cjlapd2",
+          "nextAddress": "yregtestsapling1eg8c8hdm46jn6z7xdvde6gk76zgewdndmrqz8dy3jun7y0vz3hrtps99m6f0fymxuvj2g5l6n62",
+          "nextIndex": 5,
+          "spendingKey": "secret-extended-key-regtest1q000t3f7qqqqpqx78t006029gxayf3q9azml94t5ylvr6rxsctp62xj3kyw6f9tzc9qy604m7smpsu7nrlqxs7z87n8rgt0sr7ln7fg38l9wrd9q2tnsf3jcz6kjnd7ye0ccupwdd42qym8uxx0hl0p4r4msmw3my83kedsvmfjamf2yayr873dvk4w4addc6hqk6p0nagagnx5swgaytehh94p7rr4mulrl25resm2evqgly3z3j54ln5sgd0cfwvhu3mvgjdkjv4cmdzyd8"
+        },
+        "test": {
+          "defaultAddress": "ytestsapling1aauca54mge838hfeu6n6u8xhmarrqzrjmktljumsckrvypld7az0wg2qu6yx94yl6zljylktgum",
+          "defaultIndex": 1,
+          "fullViewingKey": "zxviewtestsapling1q000t3f7qqqqpqx78t006029gxayf3q9azml94t5ylvr6rxsctp62xj3kyw6f9tzcxzrmzyqkphl3cv9e6z06z4rqcqvvrx6j832e899hapj7cx5a305aauqwuv85s94jmnvs3askfazw6svqavgvy9a8rnl8zxw5zxhm547mfjamf2yayr873dvk4w4addc6hqk6p0nagagnx5swgaytehh94p7rr4mulrl25resm2evqgly3z3j54ln5sgd0cfwvhu3mvgjdkjv4cr582xw",
+          "nextAddress": "ytestsapling1eg8c8hdm46jn6z7xdvde6gk76zgewdndmrqz8dy3jun7y0vz3hrtps99m6f0fymxuvj2geqpns9",
+          "nextIndex": 5,
+          "spendingKey": "secret-extended-key-test1q000t3f7qqqqpqx78t006029gxayf3q9azml94t5ylvr6rxsctp62xj3kyw6f9tzc9qy604m7smpsu7nrlqxs7z87n8rgt0sr7ln7fg38l9wrd9q2tnsf3jcz6kjnd7ye0ccupwdd42qym8uxx0hl0p4r4msmw3my83kedsvmfjamf2yayr873dvk4w4addc6hqk6p0nagagnx5swgaytehh94p7rr4mulrl25resm2evqgly3z3j54ln5sgd0cfwvhu3mvgjdkjv4ct2nj66"
+        }
+      },
+      "passphrase": "",
+      "path": "m/32'/347'/0'",
+      "spendingKeyBytes": "03def5c53e00000080de3adefd3d4541ba44c405e8b7f2d57427d83d0cd0c2c3a51a51b11da49562c1404d3ebbf4361873d31fc0687847f4ce342df01fbf3f25113fcae1b4a052e704c65816ad29b7c4cbf18e05cd6d54026cfc319f7fbc351d770dba3b21e36cb60cda65dda544e9067f45acb55d5eb5b8d5c16d05f3ea3a899a90723a45e6f72d43e18ebbe7c7f5507986d596011f24451952bf9d2086bf09732fc8ed88936d2657"
+    },
+    {
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+      "networks": {
+        "main": {
+          "defaultAddress": "ys135yfgsf6svzvqnaxqgzfjk08rjjg0h9z5lltgqz8rn6uytfjfwqls3a49ll0pph8cgrwz6x7vet",
+          "defaultIndex": 0,
+          "fullViewingKey": "zxviews1qd0dsk6gqqqqpqyw4xhkxqy5n7zspat42vuqemnrshqqheump5yvryy32jux7vnchdw8q8mg4lnc4qcexju7ghjypp9eqjn9vy4atvy2l3w8r4u2mwdshczx4t879q85pk2sdv0mkqeng6lnnf4asjx0u7r3s2w4vm9ss6xwsxuurqcans6k779ths7xt9camqggqa9x5ekdvmmrnxg9sfxjg02rdx6v5ajzpkax2az88rznarxth8cmcc2ejffeha8gly8kk0rtrcs2qsy9u",
+          "nextAddress": "ys1pnhtwvdg4saseqmqm0d6v5pqs9k03llwy74vg334qhvk3ah6n6aq228g26cmt2w62tyz5kvmnyr",
+          "nextIndex": 2,
+          "spendingKey": "secret-extended-key-main1qd0dsk6gqqqqpqyw4xhkxqy5n7zspat42vuqemnrshqqheump5yvryy32jux7vnchwn769zr7qu4h0asn8sh6fvt53539smamhaqcdfepjcs3qrrx6kqdaehyg9nlvfnwcft4zlr66gppdjd80hwx4w62rhergnvhc6ce6qzsxuurqcans6k779ths7xt9camqggqa9x5ekdvmmrnxg9sfxjg02rdx6v5ajzpkax2az88rznarxth8cmcc2ejffeha8gly8kk0rtrcscnktpy"
+        },
+        "regtest": {
+          "defaultAddress": "yregtestsapling135yfgsf6svzvqnaxqgzfjk08rjjg0h9z5lltgqz8rn6uytfjfwqls3a49ll0pph8cgrwz43tlgu",
+          "defaultIndex": 0,
+          "fullViewingKey": "zxviewregtestsapling1qd0dsk6gqqqqpqyw4xhkxqy5n7zspat42vuqemnrshqqheump5yvryy32jux7vnchdw8q8mg4lnc4qcexju7ghjypp9eqjn9vy4atvy2l3w8r4u2mwdshczx4t879q85pk2sdv0mkqeng6lnnf4asjx0u7r3s2w4vm9ss6xwsxuurqcans6k779ths7xt9camqggqa9x5ekdvmmrnxg9sfxjg02rdx6v5ajzpkax2az88rznarxth8cmcc2ejffeha8gly8kk0rtrcs6fm4gn",
+          "nextAddress": "yregtestsapling1pnhtwvdg4saseqmqm0d6v5pqs9k03llwy74vg334qhvk3ah6n6aq228g26cmt2w62tyz5emwq45",
+          "nextIndex": 2,
+          "spendingKey": "secret-extended-key-regtest1qd0dsk6gqqqqpqyw4xhkxqy5n7zspat42vuqemnrshqqheump5yvryy32jux7vnchwn769zr7qu4h0asn8sh6fvt53539smamhaqcdfepjcs3qrrx6kqdaehyg9nlvfnwcft4zlr66gppdjd80hwx4w62rhergnvhc6ce6qzsxuurqcans6k779ths7xt9camqggqa9x5ekdvmmrnxg9sfxjg02rdx6v5ajzpkax2az88rznarxth8cmcc2ejffeha8gly8kk0rtrcsrgrlwe"
+        },
+        "test": {
+          "defaultAddress": "ytestsapling135yfgsf6svzvqnaxqgzfjk08rjjg0h9z5lltgqz8rn6uytfjfwqls3a49ll0pph8cgrwzcwslzn",
+          "defaultIndex": 0,
+          "fullViewingKey": "zxviewtestsapling1qd0dsk6gqqqqpqyw4xhkxqy5n7zspat42vuqemnrshqqheump5yvryy32jux7vnchdw8q8mg4lnc4qcexju7ghjypp9eqjn9vy4atvy2l3w8r4u2mwdshczx4t879q85pk2sdv0mkqeng6lnnf4asjx0u7r3s2w4vm9ss6xwsxuurqcans6k779ths7xt9camqggqa9x5ekdvmmrnxg9sfxjg02rdx6v5ajzpkax2az88rznarxth8cmcc2ejffeha8gly8kk0rtrcstzp7rh",
+          "nextAddress": "ytestsapling1pnhtwvdg4saseqmqm0d6v5pqs9k03llwy74vg334qhvk3ah6n6aq228g26cmt2w62tyz55y4qlm",
+          "nextIndex": 2,
+          "spendingKey": "secret-extended-key-test1qd0dsk6gqqqqpqyw4xhkxqy5n7zspat42vuqemnrshqqheump5yvryy32jux7vnchwn769zr7qu4h0asn8sh6fvt53539smamhaqcdfepjcs3qrrx6kqdaehyg9nlvfnwcft4zlr66gppdjd80hwx4w62rhergnvhc6ce6qzsxuurqcans6k779ths7xt9camqggqa9x5ekdvmmrnxg9sfxjg02rdx6v5ajzpkax2az88rznarxth8cmcc2ejffeha8gly8kk0rtrcsn0jfey"
+        }
+      },
+      "passphrase": "yew",
+      "path": "m/32'/347'/0'",
+      "spendingKeyBytes": "035ed85b48000000808ea9af6300949f8500f57553380cee6385c00be79b0d08c1909154b86f3278bba7ed1443f0395bbfb099e17d258ba46912c37dddfa0c35390cb108806336ac06f737220b3fb1337612ba8be3d69010b64d3beee355da50ef91a26cbe358ce80281b9c1831d9c356f78abbc3c65971dd8108074a6a66cd66f6399905824d243d4369b4ca76420dba65744738c53e8ccbb9f1bc615992539bf4e8f90f6b3c6b1e2"
+    }
+  ],
+  "nodeCheck": {
+    "node": "ycashd v4.5.0-cdfc4945f (ycash-dd feature/yellowback-price-attest), regtest, x402-ycash scripts/devnet.sh up dd 331",
+    "date": "2026-10-04",
+    "checks": [
+      "z_importkey <regtest spendingKey> no -> address == regtest defaultAddress (3/3 cases)",
+      "z_exportviewingkey <defaultAddress> == regtest fullViewingKey (3/3)",
+      "z_exportkey <defaultAddress> == regtest spendingKey (3/3)",
+      "z_validateaddress <nextAddress> -> isvalid sapling (3/3)",
+      "z_shieldcoinbase to case 2 nextAddress (diversifier index 5): z_gettotalbalance private 0.00 -> 11.8749 with only the three imported Sapling keys in the wallet (the imported key's ivk decrypts the diversified address)"
+    ],
+    "note": "mainnet/testnet entries are the same key bytes under the chainparams HRPs (ycash-dd/src/chainparams.cpp:164-168, 424-428); the node's testnet/regtest HD wallet uses coin type 1, so z_getnewaddress there is a different key by design"
+  }
+}

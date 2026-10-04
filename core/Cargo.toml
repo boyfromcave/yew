@@ -21,9 +21,13 @@ secp256k1 = { version = "=0.33.1", features = ["recovery", "rand", "std"] }
 # `zeroize`: the Mnemonic wipes its word indices on drop (W5 review S-1); the crate is already in
 # the tree through rustls, so the allow-list of plan §3.3 is unchanged.
 bip39 = { version = "=3.0.0", features = ["rand", "zeroize"] }
-hmac = "=0.13.0"
-sha2 = "=0.11.0"
-ripemd = "=0.2.0"
+hmac = "=0.13.0-pre.4"
+# hmac, sha2, ripemd: the RustCrypto pre-releases `bip32 =0.6.0-pre.1` pins exactly (librustzcash6
+# zcash_transparent -> bip32; zcash_keys and the x402-ycash/light core both reach it). Cargo cannot
+# hold `=0.2.0-pre.4` beside `=0.2.0` in one graph, so YEW takes bip32's versions; the node
+# transparent signing vectors (tests/vectors.rs) are the check that nothing changed.
+sha2 = "=0.11.0-pre.4"
+ripemd = "=0.2.0-pre.4"
 blake2b_simd = "=1.0.5"
 bs58 = "=0.5.1"
 # `tls-webpki-roots` (audit G-4): the Mozilla bundle as a root store beside the platform's
@@ -35,13 +39,22 @@ webpki-roots = "=1.0.9"
 tonic-prost = "=0.14.6"
 prost = "=0.14.4"
 tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
-rusqlite = { version = "=0.40.2", features = ["bundled"] }
+rusqlite = { version = "=0.37.0", features = ["bundled"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 thiserror = "=2.0.21"
 # The bridge (api.rs): the crate and flutter_rust_bridge_codegen are the same version (W0a); the
 # Dart package in app/pubspec.yaml is pinned to it too.
 flutter_rust_bridge = "=2.13.0"
+# Sapling key derivation (yew-shielded plan S0-1, `shielded_keys.rs`): ZIP-32 over the BIP39
+# seed, the Sapling key types and their Bech32 encodings. `zcash_keys` comes from
+# boyfromcave/librustzcash6 (= miodragpop/librustzcash @ ec525fae, the Ycash-aware librustzcash
+# ycashd 6.21.0 pins and x402-ycash/light builds on), by path from the workspace checkout beside
+# this repo; a release switches it to a git rev. `sapling` feature only. `sapling-crypto` 0.7.0
+# and `zip32` 0.2.0 are the versions librustzcash6 locks (named directly for the key types).
+zcash_keys = { version = "=0.14.0", path = "../../librustzcash6/zcash_keys", default-features = false, features = ["std", "sapling"] }
+sapling-crypto = { version = "=0.7.0", default-features = false, features = ["std"] }
+zip32 = { version = "=0.2.0", default-features = false }
 
 # flutter_rust_bridge's macros test `cfg(frb_expand)`.
 [lints.rust]

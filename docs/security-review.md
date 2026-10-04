@@ -54,6 +54,19 @@ dropped as they were.
   drop; `key_for_hash` and `import_wif` wipe the unwrapped / to-be-wrapped 32 bytes.
 - `encode_wif` / `decode_wif` wipe the payload.
 
+**Seed scope: one seed, two pools** (yew-shielded plan S0-1, 2026-10-04). The seed now
+derives the transparent keys at `m/44'/347'/0'` (BIP44, `keys.rs`) and the Ycash Sapling keys
+at `m/32'/347'/0'` (ZIP-32 account 0, `shielded_keys.rs`), both exactly as Ywallet derives a
+Ycash account (`zcash-sync/src/key2.rs` `derive_secret_key`, coin type 347 on every network),
+so a seed backup restores both pools in either wallet. Consequence for the threat model: the
+seed backup, and anything that reads the seed at unlock, now also controls shielded funds and
+can view every shielded payment. The Sapling extended spending key is held as 169 serialized
+bytes, wiped on drop (`SaplingAccount`); `sapling-crypto`'s typed key has no erasure of its
+own, so its transient copies are best effort like `secp256k1::SecretKey`. The Sapling keys are
+not yet used by the wallet (no sync, no send; plan S2–S3). The user-facing statement
+(`docs/trust.md`, "holds no shielded funds and never will") is left unchanged until shielded
+funds ship (plan S3/S5), since the app does not hold them yet.
+
 **What stays in memory, and for how long.** While a wallet is unlocked: the account key
 `m/44'/347'/0'` (`KeyRing`) and the wrap key, for the whole session — D-W-6 says "derived keys
 in memory only", and this is the minimum for signing without the seed. Address keys are

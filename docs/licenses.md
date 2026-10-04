@@ -7,7 +7,7 @@ expression contains no identifier from its allowed set. YEW itself is MIT (`LICE
 
 ## Summary
 
-226 crates. Expressions seen: `MIT OR Apache-2.0` (and its spellings) for the large majority;
+296 crates. Expressions seen: `MIT OR Apache-2.0` (and its spellings) for the large majority;
 `MIT`; `Apache-2.0`; `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`; `CC0-1.0`;
 `Unlicense OR MIT`; `Zlib` (`foldhash`); `ISC` (`rustls-webpki`, `untrusted`); `Apache-2.0 AND
 ISC` (`ring`); `BSD-3-Clause` (`subtle`); `(MIT OR Apache-2.0) AND Unicode-3.0`
@@ -28,12 +28,12 @@ and its platform packages (BSD-3-Clause), `local_auth` (BSD-3-Clause), `qr_flutt
 (BSD-3-Clause), `mobile_scanner` (BSD-3-Clause), `path_provider` (BSD-3-Clause),
 `cupertino_icons` (MIT), and the Flutter SDK (BSD-3-Clause). Not checked by the script.
 
-## Rust crates
-
 | Crate | Version | License (SPDX, from the manifest) |
 |---|---|---|
 | `addr2line` | 0.25.1 | Apache-2.0 OR MIT |
 | `adler2` | 2.0.1 | 0BSD OR MIT OR Apache-2.0 |
+| `aead` | 0.5.2 | MIT OR Apache-2.0 |
+| `aes` | 0.8.4 | MIT OR Apache-2.0 |
 | `aho-corasick` | 1.1.5 | Unlicense OR MIT |
 | `allo-isolate` | 0.1.27 | Apache-2.0 |
 | `android_log-sys` | 0.3.2 | MIT OR Apache-2.0 |
@@ -42,52 +42,75 @@ and its platform packages (BSD-3-Clause), `local_auth` (BSD-3-Clause), `qr_flutt
 | `arrayvec` | 0.7.8 | MIT OR Apache-2.0 |
 | `async-trait` | 0.1.92 | MIT OR Apache-2.0 |
 | `atomic` | 0.5.3 | Apache-2.0/MIT |
+| `atomic-polyfill` | 1.0.3 | MIT OR Apache-2.0 |
 | `atomic-waker` | 1.1.2 | Apache-2.0 OR MIT |
+| `autocfg` | 1.5.1 | Apache-2.0 OR MIT |
 | `backtrace` | 0.3.76 | MIT OR Apache-2.0 |
+| `base16ct` | 0.2.0 | Apache-2.0 OR MIT |
 | `base64` | 0.22.1 | MIT OR Apache-2.0 |
+| `bech32` | 0.11.1 | MIT |
+| `bip32` | 0.6.0-pre.1 | Apache-2.0 OR MIT |
 | `bip39` | 3.0.0 | CC0-1.0 |
 | `bitcoin_hashes` | 0.14.101 | CC0-1.0 |
 | `bitflags` | 2.13.2 | MIT OR Apache-2.0 |
+| `bitvec` | 1.1.1 | MIT |
 | `blake2b_simd` | 1.0.5 | MIT |
+| `blake2s_simd` | 1.0.5 | MIT |
 | `block-buffer` | 0.10.4 | MIT OR Apache-2.0 |
-| `block-buffer` | 0.12.1 | MIT OR Apache-2.0 |
+| `block-buffer` | 0.11.0-rc.3 | MIT OR Apache-2.0 |
+| `bls12_381` | 0.8.0 | MIT/Apache-2.0 |
+| `bounded-vec` | 0.9.0 | CC0-1.0 |
 | `bs58` | 0.5.1 | MIT/Apache-2.0 |
 | `build-target` | 0.4.0 | MIT |
 | `bumpalo` | 3.20.3 | MIT OR Apache-2.0 |
 | `bytemuck` | 1.25.2 | Zlib OR Apache-2.0 OR MIT |
 | `byteorder` | 1.5.0 | Unlicense OR MIT |
 | `bytes` | 1.12.1 | MIT |
+| `cbc` | 0.1.2 | MIT OR Apache-2.0 |
 | `cc` | 1.4.7 | MIT OR Apache-2.0 |
 | `cfg-if` | 1.0.5 | MIT OR Apache-2.0 |
-| `cmov` | 0.5.4 | Apache-2.0 OR MIT |
+| `chacha20` | 0.9.1 | Apache-2.0 OR MIT |
+| `chacha20poly1305` | 0.10.1 | Apache-2.0 OR MIT |
+| `cipher` | 0.4.4 | MIT OR Apache-2.0 |
+| `cobs` | 0.3.0 | MIT OR Apache-2.0 |
 | `console_error_panic_hook` | 0.1.7 | Apache-2.0/MIT |
+| `const-crc32-nostd` | 1.3.1 | MIT |
 | `const-oid` | 0.10.2 | Apache-2.0 OR MIT |
 | `constant_time_eq` | 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
 | `core-foundation` | 0.10.1 | MIT OR Apache-2.0 |
 | `core-foundation-sys` | 0.8.7 | MIT OR Apache-2.0 |
-| `cpufeatures` | 0.3.1 | MIT OR Apache-2.0 |
+| `corez` | 0.1.1 | MIT OR Apache-2.0 |
+| `cpufeatures` | 0.2.17 | MIT OR Apache-2.0 |
+| `critical-section` | 1.2.0 | MIT OR Apache-2.0 |
 | `crypto-common` | 0.1.7 | MIT OR Apache-2.0 |
-| `crypto-common` | 0.2.2 | MIT OR Apache-2.0 |
-| `ctutils` | 0.4.2 | Apache-2.0 OR MIT |
+| `crypto-common` | 0.2.0-rc.1 | MIT OR Apache-2.0 |
 | `dart-sys` | 4.1.5 | MIT OR Apache-2.0 |
 | `dashmap` | 5.5.3 | MIT |
 | `delegate-attr` | 0.3.1 | MIT |
+| `derive-getters` | 0.5.0 | MIT |
 | `digest` | 0.10.7 | MIT OR Apache-2.0 |
-| `digest` | 0.11.3 | MIT OR Apache-2.0 |
+| `digest` | 0.11.0-pre.9 | MIT OR Apache-2.0 |
+| `document-features` | 0.2.12 | MIT OR Apache-2.0 |
 | `either` | 1.18.0 | MIT OR Apache-2.0 |
+| `embedded-io` | 0.4.0 | MIT OR Apache-2.0 |
+| `embedded-io` | 0.6.1 | MIT OR Apache-2.0 |
 | `env_filter` | 0.1.4 | MIT OR Apache-2.0 |
 | `equivalent` | 1.0.2 | Apache-2.0 OR MIT |
 | `errno` | 0.3.14 | MIT OR Apache-2.0 |
 | `fallible-iterator` | 0.3.0 | MIT/Apache-2.0 |
 | `fallible-streaming-iterator` | 0.1.9 | MIT/Apache-2.0 |
 | `fastrand` | 2.5.0 | Apache-2.0 OR MIT |
+| `ff` | 0.13.1 | MIT/Apache-2.0 |
 | `find-msvc-tools` | 0.1.13 | MIT OR Apache-2.0 |
 | `fixedbitset` | 0.5.7 | MIT OR Apache-2.0 |
 | `flutter_rust_bridge` | 2.13.0 | MIT |
 | `flutter_rust_bridge_macros` | 2.13.0 | MIT |
 | `fnv` | 1.0.7 | Apache-2.0 / MIT |
 | `foldhash` | 0.1.5 | Zlib |
-| `foldhash` | 0.2.0 | Zlib |
+| `fpe` | 0.6.1 | MIT/Apache-2.0 |
+| `frost-core` | 3.0.0 | MIT OR Apache-2.0 |
+| `frost-rerandomized` | 3.0.0 | MIT OR Apache-2.0 |
+| `funty` | 2.0.0 | MIT |
 | `futures` | 0.3.34 | MIT OR Apache-2.0 |
 | `futures-channel` | 0.3.34 | MIT OR Apache-2.0 |
 | `futures-core` | 0.3.34 | MIT OR Apache-2.0 |
@@ -101,54 +124,74 @@ and its platform packages (BSD-3-Clause), `local_auth` (BSD-3-Clause), `qr_flutt
 | `getrandom` | 0.2.17 | MIT OR Apache-2.0 |
 | `getrandom` | 0.3.4 | MIT OR Apache-2.0 |
 | `getrandom` | 0.4.3 | MIT OR Apache-2.0 |
+| `getset` | 0.1.7 | MIT |
 | `gimli` | 0.32.3 | MIT OR Apache-2.0 |
+| `group` | 0.13.0 | MIT/Apache-2.0 |
 | `h2` | 0.4.19 | MIT |
+| `halo2_poseidon` | 0.1.0 | MIT OR Apache-2.0 |
+| `hash32` | 0.2.1 | MIT OR Apache-2.0 |
 | `hashbrown` | 0.14.5 | MIT OR Apache-2.0 |
 | `hashbrown` | 0.15.5 | MIT OR Apache-2.0 |
-| `hashbrown` | 0.16.1 | MIT OR Apache-2.0 |
 | `hashbrown` | 0.17.1 | MIT OR Apache-2.0 |
-| `hashlink` | 0.12.2 | MIT OR Apache-2.0 |
+| `hashlink` | 0.10.0 | MIT OR Apache-2.0 |
+| `heapless` | 0.7.17 | MIT OR Apache-2.0 |
 | `heck` | 0.5.0 | MIT OR Apache-2.0 |
 | `hermit-abi` | 0.5.3 | MIT OR Apache-2.0 |
 | `hex` | 0.4.3 | MIT OR Apache-2.0 |
 | `hex-conservative` | 0.2.3 | CC0-1.0 |
-| `hmac` | 0.13.0 | MIT OR Apache-2.0 |
+| `hmac` | 0.13.0-pre.4 | MIT OR Apache-2.0 |
 | `http` | 1.5.0 | MIT OR Apache-2.0 |
 | `http-body` | 1.1.0 | MIT |
 | `http-body-util` | 0.1.5 | MIT |
 | `httparse` | 1.10.1 | MIT OR Apache-2.0 |
-| `hybrid-array` | 0.4.15 | MIT OR Apache-2.0 |
+| `hybrid-array` | 0.2.3 | MIT OR Apache-2.0 |
 | `hyper` | 1.11.1 | MIT |
 | `hyper-timeout` | 0.5.2 | MIT OR Apache-2.0 |
 | `hyper-util` | 0.1.21 | MIT |
+| `incrementalmerkletree` | 0.8.2 | MIT OR Apache-2.0 |
 | `indexmap` | 2.14.2 | Apache-2.0 OR MIT |
+| `inout` | 0.1.4 | MIT OR Apache-2.0 |
 | `itertools` | 0.14.0 | MIT OR Apache-2.0 |
 | `itoa` | 1.0.18 | MIT OR Apache-2.0 |
 | `js-sys` | 0.3.105 | MIT OR Apache-2.0 |
+| `jubjub` | 0.10.0 | MIT/Apache-2.0 |
 | `lazy_static` | 1.5.0 | MIT OR Apache-2.0 |
 | `libc` | 0.2.189 | MIT OR Apache-2.0 |
-| `libsqlite3-sys` | 0.38.2 | MIT |
+| `libm` | 0.2.16 | MIT |
+| `libsqlite3-sys` | 0.35.0 | MIT |
 | `linux-raw-sys` | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| `litrs` | 1.0.0 | MIT OR Apache-2.0 |
 | `lock_api` | 0.4.14 | MIT OR Apache-2.0 |
 | `log` | 0.4.34 | MIT OR Apache-2.0 |
 | `md-5` | 0.10.6 | MIT OR Apache-2.0 |
 | `memchr` | 2.8.3 | Unlicense OR MIT |
+| `memuse` | 0.2.2 | MIT/Apache-2.0 |
 | `miniz_oxide` | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
 | `mio` | 1.2.3 | MIT |
 | `multimap` | 0.10.1 | MIT OR Apache-2.0 |
+| `nonempty` | 0.11.0 | MIT |
+| `num-bigint` | 0.4.8 | MIT OR Apache-2.0 |
+| `num-integer` | 0.1.47 | MIT OR Apache-2.0 |
+| `num-traits` | 0.2.19 | MIT OR Apache-2.0 |
 | `num_cpus` | 1.17.0 | MIT OR Apache-2.0 |
 | `object` | 0.37.3 | Apache-2.0 OR MIT |
 | `once_cell` | 1.21.4 | MIT OR Apache-2.0 |
+| `opaque-debug` | 0.3.1 | MIT OR Apache-2.0 |
 | `openssl-probe` | 0.2.1 | MIT OR Apache-2.0 |
+| `orchard` | 0.14.0 | MIT OR Apache-2.0 |
 | `oslog` | 0.2.0 | MIT |
+| `pairing` | 0.23.0 | MIT/Apache-2.0 |
 | `parking_lot_core` | 0.9.12 | MIT OR Apache-2.0 |
+| `pasta_curves` | 0.5.2 | MIT OR Apache-2.0 |
 | `percent-encoding` | 2.3.2 | MIT OR Apache-2.0 |
 | `petgraph` | 0.8.3 | MIT OR Apache-2.0 |
 | `pin-project` | 1.1.13 | Apache-2.0 OR MIT |
 | `pin-project-internal` | 1.1.13 | Apache-2.0 OR MIT |
 | `pin-project-lite` | 0.2.17 | Apache-2.0 OR MIT |
 | `pkg-config` | 0.3.34 | MIT OR Apache-2.0 |
+| `poly1305` | 0.8.0 | Apache-2.0 OR MIT |
 | `portable-atomic` | 1.15.0 | Apache-2.0 OR MIT |
+| `postcard` | 1.1.3 | MIT OR Apache-2.0 |
 | `ppv-lite86` | 0.2.21 | MIT OR Apache-2.0 |
 | `prettyplease` | 0.2.37 | MIT OR Apache-2.0 |
 | `proc-macro2` | 1.0.107 | MIT OR Apache-2.0 |
@@ -161,49 +204,67 @@ and its platform packages (BSD-3-Clause), `local_auth` (BSD-3-Clause), `qr_flutt
 | `quote` | 1.0.47 | MIT OR Apache-2.0 |
 | `r-efi` | 5.3.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later |
 | `r-efi` | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later |
+| `radium` | 0.7.0 | MIT |
 | `rand` | 0.8.8 | MIT OR Apache-2.0 |
 | `rand` | 0.9.5 | MIT OR Apache-2.0 |
 | `rand_chacha` | 0.3.1 | MIT OR Apache-2.0 |
 | `rand_chacha` | 0.9.0 | MIT OR Apache-2.0 |
 | `rand_core` | 0.6.4 | MIT OR Apache-2.0 |
 | `rand_core` | 0.9.5 | MIT OR Apache-2.0 |
+| `reddsa` | 0.5.2 | MIT OR Apache-2.0 |
+| `redjubjub` | 0.8.0 | MIT OR Apache-2.0 |
 | `redox_syscall` | 0.5.18 | MIT |
 | `regex` | 1.13.1 | MIT OR Apache-2.0 |
 | `regex-automata` | 0.4.18 | MIT OR Apache-2.0 |
 | `regex-syntax` | 0.8.11 | MIT OR Apache-2.0 |
 | `ring` | 0.17.14 | Apache-2.0 AND ISC |
-| `ripemd` | 0.2.0 | MIT OR Apache-2.0 |
-| `rsqlite-vfs` | 0.1.1 | MIT |
-| `rusqlite` | 0.40.2 | MIT |
+| `ripemd` | 0.1.3 | MIT OR Apache-2.0 |
+| `ripemd` | 0.2.0-pre.4 | MIT OR Apache-2.0 |
+| `rusqlite` | 0.37.0 | MIT |
 | `rustc-demangle` | 0.1.28 | MIT/Apache-2.0 |
+| `rustc_version` | 0.4.1 | MIT OR Apache-2.0 |
 | `rustix` | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | `rustls` | 0.23.45 | Apache-2.0 OR ISC OR MIT |
 | `rustls-native-certs` | 0.8.4 | Apache-2.0 OR ISC OR MIT |
 | `rustls-pki-types` | 1.15.1 | MIT OR Apache-2.0 |
 | `rustls-webpki` | 0.103.15 | ISC |
 | `rustversion` | 1.0.23 | MIT OR Apache-2.0 |
+| `sapling-crypto` | 0.7.0 | MIT OR Apache-2.0 |
 | `schannel` | 0.1.29 | MIT |
 | `scopeguard` | 1.2.0 | MIT OR Apache-2.0 |
+| `secp256k1` | 0.29.1 | CC0-1.0 |
 | `secp256k1` | 0.33.1 | CC0-1.0 |
+| `secp256k1-sys` | 0.10.1 | CC0-1.0 |
 | `secp256k1-sys` | 0.14.1 | CC0-1.0 |
+| `secrecy` | 0.8.0 | Apache-2.0 OR MIT |
 | `security-framework` | 3.7.0 | MIT OR Apache-2.0 |
 | `security-framework-sys` | 2.17.0 | MIT OR Apache-2.0 |
+| `semver` | 1.0.28 | MIT OR Apache-2.0 |
 | `serde` | 1.0.229 | MIT OR Apache-2.0 |
 | `serde_core` | 1.0.229 | MIT OR Apache-2.0 |
 | `serde_derive` | 1.0.229 | MIT OR Apache-2.0 |
 | `serde_json` | 1.0.151 | MIT OR Apache-2.0 |
-| `sha2` | 0.11.0 | MIT OR Apache-2.0 |
+| `serdect` | 0.2.0 | Apache-2.0 OR MIT |
+| `sha1` | 0.10.7 | MIT OR Apache-2.0 |
+| `sha2` | 0.10.9 | MIT OR Apache-2.0 |
+| `sha2` | 0.11.0-pre.4 | MIT OR Apache-2.0 |
 | `shlex` | 2.0.1 | MIT OR Apache-2.0 |
+| `sinsemilla` | 0.1.0 | MIT OR Apache-2.0 |
 | `slab` | 0.4.12 | MIT |
 | `smallvec` | 1.16.1 | MIT OR Apache-2.0 |
 | `socket2` | 0.6.5 | MIT OR Apache-2.0 |
-| `sqlite-wasm-rs` | 0.5.5 | MIT |
+| `spin` | 0.9.9 | MIT |
+| `stable_deref_trait` | 1.2.1 | MIT OR Apache-2.0 |
+| `static_assertions` | 1.1.0 | MIT OR Apache-2.0 |
 | `subtle` | 2.6.1 | BSD-3-Clause |
 | `syn` | 2.0.119 | MIT OR Apache-2.0 |
 | `syn` | 3.0.6 | MIT OR Apache-2.0 |
 | `sync_wrapper` | 1.0.2 | Apache-2.0 |
+| `tap` | 1.0.1 | MIT |
 | `tempfile` | 3.27.0 | MIT OR Apache-2.0 |
+| `thiserror` | 1.0.69 | MIT OR Apache-2.0 |
 | `thiserror` | 2.0.21 | MIT OR Apache-2.0 |
+| `thiserror-impl` | 1.0.69 | MIT OR Apache-2.0 |
 | `thiserror-impl` | 2.0.21 | MIT OR Apache-2.0 |
 | `threadpool` | 1.8.1 | MIT/Apache-2.0 |
 | `tinyvec` | 1.13.3 | Zlib OR Apache-2.0 OR MIT |
@@ -227,9 +288,11 @@ and its platform packages (BSD-3-Clause), `local_auth` (BSD-3-Clause), `qr_flutt
 | `unicase` | 2.9.0 | MIT OR Apache-2.0 |
 | `unicode-ident` | 1.0.26 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | `unicode-normalization` | 0.1.25 | MIT OR Apache-2.0 |
+| `universal-hash` | 0.5.1 | MIT OR Apache-2.0 |
 | `untrusted` | 0.9.0 | ISC |
 | `vcpkg` | 0.2.15 | MIT/Apache-2.0 |
 | `version_check` | 0.9.5 | MIT/Apache-2.0 |
+| `visibility` | 0.1.1 | Zlib OR MIT OR Apache-2.0 |
 | `want` | 0.3.1 | MIT |
 | `wasi` | 0.11.1+wasi-snapshot-preview1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | `wasip2` | 1.0.4+wasi-0.2.12 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
@@ -253,8 +316,13 @@ and its platform packages (BSD-3-Clause), `local_auth` (BSD-3-Clause), `qr_flutt
 | `windows_x86_64_gnullvm` | 0.52.6 | MIT OR Apache-2.0 |
 | `windows_x86_64_msvc` | 0.52.6 | MIT OR Apache-2.0 |
 | `wit-bindgen` | 0.57.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| `wyz` | 0.5.1 | MIT |
+| `zcash_note_encryption` | 0.4.1 | MIT OR Apache-2.0 |
+| `zcash_script` | 0.4.5 | Apache-2.0 |
+| `zcash_spec` | 0.2.1 | MIT OR Apache-2.0 |
 | `zerocopy` | 0.8.58 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | `zerocopy-derive` | 0.8.58 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | `zeroize` | 1.9.0 | Apache-2.0 OR MIT |
 | `zeroize_derive` | 1.5.0 | Apache-2.0 OR MIT |
+| `zip32` | 0.2.0 | MIT OR Apache-2.0 |
 | `zmij` | 1.0.23 | MIT |

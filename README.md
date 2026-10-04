@@ -104,7 +104,7 @@ Cargo.toml              Rust workspace: core (yew-core) and core/cli (yew-cli)
 core/src/               the core; api.rs is the bridge surface, frb_generated.rs is generated
 core/cli/               yew-cli: the developer's driver and what the devnet tests use
 core/tests/             vectors.rs (node vectors), devnet.rs (acceptance; YEW_DEVNET=1, ignored otherwise)
-core/tests/vectors/     node-generated vectors (ywallet.json is pending an owner capture)
+core/tests/vectors/     node-generated vectors (ywallet.json is pending an owner capture; sapling_keys_ycash.json is node-confirmed)
 app/                    Flutter project yew_app (org cash.ycash.yew)
 app/lib/api/            WalletApi interface + the one file that calls the bridge
 app/lib/state/          AppState, the single app state

@@ -18,3 +18,10 @@ thiserror
 flutter_rust_bridge
 # Audit G-4 (2026-10-01): the Mozilla root bundle, needed on iOS where rustls-native-certs has no backend.
 webpki-roots
+# yew-shielded plan S0-1 (2026-10-04): Ycash Sapling key derivation (core/src/shielded_keys.rs).
+# `zcash_keys` is a path dependency on boyfromcave/librustzcash6 (miodragpop/librustzcash @ ec525fae,
+# what ycashd 6.21.0 pins); release builds switch it to a git rev. `sapling-crypto` and `zip32` are the
+# key-type crates at the versions librustzcash6 locks. The crate names are upstream's; the use is Ycash only.
+zcash_keys
+sapling-crypto
+zip32

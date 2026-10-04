@@ -578,3 +578,66 @@ fn w4_templates_reproduce_the_node_scripts_and_payloads() {
     );
     let _ = FEE_ZAT;
 }
+
+/// Ycash Sapling keys (yew-shielded plan S0-1): ZIP-32 account 0 at `m/32'/347'/0'` from the
+/// BIP39 seed, per network. `sapling_keys_ycash.json` was produced by this code
+/// (`YEW_REGEN_SAPLING_VECTORS=1`) and then confirmed against a v4.5.0-line regtest node
+/// (`ycash-dd`): for every regtest case `z_importkey` of `spendingKey` reported `defaultAddress`,
+/// `z_exportviewingkey` of it returned `fullViewingKey`, and `z_exportkey` returned `spendingKey`
+/// (the `nodeCheck` block records the node and the date). Mainnet and testnet differ from regtest
+/// only in the HRPs (same key bytes; asserted below).
+#[test]
+fn sapling_key_vectors_ycash() {
+    use yew_core::shielded_keys::SaplingAccount;
+    let path = vectors_dir().join("sapling_keys_ycash.json");
+    let cases: [(&str, &str); 3] = [
+        ("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", ""),
+        ("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art", ""),
+        ("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art", "yew"),
+    ];
+    let mut computed = Vec::new();
+    for (mnemonic, passphrase) in cases {
+        let mut nets = serde_json::Map::new();
+        let mut key_bytes = None;
+        for net in [Network::Mainnet, Network::Testnet, Network::Regtest] {
+            let a = SaplingAccount::from_mnemonic(mnemonic, passphrase, net).unwrap();
+            let kb = keys::hex(&a.spending_key_bytes());
+            assert_eq!(
+                *key_bytes.get_or_insert(kb.clone()),
+                kb,
+                "same key on every network"
+            );
+            let (j0, default) = a.default_address();
+            let (j1, next) = a.address_at(j0 + 1).unwrap();
+            nets.insert(
+                net.chain_name().into(),
+                serde_json::json!({
+                    "spendingKey": &*a.spending_key(),
+                    "fullViewingKey": a.full_viewing_key(),
+                    "defaultIndex": j0,
+                    "defaultAddress": default,
+                    "nextIndex": j1,
+                    "nextAddress": next,
+                }),
+            );
+        }
+        computed.push(serde_json::json!({
+            "mnemonic": mnemonic,
+            "passphrase": passphrase,
+            "path": "m/32'/347'/0'",
+            "spendingKeyBytes": key_bytes.unwrap(),
+            "networks": nets,
+        }));
+    }
+    if std::env::var_os("YEW_REGEN_SAPLING_VECTORS").is_some() {
+        let doc = serde_json::json!({ "cases": computed, "nodeCheck": null });
+        std::fs::write(&path, serde_json::to_string_pretty(&doc).unwrap() + "\n").unwrap();
+        return;
+    }
+    let v = load("sapling_keys_ycash.json");
+    assert!(
+        v["nodeCheck"]["node"].is_string(),
+        "sapling_keys_ycash.json has no node confirmation"
+    );
+    assert_eq!(v["cases"].as_array().unwrap(), &computed);
+}

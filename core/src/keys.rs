@@ -10,6 +10,12 @@
 //! Translation source (plan §3.6): `ycash-dd/src/yellowback/address.cpp` for the `s…` ↔ `ye…`
 //! encoding (same key hash; version bytes from `params.cpp`, see [`crate::params::Network`]).
 //! Derivation: Ywallet `zcash-sync/src/zip32.rs` `derive_zip32` at `m/44'/347'/0'/0/0`.
+//!
+//! **Seed scope** (yew-shielded plan S0-1, 2026-10-04). The same BIP39 seed derives two key
+//! trees: the transparent keys here at `m/44'/347'/0'/{0,1}/i` (BIP44, secp256k1) and the
+//! Ycash Sapling keys of [`crate::shielded_keys`] at `m/32'/347'/0'` (ZIP-32). Both are the
+//! paths Ywallet derives for a Ycash account, so one seed backup restores both pools, in YEW and
+//! in Ywallet. This reverses wallet-plan D-W-7's "no ZIP-32 keys, ever".
 
 use hmac::{Hmac, KeyInit, Mac};
 use ripemd::Ripemd160;

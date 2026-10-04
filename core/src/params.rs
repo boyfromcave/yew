@@ -91,6 +91,38 @@ impl Network {
             Network::Regtest => [0x20, 0x02],
         }
     }
+
+    /// Bech32 human-readable part of a Sapling payment address (`ys1…` on mainnet).
+    /// `ycash-dd/src/chainparams.cpp:164` (main `"ys"`), `:424` (test `"ytestsapling"`),
+    /// `:623` (regtest `"yregtestsapling"`). Ywallet renders the same (`zcash-sync`
+    /// `librustzcash/zcash_primitives/src/consensus/ycash.rs` `hrp_sapling_payment_address`).
+    pub fn sapling_address_hrp(self) -> &'static str {
+        match self {
+            Network::Mainnet => "ys",
+            Network::Testnet => "ytestsapling",
+            Network::Regtest => "yregtestsapling",
+        }
+    }
+
+    /// Bech32 HRP of a Sapling extended spending key (what `z_exportkey` prints and
+    /// `z_importkey` reads). `ycash-dd/src/chainparams.cpp:167`, `:427`, `:626`.
+    pub fn sapling_spending_key_hrp(self) -> &'static str {
+        match self {
+            Network::Mainnet => "secret-extended-key-main",
+            Network::Testnet => "secret-extended-key-test",
+            Network::Regtest => "secret-extended-key-regtest",
+        }
+    }
+
+    /// Bech32 HRP of a Sapling extended full viewing key (`z_exportviewingkey`).
+    /// `ycash-dd/src/chainparams.cpp:168`, `:428`, `:627`.
+    pub fn sapling_viewing_key_hrp(self) -> &'static str {
+        match self {
+            Network::Mainnet => "zxviews",
+            Network::Testnet => "zxviewtestsapling",
+            Network::Regtest => "zxviewregtestsapling",
+        }
+    }
 }
 
 /// A term class of a mint (spec §2 table, V19): the lock range in blocks and the base
@@ -251,8 +283,13 @@ pub fn required_zat(cents: u64, min_ratio_bps: i64, p_mint: i64) -> Option<i64> 
     i64::try_from(q).ok()
 }
 
-/// SLIP-44 coin type of Ycash, the BIP44 `coin_type'` level of every YEW key (D-W-7; Ywallet
-/// `zcash-sync/src/consensus/ycash.rs` `coin_type()`).
+/// SLIP-44 coin type of Ycash, the `coin_type'` level of every YEW key: BIP44 for the
+/// transparent keys (D-W-7) and ZIP-32 for the Sapling keys (yew-shielded plan S0-1), on every
+/// network, as Ywallet derives (`zcash-sync` `librustzcash/zcash_primitives/src/consensus/
+/// ycash.rs` `coin_type()` returns 347 for its testnet too). The node's own HD wallet uses
+/// `bip44CoinType = 1` on testnet and regtest (`ycash-dd/src/chainparams.cpp:341,552`), so a
+/// node-derived `z_getnewaddress` differs from YEW's on those networks; seed portability is
+/// defined against Ywallet, not the node (D-W-7).
 pub const COIN_TYPE: u32 = 347;
 
 /// BIP44 `purpose'`.
