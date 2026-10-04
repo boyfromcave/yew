@@ -292,9 +292,6 @@ pub fn required_zat(cents: u64, min_ratio_bps: i64, p_mint: i64) -> Option<i64> 
 /// defined against Ywallet, not the node (D-W-7).
 pub const COIN_TYPE: u32 = 347;
 
-/// ZIP-32 `purpose'` of the Sapling keys (`m/32'/347'/0'`; `ycash-dd/src/wallet/wallet.cpp:154`).
-pub const ZIP32_PURPOSE: u32 = 32;
-
 /// BIP44 `purpose'`.
 pub const BIP44_PURPOSE: u32 = 44;
 

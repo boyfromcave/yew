@@ -21,9 +21,13 @@ secp256k1 = { version = "=0.33.1", features = ["recovery", "rand", "std"] }
 # `zeroize`: the Mnemonic wipes its word indices on drop (W5 review S-1); the crate is already in
 # the tree through rustls, so the allow-list of plan §3.3 is unchanged.
 bip39 = { version = "=3.0.0", features = ["rand", "zeroize"] }
-hmac = "=0.13.0"
-sha2 = "=0.11.0"
-ripemd = "=0.2.0"
+hmac = "=0.13.0-pre.4"
+# hmac, sha2, ripemd: the RustCrypto pre-releases `bip32 =0.6.0-pre.1` pins exactly (librustzcash6
+# zcash_transparent -> bip32; zcash_keys and the x402-ycash/light core both reach it). Cargo cannot
+# hold `=0.2.0-pre.4` beside `=0.2.0` in one graph, so YEW takes bip32's versions; the node
+# transparent signing vectors (tests/vectors.rs) are the check that nothing changed.
+sha2 = "=0.11.0-pre.4"
+ripemd = "=0.2.0-pre.4"
 blake2b_simd = "=1.0.5"
 bs58 = "=0.5.1"
 # `tls-webpki-roots` (audit G-4): the Mozilla bundle as a root store beside the platform's
@@ -43,14 +47,12 @@ thiserror = "=2.0.21"
 # Dart package in app/pubspec.yaml is pinned to it too.
 flutter_rust_bridge = "=2.13.0"
 # Sapling key derivation (yew-shielded plan S0-1, `shielded_keys.rs`): ZIP-32 over the BIP39
-# seed and the Sapling key/address types. `sapling-crypto` 0.7.0 and `zip32` 0.2.0 are the exact
-# versions boyfromcave/librustzcash6 (= miodragpop/librustzcash @ ec525fae, the Ycash-aware
-# librustzcash ycashd 6.21.0 pins) locks and the whole of what its `zcash_keys::keys::sapling::
-# spending_key` wraps. `zcash_keys` itself cannot be used yet: through `zcash_transparent` it pins
-# `bip32 0.6.0-pre.1` → `ripemd =0.2.0-pre.4`, which Cargo cannot hold beside YEW's `ripemd 0.2.0`
-# (same 0.2 range); S2's light-core integration must settle that first. Bech32 is written in
-# `shielded_keys.rs` (BIP-173, as `keys.rs` writes BIP32), so no encoding crate is added.
-# No `circuit`/`multicore` features: no prover here, proving arrives with the light core.
+# seed, the Sapling key types and their Bech32 encodings. `zcash_keys` comes from
+# boyfromcave/librustzcash6 (= miodragpop/librustzcash @ ec525fae, the Ycash-aware librustzcash
+# ycashd 6.21.0 pins and x402-ycash/light builds on), by path from the workspace checkout beside
+# this repo; a release switches it to a git rev. `sapling` feature only. `sapling-crypto` 0.7.0
+# and `zip32` 0.2.0 are the versions librustzcash6 locks (named directly for the key types).
+zcash_keys = { version = "=0.14.0", path = "../../librustzcash6/zcash_keys", default-features = false, features = ["std", "sapling"] }
 sapling-crypto = { version = "=0.7.0", default-features = false, features = ["std"] }
 zip32 = { version = "=0.2.0", default-features = false }
 
