@@ -183,8 +183,9 @@ Future<SendResult> sendYecConfirm({required String previewId}) =>
 Future<ParamsStatus> paramsStatus() =>
     RustLib.instance.api.crateApiParamsStatus();
 
-/// Download the Sapling proving parameters from `base_url` (`https://host/dir/`; S0-2: the
-/// owner's host; `file://` or a loopback `http://` for tests) into the app's data directory,
+/// Download the Sapling proving parameters from `base_url` (`https://host/dir/`; `file://` or a
+/// loopback `http://` for tests), or, when `base_url` is empty, from
+/// [`sapling_params::DEFAULT_SOURCES`] in order (the next is tried when one fails), into the app's data directory,
 /// each file verified against its pinned SHA-256 before it is kept. Progress on `sink`, ending
 /// with a `finished` event ([`params_status`] then says `ready`); the wallet stays usable
 /// meanwhile (the download does not hold the wallet).

@@ -3,9 +3,9 @@
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
 // The one-time "Preparing private sending" sheet (yew-shielded plan §3, S0-2): the first
-// private send downloads the Sapling proving files (52 MB) from the address in Settings; the
-// core keeps them only if their SHA-256s match its pins. No host is compiled in, so an unset
-// address is said plainly and can be entered here or in Settings.
+// private send downloads the Sapling proving files (52 MB) from the standard source (the one
+// ycashd uses; a Ycash mirror first once one exists), or from the address set in Settings; the
+// core keeps them only if their SHA-256s match its pins.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -109,7 +109,6 @@ class _ParamsSheetState extends State<ParamsSheet> {
     final t = Theme.of(context).textTheme;
     final p = _progress;
     final running = p != null;
-    final unset = app.settings.paramsUrl.isEmpty;
     String mb(int b) => (b / 1000000).toStringAsFixed(1);
     return SafeArea(
       child: Padding(
@@ -126,19 +125,7 @@ class _ParamsSheetState extends State<ParamsSheet> {
               style: t.bodyMedium,
             ),
             const SizedBox(height: 16),
-            if (unset && !running) ...[
-              Text(
-                'No download address is set. Enter the address of the private sending files in Settings, or here.',
-                key: const Key('params-unset'),
-                style: t.bodyMedium,
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton(
-                key: const Key('params-set-url'),
-                onPressed: () => editParamsUrl(context, app),
-                child: const Text('Set download address'),
-              ),
-            ],
+
             if (running) ...[
               LinearProgressIndicator(key: const Key('params-progress'), value: p.totalBytes > 0 ? p.doneBytes / p.totalBytes : null),
               const SizedBox(height: 8),
@@ -151,10 +138,17 @@ class _ParamsSheetState extends State<ParamsSheet> {
             const SizedBox(height: 16),
             FilledButton(
               key: const Key('params-download'),
-              onPressed: unset || running ? null : () => _start(app),
+              onPressed: running ? null : () => _start(app),
               child: Text(_error != null ? 'Try again' : 'Download'),
             ),
             const SizedBox(height: 8),
+            // A different address (a mirror, or a copy on this phone) when the standard source is
+            // unreachable; the files are checked against the same fingerprints either way.
+            TextButton(
+              key: const Key('params-set-url'),
+              onPressed: running ? null : () => editParamsUrl(context, app),
+              child: const Text('Use another address'),
+            ),
             TextButton(
               key: const Key('params-cancel'),
               onPressed: () => Navigator.of(context).pop(false),

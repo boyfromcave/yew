@@ -181,7 +181,7 @@ void main() {
     expect(find.text('your private balance'), findsOneWidget);
   });
 
-  testWidgets('send: first private send without a download address: the sheet says so, then downloads, then sends', (tester) async {
+  testWidgets('send: first private send with no address set downloads from the standard source, then sends', (tester) async {
     final h = Harness(withWallet: true);
     h.api.balancesAnswer = synced;
     h.api.yecFunding = YecFunding.shielded;
@@ -191,25 +191,20 @@ void main() {
     await tester.longPress(find.byKey(const Key('slide-to-confirm')));
     await tester.pumpAndSettle();
     expect(find.text('Preparing private sending (52 MB, once)'), findsOneWidget);
-    expect(find.byKey(const Key('params-unset')), findsOneWidget);
-    expect(tester.widget<FilledButton>(find.byKey(const Key('params-download'))).onPressed, isNull);
+    expect(find.byKey(const Key('params-unset')), findsNothing);
+    expect(tester.widget<FilledButton>(find.byKey(const Key('params-download'))).onPressed, isNotNull);
     // "Not now": nothing sent, the preview stays.
     await tester.tap(find.byKey(const Key('params-cancel')));
     await tester.pumpAndSettle();
     expect(h.api.calls.where((c) => c.startsWith('yecConfirm')), isEmpty);
     expect(find.byKey(const Key('slide-to-confirm')), findsOneWidget);
-    // Again, entering the address in the sheet.
+    // Again: Download with no address set asks the core for its standard sources (empty base URL).
     await tester.longPress(find.byKey(const Key('slide-to-confirm')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('params-set-url')));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('params-url-field')), 'https://params.example/ycash/');
-    await tester.tap(find.byKey(const Key('params-url-save')));
-    await tester.pumpAndSettle();
-    expect(h.state.settings.paramsUrl, 'https://params.example/ycash/');
+    expect(h.state.settings.paramsUrl, '');
     await tester.tap(find.byKey(const Key('params-download')));
     await tester.pumpAndSettle();
-    expect(h.api.calls, contains('downloadParams https://params.example/ycash/'));
+    expect(h.api.calls, contains('downloadParams '));
     expect(h.api.calls, contains('yecConfirm p1'));
     expect(find.text('Sent'), findsWidgets);
   });
@@ -240,12 +235,12 @@ void main() {
     expect(find.text('Sent'), findsWidgets);
   });
 
-  testWidgets('settings: the private sending download address, unset by default', (tester) async {
+  testWidgets('settings: private sending files use the standard source unless an address is set', (tester) async {
     final h = Harness(withWallet: true);
     await h.pump(tester);
     await tester.tap(find.byKey(const Key('settings')));
     await tester.pumpAndSettle();
-    expect(find.textContaining('Download address not set'), findsOneWidget);
+    expect(find.text('Standard source (the one ycashd uses)'), findsOneWidget);
     await tester.tap(find.byKey(const Key('params-url')));
     await tester.pumpAndSettle();
     await tester.enterText(find.byKey(const Key('params-url-field')), 'https://params.example/');

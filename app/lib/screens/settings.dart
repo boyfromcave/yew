@@ -38,7 +38,7 @@ class SettingsScreen extends StatelessWidget {
             key: const Key('params-url'),
             leading: const Icon(Icons.lock_outline_rounded),
             title: const Text('Private sending files'),
-            subtitle: Text(s.paramsUrl.isEmpty ? 'Download address not set (needed once, for the first private send)' : s.paramsUrl),
+            subtitle: Text(s.paramsUrl.isEmpty ? 'Standard source (the one ycashd uses)' : s.paramsUrl),
             onTap: () => editParamsUrl(context, app),
           ),
           ListTile(
