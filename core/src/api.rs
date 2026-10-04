@@ -46,6 +46,7 @@ use flutter_rust_bridge::frb;
 use crate::frb_generated::StreamSink;
 use tokio::sync::Mutex;
 
+use crate::build::yec_move;
 use crate::build::yec_private::{self, Funding, YecSendPlan};
 use crate::build::yed_transfer;
 use crate::coins::UtxoClass;
@@ -560,7 +561,8 @@ pub struct WifExport {
 pub struct AddressCheck {
     /// Parses for the network.
     pub valid: bool,
-    /// `p2pkh` / `p2sh`, empty when invalid.
+    /// `p2pkh` / `p2sh`, `sapling` for a private address (`ys1…` / `ytestsapling1…` /
+    /// `yregtestsapling1…`), empty when invalid.
     pub kind: String,
     /// The `ye…` form was given.
     pub yellowback_form: bool,
@@ -1148,6 +1150,14 @@ pub fn check_seed_words(seed_words: String) -> Result<(), YewError> {
 /// Parse an address for `network` (the Send screen's field check).
 #[frb(sync)]
 pub fn validate_address(network: NetworkId, address: String) -> AddressCheck {
+    if crate::shielded_keys::is_sapling_address(network.to_network(), address.trim()) {
+        return AddressCheck {
+            valid: true,
+            kind: "sapling".into(),
+            yellowback_form: false,
+            message: String::new(),
+        };
+    }
     match keys::parse_address(network.to_network(), address.trim()) {
         Ok(a) => AddressCheck {
             valid: true,
@@ -1654,56 +1664,124 @@ pub fn send_yec_preview(
                 r.tip,
                 r.branch_id,
             )?;
-            let out = match &plan.funding {
-                Funding::Transparent(p) => {
-                    let txid = txid_hex(&p.txid);
-                    let reserved_spent: i64 = p
-                        .inputs
-                        .iter()
-                        .filter(|u| u.class == UtxoClass::FeeReserve)
-                        .map(|u| u.value)
-                        .sum();
-                    YecPreview {
-                        preview_id: txid.clone(),
-                        to: p.to.clone(),
-                        amount_zat: p.amount,
-                        amount_bumped: p.amount_bumped,
-                        fee_zat: p.fee,
-                        change_zat: p.change,
-                        inputs: p.inputs.len() as u32,
-                        uses_reserve: p.uses_reserve,
-                        keeps_reserved_zat: r.yec.1 - reserved_spent,
-                        expiry_height: p.expiry_height,
-                        txid,
-                        funding: YecFunding::Transparent,
-                        reveals_shielded: false,
-                        memo: None,
-                        params_needed: false,
-                    }
-                }
-                Funding::Shielded(p) => YecPreview {
-                    preview_id: format!("z{}", PREVIEW_SEQ.fetch_add(1, Ordering::SeqCst)),
-                    to: p.to.clone(),
-                    amount_zat: p.amount_zat as i64,
-                    amount_bumped: p.amount_bumped,
-                    fee_zat: p.fee_zat as i64,
-                    change_zat: p.change_zat as i64,
-                    inputs: p.notes,
-                    uses_reserve: false,
-                    keeps_reserved_zat: r.yec.1,
-                    expiry_height: p.expiry_height,
-                    txid: String::new(),
-                    funding: YecFunding::Shielded,
-                    reveals_shielded: plan.reveals_shielded,
-                    memo: p.memo.clone(),
-                    params_needed: !sapling_params::status(&o.params_dir).present(),
-                },
-            };
+            let out = yec_preview_of(o, &plan, r.yec.1);
             o.previews
                 .insert(out.preview_id.clone(), Preview::Yec(Box::new(plan)));
             Ok(out)
         })
     })
+}
+
+/// The bridge preview of a planned send or move (`reserved`: the fee reserve before it).
+fn yec_preview_of(o: &Open, plan: &YecSendPlan, reserved: i64) -> YecPreview {
+    match &plan.funding {
+        Funding::Transparent(p) => {
+            let txid = txid_hex(&p.txid);
+            let reserved_spent: i64 = p
+                .inputs
+                .iter()
+                .filter(|u| u.class == UtxoClass::FeeReserve)
+                .map(|u| u.value)
+                .sum();
+            YecPreview {
+                preview_id: txid.clone(),
+                to: p.to.clone(),
+                amount_zat: p.amount,
+                amount_bumped: p.amount_bumped,
+                fee_zat: p.fee,
+                change_zat: p.change,
+                inputs: p.inputs.len() as u32,
+                uses_reserve: p.uses_reserve,
+                keeps_reserved_zat: reserved - reserved_spent,
+                expiry_height: p.expiry_height,
+                txid,
+                funding: YecFunding::Transparent,
+                reveals_shielded: false,
+                memo: None,
+                params_needed: false,
+            }
+        }
+        Funding::Shielded(p) => YecPreview {
+            preview_id: format!("z{}", PREVIEW_SEQ.fetch_add(1, Ordering::SeqCst)),
+            to: p.to.clone(),
+            amount_zat: p.amount_zat as i64,
+            amount_bumped: p.amount_bumped,
+            fee_zat: p.fee_zat as i64,
+            change_zat: p.change_zat as i64,
+            inputs: p.notes,
+            uses_reserve: false,
+            keeps_reserved_zat: reserved,
+            expiry_height: p.expiry_height,
+            txid: String::new(),
+            funding: YecFunding::Shielded,
+            reveals_shielded: plan.reveals_shielded,
+            memo: p.memo.clone(),
+            params_needed: !sapling_params::status(&o.params_dir).present(),
+        },
+        Funding::Shield(p) => YecPreview {
+            preview_id: format!("z{}", PREVIEW_SEQ.fetch_add(1, Ordering::SeqCst)),
+            to: p.to.clone(),
+            amount_zat: p.amount,
+            amount_bumped: p.amount_bumped,
+            fee_zat: p.fee,
+            change_zat: p.change,
+            inputs: p.inputs.len() as u32,
+            uses_reserve: false,
+            keeps_reserved_zat: reserved,
+            expiry_height: p.expiry_height,
+            txid: String::new(),
+            funding: YecFunding::Transparent,
+            reveals_shielded: false,
+            memo: None,
+            params_needed: !sapling_params::status(&o.params_dir).present(),
+        },
+    }
+}
+
+/// The direction of [`move_preview`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoveDirection {
+    /// Public YEC into the private balance (shield, to the wallet's own `ys1…`).
+    ToPrivate,
+    /// Private YEC to the wallet's own public `s…` address (unshield; the amount becomes
+    /// visible on the chain, `reveals_shielded`).
+    ToPublic,
+}
+
+/// Plan a move of `amount_zat` (`None`: everything that direction can move, less the fee)
+/// between the wallet's own public and private balances, after a sync of both (yew-shielded
+/// plan S4, `build::yec_move`). To private spends plain public YEC only, never the fee reserve
+/// or anything YED. The preview is the send preview (`to` is the wallet's own address); confirm
+/// with [`move_confirm`]. Both directions prove at confirm (`params_needed`).
+pub fn move_preview(
+    direction: MoveDirection,
+    amount_zat: Option<i64>,
+) -> Result<YecPreview, YewError> {
+    with_open_async(|o| {
+        Box::pin(async move {
+            let r = o.sync().await?;
+            // A move always involves the private side: its sync must succeed.
+            o.sync_shielded(yec_private::no_progress()).await?;
+            let plan = yec_move::plan_move(
+                &mut o.wallet,
+                match direction {
+                    MoveDirection::ToPrivate => yec_move::Direction::ToPrivate,
+                    MoveDirection::ToPublic => yec_move::Direction::ToPublic,
+                },
+                amount_zat,
+                r.tip,
+            )?;
+            let out = yec_preview_of(o, &plan, r.yec.1);
+            o.previews
+                .insert(out.preview_id.clone(), Preview::Yec(Box::new(plan)));
+            Ok(out)
+        })
+    })
+}
+
+/// Broadcast a [`move_preview`] (the same gate and bookkeeping as [`send_yec_confirm`]).
+pub fn move_confirm(preview_id: String) -> Result<SendResult, YewError> {
+    send_yec_confirm(preview_id)
 }
 
 /// Broadcast a YEC preview through the gate (D-W-5). A private send is proved and signed
@@ -1721,9 +1799,7 @@ pub fn send_yec_confirm(preview_id: String) -> Result<SendResult, YewError> {
                     ))
                 }
             };
-            if matches!(plan.funding, Funding::Shielded(_))
-                && !sapling_params::status(&o.params_dir).present()
-            {
+            if plan.funding.needs_params() && !sapling_params::status(&o.params_dir).present() {
                 let e = YewError::new(
                     ErrorKind::ParamsMissing,
                     "Private sending needs a one-time download of 52 MB (the Sapling proving parameters).",
@@ -2842,6 +2918,32 @@ mod tests {
         assert!(ok.valid && ok.yellowback_form && ok.kind == "p2pkh");
         let bad = validate_address(NetworkId::Regtest, "ye-not-an-address".into());
         assert!(!bad.valid && !bad.message.is_empty());
+        // Private addresses are kind `sapling` on their own network only (S4; the app no longer
+        // guesses by prefix).
+        for (net, id) in [
+            (Network::Mainnet, NetworkId::Mainnet),
+            (Network::Testnet, NetworkId::Testnet),
+            (Network::Regtest, NetworkId::Regtest),
+        ] {
+            let z = crate::shielded_keys::SaplingAccount::from_mnemonic(PHRASE, "", net)
+                .unwrap()
+                .default_address()
+                .1;
+            let c = validate_address(id, z.clone());
+            assert!(
+                c.valid && c.kind == "sapling" && !c.yellowback_form,
+                "{z}: {c:?}"
+            );
+            let other = if id == NetworkId::Mainnet {
+                NetworkId::Regtest
+            } else {
+                NetworkId::Mainnet
+            };
+            assert!(!validate_address(other, z).valid);
+        }
+        assert!(validate_address(NetworkId::Mainnet, "ys1x".into())
+            .kind
+            .is_empty());
         assert_eq!(format_yec(21_000), "0.00021000");
         assert!(!core_version().is_empty());
     }

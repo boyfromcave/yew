@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # yew-shielded plan S2 devnet acceptance: Sapling restore / receive with memo / z→z with memo /
-# z→t (revealsShielded) / transparent fallback / YED regression, on EITHER node line.
+# z→t (revealsShielded) / transparent fallback / YED regression, and the S4 moves (s4_: shield,
+# unshield, mint after an unshield), on EITHER node line. YEW_S2_TESTS picks the tests
+# (default "s2_ s4_", run one at a time on the one devnet).
 #
 #   scripts/devnet-s2.sh {dd|6} <seed> [lwd-port]      (KEEP=1 leaves the devnet running)
 #
@@ -48,4 +50,4 @@ fi
 cd "$here"
 YEW_DEVNET=1 YEW_DEVNET_LINE=$line YEW_DEVNET_SERVER="127.0.0.1:$port" YEW_DEVNET_PYTHON="$py" \
   YEW_DEVNET_TOOL="$tool" YEW_DEVNET_TIMINGS="$scratch/s2-$line.json" \
-  cargo test -p yew-core --test devnet -- --ignored --nocapture s2_
+  cargo test -p yew-core --test devnet -- --ignored --nocapture --test-threads=1 ${YEW_S2_TESTS:-s2_ s4_}

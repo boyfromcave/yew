@@ -130,6 +130,11 @@ impl Server {
     /// `webpki-roots` bundle (on iOS only the bundle is populated) — or, when a certificate
     /// is pinned, that certificate alone — unless `plain`.
     pub async fn connect(&self) -> Result<Channel, NetError> {
+        Ok(self.endpoint()?.connect().await?)
+    }
+
+    /// The configured endpoint [`Server::connect`] dials (TLS settings and pin applied).
+    pub fn endpoint(&self) -> Result<Endpoint, NetError> {
         let mut endpoint = Endpoint::from_shared(self.uri())
             .map_err(|e| NetError::Config(format!("invalid endpoint {}: {e}", self.uri())))?;
         endpoint = endpoint.connect_timeout(std::time::Duration::from_secs(15));
@@ -142,7 +147,7 @@ impl Server {
             };
             endpoint = endpoint.tls_config(tls)?;
         }
-        Ok(endpoint.connect().await?)
+        Ok(endpoint)
     }
 }
 

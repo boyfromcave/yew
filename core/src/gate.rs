@@ -132,6 +132,9 @@ pub enum Path {
     Sweep,
     /// A spend of the wallet's Sapling notes (`shielded.rs`): no transparent input.
     Shielded,
+    /// A shield (S4, `build::yec_move`): transparent `YEC` inputs only (never the fee reserve,
+    /// never anything YED) into Sapling outputs; no Sapling spend.
+    Shield,
 }
 
 impl Path {
@@ -146,6 +149,7 @@ impl Path {
             Path::Claim(_) => "claim",
             Path::Sweep => "sweep",
             Path::Shielded => "shielded",
+            Path::Shield => "shield",
         }
     }
 
@@ -159,12 +163,13 @@ impl Path {
             Path::Claim(_) => c.claim_spendable(),
             Path::Sweep => c == UtxoClass::Carrier,
             Path::Shielded => false,
+            Path::Shield => c == UtxoClass::Yec,
         }
     }
 
     /// True when the path's YED side is the node's business (the remote layer is mandatory).
     fn needs_yellowback(self) -> bool {
-        !matches!(self, Path::Yec | Path::Shielded)
+        !matches!(self, Path::Yec | Path::Shielded | Path::Shield)
     }
 }
 
@@ -179,7 +184,9 @@ pub fn check(
     if path == Path::Shielded {
         return check_shielded(tx);
     }
-    if tx.shielded.any() {
+    if path == Path::Shield {
+        check_shield_shape(&tx)?;
+    } else if tx.shielded.any() {
         return Err(GateError::Shielded);
     }
     if tx.vin.is_empty() {
@@ -292,10 +299,35 @@ pub fn check(
                 ));
             }
         }
-        Path::Sweep => no_payload(&tx)?,
+        Path::Sweep | Path::Shield => no_payload(&tx)?,
         Path::Shielded => unreachable!("checked by check_shielded above"),
     }
     Ok(tx)
+}
+
+/// The shape half of [`Path::Shield`] (its inputs are classified like every transparent path):
+/// Sapling outputs, no Sapling spend, no JoinSplit, no transparent output of exactly
+/// `TOKEN_VALUE`.
+fn check_shield_shape(tx: &Transaction) -> Result<(), GateError> {
+    if tx.shielded.joinsplits > 0 {
+        return Err(GateError::ShieldedShape("it carries a Sprout JoinSplit"));
+    }
+    if tx.shielded.spends > 0 {
+        return Err(GateError::ShieldedShape("a shield spends no Sapling note"));
+    }
+    if tx.shielded.outputs == 0 {
+        return Err(GateError::ShieldedShape("a shield makes a Sapling output"));
+    }
+    if tx
+        .vout
+        .iter()
+        .any(|o| o.value == crate::params::TOKEN_VALUE)
+    {
+        return Err(GateError::ShieldedShape(
+            "a transparent output of exactly TOKEN_VALUE would look like a YED token",
+        ));
+    }
+    Ok(())
 }
 
 /// The local layer of [`Path::Shielded`].
@@ -1020,5 +1052,71 @@ mod tests {
         );
         assert!(!Path::Shielded.needs_yellowback());
         assert!(ALL.iter().all(|c| !Path::Shielded.allows(*c)));
+    }
+
+    #[test]
+    fn shield_path_spends_plain_yec_into_sapling_only() {
+        let op = |b: u8| OutPoint {
+            txid: [b; 32],
+            n: 0,
+        };
+        let (yec, reserve, token) = (op(7), op(8), op(9));
+        let class = |o: &OutPoint| match o.txid[0] {
+            7 => Some(UtxoClass::Yec),
+            8 => Some(UtxoClass::FeeReserve),
+            9 => Some(UtxoClass::Token),
+            _ => None,
+        };
+        let p2pkh = script::p2pkh_script(&[5; 20]);
+        // Plain YEC into a Sapling output, with or without transparent change: accepted.
+        assert!(check(Path::Shield, &raw_shielded(&[yec], &[], 0), class).is_ok());
+        assert!(check(
+            Path::Shield,
+            &raw_shielded(&[yec], &[(50_000, p2pkh.clone())], 0),
+            class
+        )
+        .is_ok());
+        // The fee reserve and YED are never shielded; unknown inputs are refused.
+        for (o, name) in [(reserve, "FEE_RESERVE"), (token, "TOKEN")] {
+            match check(Path::Shield, &raw_shielded(&[yec, o], &[], 0), class) {
+                Err(GateError::ForbiddenInput { class, path, .. }) => {
+                    assert_eq!((class, path), (name, "shield"))
+                }
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+        assert!(matches!(
+            check(Path::Shield, &raw_shielded(&[op(1)], &[], 0), class),
+            Err(GateError::UnknownInput(_))
+        ));
+        // No transparent input, a Sapling spend, a payload, a token-valued output: refused.
+        assert!(matches!(
+            check(Path::Shield, &raw_shielded(&[], &[], 0), class),
+            Err(GateError::NoInputs)
+        ));
+        assert!(matches!(
+            check(Path::Shield, &raw_shielded(&[yec], &[], 1), class),
+            Err(GateError::ShieldedShape(_))
+        ));
+        assert!(matches!(
+            check(
+                Path::Shield,
+                &raw_shielded(&[yec], &[(0, transfer_payload_script())], 0),
+                class
+            ),
+            Err(GateError::PayloadOnYecPath(0))
+        ));
+        assert!(matches!(
+            check(
+                Path::Shield,
+                &raw_shielded(&[yec], &[(crate::params::TOKEN_VALUE, p2pkh)], 0),
+                class
+            ),
+            Err(GateError::ShieldedShape(_))
+        ));
+        assert!(!Path::Shield.needs_yellowback());
+        assert!(ALL
+            .iter()
+            .all(|c| Path::Shield.allows(*c) == (*c == UtxoClass::Yec)));
     }
 }

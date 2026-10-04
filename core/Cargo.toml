@@ -68,7 +68,19 @@ x402-ycash-light = { version = "=0.1.0", path = "../../x402-ycash/light" }
 # type `WalletDb` is generic over, already in the graph through the same crates.
 zcash_client_backend = { version = "=0.22.0", path = "../../librustzcash6/zcash_client_backend", default-features = false }
 zcash_client_sqlite = { version = "=0.20.2", path = "../../librustzcash6/zcash_client_sqlite", default-features = false }
-zcash_primitives = { version = "=0.28.0", path = "../../librustzcash6/zcash_primitives", default-features = false, features = ["std"] }
+# `transparent-inputs` (yew-shielded plan S4, `shielded::Shielded::build_shield`): the builder
+# spends YEW's transparent `YEC` coins into a Sapling output to the wallet's own `ys1…` address
+# (shield). YEW still selects the coins (`coins::select_yec`, never the reserve, never a token)
+# and the gate checks them; the builder computes the ZIP-243 sighash over the Sapling bundle and
+# signs the transparent inputs with the keys YEW hands it for that one call.
+zcash_primitives = { version = "=0.28.0", path = "../../librustzcash6/zcash_primitives", default-features = false, features = ["std", "transparent-inputs"] }
+# The transparent types the builder takes (outpoint, coin, address, signing set), same crate
+# librustzcash6 already links (no new crate in Cargo.lock).
+zcash_transparent = { version = "=0.8.0", path = "../../librustzcash6/zcash_transparent", default-features = false, features = ["std", "transparent-inputs"] }
+# The secp256k1 the librustzcash6 builder signs with (0.29.1, already in Cargo.lock through
+# bip32), renamed: YEW's own signer stays on secp256k1 0.33.1 above. Used only to hand the
+# builder the keys of the selected coins (S4 shield).
+secp256k1_zcash = { package = "secp256k1", version = "=0.29.1", default-features = false, features = ["alloc"] }
 zcash_proofs = { version = "=0.28.0", path = "../../librustzcash6/zcash_proofs", default-features = false, features = ["local-prover"] }
 zcash_protocol = { version = "=0.9.0", path = "../../librustzcash6/components/zcash_protocol", default-features = false, features = ["std"] }
 rand = { version = "=0.8.8", default-features = false, features = ["std", "std_rng", "getrandom"] }

@@ -28,11 +28,12 @@ hardening; **Info** = a property worth recording. Every finding says what was do
 | A-6 | app / telemetry | No crash reporter, analytics or network plugin: the only network user is the core's gRPC (`INTERNET` permission) | Info | verified; documented in `docs/release.md` §6 |
 | Z-1 | shielded / keys | Where the Ycash Sapling spending key lives (S2) | Info | verified: derived at unlock, held as wiped bytes, never written; tests scan every file of the private store |
 | Z-2 | shielded / params | Integrity of the 52 MB proving parameters fetched on first private send (S0-2) | Info | **by design**: length + SHA-256 pins, `.part` then rename, re-verified once per session before the prover loads; no URL compiled in |
-| Z-3 | shielded / TLS | The light library opens its own connection for the scan with the platform roots: a pinned certificate (S-3b) cannot be honoured there and iOS has no native-roots backend | Medium | **open**: YEW refuses private sync while a pin is set; the fix is an injected channel in `x402-ycash/light` (`Options`), before S3 ships TLS servers |
+| Z-3 | shielded / TLS | The light library opens its own connection for the scan with the platform roots: a pinned certificate (S-3b) cannot be honoured there and iOS has no native-roots backend | Medium | **channel injected (S4)**: the scan and registration now run over YEW's own channel (`Options::channel`, x402-ycash `lightchan`), so iOS gets the webpki roots; the refusal of private sync while a pin is set is still in place — lifting it (the injected channel carries the pin) awaits an owner decision |
 | Z-4 | shielded / gate | A shielded spend must not reach any transparent output class | Info | **fixed by construction**: gate path `Shielded` refuses any transparent input, JoinSplit, `OP_RETURN` or `TOKEN_VALUE` output; the node's `ValidateRawTransaction` answered `ok` on both lines |
 | Z-5 | shielded / notes | A built spend is recorded (its notes count as spent) before the gate and `SendTransaction`; a refused broadcast leaves them unavailable until expiry (target + 40 blocks) | Low | accepted (the library's semantics; `zcash_client_sqlite` has no "forget this unmined transaction") |
 | Z-6 | shielded / server | What the server can do to the private side | Info | recorded (below) |
 | Z-7 | dependencies | `cargo audit`: RUSTSEC-2026-0009 (`time` 0.3.37, RFC 2822 parsing DoS); the fix is unreachable while librustzcash6's `zcash_client_backend` pins `time-core =0.1.2` | Low | **excepted** (`scripts/audit-exceptions.txt`): no linked crate parses RFC 2822 |
+| Z-8 | shielded / signing | Shield (S4 move to private) signs transparent inputs with the librustzcash6 builder (`transparent-inputs`, secp256k1 0.29), not YEW's ZIP-243 signer: YEW's serializer makes no Sapling outputs | Info | **by design**: YEW selects the coins (`select_yec`, class `YEC` only, no reserve override) and hands the builder only those keys for one call (wiped after); gate path `Shield` admits class `YEC` inputs only, a Sapling output, no spend, no payload, no token-valued output; the node's `ValidateRawTransaction` checks the exact bytes; the built fee must equal the previewed one |
 | A-7 | app / passphrase | The BIP39 passphrase is stored in the keystore beside the seed so unlock needs no typing; the passphrase therefore adds nothing against a keystore compromise, only against a seed-only backup thief | Info | recorded (by design; the backup screen says the phrase alone restores only without a passphrase) |
 
 ## S-1 — where the seed and the keys live
@@ -205,15 +206,17 @@ roots, redirects followed only to another `https` URL, five at most), `http://` 
 loopback host and `file://` (tests, a local copy). The base URL is the caller's: hosting is the
 owner's decision (S0-2) and none is compiled in.
 
-**Z-3, the light library's own connection.** `x402_ycash_light::Wallet::open` connects by
-itself (`lwd::connect`: `grpc://` plaintext, `grpcs://` with `with_native_roots()`), and the
-scan and the account registration (`GetTreeState`) use that connection. It therefore ignores
-YEW's certificate pin (S-3b) and, on iOS, would fail every TLS handshake (no native-roots
-backend; YEW's own channel adds the webpki roots, audit G-4). Broadcast, memo and status
-fetches and the branch-id check go through YEW's channel and keep every TLS property. Until the
-library accepts an injected channel (an `Options::channel`, a few lines in `x402-ycash/light`),
-`build::yec_private::sync_shielded` refuses private sync while a pin is set; regtest (plain) is
-unaffected. Must be closed before S3 ships against a TLS server.
+**Z-3, the light library's own connection.** Until S4 `x402_ycash_light::Wallet::open`
+connected by itself (`lwd::connect`, native roots only), so the scan ignored YEW's certificate
+pin (S-3b) and would have failed every TLS handshake on iOS. Since x402-ycash `lightchan` the
+library takes a host channel (`Options::channel`) and never dials when one is given
+(`light/src/wallet.rs` `open`); `Shielded::sync` passes `CompactClient::channel()`, YEW's own
+(webpki + native roots, or the pinned certificate alone). `yec_private::tests::
+shielded_sync_uses_the_wallets_channel` checks that only YEW's endpoint is dialed and that it
+receives YEW's TLS ClientHello. The S2 rule that refuses private sync while a pin is set is
+still in place: removing it is an owner decision. The light wallet also locks its store
+directory (`wallet.lock`); a second open in one process is `ShieldedError::Busy` (YEW keeps one
+per open wallet and drops it before reopening; `shielded::tests::one_light_wallet_per_store`).
 
 **Z-6, server trust on the private side.** Compact blocks, the birthday tree state, mempool
 and full transactions come from the chosen server. A lying server can hide incoming notes or
