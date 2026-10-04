@@ -25,8 +25,9 @@ For your private balance the server sends blocks that the wallet scans on this p
 scan does not tell the server which payments are yours. To read the messages of your private
 payments, the wallet asks the server for those transactions, which does tell it they are
 yours. The server also sees when you connect and every transaction you send, but not what a
-private one contains. The files needed for private sending (52 MB) are downloaded once from
-the address set in Settings and kept only if they match fingerprints built into YEW.
+private one contains. The files needed for private sending (52 MB) are downloaded once, from
+the standard source ycashd uses or an address set in Settings, and kept only if they match
+fingerprints built into YEW.
 
 When you mint, redeem or claim, the wallet checks the server's terms against the network's
 rules before you confirm: the lock and claim heights, the collateral the price calls for, and
