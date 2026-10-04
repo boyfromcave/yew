@@ -321,8 +321,8 @@ Everything below needs a device, an account, a public server or a decision:
    ship empty; the app asks for a server until then).
 5. **Testnet run**, store metadata and signing: `docs/release.md`.
 6. **Private (Sapling) YEC, hardening (plan S5, `docs/plans/yew-shielded-plan.md`)**: the HTTPS
-   host for the 52 MB proving files (no default is compiled in; Settings asks for one); a
-   YWallet-built `ys1…` address for the test seed to pin YWallet compatibility from a real
+   Ycash-hosted mirror for the 52 MB proving files, to list first (today YEW defaults to the
+   source ycashd uses; Settings can name another address); a YWallet-built `ys1…` address for the test seed to pin YWallet compatibility from a real
    binary; sync time, proving time and battery on real phones; `lite.ycash.xyz` upgraded to
    lightwalletd-dd with `GetChainInfo`. (Restore with a birthday, reorgs and interrupted sync
    run on both node lines in `s5_`; the S3/S4 flow ran on the iOS simulator against both.)
