@@ -17,6 +17,7 @@ class BalanceCard extends StatelessWidget {
     this.unit,
     this.subLines = const [],
     this.trailing,
+    this.child,
   });
 
   final String title;
@@ -25,6 +26,9 @@ class BalanceCard extends StatelessWidget {
   final String? unit;
   final List<String> subLines;
   final Widget? trailing;
+
+  /// Extra content under the number, before the sub-lines (the YEC private/public split).
+  final Widget? child;
 
   @override
   Widget build(BuildContext context) {
@@ -78,6 +82,7 @@ class BalanceCard extends StatelessWidget {
                 ],
               ),
             ),
+            if (child != null) Padding(padding: const EdgeInsets.only(top: 8), child: child),
             for (final s in subLines)
               Padding(
                 padding: const EdgeInsets.only(top: 4),

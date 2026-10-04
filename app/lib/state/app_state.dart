@@ -40,6 +40,12 @@ class AppState extends ChangeNotifier {
   bool syncing = false;
   bool yellowbackUsable = false;
   String syncMessage = '';
+
+  /// The overall sync progress 0..100 (transparent to 10, the private scan 10..95).
+  int syncPercent = 0;
+
+  /// Why the last sync did not bring the private balance up to date (empty when it did).
+  String shieldedNote = '';
   String? lastError;
   WalletSettings settings = const WalletSettings();
   Balances balances = const Balances(
@@ -63,6 +69,9 @@ class AppState extends ChangeNotifier {
   /// timer (the widget tests).
   Duration? mintPollInterval = const Duration(seconds: 15);
   AddressPair? receive;
+
+  /// The private (`ys1…`) receive address; null until the core has one.
+  AddressPair? receivePrivate;
   StreamSubscription<SyncEvent>? _sync;
 
   /// Read settings and whether a seed exists (first frame).
@@ -185,6 +194,11 @@ class AppState extends ChangeNotifier {
     try {
       balances = await api.balances();
       receive = await api.receiveAddress(fresh: false);
+      try {
+        receivePrivate = await api.receiveAddress(kind: ReceiveKind.shielded, fresh: false);
+      } catch (_) {
+        receivePrivate = null; // the private side is unavailable; public receive still works
+      }
       history = (await api.history(page: 0, pageSize: 200)).rows;
       mints = await api.mints();
       vaults = await api.vaults();
@@ -212,11 +226,14 @@ class AppState extends ChangeNotifier {
     if (!unlocked || syncing) return;
     syncing = true;
     syncMessage = 'Connecting';
+    syncPercent = 0;
     notifyListeners();
     final done = Completer<void>();
     _sync = api.syncNow().listen(
       (e) {
         syncMessage = e.message;
+        syncPercent = e.percent;
+        if (e.stage == SyncStage.done) shieldedNote = e.shieldedMessage;
         if (e.stage == SyncStage.probing || e.stage == SyncStage.done) {
           yellowbackUsable = e.yellowbackUsable;
         }
@@ -249,6 +266,16 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// A new private address of the same private balance ("New private address" on Receive).
+  Future<void> newPrivateAddress() async {
+    try {
+      receivePrivate = await api.newShieldedAddress();
+    } catch (e) {
+      lastError = messageOf(e);
+    }
+    notifyListeners();
+  }
+
   void clearError() {
     lastError = null;
     notifyListeners();
@@ -256,6 +283,12 @@ class AppState extends ChangeNotifier {
 
   /// Send YED is possible only when the server offers Yellowback and there is YEC for the fee.
   bool get canPayYedFee => balances.yecZat + balances.yecReservedZat >= balances.yedSendMinZat;
+
+  /// Public YEC: available plus the part kept for YED fees.
+  int get publicYecZat => balances.yecZat + balances.yecReservedZat;
+
+  /// All YEC, private and public (the Home total).
+  int get totalYecZat => publicYecZat + balances.yecShieldedZat;
 
   /// The rows still moving (the Yellowback screen's "in progress" list).
   List<MintStatus> get mintsInProgress => mints.where((m) => m.inProgress || m.canSweep || m.state == 'SWEEP_SENT').toList();

@@ -4,18 +4,27 @@
 
 // Send (plan §5.1, §3.7 item 4): asset toggle YED/YEC, address (paste, scan), amount,
 // preview (fee in YEC, dry-run verdict for YED), slide to confirm, result. Every error the
-// core returns is shown verbatim; a gate refusal is the node's verdict.
+// core returns is shown verbatim; a gate refusal is the node's verdict. Private sending
+// (yew-shielded plan §3): the YEC address field also takes `ys1…`, which shows an optional
+// message (memo) field; the core funds privacy first and the preview says when a payment
+// leaves the private balance; the first private send fetches the proving files once.
+import 'dart:convert' show utf8;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../api/wallet_api.dart';
 import '../format.dart';
 import '../state/app_scope.dart';
+import '../state/app_state.dart';
 import '../theme.dart';
+import '../widgets/memo_field.dart';
+import '../widgets/params_sheet.dart';
 import '../widgets/preview_card.dart';
 import '../widgets/scan_sheet.dart';
+import '../widgets/send_error_card.dart';
+import '../widgets/send_result.dart';
 import '../widgets/slide_to_confirm.dart';
-import 'receive.dart';
 
 enum Asset { yed, yec }
 
@@ -31,6 +40,7 @@ class _SendScreenState extends State<SendScreen> {
   late Asset _asset = widget.asset;
   final _address = TextEditingController();
   final _amount = TextEditingController();
+  final _memo = TextEditingController();
   bool _everything = false;
   bool _busy = false;
   String? _error;
@@ -43,6 +53,7 @@ class _SendScreenState extends State<SendScreen> {
   void dispose() {
     _address.dispose();
     _amount.dispose();
+    _memo.dispose();
     super.dispose();
   }
 
@@ -53,12 +64,28 @@ class _SendScreenState extends State<SendScreen> {
     _needYec = false;
   });
 
+  /// The recipient is a private (`ys1…`) address.
+  bool _toPrivate(NetworkId network) => isPrivateAddress(network, _address.text);
+
+  int get _memoBytes => utf8.encode(_memo.text).length;
+
   Future<void> _preview() async {
     final app = AppScope.read(context);
     final to = _address.text.trim();
-    final check = app.api.validateAddress(network: app.settings.network, address: to);
-    if (!check.valid) {
-      setState(() => _error = check.message.isEmpty ? 'Not a valid address' : check.message);
+    final private = _toPrivate(app.settings.network);
+    if (private && _asset == Asset.yed) {
+      setState(() => _error = 'YED can only be sent to a public address (ye… or s…).');
+      return;
+    }
+    if (!private) {
+      final check = app.api.validateAddress(network: app.settings.network, address: to);
+      if (!check.valid) {
+        setState(() => _error = check.message.isEmpty ? 'Not a valid address' : check.message);
+        return;
+      }
+    }
+    if (private && _memoBytes > maxMemoBytes) {
+      setState(() => _error = 'The message is too long: at most $maxMemoBytes bytes.');
       return;
     }
     setState(() {
@@ -73,9 +100,11 @@ class _SendScreenState extends State<SendScreen> {
         final p = await app.api.sendYedPreview(recipients: [Recipient(address: to, cents: cents)]);
         setState(() => _yed = p);
       } else {
-        final zat = _everything ? app.balances.yecZat + app.balances.yecReservedZat - 1000 : parseYecZat(_amount.text);
+        final everything = _everything && !private;
+        final zat = everything ? app.balances.yecZat + app.balances.yecReservedZat - 1000 : parseYecZat(_amount.text);
         if (zat == null || zat <= 0) throw const YewError(kind: ErrorKind.input, message: 'Enter an amount in YEC, up to eight decimals');
-        final p = await app.api.sendYecPreview(to: to, zat: zat, sendEverything: _everything);
+        final memo = private && _memo.text.trim().isNotEmpty ? _memo.text : null;
+        final p = await app.api.sendYecPreview(to: to, zat: zat, sendEverything: everything, memo: memo);
         setState(() => _yec = p);
       }
     } catch (e) {
@@ -91,17 +120,36 @@ class _SendScreenState extends State<SendScreen> {
   Future<void> _confirm() async {
     final app = AppScope.read(context);
     try {
-      final r = _yed != null
-          ? await app.api.sendYedConfirm(previewId: _yed!.previewId)
-          : await app.api.sendYecConfirm(previewId: _yec!.previewId);
+      // First private send: the one-time proving-files sheet; the preview stays valid.
+      if (_yec != null && _yec!.paramsNeeded && !await preparePrivateSending(context)) return;
+      final SendResult r;
+      if (_yed != null) {
+        r = await app.api.sendYedConfirm(previewId: _yed!.previewId);
+      } else {
+        r = await _confirmYec(app);
+      }
       setState(() => _result = r);
       await app.refresh();
+    } on _NotNow {
+      return;
     } catch (e) {
       setState(() {
         _error = messageOf(e);
         _yed = null;
         _yec = null;
       });
+    }
+  }
+
+  /// Confirm a YEC preview; a core that finds the proving files missing (the preview did not
+  /// say so) gets the sheet once, then the same preview again.
+  Future<SendResult> _confirmYec(AppState app) async {
+    try {
+      return await app.api.sendYecConfirm(previewId: _yec!.previewId);
+    } catch (e) {
+      if (kindOf(e) != ErrorKind.paramsMissing) rethrow;
+      if (!mounted || !await preparePrivateSending(context)) throw _NotNow();
+      return app.api.sendYecConfirm(previewId: _yec!.previewId);
     }
   }
 
@@ -112,7 +160,9 @@ class _SendScreenState extends State<SendScreen> {
     final t = Theme.of(context).textTheme;
     final accent = _asset == Asset.yed ? c.yed : c.yec;
     final hasPreview = _yed != null || _yec != null;
-    if (_result != null) return _ResultView(result: _result!, accent: accent);
+    final private = _asset == Asset.yec && _toPrivate(app.settings.network);
+    final b = app.balances;
+    if (_result != null) return SendResultView(result: _result!, accent: accent);
     return Scaffold(
       appBar: AppBar(title: const Text('Send')),
       body: SafeArea(
@@ -138,7 +188,7 @@ class _SendScreenState extends State<SendScreen> {
             Text(
               _asset == Asset.yed
                   ? '${formatYed(app.balances.yedCents)} YED available'
-                  : '${formatYec(app.balances.yecZat)} YEC available · ${formatYec(app.balances.yecReservedZat)} reserved for fees',
+                  : '${formatYec(b.yecShieldedSpendableZat)} YEC private · ${formatYec(b.yecZat)} YEC public',
               key: const Key('available'),
               style: t.bodyMedium?.copyWith(color: c.pending),
             ),
@@ -152,7 +202,7 @@ class _SendScreenState extends State<SendScreen> {
               onChanged: (_) => _reset(),
               decoration: InputDecoration(
                 labelText: 'To',
-                hintText: _asset == Asset.yed ? 'ye… address' : 'ye… or s… address',
+                hintText: _asset == Asset.yed ? 'ye… address' : 'ys1…, s… or ye… address',
                 suffixIcon: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -192,7 +242,11 @@ class _SendScreenState extends State<SendScreen> {
                 suffixText: _asset == Asset.yed ? 'YED' : 'YEC',
               ),
             ),
-            if (_asset == Asset.yec)
+            if (private) ...[
+              const SizedBox(height: 12),
+              MemoField(controller: _memo, enabled: !hasPreview, bytes: _memoBytes, onChanged: _reset),
+            ],
+            if (_asset == Asset.yec && !private)
               SwitchListTile(
                 key: const Key('everything'),
                 value: _everything,
@@ -205,39 +259,13 @@ class _SendScreenState extends State<SendScreen> {
             if (!hasPreview)
               FilledButton(
                 key: const Key('preview'),
-                onPressed: _busy ? null : _preview,
+                onPressed: _busy || (private && _memoBytes > maxMemoBytes) ? null : _preview,
                 style: FilledButton.styleFrom(backgroundColor: accent),
                 child: Text(_busy ? 'Building…' : 'Preview'),
               ),
             if (_error != null) ...[
               const SizedBox(height: 12),
-              Card(
-                color: c.danger.withValues(alpha: 0.08),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(_error!, key: const Key('error'), style: t.bodyMedium),
-                      if (_needYec) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          'Sending YED costs a small YEC fee (about ${formatYec(app.balances.yedSendMinZat)} YEC). '
-                          'This wallet has ${formatYec(app.balances.yecZat + app.balances.yecReservedZat)} YEC.',
-                          style: t.bodySmall,
-                        ),
-                        const SizedBox(height: 8),
-                        OutlinedButton.icon(
-                          key: const Key('show-receive'),
-                          onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const ReceiveScreen())),
-                          icon: const Icon(Icons.qr_code_2_rounded),
-                          label: const Text('Show my receive address'),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ),
+              SendErrorCard(message: _error!, needYec: _needYec),
             ],
             if (_yec != null) YecPreviewCard(_yec!),
             if (_yed != null) YedPreviewCard(_yed!),
@@ -259,40 +287,5 @@ class _SendScreenState extends State<SendScreen> {
   }
 }
 
-class _ResultView extends StatelessWidget {
-  const _ResultView({required this.result, required this.accent});
-  final SendResult result;
-  final Color accent;
-
-  @override
-  Widget build(BuildContext context) {
-    final t = Theme.of(context).textTheme;
-    return Scaffold(
-      appBar: AppBar(title: const Text('Sent')),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              TweenAnimationBuilder<double>(
-                tween: Tween(begin: 0, end: 1),
-                duration: confirmMotion,
-                curve: Curves.easeOutBack,
-                builder: (_, v, child) => Transform.scale(scale: v, child: child),
-                child: Icon(Icons.check_circle_rounded, size: 96, color: accent),
-              ),
-              const SizedBox(height: 24),
-              Text('Sent', style: t.headlineMedium),
-              const SizedBox(height: 8),
-              SelectableText(result.txid, key: const Key('txid'), textAlign: TextAlign.center, style: t.bodySmall),
-              if (result.verdict.isNotEmpty) Text('node verdict: ${result.verdict}', style: t.bodySmall),
-              const SizedBox(height: 32),
-              FilledButton(key: const Key('done'), onPressed: () => Navigator.of(context).pop(), child: const Text('Done')),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
+/// The user closed the proving-files sheet: the preview stays, nothing is sent.
+class _NotNow implements Exception {}

@@ -45,9 +45,14 @@ class YecPreviewCard extends StatelessWidget {
   const YecPreviewCard(this.p, {super.key});
   final YecPreview p;
 
+  /// The amber of the reveal line: the YED accent, which reads as a caution, not an error.
+  static const Color amber = yedAccent;
+
   @override
   Widget build(BuildContext context) {
     final c = yewColors(context);
+    final t = Theme.of(context).textTheme;
+    final private = p.funding == YecFunding.shielded;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -56,14 +61,35 @@ class YecPreviewCard extends StatelessWidget {
             PreviewRow('To', shorten(p.to, head: 14, tail: 8)),
             PreviewRow('Amount', '${formatYec(p.amountZat)} YEC', emphasis: true, color: c.yec),
             if (p.amountBumped) const PreviewRow('', 'Raised by 1 zat: exactly 0.0001 YEC would look like a YED token'),
+            PreviewRow('From', private ? 'your private balance' : 'your public balance'),
+            if (p.memo != null && p.memo!.isNotEmpty) PreviewRow('Message', p.memo!),
             PreviewRow('Fee', '${formatYec(p.feeZat)} YEC'),
             if (p.changeZat > 0) PreviewRow('Change', '${formatYec(p.changeZat)} YEC'),
-            PreviewRow('Inputs', '${p.inputs}'),
-            PreviewRow(
-              p.usesReserve ? 'Fee reserve' : 'Keeps reserved',
-              p.usesReserve ? 'spent (sending everything)' : '${formatYec(p.keepsReservedZat)} YEC for YED fees',
-            ),
+            if (!private) ...[
+              PreviewRow('Inputs', '${p.inputs}'),
+              PreviewRow(
+                p.usesReserve ? 'Fee reserve' : 'Keeps reserved',
+                p.usesReserve ? 'spent (sending everything)' : '${formatYec(p.keepsReservedZat)} YEC for YED fees',
+              ),
+            ],
             PreviewRow('Expires', 'height ${p.expiryHeight}'),
+            if (p.revealsShielded)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Row(
+                  key: const Key('reveals'),
+                  children: [
+                    const Icon(Icons.lock_open_rounded, size: 18, color: amber),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'This payment leaves your private balance',
+                        style: t.bodyMedium?.copyWith(color: amber, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
           ],
         ),
       ),

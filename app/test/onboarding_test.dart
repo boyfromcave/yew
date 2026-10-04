@@ -20,7 +20,7 @@ void main() {
     final h = Harness();
     await h.pump(tester);
     expect(find.text('Create a new wallet'), findsOneWidget);
-    expect(find.textContaining('Transparent only'), findsOneWidget);
+    expect(find.textContaining('Two kinds of YEC'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('create')));
     await tester.pumpAndSettle();

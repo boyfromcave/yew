@@ -4,9 +4,12 @@ _The trust statement of the client contract (lightwalletd plan §5, rule 7; wall
 §4). Shown once at onboarding and from Settings. The app's copy is `app/lib/trust_text.dart`;
 `scripts/check-trust-text.sh` fails when the two differ._
 
-YEW is a transparent-only wallet. Everything it does is public on the Ycash chain: your
-addresses, your balances and every transaction can be seen by anyone. It holds no shielded
-funds and never will.
+YEW holds YEC in two ways. Private YEC sits in a shielded Ycash address (ys1…): the chain
+hides who paid whom, how much, and any message. Public YEC and all YED sit in transparent
+addresses: those addresses, their balances and every transaction can be seen by anyone on the
+Ycash chain. YED, minting and every YED fee use public YEC only. Nothing moves between private
+and public unless you send it yourself, and a payment from your private balance to a public
+address shows its amount on the chain.
 
 Your keys never leave this device. The seed is kept in the phone's secure keystore, and every
 signature is made in the wallet's own core. No server can spend your YEC or your YED.
@@ -17,6 +20,13 @@ price, and whether a transaction it is about to send is sound. A dishonest serve
 your YEC or your YED, but it can lie about them: it can hide a payment, show a balance that is
 not there, or refuse to relay a transaction. If the server offers no Yellowback service, YED is
 hidden until you connect to one that does.
+
+For your private balance the server sends blocks that the wallet scans on this phone, so the
+scan does not tell the server which payments are yours. To read the messages of your private
+payments, the wallet asks the server for those transactions, which does tell it they are
+yours. The server also sees when you connect and every transaction you send, but not what a
+private one contains. The files needed for private sending (52 MB) are downloaded once from
+the address set in Settings and kept only if they match fingerprints built into YEW.
 
 When you mint, redeem or claim, the wallet checks the server's terms against the network's
 rules before you confirm: the lock and claim heights, the collateral the price calls for, and
