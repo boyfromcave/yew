@@ -434,6 +434,36 @@ pub async fn gate_now(
     Ok(terms::mint_gate(network, &info, &price, &stats)?)
 }
 
+/// The vault upgrade's terms now (rpcversion 5, U-22, U-23): `GetYellowbackInfo`, its parameter
+/// set checked against the network's (`terms::check_server_params`), its attestor set and
+/// `CLAIM_DELAY` checked (`terms::vault_terms`). The attestor set is remembered in the wallet's
+/// meta the first time; a server that later names another set is refused (a network's YED
+/// attestor set never changes).
+pub async fn vault_terms_now(
+    wallet: &Wallet,
+    yb: &mut YellowbackClient,
+) -> Result<terms::VaultTerms, WalletError> {
+    let info = yb.info().await?;
+    terms::check_server_params(wallet.network, info.params.as_ref())?;
+    let t = terms::vault_terms(wallet.network, &info)?;
+    let hex = keys::hex(&t.attestor_set_id);
+    match wallet.store.meta("attestor_set_id")? {
+        Some(known) if known != hex => {
+            return Err(MintError::Inconsistent {
+                what: format!(
+                    "the server's attestor set {} is not the one this wallet knows ({}); try another server",
+                    txid_hex(&t.attestor_set_id),
+                    known
+                ),
+            }
+            .into())
+        }
+        Some(_) => {}
+        None => wallet.store.set_meta("attestor_set_id", &hex)?,
+    }
+    Ok(t)
+}
+
 /// True while a two-step's main transaction can still enter the mempool: `tip + 1 +
 /// TX_EXPIRING_SOON_THRESHOLD <= expiry` (`CheckExpiry`).
 pub fn window_open(tip: u64, expiry_height: u32) -> bool {
@@ -583,6 +613,8 @@ pub async fn start(
         .into());
     }
     let r = est.ref_height;
+    // The vault upgrade's terms (U-23) must be usable before the carrier is funded.
+    vault_terms_now(wallet, yb).await?;
     // The bundle for (R, "") — the mint's selector is empty (BuildMint:1095).
     let b = yb.build_bundle(r, "").await?;
     let bundle_bytes = unhex(&b.hex).map_err(|e| MintError::Relay(format!("bundle hex: {e}")))?;
@@ -779,15 +811,26 @@ pub(crate) fn record_broadcast(
     Ok(())
 }
 
-/// The MINT outputs (`MintOutputs`): vault, token, payload, [fee], [attestor fee]; returns
-/// them with `(feeVout, attestFeeVout)`.
+/// The MINT outputs (`MintOutputs`): vault, token, payload, [fee], [attestor fee]. Since the
+/// vault upgrade `vout[0]` is the bare V template of the YED vault (U-23: tag `YED\0`, the
+/// attestor set as both sets, `CLAIM_DELAY`, `ownerHeight = lockHeight`, `appHeight =
+/// lockHeight + GRACE`); the v2 P2SH vault script is refused for new mints (MINT-3).
 pub fn mint_outputs(
     wallet: &Wallet,
     m: &MintRow,
     owner_pubkey: &[u8; 33],
+    vt: &terms::VaultTerms,
 ) -> Result<Vec<TxOut>, WalletError> {
-    let vault = script::vault_script(m.lock_height, owner_pubkey, m.claim_height)
-        .map_err(MintError::Script)?;
+    if m.claim_height != m.lock_height + vt.grace {
+        return Err(MintError::Inconsistent {
+            what: format!(
+                "claimHeight {} is not lockHeight {} + GRACE {}",
+                m.claim_height, m.lock_height, vt.grace
+            ),
+        }
+        .into());
+    }
+    let vault = vt.vault_script(owner_pubkey, m.lock_height)?;
     let fee_vout = if m.payee.is_empty() { FEE_VOUT_NONE } else { 3 };
     let attest_fee_vout = if m.attest_payee.is_empty() {
         FEE_VOUT_NONE
@@ -815,7 +858,7 @@ pub fn mint_outputs(
     let mut vout = vec![
         TxOut {
             value: m.collateral_zat,
-            script_pubkey: script::p2sh_of(&vault),
+            script_pubkey: vault,
         },
         TxOut {
             value: TOKEN_VALUE,
@@ -903,9 +946,15 @@ pub async fn finish(
         .key_for_hash(&m.owner_hash160)?
         .ok_or_else(|| WalletError::Other("owner key missing".into()))?;
     let (carrier_op, redeem, carrier_key) = carrier_of(wallet, &m)?;
+    let vt = {
+        let yb = validator
+            .client_mut()
+            .ok_or(gate::GateError::YellowbackAbsent)?;
+        vault_terms_now(wallet, yb).await?
+    };
     let mut tx = Transaction::new_v4();
     tx.expiry_height = m.expiry_height;
-    tx.vout = mint_outputs(wallet, &m, &owner_key.pubkey)?;
+    tx.vout = mint_outputs(wallet, &m, &owner_key.pubkey, &vt)?;
     let outputs: i64 = tx.vout.iter().map(|o| o.value).sum();
     // needed = outputs + fee − CARRIER_VALUE: the carrier input pays CARRIER_VALUE (:1136).
     let needed = outputs + FEE_ZAT - CARRIER_VALUE;

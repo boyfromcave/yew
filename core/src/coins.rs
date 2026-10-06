@@ -121,9 +121,11 @@ impl UtxoClass {
     }
 
     /// True for the own classes a **CLAIM** may spend (W4): `Token` inputs for the burn and
-    /// the `Carrier`; the vault at `vin[0]` is another wallet's and is named to the gate.
+    /// the `Carrier`; the vault at `vin[0]` is another wallet's and is named to the gate. Since
+    /// the vault upgrade (U-23) the vault's whole value goes into intents, so the fees come from
+    /// the claimant's `YEC` / `FeeReserve` too.
     pub fn claim_spendable(self) -> bool {
-        matches!(self, UtxoClass::Token | UtxoClass::Carrier)
+        matches!(self, UtxoClass::Token | UtxoClass::Carrier) || self.yec_spendable()
     }
 }
 

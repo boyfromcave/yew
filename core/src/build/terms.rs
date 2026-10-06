@@ -205,6 +205,124 @@ pub fn attest_fee(network: Network, fee_zat: i64, seqs: &[u16]) -> i64 {
     }
 }
 
+/// The vault upgrade's terms every YED script is built from (upgrade plan U-22, U-23): the
+/// network's attestor set (both sets of every YED vault), `CLAIM_DELAY` and `GRACE`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VaultTerms {
+    /// The YED attestor set id, internal byte order (as the V pushes it).
+    pub attestor_set_id: [u8; 32],
+    /// `CLAIM_DELAY`.
+    pub claim_delay: i64,
+    /// `GRACE`.
+    pub grace: u32,
+}
+
+impl VaultTerms {
+    /// The V of a mint by `owner` locked until `lock_height` (`YedVaultScript`).
+    pub fn vault_params(&self, owner: &[u8; 33], lock_height: u32) -> crate::vault::VaultParams {
+        crate::vault::yed_vault_params(
+            &self.attestor_set_id,
+            self.claim_delay,
+            self.grace,
+            owner,
+            lock_height,
+        )
+    }
+
+    /// The V scriptPubKey of a mint by `owner` locked until `lock_height`.
+    pub fn vault_script(&self, owner: &[u8; 33], lock_height: u32) -> Result<Vec<u8>, MintError> {
+        crate::vault::build_vault(&self.vault_params(owner, lock_height)).ok_or_else(|| {
+            inconsistent(format!(
+                "the vault of lockHeight {lock_height} is outside the template's ranges"
+            ))
+        })
+    }
+}
+
+/// The [`VaultTerms`] of a server (`GetYellowbackInfo`, rpcversion 5), checked: the upgrade is
+/// reported with `CLAIM_DELAY` equal to the network's, the attestor set is a 32-byte id equal in
+/// `params` and `upgrade`, and on a network that compiles its set in (none yet: mainnet and
+/// testnet are unset, P8) equal to that. Regtest takes the server's set (`-yellowbackattestorset`).
+pub fn vault_terms(network: Network, info: &rpc::YellowbackInfo) -> Result<VaultTerms, MintError> {
+    let p = info
+        .params
+        .as_ref()
+        .ok_or_else(|| inconsistent("GetYellowbackInfo carries no params"))?;
+    if p.claim_delay != network.claim_delay() {
+        return Err(inconsistent(format!(
+            "params.claimDelay {} (this network's CLAIM_DELAY is {})",
+            p.claim_delay,
+            network.claim_delay()
+        )));
+    }
+    let set = crate::tx::txid_from_hex(&p.attestor_set_id).map_err(|_| {
+        inconsistent(format!(
+            "params.attestorSetId {:?} is not a set id (Yellowback is off without one)",
+            p.attestor_set_id
+        ))
+    })?;
+    if set == [0; 32] {
+        return Err(inconsistent(
+            "params.attestorSetId is null: Yellowback is off",
+        ));
+    }
+    if let Some(u) = info.upgrade.as_ref() {
+        if !u.attestor_set_id.is_empty() && u.attestor_set_id != p.attestor_set_id {
+            return Err(inconsistent(format!(
+                "upgrade.attestorSetId {} differs from params.attestorSetId {}",
+                u.attestor_set_id, p.attestor_set_id
+            )));
+        }
+        if u.claim_delay != 0 && u.claim_delay != p.claim_delay {
+            return Err(inconsistent(format!(
+                "upgrade.claimDelay {} differs from params.claimDelay {}",
+                u.claim_delay, p.claim_delay
+            )));
+        }
+        if !u.branch_id.is_empty()
+            && u32::from_str_radix(&u.branch_id, 16).ok() != Some(params::VAULT_BRANCH_ID)
+        {
+            return Err(inconsistent(format!(
+                "upgrade.branchId {} is not the vault upgrade's {:08x}",
+                u.branch_id,
+                params::VAULT_BRANCH_ID
+            )));
+        }
+    }
+    if let Some(compiled) = network.attestor_set_id() {
+        if compiled != set {
+            return Err(inconsistent(format!(
+                "params.attestorSetId {} is not {}'s attestor set",
+                p.attestor_set_id,
+                network.chain_name()
+            )));
+        }
+    }
+    Ok(VaultTerms {
+        attestor_set_id: set,
+        claim_delay: network.claim_delay(),
+        grace: network.grace(),
+    })
+}
+
+/// A `GetVault` record's V script (rpcversion 5, U-23): the node's `scriptPubKey` must be the
+/// YED vault this wallet rebuilds from the owner key, `lockHeight` and the [`VaultTerms`], the
+/// script it will sign against (owner) or name in its claim intents (claimant). Returns it.
+pub fn check_vault_script(t: &VaultTerms, v: &rpc::YedVault) -> Result<Vec<u8>, MintError> {
+    let owner: [u8; 33] = crate::keys::unhex(&v.owner_pub_key)
+        .ok()
+        .and_then(|b| b.as_slice().try_into().ok())
+        .ok_or_else(|| inconsistent(format!("vault {}: ownerPubKey", v.txid)))?;
+    let ours = t.vault_script(&owner, v.lock_height as u32)?;
+    if crate::keys::hex(&ours) != v.script_pub_key.to_ascii_lowercase() {
+        return Err(inconsistent(format!(
+            "vault {}: scriptPubKey is not the YED vault of its owner and lockHeight",
+            v.txid
+        )));
+    }
+    Ok(ours)
+}
+
 /// A `GetVault` record's script terms (audit G-1, `sync::refresh_vaults`): `claimHeight =
 /// lockHeight + GRACE`, and for a vault the node holds ACTIVE, `lockHeight − refHeight` inside
 /// the class it reports.
@@ -270,6 +388,8 @@ pub fn check_server_params(
     want("grace", p.grace, network.grace() as i64)?;
     want("refWindow", p.ref_window, REF_WINDOW as i64)?;
     want("tokenValueZat", p.token_value_zat, params::TOKEN_VALUE)?;
+    // rpcversion 5 (U-23): CLAIM_DELAY is the YED vault's delay, part of every vault script.
+    want("claimDelay", p.claim_delay, network.claim_delay())?;
     let a = p
         .attest
         .as_ref()
@@ -357,7 +477,7 @@ pub fn mint_gate(
         }
     }
     let active = info
-        .activation
+        .upgrade
         .as_ref()
         .is_some_and(|a| a.status == crate::net::yellowback::STATUS_ACTIVE);
     let blocked = if !info.enabled || !active {
@@ -854,6 +974,7 @@ mod tests {
             grace: network.grace() as i64,
             ref_window: REF_WINDOW as i64,
             token_value_zat: params::TOKEN_VALUE,
+            claim_delay: network.claim_delay(),
             attest: Some(rpc::YellowbackAttestParams {
                 attest_fee_bps: network.attest_fee_bps(),
                 residual_min_zat: params::RESIDUAL_MIN_ZAT,
@@ -890,6 +1011,7 @@ mod tests {
             Box::new(|p| p.grace = 1),
             Box::new(|p| p.ref_window = 400),
             Box::new(|p| p.token_value_zat = 20_000),
+            Box::new(|p| p.claim_delay = 10),
             Box::new(|p| p.attest = None),
             Box::new(|p| p.attest.as_mut().unwrap().attest_fee_bps = 9_000),
             Box::new(|p| p.attest.as_mut().unwrap().residual_min_zat = 0),
@@ -914,7 +1036,7 @@ mod tests {
     fn info(requires_armed: bool) -> rpc::YellowbackInfo {
         rpc::YellowbackInfo {
             enabled: true,
-            activation: Some(rpc::YellowbackActivationState {
+            upgrade: Some(rpc::YellowbackActivation {
                 status: "active".into(),
                 ..Default::default()
             }),
@@ -990,7 +1112,7 @@ mod tests {
         ));
         // Not active.
         let mut i = info(true);
-        i.activation.as_mut().unwrap().status = "locked_in".into();
+        i.upgrade.as_mut().unwrap().status = "pending".into();
         let g = mint_gate(r, &i, &price(true), &stats(&["A"], &[])).unwrap();
         assert!(g.blocked.as_deref().unwrap().contains("not active"));
     }
@@ -1056,5 +1178,71 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// rpcversion 5 (U-22, U-23): the attestor set and CLAIM_DELAY a server reports, and the V
+    /// script of a vault it reports, rebuilt locally.
+    #[test]
+    fn vault_terms_and_the_vault_script() {
+        let r = Network::Regtest;
+        let set_display = "75".repeat(32);
+        let mut i = rpc::YellowbackInfo {
+            params: Some(rpc::YellowbackParams {
+                claim_delay: 10,
+                attestor_set_id: set_display.clone(),
+                ..server_params(r)
+            }),
+            upgrade: Some(rpc::YellowbackActivation {
+                status: "active".into(),
+                attestor_set_id: set_display.clone(),
+                claim_delay: 10,
+                branch_id: "6d5b7a31".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let t = vault_terms(r, &i).unwrap();
+        assert_eq!(t.attestor_set_id, [0x75; 32]);
+        assert_eq!((t.claim_delay, t.grace), (10, 24));
+        // Mainnet's CLAIM_DELAY is 1,152: a regtest-shaped server is refused there.
+        assert!(vault_terms(Network::Mainnet, &i).is_err());
+        let mut bad = i.clone();
+        bad.params.as_mut().unwrap().attestor_set_id = String::new();
+        assert!(vault_terms(r, &bad).is_err());
+        bad = i.clone();
+        bad.params.as_mut().unwrap().attestor_set_id = "00".repeat(32);
+        assert!(vault_terms(r, &bad).is_err());
+        bad = i.clone();
+        bad.upgrade.as_mut().unwrap().attestor_set_id = "76".repeat(32);
+        assert!(vault_terms(r, &bad).is_err());
+        bad = i.clone();
+        bad.upgrade.as_mut().unwrap().branch_id = "19bd2d2f".into();
+        assert!(vault_terms(r, &bad).is_err());
+        i.upgrade = None;
+        assert!(vault_terms(r, &i).is_ok());
+
+        // The vault script a server reports must be the one rebuilt from owner and lockHeight.
+        let owner = secp256k1::PublicKey::from_secret_key(
+            &secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap(),
+        )
+        .serialize();
+        let spk = t.vault_script(&owner, 377).unwrap();
+        let p = crate::vault::parse_vault(&spk).unwrap();
+        assert_eq!(p.tag, crate::vault::YED_TAG);
+        assert_eq!((p.owner_height, p.app_height, p.delay), (377, 401, 10));
+        let mut v = rpc::YedVault {
+            txid: "ab".repeat(32),
+            owner_pub_key: crate::keys::hex(&owner),
+            lock_height: 377,
+            claim_height: 401,
+            script_pub_key: crate::keys::hex(&spk).to_uppercase(),
+            ..Default::default()
+        };
+        assert_eq!(check_vault_script(&t, &v).unwrap(), spk);
+        v.lock_height = 378;
+        assert!(check_vault_script(&t, &v).is_err());
+        v.lock_height = 377;
+        v.script_pub_key = crate::keys::hex(&t.vault_script(&[2; 33], 377).unwrap());
+        assert!(check_vault_script(&t, &v).is_err());
     }
 }

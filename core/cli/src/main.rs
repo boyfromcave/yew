@@ -346,7 +346,17 @@ async fn main() {
                     println!("network      {}", info.network);
                     println!("height       {} (chain {})", info.height, info.chain_height);
                     println!("healthy      {} {}", info.healthy, info.unhealthy_reason);
-                    println!("enforcing    {}", info.enforcing);
+                    if let Some(u) = &info.upgrade {
+                        println!(
+                            "upgrade      {} {} at {} branch {} attestorSet {} claimDelay {}",
+                            u.name,
+                            u.status,
+                            u.activation_height,
+                            u.branch_id,
+                            u.attestor_set_id,
+                            u.claim_delay
+                        );
+                    }
                     if let Some(at) = &info.attest {
                         println!(
                             "attest       {} armed {} seated {}",
@@ -946,6 +956,47 @@ async fn main() {
                 txid_hex(&m.carrier_txid)
             );
             println!("{}", mint_line(&m));
+        }
+        "intents" => {
+            let (w, _, _, r) = synced(&o).await;
+            for i in fail(w.intents()) {
+                let rh = i.release_height();
+                println!(
+                    "{}:{} {:<9} {:<9} {} zat vault {} height {} release {}{}",
+                    txid_hex(&i.outpoint.txid),
+                    i.outpoint.n,
+                    i.role,
+                    i.state.as_str(),
+                    i.value,
+                    txid_hex(&i.vault_txid),
+                    i.height,
+                    rh.map(|h| h.to_string()).unwrap_or_else(|| "-".into()),
+                    match yew_core::build::release::not_releasable(&i, r.tip) {
+                        None => " (RELEASABLE)".to_string(),
+                        Some(_) if i.state.open() => String::new(),
+                        Some(_) => format!(" {}", i.note),
+                    }
+                );
+            }
+        }
+        "release" => {
+            let arg = o.rest.get(1).unwrap_or_else(|| usage());
+            let (t, n) = arg.split_once(':').unwrap_or_else(|| usage());
+            let op = yew_core::tx::OutPoint {
+                txid: parse_txid(t),
+                n: n.parse().unwrap_or_else(|_| usage()),
+            };
+            let (w, mut c, mut v, r) = synced(&o).await;
+            let p = fail(w.release_preview(&op, r.tip, r.branch_id));
+            println!(
+                "preview release {}: {} zat to {} (fee from YEC, change {} zat)",
+                arg, p.value, p.recipient_address, p.change
+            );
+            let (sent, val) = fail(w.release_confirm(&mut c, &mut v, &p).await);
+            println!(
+                "release {sent} sent (node dry run: verdict {} valid {} type {:?})",
+                val.verdict, val.valid, val.tx_type
+            );
         }
         other => {
             eprintln!("unknown command `{other}`");

@@ -796,6 +796,77 @@ pub struct VaultSummary {
     pub claim_warning: bool,
     /// `ACTIVE` and `tip >= claimHeight`: the claim path is open.
     pub claim_open: bool,
+    /// `CLAIMING` (the vault upgrade, U-23): a liquidator moved the collateral into a claim
+    /// intent; one attestor may still cancel it until it is released after the claim delay.
+    /// The owner's RED-5 residual, if any, is a [`ClaimIntent`] of role `residual`.
+    pub claiming: bool,
+    /// `REOPENED`: an attestor cancelled the claim and the vault lives on at `closing_txid`
+    /// (U-24), the same position at a new outpoint (shown there; this row is history).
+    pub reopened: bool,
+}
+
+/// A claim intent paying this wallet (the vault upgrade, U-15, U-23, U-24): the claimant's
+/// intent of a claim it made, or the owner's RED-5 residual intent of a claimed own vault.
+/// Released after the claim delay by [`release_preview`] / [`release_confirm`] (no signature
+/// on the intent: anyone may release it, the wallet just does it first), unless an attestor
+/// cancelled the claim first (a claimant intent only).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimIntent {
+    /// The intent outpoint, `txid:n`.
+    pub intent: String,
+    /// The claimed vault's txid.
+    pub vault_txid: String,
+    /// `claimant` (a claim this wallet made) or `residual` (its own vault's residual).
+    pub role: String,
+    /// The intent's value, zat (what the release pays).
+    pub value_zat: i64,
+    /// `PENDING`, `RELEASING`, `RELEASED` or `CANCELLED`.
+    pub state: String,
+    /// The height the claim confirmed at, 0 while unconfirmed.
+    pub height: i64,
+    /// The first height the release can be mined at (0 while unconfirmed).
+    pub release_height: i64,
+    /// Blocks until then (0 once reached).
+    pub blocks_until_release: i64,
+    /// The release can be built now.
+    pub releasable: bool,
+    /// The attestor set cancelled the claim: the collateral went back into the vault and the
+    /// claim's burn is not refunded (U-24).
+    pub cancelled: bool,
+    /// The release date estimate (Unix seconds; `now + (releaseHeight − tip) · 75`).
+    pub release_time_secs: i64,
+    /// The release (or the transaction that spent it), empty until known.
+    pub spend_txid: String,
+    /// What to tell the user.
+    pub note: String,
+}
+
+/// [`release_preview`]: the signed RELEASE waiting for [`release_confirm`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleasePreview {
+    /// Pass to [`release_confirm`].
+    pub preview_id: String,
+    /// The intent released, `txid:n`.
+    pub intent: String,
+    /// What the release pays, zat.
+    pub value_zat: i64,
+    /// The own address it pays.
+    pub recipient_address: String,
+    /// The network fee, zat (from the wallet's YEC).
+    pub fee_zat: i64,
+    /// The txid the broadcast will have.
+    pub txid: String,
+}
+
+/// The result of [`release_confirm`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleaseResult {
+    /// The txid, display form.
+    pub txid: String,
+    /// The node's verdict on the broadcast bytes.
+    pub verdict: String,
+    /// What it pays, zat.
+    pub value_zat: i64,
 }
 
 /// Whether a mint can be made now (hardening H-1, H-5; the Mint screen's gate): read from
@@ -958,6 +1029,7 @@ enum Preview {
     Yec(Box<YecSendPlan>),
     Yed(yed_transfer::YedTransferPreview),
     Redeem(crate::build::redeem::RedeemBuild),
+    Release(crate::build::release::ReleaseBuild),
 }
 
 /// The open wallet.
@@ -2376,7 +2448,55 @@ fn vault_summary(
         renew_lock_blocks: renew_lock_blocks(v, mints, network),
         claim_warning: active && tip >= claim_warn_from,
         claim_open: active && tip >= v.claim_height as u64,
+        claiming: v.status == "CLAIMING",
+        reopened: v.status == "REOPENED",
     }
+}
+
+fn claim_intent_of(
+    i: &crate::store::IntentRow,
+    tip: u64,
+    network: Network,
+    now: i64,
+) -> ClaimIntent {
+    let rh = i.release_height().unwrap_or(0);
+    ClaimIntent {
+        intent: format!("{}:{}", txid_hex(&i.outpoint.txid), i.outpoint.n),
+        vault_txid: txid_hex(&i.vault_txid),
+        role: i.role.clone(),
+        value_zat: i.value,
+        state: i.state.as_str().into(),
+        height: i.height as i64,
+        release_height: rh as i64,
+        blocks_until_release: if rh == 0 {
+            0
+        } else {
+            (rh as i64 - (tip as i64 + 1)).max(0)
+        },
+        releasable: crate::build::release::not_releasable(i, tip).is_none(),
+        cancelled: i.state == crate::store::IntentState::Cancelled,
+        release_time_secs: if rh == 0 {
+            0
+        } else {
+            height_time(network, rh, tip, now)
+        },
+        spend_txid: hex_or_empty(&i.spend_txid),
+        note: i.note.clone(),
+    }
+}
+
+fn parse_outpoint(s: &str) -> Result<crate::tx::OutPoint, YewError> {
+    let (t, n) = s
+        .trim()
+        .split_once(':')
+        .ok_or_else(|| YewError::new(ErrorKind::Input, "an outpoint is txid:n"))?;
+    let n: u32 = n
+        .parse()
+        .map_err(|_| YewError::new(ErrorKind::Input, "an outpoint is txid:n"))?;
+    Ok(crate::tx::OutPoint {
+        txid: parse_txid(t)?,
+        n,
+    })
 }
 
 fn store_err(e: crate::store::StoreError) -> YewError {
@@ -2673,6 +2793,72 @@ pub fn redeem_confirm(preview_id: String) -> Result<RedeemResult, YewError> {
                 collateral_address: p.collateral_address,
                 lock_time: p.lock_time as i64,
                 expiry_height: p.expiry_height as i64,
+            })
+        })
+    })
+}
+
+/// The claim intents paying this wallet, as the last sync left them (no network): pending
+/// claims with their release heights, releases in flight, released ones, and claims the
+/// attestor set cancelled.
+pub fn claim_intents() -> Result<Vec<ClaimIntent>, YewError> {
+    with_open(|o| {
+        let tip = synced_tip(o)?;
+        let network = o.wallet.network;
+        let now = now_secs();
+        Ok(o.wallet
+            .intents()?
+            .iter()
+            .map(|i| claim_intent_of(i, tip, network, now))
+            .collect())
+    })
+}
+
+/// Build and sign the RELEASE of a matured claim intent (after a sync). Nothing is broadcast.
+pub fn release_preview(intent: String) -> Result<ReleasePreview, YewError> {
+    let op = parse_outpoint(&intent)?;
+    with_open_async(|o| {
+        Box::pin(async move {
+            let r = o.sync().await?;
+            let p = o.wallet.release_preview(&op, r.tip, r.branch_id)?;
+            let id = txid_hex(&p.txid);
+            let out = ReleasePreview {
+                preview_id: id.clone(),
+                intent: format!("{}:{}", txid_hex(&p.intent.txid), p.intent.n),
+                value_zat: p.value,
+                recipient_address: p.recipient_address.clone(),
+                fee_zat: crate::params::FEE_ZAT,
+                txid: id.clone(),
+            };
+            o.previews.insert(id, Preview::Release(p));
+            Ok(out)
+        })
+    })
+}
+
+/// Broadcast a release preview through both gate layers.
+pub fn release_confirm(preview_id: String) -> Result<ReleaseResult, YewError> {
+    with_open_async(|o| {
+        Box::pin(async move {
+            let p = match o.previews.remove(&preview_id) {
+                Some(Preview::Release(p)) => p,
+                _ => {
+                    return Err(YewError::new(
+                        ErrorKind::PreviewExpired,
+                        "This preview is no longer valid. Start the release again.",
+                    ))
+                }
+            };
+            ensure_conn(o).await?;
+            let Open { wallet, conn, .. } = o;
+            let conn = conn.as_mut().expect("connected");
+            let (sent, v) = wallet
+                .release_confirm(&mut conn.compact, &mut conn.validator, &p)
+                .await?;
+            Ok(ReleaseResult {
+                txid: sent,
+                verdict: v.verdict,
+                value_zat: p.value,
             })
         })
     })

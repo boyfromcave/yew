@@ -8,7 +8,8 @@
 //!
 //! Contract rule 1 lives in [`YellowbackClient::probe`]: `UNIMPLEMENTED` ⇒ no Yellowback here
 //! (T0 only, YED hidden); an `rpcversion` other than [`KNOWN_RPCVERSION`] ⇒ refused; YED is
-//! shown only when `enabled && activation.status == "active"`. Errors (lightwalletd plan §3.3):
+//! shown only when `enabled && upgrade.status == "active"` (rpcversion 5: the vault upgrade's
+//! status, `yed_getactivation`; the v3 activation state machine is gone). Errors (lightwalletd plan §3.3):
 //! a node RPC error arrives as `FAILED_PRECONDITION` with the node's identifier
 //! (`change-floor: …`, `tx-not-found`, …) and is mapped to [`NetError::Node`] with that
 //! identifier split off; transport failures to the node are `UNAVAILABLE`.
@@ -25,10 +26,13 @@ use super::{limits, NetError, Server, YellowbackStreamerClient};
 use crate::tx::{txid_from_hex, OutPoint};
 
 /// The node `rpcversion` this build implements (`ycash-dd/doc/yellowback-rpc-contract.json`;
-/// lightwalletd plan §3.4: "a client refuses an `rpcversion` it does not know").
-pub const KNOWN_RPCVERSION: i64 = 4;
+/// lightwalletd plan §3.4: "a client refuses an `rpcversion` it does not know"). `5` is the
+/// vault upgrade (`ycash-dd/doc/yellowback-rpc.md`, branch `upgrade/vault`): YED is a consensus
+/// module of the vault primitive, the vault is the V template, a claim moves it into intents.
+pub const KNOWN_RPCVERSION: i64 = 5;
 
-/// The activation status string that means "active" (`YellowbackActivationState.status`).
+/// The upgrade status string that means "active" (`YellowbackActivation.status`, rpcversion 5:
+/// `"pending"` | `"active"`).
 pub const STATUS_ACTIVE: &str = "active";
 
 /// The largest address list `GetAddressTokens` accepts per call (`yed_listtokens`: 1..100).
@@ -46,7 +50,7 @@ pub enum Availability {
         info: Box<rpc::YellowbackInfo>,
         /// `info.enabled`.
         enabled: bool,
-        /// `info.activation.status == "active"`.
+        /// `info.upgrade.status == "active"`.
         active: bool,
     },
 }
@@ -186,7 +190,7 @@ impl YellowbackClient {
         }
         let enabled = info.enabled;
         let active = info
-            .activation
+            .upgrade
             .as_ref()
             .map(|a| a.status == STATUS_ACTIVE)
             .unwrap_or(false);
@@ -351,6 +355,40 @@ impl YellowbackClient {
             .map_err(map_status)?
             .into_inner();
         collect(&mut stream, "vaults", limits::MAX_VAULTS).await
+    }
+
+    /// `ListVaultOutputs` (`vault_list {tag, setid, owner, kind}`, upgrade plan §15.8): the
+    /// primitive's unspent V / I outputs matching the filter (`""` = any), collected. YEW reads
+    /// it for its own YED vaults (`owner` = the owner key hex, `kind` `"vault"`: a vault an
+    /// attestor cancel re-created at a new outpoint) and for the claim intents it waits on.
+    pub async fn list_vault_outputs(
+        &mut self,
+        tag: &str,
+        set_id: &str,
+        owner: &str,
+        kind: &str,
+    ) -> Result<Vec<rpc::VaultOutput>, NetError> {
+        let mut stream = self
+            .inner
+            .list_vault_outputs(rpc::VaultOutputFilter {
+                tag: tag.to_string(),
+                setid: set_id.to_string(),
+                owner: owner.to_string(),
+                kind: kind.to_string(),
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
+        collect(&mut stream, "vault outputs", limits::MAX_VAULTS).await
+    }
+
+    /// `GetChainInfo`'s full answer (the upgrades list included), `None` from an older server.
+    pub async fn chain_info_full(&mut self) -> Result<Option<rpc::YedChainInfo>, NetError> {
+        match self.inner.get_chain_info(rpc::Empty {}).await {
+            Ok(r) => Ok(Some(r.into_inner())),
+            Err(s) if s.code() == Code::Unimplemented => Ok(None),
+            Err(s) => Err(map_status(s)),
+        }
     }
 
     /// `ListClaimable` (`yed_listclaimable`), collected.

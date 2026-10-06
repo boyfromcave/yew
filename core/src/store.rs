@@ -301,6 +301,84 @@ pub struct VaultRow {
     pub updated_height: u64,
 }
 
+/// The state of a claim intent this wallet is paid by (the vault upgrade, U-23).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntentState {
+    /// Created (or broadcast in the claim); not yet released.
+    Pending,
+    /// The release was broadcast.
+    Releasing,
+    /// The release confirmed: the value is the recipient's YEC.
+    Released,
+    /// The attestor set cancelled the claim (I-2): the collateral went back into the vault and
+    /// the claim's burn is not refunded (U-24).
+    Cancelled,
+}
+
+impl IntentState {
+    /// The stored name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IntentState::Pending => "PENDING",
+            IntentState::Releasing => "RELEASING",
+            IntentState::Released => "RELEASED",
+            IntentState::Cancelled => "CANCELLED",
+        }
+    }
+
+    /// From the stored name.
+    pub fn parse(s: &str) -> Option<IntentState> {
+        Some(match s {
+            "PENDING" => IntentState::Pending,
+            "RELEASING" => IntentState::Releasing,
+            "RELEASED" => IntentState::Released,
+            "CANCELLED" => IntentState::Cancelled,
+            _ => return None,
+        })
+    }
+
+    /// True while the wallet still waits on the intent.
+    pub fn open(self) -> bool {
+        matches!(self, IntentState::Pending | IntentState::Releasing)
+    }
+}
+
+/// One row of `claim_intents`: an intent I output whose recipient is this wallet — the
+/// claimant's intent of a claim it made, or the RED-5 residual intent of its own claimed vault
+/// (upgrade plan U-23). Additive table (no schema version change).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntentRow {
+    /// The intent outpoint: the claim's txid and output index.
+    pub outpoint: OutPoint,
+    /// The claimed vault's outpoint txid (its position).
+    pub vault_txid: [u8; 32],
+    /// `"claimant"` or `"residual"`.
+    pub role: String,
+    /// The intent's value, zat.
+    pub value: i64,
+    /// The recipient scriptPubKey (an own P2PKH): what the release pays.
+    pub recipient_script: Vec<u8>,
+    /// The intent scriptPubKey.
+    pub intent_script: Vec<u8>,
+    /// The intent's delay (`CLAIM_DELAY`).
+    pub delay: i64,
+    /// The height the claim confirmed at, 0 while unconfirmed.
+    pub height: u64,
+    /// The state.
+    pub state: IntentState,
+    /// The release (or cancel) transaction, zero until known.
+    pub spend_txid: [u8; 32],
+    /// What the screen says about it.
+    pub note: String,
+}
+
+impl IntentRow {
+    /// The first height its release can be mined at (`height + delay`), `None` while unconfirmed.
+    pub fn release_height(&self) -> Option<u64> {
+        (self.height > 0).then(|| crate::vault::release_height(self.height, self.delay))
+    }
+}
+
 impl VaultRow {
     /// True while the vault can still be spent by its owner (ACTIVE: REDEEM; VOID: release).
     pub fn is_open(&self) -> bool {
@@ -365,6 +443,11 @@ CREATE TABLE IF NOT EXISTS vaults (
   void_reason TEXT NOT NULL, updated_height INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS claim_bounds (
   mint_id INTEGER PRIMARY KEY, max_burn_cents INTEGER NOT NULL, min_out_zat INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS claim_intents (
+  txid BLOB NOT NULL, n INTEGER NOT NULL, vault_txid BLOB NOT NULL, role TEXT NOT NULL,
+  value INTEGER NOT NULL, recipient_script BLOB NOT NULL, intent_script BLOB NOT NULL,
+  delay INTEGER NOT NULL, height INTEGER NOT NULL, state TEXT NOT NULL, spend_txid BLOB NOT NULL,
+  note TEXT NOT NULL DEFAULT '', PRIMARY KEY (txid, n));
 ";
 
 /// The additive v1 → v2 migration (W2).
@@ -1144,6 +1227,72 @@ impl Store {
             });
         }
         Ok(out)
+    }
+
+    // ---- claim intents (the vault upgrade, U-23; additive table)
+
+    /// Insert or replace an intent row.
+    pub fn upsert_intent(&self, i: &IntentRow) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO claim_intents (txid, n, vault_txid, role, value, recipient_script, intent_script, delay,
+               height, state, spend_txid, note) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                i.outpoint.txid.as_slice(), i.outpoint.n, i.vault_txid.as_slice(), i.role, i.value, i.recipient_script,
+                i.intent_script, i.delay, i.height as i64, i.state.as_str(), i.spend_txid.as_slice(), i.note
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Every intent row, newest claim first.
+    pub fn intents(&self) -> Result<Vec<IntentRow>, StoreError> {
+        let mut st = self.conn.prepare(
+            "SELECT txid, n, vault_txid, role, value, recipient_script, intent_script, delay, height, state, spend_txid, note
+               FROM claim_intents ORDER BY height DESC, txid, n",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok((
+                r.get::<_, Vec<u8>>(0)?,
+                r.get::<_, u32>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, Vec<u8>>(5)?,
+                r.get::<_, Vec<u8>>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, i64>(8)?,
+                r.get::<_, String>(9)?,
+                r.get::<_, Vec<u8>>(10)?,
+                r.get::<_, String>(11)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (txid, n, vault, role, value, rs, is, delay, height, state, spend, note) = row?;
+            out.push(IntentRow {
+                outpoint: OutPoint {
+                    txid: arr32(&txid)?,
+                    n,
+                },
+                vault_txid: arr32(&vault)?,
+                role,
+                value,
+                recipient_script: rs,
+                intent_script: is,
+                delay,
+                height: height.max(0) as u64,
+                state: IntentState::parse(&state)
+                    .ok_or_else(|| StoreError::Corrupt(format!("intent state {state:?}")))?,
+                spend_txid: arr32(&spend)?,
+                note,
+            });
+        }
+        Ok(out)
+    }
+
+    /// One intent row.
+    pub fn intent(&self, op: &OutPoint) -> Result<Option<IntentRow>, StoreError> {
+        Ok(self.intents()?.into_iter().find(|i| i.outpoint == *op))
     }
 
     // ---- vaults (own vaults as GetVault reports them, W4)

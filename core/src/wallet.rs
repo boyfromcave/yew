@@ -74,6 +74,13 @@ pub fn dollars(cents: i64) -> String {
     format!("{sign}${}.{:02}", c / 100, c % 100)
 }
 
+/// `N.NNNNNNNN YEC` for a number of zat (negative allowed).
+pub fn yec(zat: i64) -> String {
+    let sign = if zat < 0 { "-" } else { "" };
+    let z = zat.unsigned_abs();
+    format!("{sign}{}.{:08} YEC", z / 100_000_000, z % 100_000_000)
+}
+
 /// The balances the home screen shows (plan §3.4): computed from classes, never from
 /// `sum(nValue)` (§3.7).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -524,6 +531,38 @@ impl Wallet {
         branch_id: u32,
     ) -> Result<i64, WalletError> {
         claim::start(self, client, validator, vault_txid, bounds, tip, branch_id).await
+    }
+
+    /// `intents()`: the claim intents paying this wallet (the vault upgrade, U-23) — the
+    /// claimant's intent of each claim it made and the residual intent of each own claimed vault
+    /// — newest first, with their release heights and states (pending, releasing, released,
+    /// cancelled by the attestor set).
+    pub fn intents(&self) -> Result<Vec<crate::store::IntentRow>, WalletError> {
+        Ok(self.store.intents()?)
+    }
+
+    /// `release_preview(intent)`: build and sign the RELEASE of a matured intent (U-15) for the
+    /// next block. Nothing is broadcast.
+    pub fn release_preview(
+        &self,
+        intent: &crate::tx::OutPoint,
+        tip: u64,
+        branch_id: u32,
+    ) -> Result<crate::build::release::ReleaseBuild, WalletError> {
+        let row = self.store.intent(intent)?.ok_or_else(|| {
+            WalletError::Other("intent-unknown: not an intent of this wallet".into())
+        })?;
+        crate::build::release::build_release(self, &row, tip, branch_id)
+    }
+
+    /// `release_confirm(preview)`: both gate layers, then broadcast the release.
+    pub async fn release_confirm(
+        &self,
+        client: &mut CompactClient,
+        validator: &mut Validator,
+        preview: &crate::build::release::ReleaseBuild,
+    ) -> Result<(String, Validation), WalletError> {
+        crate::build::release::broadcast(self, client, validator, preview).await
     }
 
     /// The mint gate (hardening H-1, H-5): whether a mint can be made now and why not, from

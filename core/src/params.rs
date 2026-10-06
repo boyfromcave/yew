@@ -299,11 +299,11 @@ impl Network {
     /// signs under Canopy (`yellowback_util.py:139`).
     pub fn branch_ids(self) -> &'static [u32] {
         const YCASH_EPOCHS: [u32; 6] = [
-            0x374d_694f, // Ycash
-            0x8e47_1bd6, // Blossom
-            0x6631_4da3, // Heartwood
-            0x19bd_2d2f, // Canopy
-            0xf919_a198, // NU5 (no activation height on 4.5.0; reserved)
+            0x374d_694f,     // Ycash
+            0x8e47_1bd6,     // Blossom
+            0x6631_4da3,     // Heartwood
+            0x19bd_2d2f,     // Canopy
+            0xf919_a198,     // NU5 (no activation height on 4.5.0; reserved)
             VAULT_BRANCH_ID, // the vault upgrade (upgrade plan §15.1, U-9)
         ];
         match self {
@@ -387,11 +387,14 @@ pub fn signing_branch_id(
     activation: Option<u64>,
     next_block_server: Option<u32>,
 ) -> Result<u32, BranchError> {
-    let activation = network.vault_activation_height().or(if network.vault_activation_from_server() {
-        activation
-    } else {
-        None
-    });
+    let activation =
+        network
+            .vault_activation_height()
+            .or(if network.vault_activation_from_server() {
+                activation
+            } else {
+                None
+            });
     let ours = match activation {
         Some(a) if next_height >= a => VAULT_BRANCH_ID,
         _ => {
@@ -720,7 +723,10 @@ mod tests {
         const CANOPY: u32 = 0x19bd_2d2f;
         let r = Network::Regtest;
         // Before activation: the epoch id; from the activation height on: Vault.
-        assert_eq!(signing_branch_id(r, CANOPY, 149, Some(150), None), Ok(CANOPY));
+        assert_eq!(
+            signing_branch_id(r, CANOPY, 149, Some(150), None),
+            Ok(CANOPY)
+        );
         assert_eq!(
             signing_branch_id(r, CANOPY, 150, Some(150), None),
             Ok(VAULT_BRANCH_ID)

@@ -4,9 +4,10 @@
 
 // Yellowback (YED) light-client service: a second, separate gRPC service beside
 // CompactTxStreamer (service.proto, which is not edited). Every method is a thin proxy of a
-// read-only yed_* RPC on the node this server already talks to; the server adds no rule and
+// read-only yed_* RPC (or, since rpcversion 5, a read-only set_* / vault_* RPC of the vault
+// primitive YED runs on) on the node this server already talks to; the server adds no rule and
 // holds no Yellowback state. Field names are the JSON names of the node's RPC contract
-// (ycash-dd/doc/yellowback-rpc-contract.json, rpcversion 4) so the contract's example values
+// (ycash-dd/doc/yellowback-rpc-contract.json, rpcversion 5) so the contract's example values
 // are the test fixtures and the JSON result unmarshals straight into these messages; a message
 // may carry a subset of a result's fields (unknown JSON fields are ignored), never a renamed one.
 // Plan: docs/plans/yellowback-lightwalletd-plan.md section 4.1.
@@ -40,9 +41,6 @@ message YedAssignment { uint32 vout = 1; uint64 cents = 2; }
 
 // ---- yed_getinfo --------------------------------------------------------------------------
 
-message YellowbackActivationState {
-  int64 activateHeight = 1; int64 lockInHeight = 2; int64 signalCount = 3; string status = 4; int64 window = 5;
-}
 message YellowbackAttestState {
   int64 armHeight = 1; bool armed = 2; string carrierMode = 3; int64 poolFresh = 4; int64 poolSize = 5;
   bool required = 6; int64 seatedCount = 7; string status = 8; int64 triggerHeight = 9;
@@ -54,18 +52,23 @@ message YellowbackAttestParams {
   bool required = 11; int64 residualMinZat = 12; int64 emergencyRatioBps = 13;
 }
 message YellowbackParams {
-  int64 abandonBlocks = 1; YellowbackAttestParams attest = 2; repeated YellowbackClassParams classes = 3;
-  int64 enforceUntilHeight = 4; int64 feeBps = 5; int64 feeMinZat = 6; int64 feeZat = 7; int64 grace = 8;
+  reserved 1, 4; reserved "abandonBlocks", "enforceUntilHeight";      // rpcversion 5: retired (upgrade plan section 6)
+  YellowbackAttestParams attest = 2; repeated YellowbackClassParams classes = 3;
+  int64 feeBps = 5; int64 feeMinZat = 6; int64 feeZat = 7; int64 grace = 8;
   int64 refLag = 9; int64 refWindow = 10; int64 startHeight = 11; int64 tokenValueZat = 12; int64 supplyCapBps = 13;
   int64 globalRatioHaltBps = 14; int64 recapRatioBps = 15; int64 sigmaRefBps = 16;
+  string attestorSetId = 17; int64 claimDelay = 18;                   // rpcversion 5: the YED attestor set (a vault primitive set id), CLAIM_DELAY
 }
 message YellowbackInfo {
-  bool abandoned = 1; YellowbackActivationState activation = 2; YellowbackAttestState attest = 3; string blockhash = 4;
-  int64 chainHeight = 5; bool enabled = 6; bool enforcing = 7; bool healthy = 8; int64 height = 9; string network = 10;
-  YellowbackParams params = 11; int64 rpcversion = 12; int64 startHeight = 13; bool sunset = 14;
-  string unhealthyReason = 15; bool valveTripped = 16; bool protectedByIndex = 17; bool rebuilt = 18;
+  // rpcversion 5 (the vault upgrade, upgrade plan section 6): activation, enforcement, sunset, valve and abandonment are gone.
+  reserved 1, 2, 7, 14, 16; reserved "abandoned", "activation", "enforcing", "sunset", "valveTripped";
+  YellowbackAttestState attest = 3; string blockhash = 4;
+  int64 chainHeight = 5; bool enabled = 6; bool healthy = 8; int64 height = 9; string network = 10;
+  YellowbackParams params = 11; int64 rpcversion = 12; int64 startHeight = 13;
+  string unhealthyReason = 15; bool protectedByIndex = 17; bool rebuilt = 18;
   string serverVersion = 19;                                          // this server's, not the node's
   bool mintRequiresArmed = 20;                                        // rpcversion 4 (hardening H-1): a mint needs the price ARMED
+  YellowbackActivation upgrade = 21;                                  // rpcversion 5: the yed_getactivation object
 }
 
 // ---- yed_getprice, yed_getstats, yed_getactivation ------------------------------------------
@@ -73,7 +76,8 @@ message YellowbackInfo {
 message YedPriceFill { int64 minFill = 1; int64 quoteTags = 2; int64 window = 3; }
 message YedPriceFills { YedPriceFill fast = 1; YedPriceFill mid = 2; YedPriceFill slow = 3; }
 message YedPriceTag {
-  bool found = 1; string kind = 2; string payoutAddress = 3; int64 priceMicroUsd = 4; bool signal = 5;
+  reserved 5; reserved "signal";                                      // rpcversion 5: no signalling
+  bool found = 1; string kind = 2; string payoutAddress = 3; int64 priceMicroUsd = 4;
   int64 sourceMask = 6; int64 version = 7;
 }
 message YedPrice {
@@ -87,12 +91,15 @@ message YellowbackStats {
   bool mintingAllowed = 10; int64 pClaim = 11; int64 pFast = 12; int64 pMid = 13; int64 pMint = 14; int64 pSlow = 15;
   int64 sigmaMultBps = 16; int64 supplyCapCents = 17; int64 supplyCents = 18; int64 unbackedCents = 19; int64 voidVaults = 20;
 }
-message YellowbackActivationHistory { int64 height = 1; int64 signalCount = 2; }
+// rpcversion 5: yed_getactivation reports the vault network upgrade YED is a consensus module of
+// (status "pending" | "active"); the signalling, lock-in, enforcement, valve and sunset fields are gone.
 message YellowbackActivation {
-  int64 activateHeight = 1; int64 enforceUntilHeight = 2; int64 enforcementFloor = 3; int64 enforcementResume = 4;
-  bool enforcementSuspended = 5; bool enforcing = 6; repeated YellowbackActivationHistory history = 7; int64 lockInHeight = 8;
-  bool mintHalted = 9; int64 participationFloor = 10; int64 signalCount = 11; string status = 12; bool sunset = 13;
-  int64 threshold = 14; bool valveTripped = 15; int64 window = 16;
+  reserved 1 to 11, 13 to 16;
+  reserved "activateHeight", "enforceUntilHeight", "enforcementFloor", "enforcementResume", "enforcementSuspended", "enforcing",
+    "history", "lockInHeight", "mintHalted", "participationFloor", "signalCount", "sunset", "threshold", "valveTripped", "window";
+  string status = 12;
+  int64 activationHeight = 17; string attestorSetId = 18; string branchId = 19; int64 claimDelay = 20; int64 height = 21;
+  string name = 22;
 }
 
 // ---- yed_gettxinfo, yed_validaterawtransaction, yed_decodepayload ---------------------------
@@ -104,6 +111,7 @@ message YedTxInfo {
   int64 pClaim = 16; int64 pMint = 17; string path = 18; string payee = 19; int64 residualZat = 20;
   repeated YedOutpoint spentTokens = 21; string txid = 22; string type = 23; string verdict = 24; int64 xClaim = 25;
   int64 xMint = 26; int64 yedIn = 27; int64 yedOut = 28;
+  repeated YedOutpoint reopenedVaults = 29;                           // rpcversion 5: the vault an attestor-set cancel re-created
 }
 message YedValidation {
   bool blockValid = 1; int64 burned = 2; int64 feeZat = 3; bool mempoolExpiryOk = 4; string path = 5; string payee = 6;
@@ -117,12 +125,16 @@ message YedPayload {
 
 // ---- vaults --------------------------------------------------------------------------------
 
+// rpcversion 5: a CLAIMING vault's claim intents (claimant / residual), released by vault_release at releaseHeight.
+message YedVaultIntent { string txid = 1; uint32 vout = 2; string role = 3; int64 height = 4; int64 releaseHeight = 5; }
 message YedVault {
+  reserved 19; reserved "sweepBefore";                                // rpcversion 5: yed_sweep is gone
   int64 burnedCents = 1; int64 claimHeight = 2; bool claimable = 3; int64 closeHeight = 4; string closingTxid = 5;
   int64 collateralZat = 6; int64 emergencyOpenAt = 7; int64 feePaidZat = 8; int64 lockHeight = 9; int64 mintHeight = 10;
   int64 mintedCents = 11; int64 noticeHeight = 12; bool noticed = 13; string ownerAddress = 14; string ownerKeyId = 15;
-  string ownerPubKey = 16; int64 refHeight = 17; string status = 18; int64 sweepBefore = 19; string termClass = 20;
+  string ownerPubKey = 16; int64 refHeight = 17; string status = 18; string termClass = 20;
   string txid = 21; bool unbacked = 22; int64 underwaterAt = 23; string voidReason = 24; uint32 vout = 25;
+  string scriptPubKey = 26; repeated YedVaultIntent intents = 27;     // rpcversion 5: the V template (hex); intents while CLAIMING
 }
 message YedClaimable {
   int64 attestFeeZat = 1; int64 claimHeight = 2; string claimPath = 3; int64 collateralZat = 4; int64 emergencyOpenAt = 5;
@@ -168,6 +180,7 @@ message YedAttestor {
   int64 bondSpentHeight = 6; int64 bondZat = 7; YedAttestorFlags flags = 8; bool founding = 9; int64 lastBundleHeight = 10;
   bool pinned = 11; bool poolFresh = 12; int64 registerHeight = 13; bool seated = 14; int64 seatedSince = 15; int64 seq = 16;
   string status = 17; int64 statusHeight = 18; string weight = 19;
+  int64 lastAct = 20; bool bondFrozen = 21;                           // rpcversion 5 (P4-b): the attestor set's member state
 }
 
 // ---- getblockchaininfo (the stock node RPC; the one message here not backed by a yed_* RPC) --
@@ -183,6 +196,41 @@ message YedChainInfo {
   string nextBlockBranchId = 5;                                     // getblockchaininfo.consensus.nextblock
   uint64 saplingActivationHeight = 6;                               // upgrades["76b809bb"].activationheight, as LightdInfo reads it
   repeated YedUpgrade upgrades = 7;                                 // every upgrade the node knows, by activationHeight then branchId
+}
+
+// ---- the vault primitive (set_* / vault_* read RPCs, ycash-dd/doc/vault-rpc.md) -----------------
+
+// The primitive's read RPCs (docs/plans/yellowback-upgrade-plan.md section 15.8), proxied like the
+// yed_* ones. Field names are the node's JSON names (all lower case there); YEC amounts are the
+// node's decimal YEC numbers (hence double), `valuezat` is zatoshi. The node's `wallet` fields
+// (whether ITS wallet holds a key) are never carried: they describe the server's node, not the client.
+message VaultSetQuery { string setid = 1; uint32 height = 2; }     // height 0 = the next block
+message VaultOutputFilter { string tag = 1; string setid = 2; string owner = 3; string kind = 4; }   // "" = any; kind vault|intent
+message VaultDbTip { string hash = 1; int64 height = 2; }
+message VaultInfo {
+  string branchid = 1; int64 activationheight = 2; bool active = 3; int64 height = 4; VaultDbTip dbtip = 5;
+  int64 sets = 6; int64 vaults = 7; int64 intents = 8; double lockedvalue = 9; string statehash = 10;
+}
+message VaultSetMember {
+  string key = 1; string status = 2; bool current = 3; bool live = 4; int64 joinheight = 5; int64 lastact = 6;
+  string bondoutpoint = 7; double bondvalue = 8; int64 bondlocktime = 9; bool bondfrozen = 10;
+}
+message VaultSet {
+  string setid = 1; int64 height = 2; int64 seats = 3; int64 unlockthreshold = 4; int64 cancelthreshold = 5;
+  int64 slashthreshold = 6; bool open = 7; int64 ratelimitbps = 8; int64 ratewindow = 9; int64 livenesswindow = 10;
+  double bondmin = 11; int64 bondlockmin = 12; int64 maturity = 13; string admitkey = 14; int64 createheight = 15;
+  int64 winddownheight = 16; double lockedvalue = 17; int64 epoch = 18; double epochbasis = 19; double epochused = 20;
+  double unlockavailable = 21;                                       // present when the set is rate limited
+  int64 members = 22; int64 active = 23; int64 current = 24; bool dormant = 25; bool released = 26;
+  repeated VaultSetMember memberlist = 27;                           // GetSet only (set_list omits it)
+}
+message VaultOutput {
+  string txid = 1; uint32 vout = 2; string outpoint = 3; string kind = 4; double value = 5; int64 valuezat = 6;
+  int64 height = 7; string script = 8; string tag = 9; string tagtext = 10; string setid = 11; string cancelsetid = 12;
+  int64 delay = 13; string ownerkey = 14;
+  int64 ownerheight = 15; int64 appheight = 16;                      // kind vault
+  string recipienthash = 17; string vaulthash = 18; int64 matureheight = 19; bool mature = 20; bool cancellable = 21;
+  string origin = 22;                                                // kind intent
 }
 
 // ---- the service ---------------------------------------------------------------------------
@@ -208,4 +256,8 @@ service YellowbackStreamer {
   rpc ListAttestors(HeightFilter) returns (stream YedAttestor) {}
   rpc GetAddressTokens(YedAddressList) returns (stream YedToken) {}     // Phase L2: yed_listtokens (node N1)
   rpc GetChainInfo(Empty) returns (YedChainInfo) {}                      // x402 X-F71: getblockchaininfo.consensus.nextblock
+  rpc GetVaultInfo(Empty) returns (VaultInfo) {}                         // vault_getinfo (upgrade plan section 15.8)
+  rpc ListSets(Empty) returns (stream VaultSet) {}                       // set_list
+  rpc GetSet(VaultSetQuery) returns (VaultSet) {}                        // set_getinfo
+  rpc ListVaultOutputs(VaultOutputFilter) returns (stream VaultOutput) {} // vault_list (never "mine")
 }

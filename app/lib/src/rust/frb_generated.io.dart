@@ -57,6 +57,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MintTerms dco_decode_box_autoadd_mint_terms(dynamic raw);
 
   @protected
+  ClaimIntent dco_decode_claim_intent(dynamic raw);
+
+  @protected
   ClaimTerms dco_decode_claim_terms(dynamic raw);
 
   @protected
@@ -91,6 +94,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<AddressPair> dco_decode_list_address_pair(dynamic raw);
+
+  @protected
+  List<ClaimIntent> dco_decode_list_claim_intent(dynamic raw);
 
   @protected
   List<ClaimableItem> dco_decode_list_claimable_item(dynamic raw);
@@ -157,6 +163,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   RedeemResult dco_decode_redeem_result(dynamic raw);
+
+  @protected
+  ReleasePreview dco_decode_release_preview(dynamic raw);
+
+  @protected
+  ReleaseResult dco_decode_release_result(dynamic raw);
 
   @protected
   SendResult dco_decode_send_result(dynamic raw);
@@ -241,6 +253,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MintTerms sse_decode_box_autoadd_mint_terms(SseDeserializer deserializer);
 
   @protected
+  ClaimIntent sse_decode_claim_intent(SseDeserializer deserializer);
+
+  @protected
   ClaimTerms sse_decode_claim_terms(SseDeserializer deserializer);
 
   @protected
@@ -275,6 +290,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<AddressPair> sse_decode_list_address_pair(SseDeserializer deserializer);
+
+  @protected
+  List<ClaimIntent> sse_decode_list_claim_intent(SseDeserializer deserializer);
 
   @protected
   List<ClaimableItem> sse_decode_list_claimable_item(
@@ -347,6 +365,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   RedeemResult sse_decode_redeem_result(SseDeserializer deserializer);
+
+  @protected
+  ReleasePreview sse_decode_release_preview(SseDeserializer deserializer);
+
+  @protected
+  ReleaseResult sse_decode_release_result(SseDeserializer deserializer);
 
   @protected
   SendResult sse_decode_send_result(SseDeserializer deserializer);
@@ -445,6 +469,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_claim_intent(ClaimIntent self, SseSerializer serializer);
+
+  @protected
   void sse_encode_claim_terms(ClaimTerms self, SseSerializer serializer);
 
   @protected
@@ -483,6 +510,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_address_pair(
     List<AddressPair> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_claim_intent(
+    List<ClaimIntent> self,
     SseSerializer serializer,
   );
 
@@ -584,6 +617,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_redeem_result(RedeemResult self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_release_preview(
+    ReleasePreview self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_release_result(ReleaseResult self, SseSerializer serializer);
 
   @protected
   void sse_encode_send_result(SendResult self, SseSerializer serializer);

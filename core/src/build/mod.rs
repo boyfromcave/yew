@@ -13,6 +13,7 @@
 pub mod claim;
 pub mod mint;
 pub mod redeem;
+pub mod release;
 pub mod terms;
 pub mod yec_move;
 pub mod yec_private;

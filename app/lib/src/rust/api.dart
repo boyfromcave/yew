@@ -7,9 +7,9 @@ import 'frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `connect`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `height_time`, `hex_or_empty`, `history_item`, `locked`, `merge_shielded`, `mint_status_of`, `new`, `now_secs`, `open_wallet`, `params_dir_of`, `params_status_of`, `parse_server`, `parse_txid`, `renew_lock_blocks`, `row_status`, `runtime`, `shielded_pair`, `store_err`, `sync_shielded`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `yec_preview_of`, `yellowback_status`
+// These functions are ignored because they are not marked as `pub`: `claim_intent_of`, `connect`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `height_time`, `hex_or_empty`, `history_item`, `locked`, `merge_shielded`, `mint_status_of`, `new`, `now_secs`, `open_wallet`, `params_dir_of`, `params_status_of`, `parse_outpoint`, `parse_server`, `parse_txid`, `renew_lock_blocks`, `row_status`, `runtime`, `shielded_pair`, `store_err`, `sync_shielded`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `yec_preview_of`, `yellowback_status`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Conn`, `Open`, `Preview`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
 
 /// The core's version.
 String coreVersion() => RustLib.instance.api.crateApiCoreVersion();
@@ -284,6 +284,20 @@ Future<RedeemPreview> redeemPreview({required String vaultTxid}) =>
 Future<RedeemResult> redeemConfirm({required String previewId}) =>
     RustLib.instance.api.crateApiRedeemConfirm(previewId: previewId);
 
+/// The claim intents paying this wallet, as the last sync left them (no network): pending
+/// claims with their release heights, releases in flight, released ones, and claims the
+/// attestor set cancelled.
+Future<List<ClaimIntent>> claimIntents() =>
+    RustLib.instance.api.crateApiClaimIntents();
+
+/// Build and sign the RELEASE of a matured claim intent (after a sync). Nothing is broadcast.
+Future<ReleasePreview> releasePreview({required String intent}) =>
+    RustLib.instance.api.crateApiReleasePreview(intent: intent);
+
+/// Broadcast a release preview through both gate layers.
+Future<ReleaseResult> releaseConfirm({required String previewId}) =>
+    RustLib.instance.api.crateApiReleaseConfirm(previewId: previewId);
+
 /// `ListClaimable` at the node's tip (connects; the liquidator persona).
 Future<List<ClaimableItem>> claimable() =>
     RustLib.instance.api.crateApiClaimable();
@@ -493,6 +507,104 @@ class Balances {
           yecShieldedPendingZat == other.yecShieldedPendingZat &&
           shieldedScannedHeight == other.shieldedScannedHeight &&
           shieldedSendable == other.shieldedSendable;
+}
+
+/// A claim intent paying this wallet (the vault upgrade, U-15, U-23, U-24): the claimant's
+/// intent of a claim it made, or the owner's RED-5 residual intent of a claimed own vault.
+/// Released after the claim delay by [`release_preview`] / [`release_confirm`] (no signature
+/// on the intent: anyone may release it, the wallet just does it first), unless an attestor
+/// cancelled the claim first (a claimant intent only).
+class ClaimIntent {
+  /// The intent outpoint, `txid:n`.
+  final String intent;
+
+  /// The claimed vault's txid.
+  final String vaultTxid;
+
+  /// `claimant` (a claim this wallet made) or `residual` (its own vault's residual).
+  final String role;
+
+  /// The intent's value, zat (what the release pays).
+  final PlatformInt64 valueZat;
+
+  /// `PENDING`, `RELEASING`, `RELEASED` or `CANCELLED`.
+  final String state;
+
+  /// The height the claim confirmed at, 0 while unconfirmed.
+  final PlatformInt64 height;
+
+  /// The first height the release can be mined at (0 while unconfirmed).
+  final PlatformInt64 releaseHeight;
+
+  /// Blocks until then (0 once reached).
+  final PlatformInt64 blocksUntilRelease;
+
+  /// The release can be built now.
+  final bool releasable;
+
+  /// The attestor set cancelled the claim: the collateral went back into the vault and the
+  /// claim's burn is not refunded (U-24).
+  final bool cancelled;
+
+  /// The release date estimate (Unix seconds; `now + (releaseHeight − tip) · 75`).
+  final PlatformInt64 releaseTimeSecs;
+
+  /// The release (or the transaction that spent it), empty until known.
+  final String spendTxid;
+
+  /// What to tell the user.
+  final String note;
+
+  const ClaimIntent({
+    required this.intent,
+    required this.vaultTxid,
+    required this.role,
+    required this.valueZat,
+    required this.state,
+    required this.height,
+    required this.releaseHeight,
+    required this.blocksUntilRelease,
+    required this.releasable,
+    required this.cancelled,
+    required this.releaseTimeSecs,
+    required this.spendTxid,
+    required this.note,
+  });
+
+  @override
+  int get hashCode =>
+      intent.hashCode ^
+      vaultTxid.hashCode ^
+      role.hashCode ^
+      valueZat.hashCode ^
+      state.hashCode ^
+      height.hashCode ^
+      releaseHeight.hashCode ^
+      blocksUntilRelease.hashCode ^
+      releasable.hashCode ^
+      cancelled.hashCode ^
+      releaseTimeSecs.hashCode ^
+      spendTxid.hashCode ^
+      note.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ClaimIntent &&
+          runtimeType == other.runtimeType &&
+          intent == other.intent &&
+          vaultTxid == other.vaultTxid &&
+          role == other.role &&
+          valueZat == other.valueZat &&
+          state == other.state &&
+          height == other.height &&
+          releaseHeight == other.releaseHeight &&
+          blocksUntilRelease == other.blocksUntilRelease &&
+          releasable == other.releasable &&
+          cancelled == other.cancelled &&
+          releaseTimeSecs == other.releaseTimeSecs &&
+          spendTxid == other.spendTxid &&
+          note == other.note;
 }
 
 /// The bounds a claim was confirmed with (H-9.3; `yed_claim`'s `maxBurnCents` / `minOutZat`):
@@ -1639,6 +1751,87 @@ class RedeemResult {
           expiryHeight == other.expiryHeight;
 }
 
+/// [`release_preview`]: the signed RELEASE waiting for [`release_confirm`].
+class ReleasePreview {
+  /// Pass to [`release_confirm`].
+  final String previewId;
+
+  /// The intent released, `txid:n`.
+  final String intent;
+
+  /// What the release pays, zat.
+  final PlatformInt64 valueZat;
+
+  /// The own address it pays.
+  final String recipientAddress;
+
+  /// The network fee, zat (from the wallet's YEC).
+  final PlatformInt64 feeZat;
+
+  /// The txid the broadcast will have.
+  final String txid;
+
+  const ReleasePreview({
+    required this.previewId,
+    required this.intent,
+    required this.valueZat,
+    required this.recipientAddress,
+    required this.feeZat,
+    required this.txid,
+  });
+
+  @override
+  int get hashCode =>
+      previewId.hashCode ^
+      intent.hashCode ^
+      valueZat.hashCode ^
+      recipientAddress.hashCode ^
+      feeZat.hashCode ^
+      txid.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ReleasePreview &&
+          runtimeType == other.runtimeType &&
+          previewId == other.previewId &&
+          intent == other.intent &&
+          valueZat == other.valueZat &&
+          recipientAddress == other.recipientAddress &&
+          feeZat == other.feeZat &&
+          txid == other.txid;
+}
+
+/// The result of [`release_confirm`].
+class ReleaseResult {
+  /// The txid, display form.
+  final String txid;
+
+  /// The node's verdict on the broadcast bytes.
+  final String verdict;
+
+  /// What it pays, zat.
+  final PlatformInt64 valueZat;
+
+  const ReleaseResult({
+    required this.txid,
+    required this.verdict,
+    required this.valueZat,
+  });
+
+  @override
+  int get hashCode => txid.hashCode ^ verdict.hashCode ^ valueZat.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ReleaseResult &&
+          runtimeType == other.runtimeType &&
+          txid == other.txid &&
+          verdict == other.verdict &&
+          valueZat == other.valueZat;
+}
+
 /// The result of a confirm.
 class SendResult {
   /// The txid, display form.
@@ -1989,6 +2182,15 @@ class VaultSummary {
   /// `ACTIVE` and `tip >= claimHeight`: the claim path is open.
   final bool claimOpen;
 
+  /// `CLAIMING` (the vault upgrade, U-23): a liquidator moved the collateral into a claim
+  /// intent; one attestor may still cancel it until it is released after the claim delay.
+  /// The owner's RED-5 residual, if any, is a [`ClaimIntent`] of role `residual`.
+  final bool claiming;
+
+  /// `REOPENED`: an attestor cancelled the claim and the vault lives on at `closing_txid`
+  /// (U-24), the same position at a new outpoint (shown there; this row is history).
+  final bool reopened;
+
   const VaultSummary({
     required this.vaultTxid,
     required this.status,
@@ -2017,6 +2219,8 @@ class VaultSummary {
     required this.renewLockBlocks,
     required this.claimWarning,
     required this.claimOpen,
+    required this.claiming,
+    required this.reopened,
   });
 
   @override
@@ -2047,7 +2251,9 @@ class VaultSummary {
       renewable.hashCode ^
       renewLockBlocks.hashCode ^
       claimWarning.hashCode ^
-      claimOpen.hashCode;
+      claimOpen.hashCode ^
+      claiming.hashCode ^
+      reopened.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -2080,7 +2286,9 @@ class VaultSummary {
           renewable == other.renewable &&
           renewLockBlocks == other.renewLockBlocks &&
           claimWarning == other.claimWarning &&
-          claimOpen == other.claimOpen;
+          claimOpen == other.claimOpen &&
+          claiming == other.claiming &&
+          reopened == other.reopened;
 }
 
 /// [`export_wif`].

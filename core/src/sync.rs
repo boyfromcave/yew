@@ -37,9 +37,9 @@ use crate::coins::{self, Utxo, UtxoClass};
 use crate::keys;
 use crate::net::rpc::YedTxInfo;
 use crate::net::{CompactClient, NetError, YellowbackClient};
-use crate::params::{CARRIER_VALUE, GAP_LIMIT};
+use crate::params::{self, CARRIER_VALUE, GAP_LIMIT};
 use crate::script;
-use crate::store::{HistoryRow, MintState, VaultRow};
+use crate::store::{HistoryRow, IntentRow, IntentState, MintState, VaultRow};
 use crate::tx::{txid_from_hex, txid_hex, OutPoint, Transaction};
 use crate::wallet::{dollars, Wallet, WalletError};
 
@@ -78,6 +78,8 @@ pub struct SyncReport {
     pub mints_advanced: Vec<(i64, MintState)>,
     /// Own vaults refreshed from `GetVault`.
     pub vaults: usize,
+    /// Claim intents paying this wallet whose state moved this run (the vault upgrade).
+    pub intents: usize,
 }
 
 /// Run one sync of `wallet` against `client`, and against `yellowback` for the YED steps when
@@ -90,14 +92,63 @@ pub async fn sync(
 ) -> Result<SyncReport, WalletError> {
     let info = client.lightd_info_for(wallet.network).await?;
     let tip = client.latest_height().await?.max(info.block_height);
+    // The branch id every transparent signature commits to is the NEXT block's (ZIP-243): the
+    // Vault id from the vault upgrade's activation height on (upgrade plan §8, §15.1).
+    // `GetLightdInfo` carries the chaintip's; `GetChainInfo` the next block's and the upgrade
+    // heights, which the height rule must agree with (`params::signing_branch_id`).
+    let mut branch_id = info.branch_id;
+    let mut next_height = tip + 1;
+    let mut activation = None;
+    let mut next_server = None;
+    if let Some(yb) = yellowback.as_mut() {
+        if let Some(ci) = yb.chain_info_full().await? {
+            next_height = ci.block_height + 1;
+            next_server = Some(
+                u32::from_str_radix(ci.next_block_branch_id.trim_start_matches("0x"), 16).map_err(
+                    |_| {
+                        NetError::Mismatch(format!(
+                            "bad nextBlockBranchId {:?}",
+                            ci.next_block_branch_id
+                        ))
+                    },
+                )?,
+            );
+            if u32::from_str_radix(ci.consensus_branch_id.trim_start_matches("0x"), 16)
+                .is_ok_and(|b| b == params::VAULT_BRANCH_ID)
+            {
+                branch_id = params::VAULT_BRANCH_ID;
+            }
+            activation = ci
+                .upgrades
+                .iter()
+                .find(|u| {
+                    u32::from_str_radix(u.branch_id.trim_start_matches("0x"), 16)
+                        .is_ok_and(|b| b == params::VAULT_BRANCH_ID)
+                })
+                .filter(|u| u.activation_height > 0)
+                .map(|u| u.activation_height as u64);
+        }
+    }
+    let branch_id = params::signing_branch_id(
+        wallet.network,
+        branch_id,
+        next_height,
+        activation,
+        next_server,
+    )
+    .map_err(|e| WalletError::Other(e.to_string()))?;
     wallet
         .store
-        .set_meta("branch_id", &format!("{:08x}", info.branch_id))?;
+        .set_meta("branch_id", &format!("{:08x}", branch_id))?;
+    wallet.store.set_meta(
+        "vault_activation_height",
+        &activation.unwrap_or(0).to_string(),
+    )?;
     let birthday = wallet.birthday()?;
     let scanned = wallet.store.meta_u64("scanned_height")?;
     let mut report = SyncReport {
         tip,
-        branch_id: info.branch_id,
+        branch_id,
         yellowback: yellowback.is_some(),
         ..Default::default()
     };
@@ -283,8 +334,14 @@ pub async fn sync(
 
     // 5. W4: the two-step rows, the own vaults, and the VAULT / CARRIER rows.
     report.mints_advanced = advance_mints(wallet, tip)?;
+    let mut vt = None;
     if let Some(yb) = yellowback.as_mut() {
-        report.vaults = refresh_vaults(wallet, yb, tip).await?;
+        let (n, terms) = refresh_vaults(wallet, yb, tip).await?;
+        report.vaults = n;
+        vt = terms;
+        if let Some(t) = vt.as_ref() {
+            report.intents = refresh_intents(wallet, yb, t, tip).await?;
+        }
     }
     let present: HashSet<OutPoint> = utxos.iter().map(|u| u.outpoint).collect();
     for v in wallet.store.vaults()? {
@@ -295,13 +352,13 @@ pub async fn sync(
         if !v.is_open() || present.contains(&op) {
             continue;
         }
-        let vs = script::vault_script(v.lock_height, &v.owner_pubkey, v.claim_height)
-            .map_err(|e| WalletError::Other(e.to_string()))?;
-        let hash = keys::hash160(&vs);
+        // The vault upgrade (U-23): the vault is the bare V template, which no address lists.
+        let Some(t) = vt.as_ref() else { continue };
+        let vs = t.vault_script(&v.owner_pubkey, v.lock_height)?;
         utxos.push(Utxo {
             outpoint: op,
-            address: keys::encode_p2sh(wallet.network, &hash),
-            script: script::p2sh_script(&hash),
+            address: String::new(),
+            script: vs,
             value: v.collateral_zat,
             height: v.mint_height,
             class: UtxoClass::Vault,
@@ -466,12 +523,32 @@ pub fn advance_mints(wallet: &Wallet, tip: u64) -> Result<Vec<(i64, MintState)>,
 
 /// Refresh the own vaults from `GetVault`: every mint row's main transaction and every
 /// history row labelled `mint`, kept when the owner key is ours and its script terms follow
-/// the network's rules (`terms::check_vault`). Returns the rows written.
+/// the network's rules (`terms::check_vault`, and since the vault upgrade the V script the node
+/// reports, `terms::check_vault_script`). A vault an attestor cancel re-created at a new
+/// outpoint (U-24: the node keys it there and forgets the old one) is found again through
+/// `ListVaultOutputs` by its owner key. The owner's RED-5 residual intent of a `CLAIMING` vault
+/// is recorded for release ([`refresh_intents`]). Returns the rows written and the vault terms
+/// (`None` when the server reports no usable YED attestor set and the wallet has no vault).
 pub async fn refresh_vaults(
     wallet: &Wallet,
     yb: &mut YellowbackClient,
     tip: u64,
-) -> Result<usize, WalletError> {
+) -> Result<(usize, Option<terms::VaultTerms>), WalletError> {
+    let vt = match crate::build::mint::vault_terms_now(wallet, yb).await {
+        Ok(t) => t,
+        Err(e) => {
+            if wallet
+                .store
+                .vaults()?
+                .iter()
+                .any(|v| v.is_open() || v.status == "CLAIMING")
+                || wallet.store.intents()?.iter().any(|i| i.state.open())
+            {
+                return Err(e);
+            }
+            return Ok((0, None));
+        }
+    };
     let own = wallet.own_hashes()?;
     let mut candidates: HashSet<[u8; 32]> = HashSet::new();
     for m in wallet.store.mints()? {
@@ -487,16 +564,29 @@ pub async fn refresh_vaults(
             candidates.insert(h.txid);
         }
     }
+    let mut lost: Vec<VaultRow> = Vec::new();
     for v in wallet.store.vaults()? {
-        if v.is_open() {
+        if v.is_open() || v.status == "CLAIMING" {
             candidates.insert(v.txid);
         }
     }
     let mut n = 0;
-    for txid in candidates {
+    let mut seen: HashSet<[u8; 32]> = HashSet::new();
+    let mut queue: Vec<[u8; 32]> = candidates.into_iter().collect();
+    while let Some(txid) = queue.pop() {
+        if !seen.insert(txid) {
+            continue;
+        }
         let v = match yb.vault(&txid_hex(&txid)).await {
             Ok(v) => v,
-            Err(NetError::Node { identifier, .. }) if identifier == "vault-not-found" => continue,
+            Err(NetError::Node { identifier, .. }) if identifier == "vault-not-found" => {
+                if let Some(row) = wallet.store.vault(&txid)? {
+                    if row.is_open() || row.status == "CLAIMING" {
+                        lost.push(row);
+                    }
+                }
+                continue;
+            }
             Err(e) => return Err(e.into()),
         };
         let pk: [u8; 33] = match keys::unhex(&v.owner_pub_key)
@@ -513,14 +603,15 @@ pub async fn refresh_vaults(
         // The script terms the wallet would sign against, checked before the vault is shown
         // as redeemable (audit G-1); an inconsistent answer fails the sync with that error.
         terms::check_vault(wallet.network, &v)?;
+        let vault_script = terms::check_vault_script(&vt, &v)?;
         let vault_txid = txid_from_hex(&v.txid).unwrap_or(txid);
         wallet.store.upsert_vault(&VaultRow {
             txid: vault_txid,
             vout: v.vout,
-            status: v.status,
+            status: v.status.clone(),
             owner_hash160,
             owner_pubkey: pk,
-            term_class: v.term_class,
+            term_class: v.term_class.clone(),
             lock_height: v.lock_height as u32,
             claim_height: v.claim_height as u32,
             collateral_zat: v.collateral_zat,
@@ -528,15 +619,216 @@ pub async fn refresh_vaults(
             mint_height: v.mint_height.max(0) as u64,
             claimable: v.claimable,
             underwater_at: v.underwater_at,
-            sweep_before: v.sweep_before.max(0) as u64,
+            sweep_before: 0,
             close_height: v.close_height.max(0) as u64,
-            closing_txid: v.closing_txid,
-            void_reason: v.void_reason,
+            closing_txid: v.closing_txid.clone(),
+            void_reason: v.void_reason.clone(),
             updated_height: tip,
         })?;
         n += 1;
+        if v.status == "CLAIMING" {
+            record_residual_intents(wallet, yb, &vt, &v, &pk, &vault_script, vault_txid).await?;
+        }
     }
-    Ok(n)
+    // U-24: a vault the node no longer knows under its old outpoint was either re-created by an
+    // attestor cancel (ACTIVE again at the cancel's output 0) or reorganised away. Look for the
+    // owner's live YED vaults and adopt the new outpoint.
+    for row in lost {
+        let mut found = None;
+        for o in yb
+            .list_vault_outputs("", "", &keys::hex(&row.owner_pubkey), "vault")
+            .await?
+        {
+            let Ok(t) = txid_from_hex(&o.txid) else {
+                continue;
+            };
+            if seen.contains(&t) || wallet.store.vault(&t)?.is_some() {
+                continue;
+            }
+            let Ok(v) = yb.vault(&o.txid).await else {
+                continue;
+            };
+            if v.lock_height as u32 != row.lock_height
+                || v.minted_cents.max(0) as u64 != row.minted_cents
+            {
+                continue;
+            }
+            terms::check_vault(wallet.network, &v)?;
+            terms::check_vault_script(&vt, &v)?;
+            wallet.store.upsert_vault(&VaultRow {
+                txid: t,
+                vout: v.vout,
+                status: v.status.clone(),
+                collateral_zat: v.collateral_zat,
+                claimable: v.claimable,
+                underwater_at: v.underwater_at,
+                close_height: 0,
+                closing_txid: String::new(),
+                updated_height: tip,
+                ..row.clone()
+            })?;
+            found = Some(t);
+            n += 1;
+            break;
+        }
+        wallet.store.upsert_vault(&VaultRow {
+            status: if found.is_some() {
+                "REOPENED".into()
+            } else {
+                "GONE".into()
+            },
+            closing_txid: found.map(|t| txid_hex(&t)).unwrap_or_default(),
+            updated_height: tip,
+            ..row
+        })?;
+    }
+    Ok((n, Some(vt)))
+}
+
+/// The owner's RED-5 residual intent of an own `CLAIMING` vault (`yed_getvault.intents`, role
+/// `"residual"`): its value and script from `ListVaultOutputs`, the script checked to be the
+/// intent this wallet derives (paying `P2PKH(owner)`), recorded for release.
+async fn record_residual_intents(
+    wallet: &Wallet,
+    yb: &mut YellowbackClient,
+    vt: &terms::VaultTerms,
+    v: &crate::net::rpc::YedVault,
+    owner: &[u8; 33],
+    vault_script: &[u8],
+    vault_txid: [u8; 32],
+) -> Result<(), WalletError> {
+    let residual: Vec<_> = v
+        .intents
+        .iter()
+        .filter(|i| i.role == crate::build::claim::ROLE_RESIDUAL)
+        .collect();
+    if residual.is_empty() {
+        return Ok(());
+    }
+    let recipient = script::p2pkh_script(&keys::hash160(owner));
+    let want = crate::vault::build_intent(&crate::vault::intent_for(
+        &vt.vault_params(owner, v.lock_height as u32),
+        vault_script,
+        &recipient,
+    ))
+    .ok_or_else(|| WalletError::Other("cannot build the residual intent".into()))?;
+    let live = yb
+        .list_vault_outputs("", "", &keys::hex(owner), "intent")
+        .await?;
+    for i in residual {
+        let Ok(txid) = txid_from_hex(&i.txid) else {
+            continue;
+        };
+        let op = OutPoint { txid, n: i.vout };
+        if wallet.store.intent(&op)?.is_some() {
+            continue;
+        }
+        let Some(o) = live.iter().find(|o| o.txid == i.txid && o.vout == i.vout) else {
+            continue;
+        };
+        if keys::unhex(&o.script).ok().as_deref() != Some(&want[..]) {
+            return Err(terms_inconsistent(format!(
+                "the residual intent {}:{} is not the one paying this vault's owner",
+                i.txid, i.vout
+            )));
+        }
+        wallet.store.upsert_intent(&IntentRow {
+            outpoint: op,
+            vault_txid,
+            role: crate::build::claim::ROLE_RESIDUAL.into(),
+            value: o.valuezat,
+            recipient_script: recipient.clone(),
+            intent_script: want.clone(),
+            delay: vt.claim_delay,
+            height: i.height.max(0) as u64,
+            state: IntentState::Pending,
+            spend_txid: [0; 32],
+            note: format!(
+                "your vault {} was claimed: the RED-5 residual is yours after the claim delay",
+                &txid_hex(&vault_txid)[..8]
+            ),
+        })?;
+    }
+    Ok(())
+}
+
+fn terms_inconsistent(what: String) -> WalletError {
+    crate::build::mint::MintError::Inconsistent { what }.into()
+}
+
+/// Advance every open claim intent paying this wallet (the vault upgrade, U-15, U-23, U-24):
+/// its confirmation height from the history scan (the claim spends own coins, so the scan sees
+/// it); a release seen confirmed ⇒ `Released`, a release that expired ⇒ back to `Pending`; a
+/// confirmed intent no longer among the live template outputs ⇒ `Released` when the vault is
+/// `CLAIMED` (or it is the owner's residual), `Cancelled` when the attestor set re-created the
+/// vault (the claim's burn is not refunded). Returns the rows that moved.
+pub async fn refresh_intents(
+    wallet: &Wallet,
+    yb: &mut YellowbackClient,
+    vt: &terms::VaultTerms,
+    _tip: u64,
+) -> Result<usize, WalletError> {
+    let mut moved = 0;
+    let set_hex = txid_hex(&vt.attestor_set_id);
+    let mut live: Option<HashSet<OutPoint>> = None;
+    for i in wallet.store.intents()? {
+        if !i.state.open() {
+            continue;
+        }
+        let mut row = i.clone();
+        if row.height == 0 {
+            if let Some(h) = confirmed_height(wallet, &row.outpoint.txid)? {
+                row.height = h;
+            }
+        }
+        if row.state == IntentState::Releasing {
+            if confirmed_height(wallet, &row.spend_txid)?.is_some() {
+                row.state = IntentState::Released;
+                row.note = "released".into();
+            } else if wallet
+                .store
+                .pending_txs()?
+                .iter()
+                .all(|(t, _, _)| *t != row.spend_txid)
+            {
+                row.state = IntentState::Pending;
+                row.note = "the release expired unconfirmed; release again".into();
+            }
+        }
+        if row.state == IntentState::Pending && row.height > 0 {
+            if live.is_none() {
+                let mut s = HashSet::new();
+                for o in yb.list_vault_outputs("", &set_hex, "", "intent").await? {
+                    if let Ok(t) = txid_from_hex(&o.txid) {
+                        s.insert(OutPoint { txid: t, n: o.vout });
+                    }
+                }
+                live = Some(s);
+            }
+            if !live.as_ref().is_some_and(|s| s.contains(&row.outpoint)) {
+                let status = match yb.vault(&txid_hex(&row.vault_txid)).await {
+                    Ok(v) => v.status,
+                    Err(NetError::Node { identifier, .. }) if identifier == "vault-not-found" => {
+                        String::new()
+                    }
+                    Err(e) => return Err(e.into()),
+                };
+                if row.role == crate::build::claim::ROLE_RESIDUAL || status == "CLAIMED" {
+                    row.state = IntentState::Released;
+                    row.note =
+                        "released (by another party: a release needs no signature, U-15)".into();
+                } else {
+                    row.state = IntentState::Cancelled;
+                    row.note = "cancelled by the attestor set: the collateral went back into the vault and the claim's burn is not refunded (U-24)".into();
+                }
+            }
+        }
+        if row != i {
+            wallet.store.upsert_intent(&row)?;
+            moved += 1;
+        }
+    }
+    Ok(moved)
 }
 
 /// Record one transaction touching an own address: history row, own outputs, used marks,

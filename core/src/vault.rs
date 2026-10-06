@@ -144,12 +144,26 @@ pub fn build_vault(p: &VaultParams) -> Option<Vec<u8>> {
     s.extend_from_slice(&[op::OP_DUP, op::OP_1, op::OP_EQUAL, op::OP_IF, op::OP_DROP]);
     script::push_data(&mut s, &p.set_id);
     s.extend_from_slice(&[op::OP_1, OP_CHECKSETSIG]);
-    s.extend_from_slice(&[op::OP_ELSE, op::OP_DUP, OP_2, op::OP_EQUAL, op::OP_IF, op::OP_DROP]);
+    s.extend_from_slice(&[
+        op::OP_ELSE,
+        op::OP_DUP,
+        OP_2,
+        op::OP_EQUAL,
+        op::OP_IF,
+        op::OP_DROP,
+    ]);
     script::push_int(&mut s, p.owner_height);
     s.extend_from_slice(&[op::OP_CHECKLOCKTIMEVERIFY, op::OP_DROP]);
     script::push_data(&mut s, &p.owner_key);
     s.push(op::OP_CHECKSIG);
-    s.extend_from_slice(&[op::OP_ELSE, op::OP_DUP, OP_3, op::OP_EQUAL, op::OP_IF, op::OP_DROP]);
+    s.extend_from_slice(&[
+        op::OP_ELSE,
+        op::OP_DUP,
+        OP_3,
+        op::OP_EQUAL,
+        op::OP_IF,
+        op::OP_DROP,
+    ]);
     script::push_data(&mut s, &p.set_id);
     s.extend_from_slice(&[OP_CHECKSETDORMANT, OP_VERIFY]);
     script::push_data(&mut s, &p.owner_key);
@@ -174,7 +188,14 @@ pub fn build_intent(p: &IntentParams) -> Option<Vec<u8>> {
     s.extend_from_slice(&[op::OP_DUP, op::OP_1, op::OP_EQUAL, op::OP_IF, op::OP_DROP]);
     script::push_int(&mut s, p.delay);
     s.push(OP_CHECKSEQUENCEVERIFY);
-    s.extend_from_slice(&[op::OP_ELSE, op::OP_DUP, OP_2, op::OP_EQUAL, op::OP_IF, op::OP_DROP]);
+    s.extend_from_slice(&[
+        op::OP_ELSE,
+        op::OP_DUP,
+        OP_2,
+        op::OP_EQUAL,
+        op::OP_IF,
+        op::OP_DROP,
+    ]);
     script::push_data(&mut s, &p.cancel_set_id);
     s.extend_from_slice(&[OP_2, OP_CHECKSETSIG]);
     s.extend_from_slice(&[op::OP_ELSE, OP_3, op::OP_EQUALVERIFY]);
@@ -373,7 +394,12 @@ pub fn yed_vault_params(
 
 /// True when `p` is the shape of a YED vault for `attestor_set_id` / `claim_delay` / `grace`
 /// (the module's MINT-3 for a V output).
-pub fn is_yed_vault(p: &VaultParams, attestor_set_id: &SetId, claim_delay: i64, grace: u32) -> bool {
+pub fn is_yed_vault(
+    p: &VaultParams,
+    attestor_set_id: &SetId,
+    claim_delay: i64,
+    grace: u32,
+) -> bool {
     p.tag == YED_TAG
         && p.set_id == *attestor_set_id
         && p.cancel_set_id == *attestor_set_id

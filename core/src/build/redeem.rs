@@ -283,8 +283,10 @@ pub fn select_yed_burn(
     Ok((sel, s.change as u64, s.extra_burn as u64, s.stage))
 }
 
-/// `SignVaultSpend`'s owner signature (`txbuilder.cpp:141-150`): ZIP-243 over the vault
-/// script with the vault's `nValue`, then `<sig> OP_1 <vaultScript>` at `vin[0]`.
+/// `SignVaultSpend`'s owner signature (`txbuilder.cpp`, branch `upgrade/vault`): ZIP-243 over
+/// the bare V script (it is the scriptCode) with the vault's `nValue` and the next block's
+/// branch id (the Vault id after activation), then `<sig> OP_2` at `vin[0]` (the V's OWNER
+/// selector, U-23).
 pub fn sign_owner_input(
     tx: &mut Transaction,
     owner: &AddressKey,
@@ -302,7 +304,7 @@ pub fn sign_owner_input(
     let sig = secp256k1::ecdsa::sign(secp256k1::Message::from_digest(digest), &owner.secret);
     let mut der = sig.serialize_der().to_vec();
     der.push(crate::params::SIGHASH_ALL as u8);
-    tx.vin[0].script_sig = script::owner_script_sig(&der, vault_script);
+    tx.vin[0].script_sig = crate::vault::vault_owner_script_sig(&der);
     Ok(())
 }
 
@@ -343,12 +345,23 @@ pub struct RedeemBuild {
     pub txid: [u8; 32],
 }
 
-/// The vault script of a stored vault.
-pub fn vault_script_of(v: &VaultRow) -> Result<Vec<u8>, WalletError> {
-    Ok(
-        script::vault_script(v.lock_height, &v.owner_pubkey, v.claim_height)
-            .map_err(MintError::Script)?,
-    )
+/// The V script of a stored vault under the vault upgrade's terms (U-23).
+pub fn vault_script_of(
+    v: &VaultRow,
+    vt: &super::terms::VaultTerms,
+) -> Result<Vec<u8>, WalletError> {
+    if v.claim_height != v.lock_height + vt.grace {
+        return Err(MintError::Inconsistent {
+            what: format!(
+                "vault {}: claimHeight {} is not lockHeight {} + GRACE",
+                txid_hex(&v.txid),
+                v.claim_height,
+                v.lock_height
+            ),
+        }
+        .into());
+    }
+    Ok(vt.vault_script(&v.owner_pubkey, v.lock_height)?)
 }
 
 /// `BuildRedeem` (`txbuilder.cpp:1286-1299`): the owner-path spend of an own open vault at or
@@ -389,7 +402,8 @@ pub async fn build_redeem(
     let owner = wallet
         .key_for_hash(&v.owner_hash160)?
         .ok_or_else(|| WalletError::Other("vault-not-owned: owner key missing".into()))?;
-    let vault_script = vault_script_of(&v)?;
+    let vt = mint::vault_terms_now(wallet, yb).await?;
+    let vault_script = vault_script_of(&v, &vt)?;
     let vault_out = OutPoint {
         txid: v.txid,
         n: v.vout,

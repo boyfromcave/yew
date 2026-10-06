@@ -130,6 +130,10 @@ pub enum Path {
     Claim(OutPoint),
     /// The sweep of lapsed carriers (`build::mint::sweep`).
     Sweep,
+    /// The RELEASE of a claim intent paying this wallet (the vault upgrade, U-15, U-23;
+    /// `build::release`): the named intent at `vin[0]` (a template output, never classified),
+    /// fee inputs `YEC` / `FeeReserve` only, no payload.
+    IntentRelease(OutPoint),
     /// A spend of the wallet's Sapling notes (`shielded.rs`): no transparent input.
     Shielded,
     /// A shield (S4, `build::yec_move`): transparent `YEC` inputs only (never the fee reserve,
@@ -148,6 +152,7 @@ impl Path {
             Path::Release => "release",
             Path::Claim(_) => "claim",
             Path::Sweep => "sweep",
+            Path::IntentRelease(_) => "intent release",
             Path::Shielded => "shielded",
             Path::Shield => "shield",
         }
@@ -162,6 +167,7 @@ impl Path {
             Path::Release => c == UtxoClass::Vault,
             Path::Claim(_) => c.claim_spendable(),
             Path::Sweep => c == UtxoClass::Carrier,
+            Path::IntentRelease(_) => c.yec_spendable(),
             Path::Shielded => false,
             Path::Shield => c == UtxoClass::Yec,
         }
@@ -195,11 +201,12 @@ pub fn check(
     let mut tokens = 0;
     let mut carriers: Vec<usize> = Vec::new();
     for (n, i) in tx.vin.iter().enumerate() {
-        // The claim path's vault is another wallet's output: it is named, never classified.
-        if let Path::Claim(vault) = path {
+        // The claim path's vault is another wallet's output, and a released intent a template
+        // output: each is named, never classified.
+        if let Path::Claim(named) | Path::IntentRelease(named) = path {
             if n == 0 {
-                if i.prevout != vault {
-                    return Err(GateError::VaultShape(path.name(), vault.display()));
+                if i.prevout != named {
+                    return Err(GateError::VaultShape(path.name(), named.display()));
                 }
                 continue;
             }
@@ -299,7 +306,7 @@ pub fn check(
                 ));
             }
         }
-        Path::Sweep | Path::Shield => no_payload(&tx)?,
+        Path::Sweep | Path::Shield | Path::IntentRelease(_) => no_payload(&tx)?,
         Path::Shielded => unreachable!("checked by check_shielded above"),
     }
     Ok(tx)
@@ -948,15 +955,31 @@ mod tests {
             .unwrap_err(),
             GateError::CarrierShape("claim")
         );
+        // The vault upgrade (U-23): the claim's fees come from the claimant's YEC.
+        assert!(check(
+            claim,
+            &build(
+                &[foreign_vault, token, yec, carrier],
+                Some(redeem_p.clone()),
+                None
+            ),
+            class
+        )
+        .is_ok());
+        // An intent release: the named intent at vin[0], YEC fee inputs, no payload, no token.
+        let release = Path::IntentRelease(foreign_vault);
+        assert!(check(release, &build(&[foreign_vault, yec], None, None), class).is_ok());
+        assert!(check(release, &build(&[yec, foreign_vault], None, None), class).is_err());
         assert!(matches!(
-            check(
-                claim,
-                &build(&[foreign_vault, yec, carrier], Some(redeem_p), None),
-                class
-            )
-            .unwrap_err(),
-            GateError::ForbiddenInput { class: "YEC", .. }
+            check(release, &build(&[foreign_vault, token], None, None), class).unwrap_err(),
+            GateError::ForbiddenInput { class: "TOKEN", .. }
         ));
+        assert!(check(
+            release,
+            &build(&[foreign_vault, yec], Some(redeem_p), None),
+            class
+        )
+        .is_err());
         // Sweep: carriers only, no payload.
         assert!(check(Path::Sweep, &build(&[carrier], None, None), class).is_ok());
         assert!(check(Path::Sweep, &build(&[carrier, yec], None, None), class).is_err());
