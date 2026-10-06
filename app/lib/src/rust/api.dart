@@ -7,9 +7,9 @@ import 'frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `connect`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `hex_or_empty`, `history_item`, `locked`, `merge_shielded`, `mint_status_of`, `new`, `open_wallet`, `params_dir_of`, `params_status_of`, `parse_server`, `parse_txid`, `row_status`, `runtime`, `shielded_pair`, `store_err`, `sync_shielded`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `yec_preview_of`, `yellowback_status`
+// These functions are ignored because they are not marked as `pub`: `connect`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `height_time`, `hex_or_empty`, `history_item`, `locked`, `merge_shielded`, `mint_status_of`, `new`, `now_secs`, `open_wallet`, `params_dir_of`, `params_status_of`, `parse_server`, `parse_txid`, `renew_lock_blocks`, `row_status`, `runtime`, `shielded_pair`, `store_err`, `sync_shielded`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `yec_preview_of`, `yellowback_status`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Conn`, `Open`, `Preview`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
 
 /// The core's version.
 String coreVersion() => RustLib.instance.api.crateApiCoreVersion();
@@ -219,6 +219,13 @@ Future<AddressPair> importWif({required String wif, PlatformInt64? birthday}) =>
 /// mirrors the `Failed` event.
 Stream<SyncEvent> syncNow() => RustLib.instance.api.crateApiSyncNow();
 
+/// Whether a mint can be made now (connects; no sync): the Mint screen calls it before the
+/// estimate and blocks the screen with `reason` when it is not `allowed` (hardening H-1:
+/// `mintRequiresArmed` and the price not armed; H-5: an empty `mintableClasses` = no class
+/// mintable, class A only at launch).
+Future<MintAvailability> mintAvailability() =>
+    RustLib.instance.api.crateApiMintAvailability();
+
 /// The mint estimate (after a sync): collateral, fees, payee, heights, term class, attestor
 /// seqs, each checked against the network's rules (audit G-1, G-2). Nothing is signed. An
 /// amount outside `[MIN_MINT, MAX_MINT]` is [`ErrorKind::Input`] (audit G-9).
@@ -283,9 +290,16 @@ Future<List<ClaimableItem>> claimable() =>
 
 /// Start a claim of another wallet's claimable vault (after a sync): the bundle, the carrier
 /// through the gate, a row of kind `claim`. Returns the row; [`mint_finish`] sends the CLAIM
-/// once the carrier is confirmed.
-Future<MintStatus> claim({required String vaultTxid}) =>
-    RustLib.instance.api.crateApiClaim(vaultTxid: vaultTxid);
+/// once the carrier is confirmed. `confirmed` is the debt and the take the Claimable screen
+/// showed: a server answer that would burn more or pay less is refused before anything is
+/// signed (`claim-burn-above-max` / `claim-out-below-min`, H-9.3).
+Future<MintStatus> claim({
+  required String vaultTxid,
+  required ClaimTerms confirmed,
+}) => RustLib.instance.api.crateApiClaim(
+  vaultTxid: vaultTxid,
+  confirmed: confirmed,
+);
 
 /// [`validate_address`].
 class AddressCheck {
@@ -479,6 +493,30 @@ class Balances {
           yecShieldedPendingZat == other.yecShieldedPendingZat &&
           shieldedScannedHeight == other.shieldedScannedHeight &&
           shieldedSendable == other.shieldedSendable;
+}
+
+/// The bounds a claim was confirmed with (H-9.3; `yed_claim`'s `maxBurnCents` / `minOutZat`):
+/// from the [`ClaimableItem`] the user saw. The core refuses before signing when the server's
+/// numbers would burn more or pay less.
+class ClaimTerms {
+  /// `ClaimableItem::cents`.
+  final PlatformInt64 maxBurnCents;
+
+  /// `ClaimableItem::claimant_zat`.
+  final PlatformInt64 minOutZat;
+
+  const ClaimTerms({required this.maxBurnCents, required this.minOutZat});
+
+  @override
+  int get hashCode => maxBurnCents.hashCode ^ minOutZat.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ClaimTerms &&
+          runtimeType == other.runtimeType &&
+          maxBurnCents == other.maxBurnCents &&
+          minOutZat == other.minOutZat;
 }
 
 /// One `ListClaimable` row (the liquidator persona, plan §5.3).
@@ -706,6 +744,10 @@ enum ErrorKind {
   /// Not enough YEC for the fee of a YED operation (§3.7 item 4).
   needYecForFees,
 
+  /// Minting is not possible now (hardening H-1: the price is not armed and the network
+  /// requires it; H-5 / W16 / W20: no term class is mintable). `message` is the reason.
+  mintBlocked,
+
   /// Bad input from the app (mnemonic, address, WIF, amount).
   input,
 
@@ -835,6 +877,71 @@ class HistoryPage {
           rows == other.rows &&
           page == other.page &&
           total == other.total;
+}
+
+/// Whether a mint can be made now (hardening H-1, H-5; the Mint screen's gate): read from
+/// `GetYellowbackInfo.mintRequiresArmed`, `GetPrice.armed` and `GetStats.mintableClasses`,
+/// with the server's parameter set checked against the network's.
+class MintAvailability {
+  /// No reason blocks a mint.
+  final bool allowed;
+
+  /// Why not (empty when `allowed`), the text to show.
+  final String reason;
+
+  /// `MINT_REQUIRES_ARMED`.
+  final bool mintRequiresArmed;
+
+  /// The price is armed at the index tip.
+  final bool armed;
+
+  /// The attestation status at the tip.
+  final String attestStatus;
+
+  /// The term classes a mint can use now (empty = none).
+  final List<String> mintableClasses;
+
+  /// The term classes this network enables (H-5: `A` alone on mainnet and testnet).
+  final List<String> enabledClasses;
+
+  /// The halts in force (`GetStats.haltMask`).
+  final List<String> halts;
+
+  const MintAvailability({
+    required this.allowed,
+    required this.reason,
+    required this.mintRequiresArmed,
+    required this.armed,
+    required this.attestStatus,
+    required this.mintableClasses,
+    required this.enabledClasses,
+    required this.halts,
+  });
+
+  @override
+  int get hashCode =>
+      allowed.hashCode ^
+      reason.hashCode ^
+      mintRequiresArmed.hashCode ^
+      armed.hashCode ^
+      attestStatus.hashCode ^
+      mintableClasses.hashCode ^
+      enabledClasses.hashCode ^
+      halts.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MintAvailability &&
+          runtimeType == other.runtimeType &&
+          allowed == other.allowed &&
+          reason == other.reason &&
+          mintRequiresArmed == other.mintRequiresArmed &&
+          armed == other.armed &&
+          attestStatus == other.attestStatus &&
+          mintableClasses == other.mintableClasses &&
+          enabledClasses == other.enabledClasses &&
+          halts == other.halts;
 }
 
 /// [`mint_estimate`]: what the Mint screen shows before anything is signed (plan §5.3).
@@ -1855,6 +1962,33 @@ class VaultSummary {
   /// `voidReason`, empty unless VOID.
   final String voidReason;
 
+  /// `lockHeight` as a date (H-9.2): Unix seconds, estimated from the last synced height and
+  /// the chain's target spacing (75 s): `now + (lockHeight − tip) · 75`; in the past once
+  /// reached.
+  final PlatformInt64 lockTimeSecs;
+
+  /// `claimHeight` as a date, estimated the same way.
+  final PlatformInt64 claimTimeSecs;
+
+  /// Blocks until `claimHeight` (0 once reached).
+  final PlatformInt64 blocksUntilClaim;
+
+  /// `ACTIVE` and `tip >= lockHeight`: the wallet offers **renew** (redeem, then re-mint the
+  /// same amount and term in one flow) beside redeem (H-9.2).
+  final bool renewable;
+
+  /// The lock to re-mint with on renew: the original mint's `lockBlocks` when this wallet
+  /// made it, else `lockHeight − mintHeight` clamped into the class (a restored wallet).
+  final int renewLockBlocks;
+
+  /// `ACTIVE` and `tip >= claimHeight − 1 day` (the network's day, `Network::day_blocks`):
+  /// the persistent warning that a liquidator may claim the vault once it is underwater
+  /// (H-9.2). No sunset warning (upgrade plan §7: H-9.2 kept, the sunset leg dropped).
+  final bool claimWarning;
+
+  /// `ACTIVE` and `tip >= claimHeight`: the claim path is open.
+  final bool claimOpen;
+
   const VaultSummary({
     required this.vaultTxid,
     required this.status,
@@ -1876,6 +2010,13 @@ class VaultSummary {
     required this.closeHeight,
     required this.closingTxid,
     required this.voidReason,
+    required this.lockTimeSecs,
+    required this.claimTimeSecs,
+    required this.blocksUntilClaim,
+    required this.renewable,
+    required this.renewLockBlocks,
+    required this.claimWarning,
+    required this.claimOpen,
   });
 
   @override
@@ -1899,7 +2040,14 @@ class VaultSummary {
       underwater.hashCode ^
       closeHeight.hashCode ^
       closingTxid.hashCode ^
-      voidReason.hashCode;
+      voidReason.hashCode ^
+      lockTimeSecs.hashCode ^
+      claimTimeSecs.hashCode ^
+      blocksUntilClaim.hashCode ^
+      renewable.hashCode ^
+      renewLockBlocks.hashCode ^
+      claimWarning.hashCode ^
+      claimOpen.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1925,7 +2073,14 @@ class VaultSummary {
           underwater == other.underwater &&
           closeHeight == other.closeHeight &&
           closingTxid == other.closingTxid &&
-          voidReason == other.voidReason;
+          voidReason == other.voidReason &&
+          lockTimeSecs == other.lockTimeSecs &&
+          claimTimeSecs == other.claimTimeSecs &&
+          blocksUntilClaim == other.blocksUntilClaim &&
+          renewable == other.renewable &&
+          renewLockBlocks == other.renewLockBlocks &&
+          claimWarning == other.claimWarning &&
+          claimOpen == other.claimOpen;
 }
 
 /// [`export_wif`].

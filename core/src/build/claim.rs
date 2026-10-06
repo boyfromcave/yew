@@ -23,7 +23,7 @@ use crate::coins::{Utxo, UtxoClass};
 use crate::gate::{self, Validator};
 use crate::keys::{self, unhex};
 use crate::net::{CompactClient, YellowbackClient};
-use crate::params::{CARRIER_VALUE, TOKEN_VALUE};
+use crate::params::{Network, CARRIER_VALUE, TOKEN_VALUE};
 use crate::script;
 use crate::store::{HistoryRow, MintKind, MintRow, MintState};
 use crate::tx::{txid_hex, OutPoint, Transaction, TxIn};
@@ -64,9 +64,16 @@ pub struct Claimable {
 
 /// `claimable` (plan §3.4): `ListClaimable` mapped for the screen. The fee is FEE-1 computed
 /// locally and the attestor fee AFEE-1 (audit G-2): a server quoting another figure is
-/// refused; the payee comes from `GetFeePayee` for the vault's selector at the index tip.
-pub async fn claimable(yb: &mut YellowbackClient) -> Result<Vec<Claimable>, WalletError> {
-    let r = yb.info().await?.height as u32;
+/// refused; the payee comes from `GetFeePayee` for the vault's selector at the index tip. The
+/// residual is RED-5 recomputed from the row's `pClaim` (`terms::check_claimable`, H-9.3),
+/// and the server's parameter set must be the network's (`terms::check_server_params`).
+pub async fn claimable(
+    network: Network,
+    yb: &mut YellowbackClient,
+) -> Result<Vec<Claimable>, WalletError> {
+    let info = yb.info().await?;
+    terms::check_server_params(network, info.params.as_ref())?;
+    let r = info.height as u32;
     let mut out = Vec::new();
     for c in yb.list_claimable().await? {
         let vault_txid = c.vault.split(':').next().unwrap_or("").to_string();
@@ -79,7 +86,8 @@ pub async fn claimable(yb: &mut YellowbackClient) -> Result<Vec<Claimable>, Wall
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
         let selector = bundle::outpoint_selector(&txid, vout);
-        let (fee_zat, payee) = mint::fee_payee(yb, r, c.collateral_zat, &selector).await?;
+        let residual_zat = terms::check_claimable(&c)?;
+        let (fee_zat, payee) = mint::fee_payee(network, yb, r, c.collateral_zat, &selector).await?;
         if !payee.is_empty() && c.fee_zat != fee_zat {
             return Err(MintError::Inconsistent {
                 what: format!(
@@ -92,7 +100,7 @@ pub async fn claimable(yb: &mut YellowbackClient) -> Result<Vec<Claimable>, Wall
         let attest_fee_zat = if c.attest_fee_zat == 0 {
             0
         } else {
-            let local = crate::params::attest_fee_zat_for(fee_zat);
+            let local = crate::params::attest_fee_zat_for(network, fee_zat);
             if c.attest_fee_zat != local {
                 return Err(MintError::Inconsistent {
                     what: format!(
@@ -114,12 +122,13 @@ pub async fn claimable(yb: &mut YellowbackClient) -> Result<Vec<Claimable>, Wall
             p_claim: c.p_claim,
             fee_zat,
             attest_fee_zat,
-            residual_zat: c.residual_zat,
-            claimant_zat: c.collateral_zat
-                - fee_zat
-                - attest_fee_zat
-                - c.residual_zat
-                - crate::params::FEE_ZAT,
+            residual_zat,
+            claimant_zat: terms::claimant_take(
+                c.collateral_zat,
+                fee_zat,
+                attest_fee_zat,
+                residual_zat,
+            ),
             payee,
         });
     }
@@ -128,12 +137,15 @@ pub async fn claimable(yb: &mut YellowbackClient) -> Result<Vec<Claimable>, Wall
 
 /// `claim` (plan §3.4; `BuildClaim`'s preflight and carrier step): start the two-step claim
 /// of `vault_txid`. Returns the `mints` row id; `mint_finish(id)` sends the CLAIM once the
-/// carrier is confirmed.
+/// carrier is confirmed. With `bounds` (what the Claimable screen showed), the debt to burn
+/// and the YEC the claimant takes are checked against them before the carrier is funded, and
+/// again before the CLAIM is signed (`yed_claim`'s `maxBurnCents` / `minOutZat`, H-9.3).
 pub async fn start(
     wallet: &Wallet,
     client: &mut CompactClient,
     validator: &mut Validator,
     vault_txid: &[u8; 32],
+    bounds: Option<&terms::ClaimBounds>,
     tip: u64,
     branch_id: u32,
 ) -> Result<i64, WalletError> {
@@ -141,7 +153,7 @@ pub async fn start(
         .client_mut()
         .ok_or(gate::GateError::YellowbackAbsent)?;
     let txid_str = txid_hex(vault_txid);
-    let entry = claimable(yb)
+    let entry = claimable(wallet.network, yb)
         .await?
         .into_iter()
         .find(|c| c.vault_txid == txid_str)
@@ -190,7 +202,8 @@ pub async fn start(
     let bundle_bytes = unhex(&b.hex).map_err(|e| MintError::Relay(format!("bundle hex: {e}")))?;
     let seqs = mint::verify_bundle(client, yb, &bundle_bytes).await?;
     // FEE-1 locally (audit G-2); the payee must be the one the Claimable screen showed.
-    let (fee_zat, payee) = mint::fee_payee(yb, r, v.collateral_zat, &selector).await?;
+    let (fee_zat, payee) =
+        mint::fee_payee(wallet.network, yb, r, v.collateral_zat, &selector).await?;
     if payee != entry.payee {
         return Err(MintError::TermsChanged {
             what: "fee payee",
@@ -200,7 +213,20 @@ pub async fn start(
         .into());
     }
     let (attest_payee, attest_fee_zat) =
-        mint::attest_payee(client, yb, r, &selector, &seqs, fee_zat).await?;
+        mint::attest_payee(wallet.network, client, yb, r, &selector, &seqs, fee_zat).await?;
+    // H-9.3: the numbers about to be committed against what the user confirmed.
+    if let Some(b) = bounds {
+        terms::check_claim_bounds(
+            b,
+            entry.minted_cents,
+            terms::claimant_take(
+                v.collateral_zat,
+                fee_zat,
+                attest_fee_zat,
+                entry.residual_zat,
+            ),
+        )?;
+    }
     let step =
         mint::carrier_step(wallet, client, validator, &bundle_bytes, r, tip, branch_id).await?;
     let row = MintRow {
@@ -237,7 +263,13 @@ pub async fn start(
         owner_pubkey: owner_pubkey.to_vec(),
         note: format!("clause {}", entry.claim_path),
     };
-    Ok(wallet.store.insert_mint(&row)?)
+    let id = wallet.store.insert_mint(&row)?;
+    if let Some(b) = bounds {
+        wallet
+            .store
+            .set_claim_bounds(id, b.max_burn_cents, b.min_out_zat)?;
+    }
+    Ok(id)
 }
 
 /// The CLAIM over a confirmed carrier (`BuildClaim` → `BuildVaultSpend` with `ClaimExtras`),
@@ -300,6 +332,25 @@ pub async fn finish(
         collateral_script: script::p2pkh_script(&dest.hash160),
     };
     let plan = redeem::plan_vault_spend(&shape)?;
+    // H-9.3: refuse to sign a CLAIM whose debt or take moved past what the user confirmed
+    // (the row holds the checked figures; the burn's own remainder is the wallet's, not the
+    // server's, and is not bounded here).
+    if let Some((max_burn_cents, min_out_zat)) = wallet.store.claim_bounds(m.id)? {
+        let debt = (plan.burn_cents.max(0) as u64).saturating_sub(extra_burn);
+        terms::check_claim_bounds(
+            &terms::ClaimBounds {
+                max_burn_cents,
+                min_out_zat,
+            },
+            debt,
+            terms::claimant_take(
+                m.collateral_zat,
+                m.fee_zat,
+                m.attest_fee_zat,
+                m.residual_zat,
+            ),
+        )?;
+    }
     let mut tx = Transaction::new_v4();
     tx.lock_time = plan.lock_time;
     tx.expiry_height = m.expiry_height;

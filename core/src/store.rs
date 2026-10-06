@@ -363,6 +363,8 @@ CREATE TABLE IF NOT EXISTS vaults (
   mint_height INTEGER NOT NULL, claimable INTEGER NOT NULL, underwater_at INTEGER NOT NULL,
   sweep_before INTEGER NOT NULL, close_height INTEGER NOT NULL, closing_txid TEXT NOT NULL,
   void_reason TEXT NOT NULL, updated_height INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS claim_bounds (
+  mint_id INTEGER PRIMARY KEY, max_burn_cents INTEGER NOT NULL, min_out_zat INTEGER NOT NULL);
 ";
 
 /// The additive v1 → v2 migration (W2).
@@ -1006,6 +1008,33 @@ impl Store {
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// The bounds a claim row was confirmed with (hardening H-9.3; additive table, no schema
+    /// version change: `CREATE TABLE IF NOT EXISTS` on every open).
+    pub fn set_claim_bounds(
+        &self,
+        mint_id: i64,
+        max_burn_cents: u64,
+        min_out_zat: i64,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO claim_bounds (mint_id, max_burn_cents, min_out_zat) VALUES (?1, ?2, ?3)",
+            params![mint_id, max_burn_cents as i64, min_out_zat],
+        )?;
+        Ok(())
+    }
+
+    /// `(max_burn_cents, min_out_zat)` of a claim row, if it was started with bounds.
+    pub fn claim_bounds(&self, mint_id: i64) -> Result<Option<(u64, i64)>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT max_burn_cents, min_out_zat FROM claim_bounds WHERE mint_id = ?1",
+                params![mint_id],
+                |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)?)),
+            )
+            .optional()?)
     }
 
     /// Advance a row: state, the txid the step produced (main or sweep), and a note.

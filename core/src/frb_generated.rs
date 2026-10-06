@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1890070908;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1960907033;
 
 // Section: executor
 
@@ -196,10 +196,11 @@ fn wire__crate__api__claim_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_vault_txid = <String>::sse_decode(&mut deserializer);
+            let api_confirmed = <crate::api::ClaimTerms>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
-                    let output_ok = crate::api::claim(api_vault_txid)?;
+                    let output_ok = crate::api::claim(api_vault_txid, api_confirmed)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -605,6 +606,38 @@ fn wire__crate__api__lock_impl(
                     let output_ok = Ok::<_, ()>({
                         crate::api::lock();
                     })?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__mint_availability_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "mint_availability",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::YewError>((move || {
+                    let output_ok = crate::api::mint_availability()?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -1550,6 +1583,18 @@ impl SseDecode for bool {
     }
 }
 
+impl SseDecode for crate::api::ClaimTerms {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_maxBurnCents = <i64>::sse_decode(deserializer);
+        let mut var_minOutZat = <i64>::sse_decode(deserializer);
+        return crate::api::ClaimTerms {
+            max_burn_cents: var_maxBurnCents,
+            min_out_zat: var_minOutZat,
+        };
+    }
+}
+
 impl SseDecode for crate::api::ClaimableItem {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -1643,11 +1688,12 @@ impl SseDecode for crate::api::ErrorKind {
             5 => crate::api::ErrorKind::YellowbackUnavailable,
             6 => crate::api::ErrorKind::Refused,
             7 => crate::api::ErrorKind::NeedYecForFees,
-            8 => crate::api::ErrorKind::Input,
-            9 => crate::api::ErrorKind::PreviewExpired,
-            10 => crate::api::ErrorKind::ShieldedNotReady,
-            11 => crate::api::ErrorKind::ParamsMissing,
-            12 => crate::api::ErrorKind::Other,
+            8 => crate::api::ErrorKind::MintBlocked,
+            9 => crate::api::ErrorKind::Input,
+            10 => crate::api::ErrorKind::PreviewExpired,
+            11 => crate::api::ErrorKind::ShieldedNotReady,
+            12 => crate::api::ErrorKind::ParamsMissing,
+            13 => crate::api::ErrorKind::Other,
             _ => unreachable!("Invalid variant for ErrorKind: {}", inner),
         };
     }
@@ -1708,6 +1754,18 @@ impl SseDecode for i64 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         deserializer.cursor.read_i64::<NativeEndian>().unwrap()
+    }
+}
+
+impl SseDecode for Vec<String> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<String>::sse_decode(deserializer));
+        }
+        return ans_;
     }
 }
 
@@ -1816,6 +1874,30 @@ impl SseDecode for Vec<crate::api::VaultSummary> {
             ans_.push(<crate::api::VaultSummary>::sse_decode(deserializer));
         }
         return ans_;
+    }
+}
+
+impl SseDecode for crate::api::MintAvailability {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_allowed = <bool>::sse_decode(deserializer);
+        let mut var_reason = <String>::sse_decode(deserializer);
+        let mut var_mintRequiresArmed = <bool>::sse_decode(deserializer);
+        let mut var_armed = <bool>::sse_decode(deserializer);
+        let mut var_attestStatus = <String>::sse_decode(deserializer);
+        let mut var_mintableClasses = <Vec<String>>::sse_decode(deserializer);
+        let mut var_enabledClasses = <Vec<String>>::sse_decode(deserializer);
+        let mut var_halts = <Vec<String>>::sse_decode(deserializer);
+        return crate::api::MintAvailability {
+            allowed: var_allowed,
+            reason: var_reason,
+            mint_requires_armed: var_mintRequiresArmed,
+            armed: var_armed,
+            attest_status: var_attestStatus,
+            mintable_classes: var_mintableClasses,
+            enabled_classes: var_enabledClasses,
+            halts: var_halts,
+        };
     }
 }
 
@@ -2274,6 +2356,13 @@ impl SseDecode for crate::api::VaultSummary {
         let mut var_closeHeight = <i64>::sse_decode(deserializer);
         let mut var_closingTxid = <String>::sse_decode(deserializer);
         let mut var_voidReason = <String>::sse_decode(deserializer);
+        let mut var_lockTimeSecs = <i64>::sse_decode(deserializer);
+        let mut var_claimTimeSecs = <i64>::sse_decode(deserializer);
+        let mut var_blocksUntilClaim = <i64>::sse_decode(deserializer);
+        let mut var_renewable = <bool>::sse_decode(deserializer);
+        let mut var_renewLockBlocks = <u32>::sse_decode(deserializer);
+        let mut var_claimWarning = <bool>::sse_decode(deserializer);
+        let mut var_claimOpen = <bool>::sse_decode(deserializer);
         return crate::api::VaultSummary {
             vault_txid: var_vaultTxid,
             status: var_status,
@@ -2295,6 +2384,13 @@ impl SseDecode for crate::api::VaultSummary {
             close_height: var_closeHeight,
             closing_txid: var_closingTxid,
             void_reason: var_voidReason,
+            lock_time_secs: var_lockTimeSecs,
+            claim_time_secs: var_claimTimeSecs,
+            blocks_until_claim: var_blocksUntilClaim,
+            renewable: var_renewable,
+            renew_lock_blocks: var_renewLockBlocks,
+            claim_warning: var_claimWarning,
+            claim_open: var_claimOpen,
         };
     }
 }
@@ -2452,29 +2548,30 @@ fn pde_ffi_dispatcher_primary_impl(
         14 => wire__crate__api__import_wif_impl(port, ptr, rust_vec_len, data_len),
         15 => wire__crate__api__init_app_impl(port, ptr, rust_vec_len, data_len),
         17 => wire__crate__api__lock_impl(port, ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__mint_estimate_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__mint_finish_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__mint_start_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__mint_status_impl(port, ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__mint_sweep_impl(port, ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__mints_impl(port, ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__move_confirm_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__move_preview_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__new_shielded_address_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__params_status_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__probe_server_impl(port, ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__receive_address_impl(port, ptr, rust_vec_len, data_len),
-        30 => wire__crate__api__redeem_confirm_impl(port, ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__redeem_preview_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__send_yec_confirm_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__send_yec_preview_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__send_yed_confirm_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__send_yed_preview_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__api__set_server_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__api__status_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__crate__api__sync_now_impl(port, ptr, rust_vec_len, data_len),
-        39 => wire__crate__api__unlock_impl(port, ptr, rust_vec_len, data_len),
-        41 => wire__crate__api__vaults_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__mint_availability_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__mint_estimate_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__mint_finish_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__mint_start_impl(port, ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__mint_status_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__mint_sweep_impl(port, ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__mints_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__move_confirm_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__move_preview_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__new_shielded_address_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__params_status_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__probe_server_impl(port, ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__receive_address_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__redeem_confirm_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__redeem_preview_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__send_yec_confirm_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__send_yec_preview_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__send_yed_confirm_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__send_yed_preview_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__set_server_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__api__status_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__sync_now_impl(port, ptr, rust_vec_len, data_len),
+        40 => wire__crate__api__unlock_impl(port, ptr, rust_vec_len, data_len),
+        42 => wire__crate__api__vaults_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2492,7 +2589,7 @@ fn pde_ffi_dispatcher_sync_impl(
         9 => wire__crate__api__default_servers_impl(ptr, rust_vec_len, data_len),
         12 => wire__crate__api__generate_seed_words_impl(ptr, rust_vec_len, data_len),
         16 => wire__crate__api__is_unlocked_impl(ptr, rust_vec_len, data_len),
-        40 => wire__crate__api__validate_address_impl(ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__validate_address_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2562,6 +2659,22 @@ impl flutter_rust_bridge::IntoDart for crate::api::Balances {
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::Balances {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::Balances> for crate::api::Balances {
     fn into_into_dart(self) -> crate::api::Balances {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::ClaimTerms {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.max_burn_cents.into_into_dart().into_dart(),
+            self.min_out_zat.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::ClaimTerms {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::ClaimTerms> for crate::api::ClaimTerms {
+    fn into_into_dart(self) -> crate::api::ClaimTerms {
         self
     }
 }
@@ -2659,11 +2772,12 @@ impl flutter_rust_bridge::IntoDart for crate::api::ErrorKind {
             Self::YellowbackUnavailable => 5.into_dart(),
             Self::Refused => 6.into_dart(),
             Self::NeedYecForFees => 7.into_dart(),
-            Self::Input => 8.into_dart(),
-            Self::PreviewExpired => 9.into_dart(),
-            Self::ShieldedNotReady => 10.into_dart(),
-            Self::ParamsMissing => 11.into_dart(),
-            Self::Other => 12.into_dart(),
+            Self::MintBlocked => 8.into_dart(),
+            Self::Input => 9.into_dart(),
+            Self::PreviewExpired => 10.into_dart(),
+            Self::ShieldedNotReady => 11.into_dart(),
+            Self::ParamsMissing => 12.into_dart(),
+            Self::Other => 13.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -2713,6 +2827,30 @@ impl flutter_rust_bridge::IntoDart for crate::api::HistoryPage {
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::HistoryPage {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::HistoryPage> for crate::api::HistoryPage {
     fn into_into_dart(self) -> crate::api::HistoryPage {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::MintAvailability {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.allowed.into_into_dart().into_dart(),
+            self.reason.into_into_dart().into_dart(),
+            self.mint_requires_armed.into_into_dart().into_dart(),
+            self.armed.into_into_dart().into_dart(),
+            self.attest_status.into_into_dart().into_dart(),
+            self.mintable_classes.into_into_dart().into_dart(),
+            self.enabled_classes.into_into_dart().into_dart(),
+            self.halts.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::MintAvailability {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::MintAvailability>
+    for crate::api::MintAvailability
+{
+    fn into_into_dart(self) -> crate::api::MintAvailability {
         self
     }
 }
@@ -3099,6 +3237,13 @@ impl flutter_rust_bridge::IntoDart for crate::api::VaultSummary {
             self.close_height.into_into_dart().into_dart(),
             self.closing_txid.into_into_dart().into_dart(),
             self.void_reason.into_into_dart().into_dart(),
+            self.lock_time_secs.into_into_dart().into_dart(),
+            self.claim_time_secs.into_into_dart().into_dart(),
+            self.blocks_until_claim.into_into_dart().into_dart(),
+            self.renewable.into_into_dart().into_dart(),
+            self.renew_lock_blocks.into_into_dart().into_dart(),
+            self.claim_warning.into_into_dart().into_dart(),
+            self.claim_open.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -3317,6 +3462,14 @@ impl SseEncode for bool {
     }
 }
 
+impl SseEncode for crate::api::ClaimTerms {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i64>::sse_encode(self.max_burn_cents, serializer);
+        <i64>::sse_encode(self.min_out_zat, serializer);
+    }
+}
+
 impl SseEncode for crate::api::ClaimableItem {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -3378,11 +3531,12 @@ impl SseEncode for crate::api::ErrorKind {
                 crate::api::ErrorKind::YellowbackUnavailable => 5,
                 crate::api::ErrorKind::Refused => 6,
                 crate::api::ErrorKind::NeedYecForFees => 7,
-                crate::api::ErrorKind::Input => 8,
-                crate::api::ErrorKind::PreviewExpired => 9,
-                crate::api::ErrorKind::ShieldedNotReady => 10,
-                crate::api::ErrorKind::ParamsMissing => 11,
-                crate::api::ErrorKind::Other => 12,
+                crate::api::ErrorKind::MintBlocked => 8,
+                crate::api::ErrorKind::Input => 9,
+                crate::api::ErrorKind::PreviewExpired => 10,
+                crate::api::ErrorKind::ShieldedNotReady => 11,
+                crate::api::ErrorKind::ParamsMissing => 12,
+                crate::api::ErrorKind::Other => 13,
                 _ => {
                     unimplemented!("");
                 }
@@ -3429,6 +3583,16 @@ impl SseEncode for i64 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         serializer.cursor.write_i64::<NativeEndian>(self).unwrap();
+    }
+}
+
+impl SseEncode for Vec<String> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <String>::sse_encode(item, serializer);
+        }
     }
 }
 
@@ -3519,6 +3683,20 @@ impl SseEncode for Vec<crate::api::VaultSummary> {
         for item in self {
             <crate::api::VaultSummary>::sse_encode(item, serializer);
         }
+    }
+}
+
+impl SseEncode for crate::api::MintAvailability {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.allowed, serializer);
+        <String>::sse_encode(self.reason, serializer);
+        <bool>::sse_encode(self.mint_requires_armed, serializer);
+        <bool>::sse_encode(self.armed, serializer);
+        <String>::sse_encode(self.attest_status, serializer);
+        <Vec<String>>::sse_encode(self.mintable_classes, serializer);
+        <Vec<String>>::sse_encode(self.enabled_classes, serializer);
+        <Vec<String>>::sse_encode(self.halts, serializer);
     }
 }
 
@@ -3847,6 +4025,13 @@ impl SseEncode for crate::api::VaultSummary {
         <i64>::sse_encode(self.close_height, serializer);
         <String>::sse_encode(self.closing_txid, serializer);
         <String>::sse_encode(self.void_reason, serializer);
+        <i64>::sse_encode(self.lock_time_secs, serializer);
+        <i64>::sse_encode(self.claim_time_secs, serializer);
+        <i64>::sse_encode(self.blocks_until_claim, serializer);
+        <bool>::sse_encode(self.renewable, serializer);
+        <u32>::sse_encode(self.renew_lock_blocks, serializer);
+        <bool>::sse_encode(self.claim_warning, serializer);
+        <bool>::sse_encode(self.claim_open, serializer);
     }
 }
 

@@ -48,10 +48,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool dco_decode_bool(dynamic raw);
 
   @protected
+  ClaimTerms dco_decode_box_autoadd_claim_terms(dynamic raw);
+
+  @protected
   PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
 
   @protected
   MintTerms dco_decode_box_autoadd_mint_terms(dynamic raw);
+
+  @protected
+  ClaimTerms dco_decode_claim_terms(dynamic raw);
 
   @protected
   ClaimableItem dco_decode_claimable_item(dynamic raw);
@@ -81,6 +87,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 dco_decode_i_64(dynamic raw);
 
   @protected
+  List<String> dco_decode_list_String(dynamic raw);
+
+  @protected
   List<AddressPair> dco_decode_list_address_pair(dynamic raw);
 
   @protected
@@ -106,6 +115,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<VaultSummary> dco_decode_list_vault_summary(dynamic raw);
+
+  @protected
+  MintAvailability dco_decode_mint_availability(dynamic raw);
 
   @protected
   MintEstimate dco_decode_mint_estimate(dynamic raw);
@@ -220,10 +232,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
+  ClaimTerms sse_decode_box_autoadd_claim_terms(SseDeserializer deserializer);
+
+  @protected
   PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
   MintTerms sse_decode_box_autoadd_mint_terms(SseDeserializer deserializer);
+
+  @protected
+  ClaimTerms sse_decode_claim_terms(SseDeserializer deserializer);
 
   @protected
   ClaimableItem sse_decode_claimable_item(SseDeserializer deserializer);
@@ -251,6 +269,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PlatformInt64 sse_decode_i_64(SseDeserializer deserializer);
+
+  @protected
+  List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
   List<AddressPair> sse_decode_list_address_pair(SseDeserializer deserializer);
@@ -284,6 +305,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<VaultSummary> sse_decode_list_vault_summary(
     SseDeserializer deserializer,
   );
+
+  @protected
+  MintAvailability sse_decode_mint_availability(SseDeserializer deserializer);
 
   @protected
   MintEstimate sse_decode_mint_estimate(SseDeserializer deserializer);
@@ -403,6 +427,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_bool(bool self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_claim_terms(
+    ClaimTerms self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_i_64(
     PlatformInt64 self,
     SseSerializer serializer,
@@ -413,6 +443,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     MintTerms self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_claim_terms(ClaimTerms self, SseSerializer serializer);
 
   @protected
   void sse_encode_claimable_item(ClaimableItem self, SseSerializer serializer);
@@ -443,6 +476,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_String(List<String> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_address_pair(
@@ -495,6 +531,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_vault_summary(
     List<VaultSummary> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_mint_availability(
+    MintAvailability self,
     SseSerializer serializer,
   );
 
