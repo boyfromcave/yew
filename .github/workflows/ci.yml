@@ -145,6 +145,10 @@ jobs:
       - run: scripts/check-trust-text.sh
       - name: Rust toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain
+      # The bridge regeneration builds the core crate, whose x402-ycash-light dependency compiles
+      # its protos in build.rs (as core-macos does).
+      - name: Install protoc
+        run: brew install protobuf && protoc --version
       # The codegen at the crate's exact version, cached by exact key (no restore-keys): a hit
       # skips a ~6 min source build.
       - name: cache flutter_rust_bridge_codegen
