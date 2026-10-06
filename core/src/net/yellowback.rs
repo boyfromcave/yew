@@ -26,7 +26,7 @@ use crate::tx::{txid_from_hex, OutPoint};
 
 /// The node `rpcversion` this build implements (`ycash-dd/doc/yellowback-rpc-contract.json`;
 /// lightwalletd plan §3.4: "a client refuses an `rpcversion` it does not know").
-pub const KNOWN_RPCVERSION: i64 = 3;
+pub const KNOWN_RPCVERSION: i64 = 4;
 
 /// The activation status string that means "active" (`YellowbackActivationState.status`).
 pub const STATUS_ACTIVE: &str = "active";

@@ -6,7 +6,7 @@
 // CompactTxStreamer (service.proto, which is not edited). Every method is a thin proxy of a
 // read-only yed_* RPC on the node this server already talks to; the server adds no rule and
 // holds no Yellowback state. Field names are the JSON names of the node's RPC contract
-// (ycash-dd/doc/yellowback-rpc-contract.json, rpcversion 3) so the contract's example values
+// (ycash-dd/doc/yellowback-rpc-contract.json, rpcversion 4) so the contract's example values
 // are the test fixtures and the JSON result unmarshals straight into these messages; a message
 // may carry a subset of a result's fields (unknown JSON fields are ignored), never a renamed one.
 // Plan: docs/plans/yellowback-lightwalletd-plan.md section 4.1.
@@ -65,6 +65,7 @@ message YellowbackInfo {
   YellowbackParams params = 11; int64 rpcversion = 12; int64 startHeight = 13; bool sunset = 14;
   string unhealthyReason = 15; bool valveTripped = 16; bool protectedByIndex = 17; bool rebuilt = 18;
   string serverVersion = 19;                                          // this server's, not the node's
+  bool mintRequiresArmed = 20;                                        // rpcversion 4 (hardening H-1): a mint needs the price ARMED
 }
 
 // ---- yed_getprice, yed_getstats, yed_getactivation ------------------------------------------

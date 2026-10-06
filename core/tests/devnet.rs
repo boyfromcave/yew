@@ -505,13 +505,15 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
     let mut c = CompactClient::from_channel(channel.clone());
     let info = c.lightd_info_for(Network::Regtest).await.unwrap();
 
-    // Contract rule 1: the service is there, rpcversion 3, enabled and active.
+    // Contract rule 1: the service is there, rpcversion 4 (hardening H3-c), enabled and active.
     let (mut v, availability) = Validator::detect(YellowbackClient::from_channel(channel))
         .await
         .expect("probe");
     assert!(availability.usable(), "{availability:?}");
     match &availability {
-        Availability::Present { info, .. } => assert_eq!(info.rpcversion, 3),
+        Availability::Present { info, .. } => {
+            assert_eq!(info.rpcversion, yew_core::net::yellowback::KNOWN_RPCVERSION)
+        }
         Availability::Absent => panic!("the W2 devnet's lightwalletd must run --yellowback"),
     }
     // Warm the price windows: pool blocks with fresh quotes until pMint is defined at the tip
