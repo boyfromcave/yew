@@ -796,23 +796,40 @@ pub async fn refresh_intents(
             }
         }
         if row.state == IntentState::Pending && row.height > 0 {
-            if live.is_none() {
-                let mut s = HashSet::new();
-                for o in yb.list_vault_outputs("", &set_hex, "", "intent").await? {
-                    if let Ok(t) = txid_from_hex(&o.txid) {
-                        s.insert(OutPoint { txid: t, n: o.vout });
-                    }
+            // GetVault is a light call: while the vault is CLAIMING its live intents are listed.
+            // Only an intent it no longer lists needs the (heavy) template-output scan.
+            let (status, listed) = match yb.vault(&txid_hex(&row.vault_txid)).await {
+                Ok(v) => {
+                    let listed = v.intents.iter().any(|x| {
+                        x.vout == row.outpoint.n
+                            && txid_from_hex(&x.txid).ok() == Some(row.outpoint.txid)
+                    });
+                    (v.status, listed)
                 }
-                live = Some(s);
-            }
-            if !live.as_ref().is_some_and(|s| s.contains(&row.outpoint)) {
-                let status = match yb.vault(&txid_hex(&row.vault_txid)).await {
-                    Ok(v) => v.status,
-                    Err(NetError::Node { identifier, .. }) if identifier == "vault-not-found" => {
-                        String::new()
+                Err(NetError::Node { identifier, .. }) if identifier == "vault-not-found" => {
+                    (String::new(), false)
+                }
+                Err(e) => return Err(e.into()),
+            };
+            let alive = if listed {
+                true
+            } else if row.role == crate::build::claim::ROLE_RESIDUAL {
+                // A residual outlives its vault's CLAIMING state (and a cancel of the claimant
+                // intent, which re-keys the vault): ask the template-output index.
+                if live.is_none() {
+                    let mut s = HashSet::new();
+                    for o in yb.list_vault_outputs("", &set_hex, "", "intent").await? {
+                        if let Ok(t) = txid_from_hex(&o.txid) {
+                            s.insert(OutPoint { txid: t, n: o.vout });
+                        }
                     }
-                    Err(e) => return Err(e.into()),
-                };
+                    live = Some(s);
+                }
+                live.as_ref().is_some_and(|s| s.contains(&row.outpoint))
+            } else {
+                false
+            };
+            if !alive {
                 if row.role == crate::build::claim::ROLE_RESIDUAL || status == "CLAIMED" {
                     row.state = IntentState::Released;
                     row.note =

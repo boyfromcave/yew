@@ -54,6 +54,14 @@ fn workspace() -> PathBuf {
         .unwrap()
 }
 
+/// The node that funds the test wallets (`YEW_DEVNET_FUND_NODE`, default pool node 2).
+fn fund_node() -> usize {
+    std::env::var("YEW_DEVNET_FUND_NODE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2)
+}
+
 fn env_or(k: &str, d: String) -> String {
     std::env::var(k).unwrap_or(d)
 }
@@ -975,12 +983,15 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     //    block; role plan F-3), then sync. The YEC comes from pool node 2 (mature coinbase):
     //    node 0's YEC is what the W2 acceptance and its own mints left, a few YEC.
     let addr = a.receive_address(true).unwrap();
+    // YEW_DEVNET_FUND_NODE (default 2): a fresh vault-upgrade devnet's pools hold few mature
+    // coinbases; node 0 (funded by `up`) can fund instead.
+    let fund = fund_node();
     for amount in ["15", "10", "8", "5"] {
-        let t = dn.node(2, &["sendtoaddress", &addr.address_s, amount]);
+        let t = dn.node(fund, &["sendtoaddress", &addr.address_s, amount]);
         assert_eq!(t.len(), 64, "{t}");
     }
     let addr2 = a.receive_address(true).unwrap();
-    let t = dn.node(2, &["sendtoaddress", &addr2.address_s, "2"]);
+    let t = dn.node(fund, &["sendtoaddress", &addr2.address_s, "2"]);
     confirm(&dn, &mut c, &t).await;
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     assert_eq!(r.yec.0 + r.yec.1, 40 * 100_000_000, "{r:?}");
@@ -1224,7 +1235,8 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
 
     // 5. Redeem vault 1 after lockHeight (mine up to it on the pools).
     let mut r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
-    while r.tip < v1.lock_height as u64 {
+    // One block past lockHeight: the relay's index may trail the chain tip by a block.
+    while r.tip <= v1.lock_height as u64 {
         let h = dn.mine_pool();
         wait_for_height(&mut c, h).await;
         r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
@@ -1312,6 +1324,30 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     let target_collateral = target["collateralZat"].as_i64().unwrap();
     let target_claim_height = target["claimHeight"].as_u64().unwrap();
     println!("claim target: {target_txid} ${:.2} collateral {target_collateral} claimHeight {target_claim_height}", target_cents as f64 / 100.0);
+    // A fresh vault-upgrade devnet: node 0 holds only what its own mint left (less W2's 5,000
+    // cents): top it up with a second mint (two-step without waiting; its wallet completes it on
+    // the next blocks) so it can fund A with the target's whole debt.
+    let have = dn.node_json(0, &["yed_getbalance"])["confirmedCents"]
+        .as_u64()
+        .unwrap();
+    if have < target_cents {
+        let top = (target_cents - have).max(10_000).to_string();
+        let m = dn.node_json(0, &["yed_mint", &top, "48", "", "", "false"]);
+        println!("node 0 top-up mint of {top} cents: {m}");
+        let start = Instant::now();
+        while dn.node_json(0, &["yed_getbalance"])["confirmedCents"]
+            .as_u64()
+            .unwrap()
+            < target_cents
+        {
+            assert!(
+                start.elapsed() < Duration::from_secs(300),
+                "the top-up mint never confirmed"
+            );
+            let h = dn.mine_pool();
+            wait_for_height(&mut c, h).await;
+        }
+    }
     let a_addr = a.receive_address(true).unwrap();
     let fund_yed = dn.node_json(
         0,
@@ -1335,6 +1371,9 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
         );
         let h = dn.mine_pool();
         wait_for_height(&mut c, h).await;
+        // Pace the loop under the server's per-peer rate limit (a sync of a wallet with vaults
+        // and claim intents makes several whole-token calls; lightwalletd refills one per second).
+        tokio::time::sleep(Duration::from_secs(3)).await;
         r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
         claimable = a.claimable(&mut v).await.unwrap();
         if r.tip % 10 == 0 {
@@ -1447,13 +1486,20 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
         }
     );
     assert!(script::parse_carrier_script_sig(&ctx.vin[ctx.vin.len() - 1].script_sig).is_some());
+    // The vault upgrade (U-23): vin[0] is the V spent with OP_4; vout[0] the claimant intent
+    // paying A, of the collateral less the residual.
+    assert_eq!(ctx.vin[0].script_sig, vec![0x54]);
+    let ip =
+        yew_core::vault::parse_intent(&ctx.vout[0].script_pubkey).expect("vout[0] is an intent");
+    assert_eq!(ip.tag, yew_core::vault::YED_TAG);
+    assert_eq!(ctx.vout[0].value, target_collateral - entry.residual_zat);
     confirm(&dn, &mut c, &fc.txid).await;
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     assert_eq!(mint_state(&a, idc), MintState::Done);
     let node_vault = dn.node_json(0, &["yed_getvault", &target_txid]);
     assert_eq!(
         node_vault["status"].as_str().unwrap(),
-        "CLAIMED",
+        "CLAIMING",
         "{node_vault}"
     );
     assert_eq!(node_vault["closingTxid"].as_str().unwrap(), fc.txid);
@@ -1466,6 +1512,97 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
         r.yed.0 < yed_before,
         "the debt was burned: {yed_before} -> {}",
         r.yed.0
+    );
+    // The claimant intent is pending release; a release before CLAIM_DELAY is refused locally.
+    let intent_op = OutPoint {
+        txid: txid_from_hex(&fc.txid).unwrap(),
+        n: 0,
+    };
+    let row_i = a
+        .store
+        .intent(&intent_op)
+        .unwrap()
+        .expect("the claimant intent row");
+    assert_eq!(
+        (row_i.state, row_i.role.as_str(), row_i.value, row_i.height),
+        (
+            yew_core::store::IntentState::Pending,
+            "claimant",
+            target_collateral - entry.residual_zat,
+            r.tip
+        ),
+        "{row_i:?}"
+    );
+    assert!(a.release_preview(&intent_op, r.tip, r.branch_id).is_err());
+    let mut r = r;
+    while yew_core::build::release::not_releasable(
+        &a.store.intent(&intent_op).unwrap().unwrap(),
+        r.tip,
+    )
+    .is_some()
+    {
+        let h = dn.mine_pool();
+        wait_for_height(&mut c, h).await;
+        tokio::time::sleep(Duration::from_secs(3)).await; // the server's rate limit
+
+        r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    }
+    let rp = a.release_preview(&intent_op, r.tip, r.branch_id).unwrap();
+    let (rtx, _) = Transaction::parse(&rp.raw).unwrap();
+    assert_eq!(
+        (rtx.vin[0].script_sig.clone(), rtx.vin[0].sequence as i64),
+        (vec![0x51], row_i.delay)
+    );
+    let release_hex = keys::hex(&rp.raw);
+    println!("release preview {}: {release_hex}", txid_hex(&rp.txid));
+    // Node defect (found here, both node lines): yed_validaterawtransaction verifies scripts with
+    // STANDARD_SCRIPT_VERIFY_FLAGS only (src/yellowback/policy.cpp VerifyAllInputs), without the
+    // vault flags of tip+1 and without the set checker, so the intent's OP_CHECKSEQUENCEVERIFY is
+    // an upgradable NOP there and every RELEASE answers valid:false. The gate refuses it (no
+    // override). YEW_DEVNET_RELEASE_VIA_NODE=1 records the refusal and then sends YEW's exact
+    // bytes with sendrawtransaction, to show they are consensus-valid and to drive the sync side.
+    let rel = match a.release_confirm(&mut c, &mut v, &rp).await {
+        Ok((rel, rv)) => {
+            println!(
+                "release {rel}: verdict {} type {:?}",
+                rv.verdict, rv.tx_type
+            );
+            assert_eq!(rv.verdict, "ok");
+            rel
+        }
+        Err(e) if std::env::var("YEW_DEVNET_RELEASE_VIA_NODE").as_deref() == Ok("1") => {
+            println!("RELEASE GATE REFUSED (node defect, see above): {e}");
+            println!(
+                "node yed_validaterawtransaction: {}",
+                dn.node_try(0, &["yed_validaterawtransaction", &release_hex])
+            );
+            let sent = dn.node(0, &["sendrawtransaction", &release_hex]);
+            assert_eq!(
+                sent,
+                txid_hex(&rp.txid),
+                "the node accepted YEW's release bytes"
+            );
+            println!("RELEASE SENT VIA NODE: {sent}");
+            sent
+        }
+        Err(e) => panic!("release refused: {e}"),
+    };
+    confirm(&dn, &mut c, &rel).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(
+        a.store.intent(&intent_op).unwrap().unwrap().state,
+        yew_core::store::IntentState::Released
+    );
+    let node_vault = dn.node_json(0, &["yed_getvault", &target_txid]);
+    assert_eq!(
+        node_vault["status"].as_str().unwrap(),
+        "CLAIMED",
+        "{node_vault}"
+    );
+    let ti = v.client_mut().unwrap().tx_info(&rel).await.unwrap();
+    assert_eq!(
+        (ti.r#type.as_str(), ti.verdict.as_str()),
+        ("claim_release", "ok")
     );
     assert!(
         r.yec.0 + r.yec.1 > yec_before + target_collateral / 2,
