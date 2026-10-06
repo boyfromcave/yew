@@ -382,6 +382,24 @@ impl YellowbackClient {
         collect(&mut stream, "vault outputs", limits::MAX_VAULTS).await
     }
 
+    /// `GetChainInfo` once (it is rate-limited with this service, finding 52): the server's
+    /// height, the next block's branch id and the vault upgrade's activation height
+    /// ([`vault_activation`]). `None` from an older server.
+    pub async fn chain_info_vault(&mut self) -> Result<Option<(u64, u32, Option<u64>)>, NetError> {
+        let Some(c) = self.chain_info_full().await? else {
+            return Ok(None);
+        };
+        let id = u32::from_str_radix(c.next_block_branch_id.trim_start_matches("0x"), 16).map_err(
+            |_| {
+                NetError::Mismatch(format!(
+                    "bad nextBlockBranchId {:?}",
+                    c.next_block_branch_id
+                ))
+            },
+        )?;
+        Ok(Some((c.block_height, id, vault_activation(&c))))
+    }
+
     /// `GetChainInfo`'s full answer (the upgrades list included), `None` from an older server.
     pub async fn chain_info_full(&mut self) -> Result<Option<rpc::YedChainInfo>, NetError> {
         match self.inner.get_chain_info(rpc::Empty {}).await {
@@ -562,9 +580,38 @@ impl YellowbackClient {
     }
 }
 
+/// The vault upgrade's activation height in a `GetChainInfo` answer (`upgrades`, branch
+/// `6d5b7a31`), `None` when it is absent or unscheduled (height 0).
+pub fn vault_activation(ci: &rpc::YedChainInfo) -> Option<u64> {
+    ci.upgrades
+        .iter()
+        .find(|u| {
+            u32::from_str_radix(u.branch_id.trim_start_matches("0x"), 16)
+                .is_ok_and(|b| b == crate::params::VAULT_BRANCH_ID)
+        })
+        .filter(|u| u.activation_height > 0)
+        .map(|u| u.activation_height as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vault_activation_reads_the_upgrades_list() {
+        let up = |b: &str, h: i64| rpc::YedUpgrade {
+            branch_id: b.into(),
+            name: String::new(),
+            activation_height: h,
+            status: String::new(),
+        };
+        let mut ci = rpc::YedChainInfo::default();
+        assert_eq!(vault_activation(&ci), None);
+        ci.upgrades = vec![up("19bd2d2f", 1), up("6d5b7a31", 0)];
+        assert_eq!(vault_activation(&ci), None, "unscheduled");
+        ci.upgrades = vec![up("19bd2d2f", 1), up("0x6d5b7a31", 230)];
+        assert_eq!(vault_activation(&ci), Some(230));
+    }
 
     #[test]
     fn status_mapping_splits_the_node_identifier() {

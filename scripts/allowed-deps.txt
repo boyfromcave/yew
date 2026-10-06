@@ -19,19 +19,18 @@ flutter_rust_bridge
 # Audit G-4 (2026-10-01): the Mozilla root bundle, needed on iOS where rustls-native-certs has no backend.
 webpki-roots
 # yew-shielded plan S0-1 (2026-10-04): Ycash Sapling key derivation (core/src/shielded_keys.rs).
-# `zcash_keys` is a path dependency on boyfromcave/librustzcash6 (miodragpop/librustzcash @ ec525fae,
-# what ycashd 6.21.0 pins); release builds switch it to a git rev. `sapling-crypto` and `zip32` are the
+# `zcash_keys` is a git dependency on boyfromcave/librustzcash6 at 4867cf85 (miodragpop/librustzcash
+# @ ec525fae, what ycashd 6.21.0 pins, plus the vault upgrade's BranchId::Vault; upgrade/vault). `sapling-crypto` and `zip32` are the
 # key-type crates at the versions librustzcash6 locks. The crate names are upstream's; the use is Ycash only.
 zcash_keys
 sapling-crypto
 zip32
 # yew-shielded plan S2 (2026-10-04): the Ycash Sapling light client, library `x402_ycash_light` of
-# boyfromcave/x402-ycash (`light/`), by path from the workspace checkout; a release switches it to a
-# git rev of that repository. It brings librustzcash6's zcash_client_backend/zcash_client_sqlite/
+# boyfromcave/x402-ycash (`light/`), by git rev of its upgrade/vault branch (core/Cargo.toml). It brings librustzcash6's zcash_client_backend/zcash_client_sqlite/
 # zcash_proofs transitively (sync, note store, prover), the versions x402-ycash/light locks.
 x402-ycash-light
 # yew-shielded plan S2 (2026-10-04): the shielded spend path, memos and balances beside the light client
-# (core/src/shielded.rs), on the same zcash_client_sqlite database; all librustzcash6 by path at the light
+# (core/src/shielded.rs), on the same zcash_client_sqlite database; all librustzcash6 at the same git rev and the light
 # library's locked versions (no new crate in Cargo.lock). `rand` 0.8 is WalletDb's RNG type parameter.
 zcash_client_backend
 zcash_client_sqlite

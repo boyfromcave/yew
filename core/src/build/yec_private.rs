@@ -172,17 +172,29 @@ pub async fn confirm_yec_send(
         }),
         Funding::Shielded(p) => {
             // The next block's branch id (GetChainInfo), else the chaintip's (older server).
+            // The same answer carries the vault upgrade's activation height (regtest), taken
+            // before the check so a send across the activation signs the Vault branch.
             let chain = match validator.client_mut() {
-                Some(yb) => yb.chain_info().await?,
+                Some(yb) => yb.chain_info_vault().await?,
                 None => None,
             };
             let network = wallet.network;
+            if let Some((_, _, vault)) = chain {
+                wallet.set_vault_activation(vault)?;
+            }
             let sh = wallet.shielded_mut()?;
             match chain {
-                Some((height, id)) => sh.check_branch(height, id, true)?,
+                Some((height, id, _)) => {
+                    sh.check_branch_at(height, id, true, Some(p.target_height))?
+                }
                 None => {
                     let info = client.lightd_info_for(network).await?;
-                    sh.check_branch(info.block_height, info.branch_id, false)?
+                    sh.check_branch_at(
+                        info.block_height,
+                        info.branch_id,
+                        false,
+                        Some(p.target_height),
+                    )?
                 }
             }
             let built = sh.build(p, params_dir)?;
@@ -219,6 +231,10 @@ pub async fn sync_shielded(
     let birthday = wallet.birthday()?;
     let new_seed = wallet.store.meta("new_seed")?.as_deref() == Some("1");
     let lwd = shielded::light_endpoint(&server.host, server.port, server.plain);
+    // The vault activation height the transparent sync recorded (the light library checks the
+    // server's chaintip branch against these parameters before it scans).
+    let vault = wallet.vault_activation()?;
+    wallet.set_vault_activation(vault)?;
     let sh = wallet.shielded_mut()?;
     let birthday = if birthday == 0 && new_seed {
         None

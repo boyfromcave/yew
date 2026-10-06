@@ -151,10 +151,32 @@ impl Wallet {
                 })?;
                 let dir = crate::shielded::shielded_dir(std::path::Path::new(path));
                 w.shielded = Some(Shielded::open(&dir, network, account)?);
+                // The vault activation height the last sync recorded (regtest: the server's).
+                let vault = w.vault_activation()?;
+                w.set_vault_activation(vault)?;
                 Ok(w)
             });
         keys::wipe(&mut seed);
         w
+    }
+
+    /// The vault upgrade's activation height recorded by the last sync (`GetChainInfo`; regtest
+    /// only takes it, see [`crate::params::signing_branch_id`]), `None` when the server reported
+    /// none.
+    pub fn vault_activation(&self) -> Result<Option<u64>, WalletError> {
+        Ok(Some(self.store.meta_u64("vault_activation_height")?).filter(|h| *h > 0))
+    }
+
+    /// Record the vault upgrade's activation height and hand it to the shielded side, whose
+    /// Ycash parameters (scan branch check, proposals, builder) then carry the Vault branch from
+    /// that height on (finding 58).
+    pub fn set_vault_activation(&mut self, vault: Option<u64>) -> Result<(), WalletError> {
+        self.store
+            .set_meta("vault_activation_height", &vault.unwrap_or(0).to_string())?;
+        if let Some(sh) = self.shielded.as_mut() {
+            sh.set_vault_activation(vault)?;
+        }
+        Ok(())
     }
 
     /// The shielded side, or an error for a wallet without one (in-memory test wallets).

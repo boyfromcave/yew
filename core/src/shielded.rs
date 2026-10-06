@@ -184,6 +184,27 @@ fn store_err(e: impl std::fmt::Display) -> ShieldedError {
 /// upgrade through Canopy at height 1, no NU5), which the light library checks against the
 /// server's branch id on every sync.
 pub fn ycash_network(n: Network) -> YcashNetwork {
+    ycash_network_with_vault(n, None)
+}
+
+/// [`ycash_network`] with the vault upgrade (`UPGRADE_VAULT`, branch `6d5b7a31`, upgrade plan
+/// §15.1) activated at `vault` on regtest, the height the server reports
+/// (`GetChainInfo.upgrades["6d5b7a31"]`, the node's `-nuparams=6d5b7a31:<h>`). Mainnet and
+/// testnet take librustzcash6's compiled-in heights (no vault activation until a release sets
+/// one, P8) and ignore `vault`, the rule of [`Network::vault_activation_from_server`].
+pub fn ycash_network_with_vault(n: Network, vault: Option<u64>) -> YcashNetwork {
+    match (n, ycash_network_base(n)) {
+        (Network::Regtest, YcashNetwork::Regtest(mut local)) => {
+            local.vault = vault
+                .filter(|h| *h > 0)
+                .map(|h| BlockHeight::from_u32(u32::try_from(h).unwrap_or(u32::MAX)));
+            YcashNetwork::Regtest(local)
+        }
+        (_, base) => base,
+    }
+}
+
+fn ycash_network_base(n: Network) -> YcashNetwork {
     match n {
         Network::Mainnet => YcashNetwork::Main,
         Network::Testnet => YcashNetwork::Test,
@@ -294,6 +315,9 @@ pub struct SpendPlan {
     pub transparent_recipient: bool,
     /// `nExpiryHeight` the transaction will have (target height + 40, the builder's default).
     pub expiry_height: u32,
+    /// The height the transaction is built for (the store's tip + 1); its branch id is the one
+    /// every signature commits to.
+    pub target_height: u32,
     proposal: Proposal<StandardFeeRule, ReceivedNoteId>,
 }
 
@@ -714,6 +738,21 @@ impl Shielded {
         server_branch: u32,
         next_block: bool,
     ) -> Result<(), ShieldedError> {
+        self.check_branch_at(server_height, server_branch, next_block, None)
+    }
+
+    /// [`Shielded::check_branch`], and also that a transaction built for `target` (the plan's
+    /// target height: the builder takes its branch id from it) commits to the same id as the
+    /// next block. A plan made before a network upgrade and confirmed after it (the vault
+    /// upgrade, `6d5b7a31`) would sign the old branch and be rejected: it is refused here and
+    /// planned again.
+    pub fn check_branch_at(
+        &self,
+        server_height: u64,
+        server_branch: u32,
+        next_block: bool,
+        target: Option<u32>,
+    ) -> Result<(), ShieldedError> {
         let at = if next_block {
             server_height + 1
         } else {
@@ -727,7 +766,42 @@ impl Shielded {
                 ours,
             });
         }
+        if let Some(t) = target {
+            let planned = u32::from(self.params.branch_id_at(BlockHeight::from_u32(t)));
+            if planned != server_branch {
+                return Err(ShieldedError::Branch {
+                    height: t as u64,
+                    server: server_branch,
+                    ours: planned,
+                });
+            }
+        }
         Ok(())
+    }
+
+    /// Take the vault upgrade's activation height (regtest: the server's, `None` or 0 when it
+    /// reports none; mainnet / testnet: ignored, the compiled-in heights stand). When the
+    /// parameters change, the note store and the light client are reopened with them, so the
+    /// scan's branch check, transaction parsing, proposals and the builder all use the Vault
+    /// branch from the activation height on. Returns whether anything changed.
+    pub fn set_vault_activation(&mut self, vault: Option<u64>) -> Result<bool, ShieldedError> {
+        let params = ycash_network_with_vault(self.network, vault);
+        if params == self.params {
+            return Ok(false);
+        }
+        let db = WalletDb::for_path(self.dir.join("wallet.sqlite"), params, SystemClock, OsRng)
+            .map_err(store_err)?;
+        self.light = None;
+        self.db = db;
+        self.params = params;
+        Ok(true)
+    }
+
+    /// The vault upgrade's activation height in this wallet's parameters, if any.
+    pub fn vault_activation(&self) -> Option<u64> {
+        self.params
+            .activation_height(NetworkUpgrade::Vault)
+            .map(|h| u32::from(h) as u64)
     }
 
     /// Plan a shielded spend of `amount_zat` to `to` (a Sapling address of this network, or a
@@ -850,6 +924,7 @@ impl Shielded {
             memo: memo.map(str::to_string),
             transparent_recipient: transparent,
             expiry_height,
+            target_height: target,
             proposal,
         })
     }
@@ -1238,6 +1313,96 @@ mod tests {
         // Reopening is fine; mainnet keys in the same directory are another network's store,
         // but an unregistered store has nothing to compare yet.
         Shielded::open(&dir, Network::Regtest, account(Network::Regtest, "")).unwrap();
+    }
+
+    /// Finding 58: the vault upgrade (branch 6d5b7a31) at the server's regtest height. The
+    /// block before the activation is Canopy, the activation block and after are Vault; mainnet
+    /// and testnet ignore a server height (no activation compiled in until a release sets one).
+    #[test]
+    fn vault_activation_moves_the_branch_at_the_boundary() {
+        const CANOPY: u32 = 0x19bd_2d2f;
+        let vault = crate::params::VAULT_BRANCH_ID;
+        let at = |n: YcashNetwork, h: u32| u32::from(n.branch_id_at(BlockHeight::from_u32(h)));
+        let r = ycash_network_with_vault(Network::Regtest, Some(200));
+        assert_eq!(at(r, 1), CANOPY);
+        assert_eq!(at(r, 199), CANOPY);
+        assert_eq!(at(r, 200), vault);
+        assert_eq!(at(r, 10_000), vault);
+        assert_eq!(
+            BranchId::for_height(&r, BlockHeight::from_u32(200)),
+            BranchId::Vault
+        );
+        // None and 0 (the server's "unscheduled") are the plain devnet regtest.
+        assert_eq!(
+            ycash_network_with_vault(Network::Regtest, None),
+            ycash_network(Network::Regtest)
+        );
+        assert_eq!(
+            ycash_network_with_vault(Network::Regtest, Some(0)),
+            ycash_network(Network::Regtest)
+        );
+        assert_eq!(at(ycash_network(Network::Regtest), 10_000), CANOPY);
+        for n in [Network::Mainnet, Network::Testnet] {
+            let p = ycash_network_with_vault(n, Some(200));
+            assert_eq!(p, ycash_network(n));
+            assert_eq!(p.activation_height(NetworkUpgrade::Vault), None);
+            assert_eq!(at(p, 5_000_000), CANOPY);
+        }
+    }
+
+    /// The shielded store takes the activation: the branch check agrees with a server that
+    /// signs the activation block under Vault only once it has, a plan targeting the block
+    /// before the activation is refused once the next block is past it, and a mainnet store
+    /// ignores a server height.
+    #[test]
+    fn shielded_store_takes_the_vault_activation() {
+        const CANOPY: u32 = 0x19bd_2d2f;
+        let vault = crate::params::VAULT_BRANCH_ID;
+        let dir = tmp("vault");
+        let mut s = Shielded::open(&dir, Network::Regtest, account(Network::Regtest, "")).unwrap();
+        assert_eq!(s.vault_activation(), None);
+        // Before: the server's Vault id for block 200 is refused (it used to be the only answer).
+        assert!(matches!(
+            s.check_branch(199, vault, true),
+            Err(ShieldedError::Branch {
+                height: 200,
+                ours: CANOPY,
+                ..
+            })
+        ));
+        assert!(s.set_vault_activation(Some(200)).unwrap());
+        assert!(!s.set_vault_activation(Some(200)).unwrap());
+        assert_eq!(s.vault_activation(), Some(200));
+        // Tip 198: the next block (199) is still Canopy; tip 199: block 200 is Vault.
+        s.check_branch(198, CANOPY, true).unwrap();
+        s.check_branch(199, vault, true).unwrap();
+        assert!(s.check_branch(199, CANOPY, true).is_err());
+        // Older server (chaintip id): the activation block itself is Vault.
+        s.check_branch(200, vault, false).unwrap();
+        s.check_branch(199, CANOPY, false).unwrap();
+        // A plan for block 199 confirmed when the next block is 200 would sign Canopy.
+        assert!(matches!(
+            s.check_branch_at(199, vault, true, Some(199)),
+            Err(ShieldedError::Branch {
+                height: 199,
+                ours: CANOPY,
+                ..
+            })
+        ));
+        s.check_branch_at(199, vault, true, Some(200)).unwrap();
+        s.check_branch_at(250, vault, true, Some(240)).unwrap();
+        // The store still opens and reads with the new parameters.
+        assert!(s.history().unwrap().is_empty());
+        assert_eq!(s.balance().unwrap(), ShieldedBalance::default());
+        assert!(s.set_vault_activation(None).unwrap());
+        assert!(s.check_branch(199, vault, true).is_err());
+        drop(s);
+
+        let dir = tmp("vault-main");
+        let mut m = Shielded::open(&dir, Network::Mainnet, account(Network::Mainnet, "")).unwrap();
+        assert!(!m.set_vault_activation(Some(200)).unwrap());
+        assert_eq!(m.vault_activation(), None);
+        assert!(m.check_branch(3_500_000, vault, true).is_err());
     }
 
     /// The light wallet locks its directory: a second open in the same process is `Busy`

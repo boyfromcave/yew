@@ -251,10 +251,15 @@ pub async fn confirm_shield(
     params_dir: &Path,
 ) -> Result<Confirmed, WalletError> {
     let chain = match validator.client_mut() {
-        Some(yb) => yb.chain_info().await?,
+        Some(yb) => yb.chain_info_vault().await?,
         None => None,
     };
     let network = wallet.network;
+    // The vault upgrade's activation height (regtest) comes with the same answer.
+    if let Some((_, _, vault)) = chain {
+        wallet.set_vault_activation(vault)?;
+    }
+    let chain = chain.map(|(h, id, _)| (h, id));
     let mut secrets = Vec::with_capacity(plan.inputs.len());
     for i in &plan.shield_inputs {
         let key = wallet
@@ -271,18 +276,20 @@ pub async fn confirm_shield(
     };
     let sh = wallet.shielded_mut()?;
     let built = match info {
-        Ok((height, id)) => sh.check_branch(height, id, chain.is_some()).and_then(|_| {
-            sh.build_shield(
-                plan.target,
-                &plan.shield_inputs,
-                &secrets,
-                plan.amount as u64,
-                plan.change_address
-                    .as_ref()
-                    .map(|(_, h)| (*h, plan.change as u64)),
-                params_dir,
-            )
-        }),
+        Ok((height, id)) => sh
+            .check_branch_at(height, id, chain.is_some(), Some(plan.target))
+            .and_then(|_| {
+                sh.build_shield(
+                    plan.target,
+                    &plan.shield_inputs,
+                    &secrets,
+                    plan.amount as u64,
+                    plan.change_address
+                        .as_ref()
+                        .map(|(_, h)| (*h, plan.change as u64)),
+                    params_dir,
+                )
+            }),
         Err(e) => Err(e.into()),
     };
     for s in secrets.iter_mut() {
