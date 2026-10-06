@@ -13,6 +13,7 @@ export '../src/rust/api.dart'
         AddressPair,
         Balances,
         ClaimableItem,
+        ClaimIntent,
         ClaimTerms,
         Created,
         DefaultEndpoint,
@@ -32,6 +33,8 @@ export '../src/rust/api.dart'
         Recipient,
         RedeemPreview,
         RedeemResult,
+        ReleasePreview,
+        ReleaseResult,
         SendResult,
         ServerProbe,
         Status,
@@ -168,6 +171,15 @@ abstract class WalletApi {
   /// [confirmed] is the debt and the take the user saw on the row (H-9.3): the core refuses
   /// before signing when the server's numbers would burn more YED or pay less YEC.
   Future<MintStatus> claim({required String vaultTxid, required ClaimTerms confirmed});
+
+  /// The claim intents paying this wallet (the vault upgrade): a claim's collateral waits in an
+  /// intent for the claim delay, then is released; an attestor may cancel it before. No network.
+  Future<List<ClaimIntent>> claimIntents();
+
+  /// Build and sign the release of a matured intent (`txid:n`); nothing is sent.
+  Future<ReleasePreview> releasePreview({required String intent});
+
+  Future<ReleaseResult> releaseConfirm({required String previewId});
 
   String generateSeedWords({required int words});
 

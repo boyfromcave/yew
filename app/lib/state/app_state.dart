@@ -64,6 +64,9 @@ class AppState extends ChangeNotifier {
   /// The two-step rows (mints and claims) and the own vaults, from the core's store (W4).
   List<MintStatus> mints = const [];
   List<VaultSummary> vaults = const [];
+  /// The claim intents paying this wallet (the vault upgrade): pending, releasable, released,
+  /// cancelled by the attestor set.
+  List<ClaimIntent> intents = const [];
 
   /// How often a screen watching a mint in progress syncs by itself; `null` disables the
   /// timer (the widget tests).
@@ -202,6 +205,7 @@ class AppState extends ChangeNotifier {
       history = (await api.history(page: 0, pageSize: 200)).rows;
       mints = await api.mints();
       vaults = await api.vaults();
+      intents = await api.claimIntents();
       lastError = null;
     } catch (e) {
       lastError = messageOf(e);

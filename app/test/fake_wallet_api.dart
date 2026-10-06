@@ -73,6 +73,9 @@ class FakeWalletApi implements WalletApi {
   String payee = fakeS;
   Object? claimableError;
   Object? claimError;
+  // The vault upgrade: claim intents and their release.
+  List<ClaimIntent> intentsAnswer = const [];
+  Object? releaseError;
   int tip = 484;
   bool armed = true;
 
@@ -147,7 +150,28 @@ class FakeWalletApi implements WalletApi {
     renewLockBlocks: 48,
     claimWarning: status == 'ACTIVE' && tip >= lockHeight + grace - 1,
     claimOpen: status == 'ACTIVE' && tip >= lockHeight + grace,
+    claiming: status == 'CLAIMING',
+    reopened: status == 'REOPENED',
   );
+
+  ClaimIntent intent({required String txid, String role = 'claimant', String state = 'PENDING', int height = 480, int delay = 10, int tip = 484, int valueZat = 937499000}) {
+    final release = height == 0 ? 0 : height + delay;
+    return ClaimIntent(
+      intent: '$txid:0',
+      vaultTxid: 'va' * 32,
+      role: role,
+      valueZat: valueZat,
+      state: state,
+      height: height,
+      releaseHeight: release,
+      blocksUntilRelease: release == 0 ? 0 : (release - (tip + 1)).clamp(0, 1 << 30),
+      releasable: state == 'PENDING' && height > 0 && release <= tip + 1,
+      cancelled: state == 'CANCELLED',
+      releaseTimeSecs: nowSecs + (release - tip) * 75,
+      spendTxid: '',
+      note: '',
+    );
+  }
 
   @override
   Future<MintAvailability> mintAvailability() async {
@@ -302,6 +326,32 @@ class FakeWalletApi implements WalletApi {
   }
 
   @override
+  Future<List<ClaimIntent>> claimIntents() async => intentsAnswer;
+
+  @override
+  Future<ReleasePreview> releasePreview({required String intent}) async {
+    calls.add('releasePreview $intent');
+    if (releaseError != null) throw releaseError!;
+    final i = intentsAnswer.firstWhere((x) => x.intent == intent);
+    return ReleasePreview(previewId: 'rl-$intent', intent: intent, valueZat: i.valueZat, recipientAddress: fakeS, feeZat: 1000, txid: 're' * 32);
+  }
+
+  @override
+  Future<ReleaseResult> releaseConfirm({required String previewId}) async {
+    calls.add('releaseConfirm $previewId');
+    final intent = previewId.substring(3);
+    final i = intentsAnswer.firstWhere((x) => x.intent == intent);
+    intentsAnswer = [
+      for (final x in intentsAnswer)
+        if (x.intent == intent)
+          ClaimIntent(intent: x.intent, vaultTxid: x.vaultTxid, role: x.role, valueZat: x.valueZat, state: 'RELEASING', height: x.height, releaseHeight: x.releaseHeight, blocksUntilRelease: 0, releasable: false, cancelled: false, releaseTimeSecs: x.releaseTimeSecs, spendTxid: 're' * 32, note: '')
+        else
+          x,
+    ];
+    return ReleaseResult(txid: 're' * 32, verdict: 'ok', valueZat: i.valueZat);
+  }
+
+  @override
   List<DefaultEndpoint> defaultServers({required NetworkId network}) => switch (network) {
     NetworkId.regtest => const [DefaultEndpoint(address: '127.0.0.1:9067', plain: true)],
     _ => const [],
@@ -315,7 +365,7 @@ class FakeWalletApi implements WalletApi {
       chainName: 'regtest',
       tip: 484,
       taddrSupport: true,
-      yellowback: YellowbackStatus(present: true, usable: true, rpcversion: 4, enabled: true, active: true, serverVersion: 'lwd', feeZat: 1000),
+      yellowback: YellowbackStatus(present: true, usable: true, rpcversion: 5, enabled: true, active: true, serverVersion: 'lwd', feeZat: 1000),
     );
   }
 
@@ -360,7 +410,7 @@ class FakeWalletApi implements WalletApi {
     birthday: 1,
     syncHeight: 484,
     addresses: 40,
-    yellowback: const YellowbackStatus(present: true, usable: true, rpcversion: 4, enabled: true, active: true, serverVersion: 'lwd', feeZat: 1000),
+    yellowback: const YellowbackStatus(present: true, usable: true, rpcversion: 5, enabled: true, active: true, serverVersion: 'lwd', feeZat: 1000),
     coreVersion: '0.1.0',
   );
 
