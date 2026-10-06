@@ -298,17 +298,126 @@ impl Network {
     /// so they are never accepted. Regtest activates the upgrades by `-nuparams`; the devnet
     /// signs under Canopy (`yellowback_util.py:139`).
     pub fn branch_ids(self) -> &'static [u32] {
-        const YCASH_EPOCHS: [u32; 5] = [
+        const YCASH_EPOCHS: [u32; 6] = [
             0x374d_694f, // Ycash
             0x8e47_1bd6, // Blossom
             0x6631_4da3, // Heartwood
             0x19bd_2d2f, // Canopy
             0xf919_a198, // NU5 (no activation height on 4.5.0; reserved)
+            VAULT_BRANCH_ID, // the vault upgrade (upgrade plan §15.1, U-9)
         ];
         match self {
             Network::Mainnet | Network::Testnet | Network::Regtest => &YCASH_EPOCHS,
         }
     }
+}
+
+impl Network {
+    /// `CLAIM_DELAY` (upgrade plan U-23, `ycash-dd/src/yellowback/params.cpp` `SetCommon`
+    /// `claimDelay = 1152`, `RegtestParams` `claimDelay = 10`, branch `upgrade/vault`): the YED
+    /// vault's delay, i.e. how long a claim's intents wait before release, the window in which one
+    /// attestor can cancel a wrong-price claim. A server reporting another value is refused.
+    pub fn claim_delay(self) -> i64 {
+        match self {
+            Network::Mainnet | Network::Testnet => 1_152,
+            Network::Regtest => 10,
+        }
+    }
+
+    /// The `UPGRADE_VAULT` activation height compiled into this build: `None` on every network
+    /// today (upgrade plan §15.1: mainnet and testnet `NO_ACTIVATION_HEIGHT` until P8 sets them;
+    /// regtest by `-nuparams=6d5b7a31:<h>`). Regtest takes the server's height
+    /// ([`Network::vault_activation_from_server`]); on mainnet and testnet a server announcing an
+    /// activation this build does not know is not believed (see [`signing_branch_id`]).
+    pub fn vault_activation_height(self) -> Option<u64> {
+        None
+    }
+
+    /// True when this network takes the vault activation height from the server (regtest only).
+    pub fn vault_activation_from_server(self) -> bool {
+        self == Network::Regtest
+    }
+
+    /// The network's YED attestor set (U-22, `Params::attestorSetId`): unset on mainnet and
+    /// testnet (YED is off there until a release sets it); regtest's comes from the server
+    /// (`-yellowbackattestorset`).
+    pub fn attestor_set_id(self) -> Option<[u8; 32]> {
+        None
+    }
+}
+
+/// The consensus branch id of the vault upgrade, `UPGRADE_VAULT` (upgrade plan §15.1, U-9;
+/// `ycash-dd/src/consensus/upgrades.cpp` `{0x6d5b7a31, "Vault", …}`). Every ZIP-243 signature in
+/// a block at or above the activation height commits to it (`VAULT_BRANCH_ID` in the Python
+/// `test_framework/util.py`).
+pub const VAULT_BRANCH_ID: u32 = 0x6d5b_7a31;
+
+/// Why a branch id for the next block could not be chosen.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum BranchError {
+    /// The server's next-block id contradicts the height rule (an upgrade boundary the server and
+    /// this wallet disagree on): nothing is signed.
+    #[error("branch-mismatch: the server signs block {height} under {server:08x}, the vault upgrade rule gives {ours:08x}")]
+    Mismatch {
+        /// The next block's height.
+        height: u64,
+        /// The server's `nextblock` id.
+        server: u32,
+        /// The id the rule gives.
+        ours: u32,
+    },
+    /// The server reports the Vault branch on a network whose vault activation this build does
+    /// not know (mainnet / testnet before P8).
+    #[error("branch-unknown: the server reports the vault upgrade active on {0}, which this build does not schedule")]
+    UnscheduledVault(&'static str),
+}
+
+/// The branch id every transparent signature of a transaction for the **next block** commits to
+/// (ZIP-243): the Vault id once `next_height` reaches the vault activation height, else the
+/// server's pre-upgrade epoch id (`chaintip`, already checked against [`Network::branch_ids`]).
+///
+/// `activation`: the network's compiled-in height, or on regtest the server's
+/// (`GetChainInfo.upgrades["6d5b7a31"]`). `next_block_server`: `GetChainInfo.nextBlockBranchId`
+/// when the server offers it; it must agree with the rule (the one block where `chaintip` and
+/// `nextblock` differ is the block before an upgrade, which is what this function exists for).
+pub fn signing_branch_id(
+    network: Network,
+    chaintip_branch: u32,
+    next_height: u64,
+    activation: Option<u64>,
+    next_block_server: Option<u32>,
+) -> Result<u32, BranchError> {
+    let activation = network.vault_activation_height().or(if network.vault_activation_from_server() {
+        activation
+    } else {
+        None
+    });
+    let ours = match activation {
+        Some(a) if next_height >= a => VAULT_BRANCH_ID,
+        _ => {
+            if chaintip_branch == VAULT_BRANCH_ID || next_block_server == Some(VAULT_BRANCH_ID) {
+                if !network.vault_activation_from_server() {
+                    return Err(BranchError::UnscheduledVault(network.chain_name()));
+                }
+                return Err(BranchError::Mismatch {
+                    height: next_height,
+                    server: next_block_server.unwrap_or(chaintip_branch),
+                    ours: chaintip_branch,
+                });
+            }
+            chaintip_branch
+        }
+    };
+    if let Some(server) = next_block_server {
+        if server != ours {
+            return Err(BranchError::Mismatch {
+                height: next_height,
+                server,
+                ours,
+            });
+        }
+    }
+    Ok(ours)
 }
 
 /// `FEE_MIN`: the enforcement fee floor, 0.5 YEC (`params.cpp:43`, V10).
@@ -600,7 +709,50 @@ mod tests {
             assert!(!n.branch_ids().contains(&0x76b8_09bb)); // Sapling
             assert!(!n.branch_ids().contains(&0x5ba8_1b19)); // Overwinter
             assert!(!n.branch_ids().contains(&0));
+            assert!(n.branch_ids().contains(&VAULT_BRANCH_ID));
         }
+        assert_eq!(Network::Mainnet.claim_delay(), 1_152);
+        assert_eq!(Network::Regtest.claim_delay(), 10);
+    }
+
+    #[test]
+    fn branch_id_by_height() {
+        const CANOPY: u32 = 0x19bd_2d2f;
+        let r = Network::Regtest;
+        // Before activation: the epoch id; from the activation height on: Vault.
+        assert_eq!(signing_branch_id(r, CANOPY, 149, Some(150), None), Ok(CANOPY));
+        assert_eq!(
+            signing_branch_id(r, CANOPY, 150, Some(150), None),
+            Ok(VAULT_BRANCH_ID)
+        );
+        // The block before the upgrade: chaintip says Canopy, nextblock Vault; both agree.
+        assert_eq!(
+            signing_branch_id(r, CANOPY, 150, Some(150), Some(VAULT_BRANCH_ID)),
+            Ok(VAULT_BRANCH_ID)
+        );
+        assert_eq!(
+            signing_branch_id(r, VAULT_BRANCH_ID, 151, Some(150), Some(VAULT_BRANCH_ID)),
+            Ok(VAULT_BRANCH_ID)
+        );
+        // No activation known: the server's nextblock may not claim Vault.
+        assert!(matches!(
+            signing_branch_id(r, CANOPY, 150, None, Some(VAULT_BRANCH_ID)),
+            Err(BranchError::Mismatch { .. })
+        ));
+        // A disagreeing server is refused.
+        assert!(matches!(
+            signing_branch_id(r, CANOPY, 150, Some(150), Some(CANOPY)),
+            Err(BranchError::Mismatch { .. })
+        ));
+        // Mainnet schedules no vault upgrade in this build: a server activation is not believed.
+        assert_eq!(
+            signing_branch_id(Network::Mainnet, CANOPY, 3_500_000, Some(10), None),
+            Ok(CANOPY)
+        );
+        assert!(matches!(
+            signing_branch_id(Network::Mainnet, VAULT_BRANCH_ID, 3_500_000, Some(10), None),
+            Err(BranchError::UnscheduledVault("main"))
+        ));
     }
 
     #[test]

@@ -31,6 +31,7 @@ pub mod shielded_keys;
 pub mod store;
 pub mod sync;
 pub mod tx;
+pub mod vault;
 pub mod wallet;
 
 /// Crate version, as pinned in the workspace `Cargo.toml`.
