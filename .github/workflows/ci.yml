@@ -37,12 +37,10 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_AUDIT_VERSION: 0.22.2
   HOMEBREW_NO_AUTO_UPDATE: 1
-  # The Sapling crates are path dependencies on sibling checkouts (core/Cargo.toml):
-  # librustzcash6 (boyfromcave, = miodragpop/librustzcash @ ec525fae) and the x402-ycash light
-  # library. actions/checkout cannot write outside the workspace, so plain clones put them there
-  # (the clone steps below). The two revisions are the pins; bump them here.
-  LIBRUSTZCASH6_REV: ec525fae828ff67af0bf5d1995acfe445340ce66
-  X402_YCASH_REV: 0c1d3015e48a316f2ef8f8583911e33ee02c0cea
+  # upgrade/vault: the Sapling crates are git dependencies at pinned revisions (core/Cargo.toml:
+  # boyfromcave/librustzcash6 @ 4867cf85, boyfromcave/x402-ycash light @ 8daa6fb); cargo fetches
+  # them and rust-cache keeps ~/.cargo/git keyed on Cargo.lock. No sibling checkouts but
+  # lightwalletd-dd for the proto pin.
 
 jobs:
   core-linux:
@@ -53,24 +51,20 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - name: clone librustzcash6, x402-ycash and lightwalletd-dd beside the repo
+      # scripts/check-proto-pin.sh diffs proto/ against ../lightwalletd-dd/walletrpc: check it out
+      # at the commit proto/PIN records (without it the check skips itself). actions/checkout
+      # cannot write outside the workspace, so a plain clone puts it there.
+      - name: clone lightwalletd-dd beside the repo at the proto pin
         run: |
-          clone() { git clone --quiet --filter=blob:none "https://github.com/boyfromcave/$1.git" "$GITHUB_WORKSPACE/../$2"
-                    git -C "$GITHUB_WORKSPACE/../$2" checkout --quiet "$3"; }
-          clone librustzcash6 librustzcash6 "$LIBRUSTZCASH6_REV"
-          clone x402-ycash x402-ycash "$X402_YCASH_REV"
-          # scripts/check-proto-pin.sh diffs proto/ against ../lightwalletd-dd/walletrpc: check it
-          # out at the commit proto/PIN records (without it the check skips itself).
-          clone lightwalletd lightwalletd-dd "$(awk '{print $2}' proto/PIN)"
+          git clone --quiet --filter=blob:none https://github.com/boyfromcave/lightwalletd.git "$GITHUB_WORKSPACE/../lightwalletd-dd"
+          git -C "$GITHUB_WORKSPACE/../lightwalletd-dd" checkout --quiet "$(awk '{print $2}' proto/PIN)"
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler && protoc --version
       - name: Rust toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain
-      # Keyed by rust-cache on rustc, Cargo.lock/Cargo.toml and the job, plus the sibling revisions
-      # (path dependencies are not in the lock's hash); saved from pushes only.
+      # Keyed by rust-cache on rustc, Cargo.lock/Cargo.toml and the job; saved from pushes only.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: lrz6-${{ env.LIBRUSTZCASH6_REV }}-x402-${{ env.X402_YCASH_REV }}
           save-if: ${{ github.event_name != 'pull_request' }}
       - run: cargo fmt --all -- --check
       - run: scripts/check-proto-pin.sh
@@ -98,7 +92,7 @@ jobs:
       - name: install cargo-audit
         if: steps.tools.outputs.cache-hit != 'true'
         run: cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
-      # Reads Cargo.lock only: no sibling checkouts needed.
+      # Reads Cargo.lock only.
       - run: scripts/audit.sh
 
   core-macos:
@@ -109,19 +103,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - name: clone librustzcash6 and x402-ycash beside the repo
-        run: |
-          clone() { git clone --quiet --filter=blob:none "https://github.com/boyfromcave/$1.git" "$GITHUB_WORKSPACE/../$1"
-                    git -C "$GITHUB_WORKSPACE/../$1" checkout --quiet "$2"; }
-          clone librustzcash6 "$LIBRUSTZCASH6_REV"
-          clone x402-ycash "$X402_YCASH_REV"
       - name: Install protoc
         run: brew install protobuf && protoc --version
       - name: Rust toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: lrz6-${{ env.LIBRUSTZCASH6_REV }}-x402-${{ env.X402_YCASH_REV }}
           save-if: ${{ github.event_name != 'pull_request' }}
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
@@ -136,13 +123,6 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      # The bridge codegen reads the core crate's metadata, which resolves the path dependencies.
-      - name: clone librustzcash6 and x402-ycash beside the repo
-        run: |
-          clone() { git clone --quiet --filter=blob:none "https://github.com/boyfromcave/$1.git" "$GITHUB_WORKSPACE/../$1"
-                    git -C "$GITHUB_WORKSPACE/../$1" checkout --quiet "$2"; }
-          clone librustzcash6 "$LIBRUSTZCASH6_REV"
-          clone x402-ycash "$X402_YCASH_REV"
       - name: versions (Flutter from README.md, the bridge codegen from core/Cargo.toml)
         id: v
         run: |
