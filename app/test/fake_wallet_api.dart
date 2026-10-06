@@ -76,6 +76,13 @@ class FakeWalletApi implements WalletApi {
   int tip = 484;
   bool armed = true;
 
+  /// The mint gate (H-1, H-5); `null` = open with every regtest class.
+  MintAvailability? availability;
+  Object? availabilityError;
+
+  /// "Now" for the deadline dates the fake reports (fixed so the texts are stable).
+  static const int nowSecs = 1790000000;
+
   MintStatus mintRow({required int id, required String state, String kind = 'mint', int cents = 2500, int tip = 484, int refHeight = 480, String vaultTxid = ''}) {
     final expiry = refHeight + 40;
     final open = tip + 1 + 3 <= expiry;
@@ -112,7 +119,7 @@ class FakeWalletApi implements WalletApi {
     );
   }
 
-  VaultSummary vault({required String txid, String status = 'ACTIVE', int cents = 2500, int lockHeight = 528, int tip = 484, bool underwater = false, String voidReason = ''}) => VaultSummary(
+  VaultSummary vault({required String txid, String status = 'ACTIVE', int cents = 2500, int lockHeight = 528, int tip = 484, bool underwater = false, String voidReason = '', int grace = 20}) => VaultSummary(
     vaultTxid: txid,
     status: status,
     ownerAddress: fakeYe,
@@ -120,7 +127,7 @@ class FakeWalletApi implements WalletApi {
     cents: cents,
     collateralZat: 950000000,
     lockHeight: lockHeight,
-    claimHeight: lockHeight + 20,
+    claimHeight: lockHeight + grace,
     mintHeight: 482,
     tip: tip,
     open: status == 'ACTIVE' || status == 'VOID',
@@ -133,7 +140,22 @@ class FakeWalletApi implements WalletApi {
     closeHeight: status == 'CLOSED' || status == 'CLAIMED' ? 530 : 0,
     closingTxid: status == 'CLOSED' || status == 'CLAIMED' ? 'c1' * 32 : '',
     voidReason: voidReason,
+    lockTimeSecs: nowSecs + (lockHeight - tip) * 75,
+    claimTimeSecs: nowSecs + (lockHeight + grace - tip) * 75,
+    blocksUntilClaim: lockHeight + grace > tip ? lockHeight + grace - tip : 0,
+    renewable: status == 'ACTIVE' && tip >= lockHeight,
+    renewLockBlocks: 48,
+    claimWarning: status == 'ACTIVE' && tip >= lockHeight + grace - 1,
+    claimOpen: status == 'ACTIVE' && tip >= lockHeight + grace,
   );
+
+  @override
+  Future<MintAvailability> mintAvailability() async {
+    calls.add('mintAvailability');
+    if (availabilityError != null) throw availabilityError!;
+    return availability ??
+        const MintAvailability(allowed: true, reason: '', mintRequiresArmed: false, armed: true, attestStatus: 'ARMED', mintableClasses: ['A', 'B', 'C'], enabledClasses: ['A', 'B', 'C'], halts: []);
+  }
 
   void _set(MintStatus m) {
     final i = mintsAnswer.indexWhere((x) => x.mintId == m.mintId);
@@ -269,8 +291,9 @@ class FakeWalletApi implements WalletApi {
   }
 
   @override
-  Future<MintStatus> claim({required String vaultTxid}) async {
+  Future<MintStatus> claim({required String vaultTxid, required ClaimTerms confirmed}) async {
     calls.add('claim $vaultTxid');
+    calls.add('claim confirmed ${confirmed.maxBurnCents} ${confirmed.minOutZat}');
     if (claimError != null) throw claimError!;
     final c = claimableAnswer.firstWhere((x) => x.vaultTxid == vaultTxid);
     final m = mintRow(id: mintsAnswer.length + 1, state: 'CARRIER_SENT', kind: 'claim', cents: c.cents, tip: tip, refHeight: tip - 4, vaultTxid: vaultTxid);

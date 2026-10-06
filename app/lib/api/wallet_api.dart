@@ -13,12 +13,14 @@ export '../src/rust/api.dart'
         AddressPair,
         Balances,
         ClaimableItem,
+        ClaimTerms,
         Created,
         DefaultEndpoint,
         DryRun,
         ErrorKind,
         HistoryItem,
         HistoryPage,
+        MintAvailability,
         MintEstimate,
         MintStatus,
         MintTerms,
@@ -134,6 +136,11 @@ abstract class WalletApi {
   // ---- Yellowback operations (plan §3.4, §5.3; Phase W4). Every broadcast runs through the
   // core's gate; the app only renders the rows the core returns.
 
+  /// Whether a mint can be made now (hardening H-1, H-5): `allowed`, else the `reason` the Mint
+  /// screen shows instead of the form (the price not armed under `mintRequiresArmed`, or no
+  /// term class mintable). Connects; no sync.
+  Future<MintAvailability> mintAvailability();
+
   Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks});
 
   /// [confirmed] is the estimate the user saw: the core refuses a server answer whose
@@ -158,7 +165,9 @@ abstract class WalletApi {
 
   Future<List<ClaimableItem>> claimable();
 
-  Future<MintStatus> claim({required String vaultTxid});
+  /// [confirmed] is the debt and the take the user saw on the row (H-9.3): the core refuses
+  /// before signing when the server's numbers would burn more YED or pay less YEC.
+  Future<MintStatus> claim({required String vaultTxid, required ClaimTerms confirmed});
 
   String generateSeedWords({required int words});
 

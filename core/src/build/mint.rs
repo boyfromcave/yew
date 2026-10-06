@@ -128,6 +128,22 @@ pub enum MintError {
         /// `MAX_MINT`.
         max: u64,
     },
+    /// Minting is not possible now (hardening H-1 unarmed, H-5 / W16 / W20 no class mintable,
+    /// or the class asked for is not among `mintableClasses`): the reason as shown.
+    #[error("mint-blocked: {reason}")]
+    Blocked {
+        /// Why.
+        reason: String,
+    },
+    /// A server number exceeds a bound the user confirmed (hardening H-9.3: the light-client
+    /// form of `maxCollateralZat` / `maxBurnCents` / `minOutZat`); nothing was signed.
+    #[error("{what}: {detail}")]
+    BoundExceeded {
+        /// The node's identifier for the same refusal.
+        what: &'static str,
+        /// What, in numbers.
+        detail: String,
+    },
     /// `lock_blocks` inside no term class of the network.
     #[error("bad-lock: a lock of {lock_blocks} blocks is inside no term class of {}", network.chain_name())]
     BadLock {
@@ -217,6 +233,7 @@ pub struct CarrierStep {
 /// `(fee_zat, payee)`; `payee` empty under FEE-0 (no eligible pool). The fee is checked against
 /// FEE-1 locally (`terms::check_fee`, audit G-2); the payee's eligibility cannot be.
 pub(crate) async fn fee_payee(
+    network: crate::params::Network,
     yb: &mut YellowbackClient,
     ref_height: u32,
     collateral_zat: i64,
@@ -232,7 +249,7 @@ pub(crate) async fn fee_payee(
     } else {
         String::new()
     };
-    let fee = terms::check_fee(collateral_zat, &payee, p.fee_zat)?;
+    let fee = terms::check_fee(network, collateral_zat, &payee, p.fee_zat)?;
     Ok((fee, payee))
 }
 
@@ -291,6 +308,7 @@ pub async fn verify_bundle_full(
 /// (`AttestFeeFor`): `("", 0)` under AFEE-0 (no bundle). The fee is AFEE-1 with the local
 /// `ATTEST_FEE_BPS` (audit G-2), never the server's figure.
 pub async fn attest_payee(
+    network: crate::params::Network,
     client: &mut CompactClient,
     yb: &mut YellowbackClient,
     ref_height: u32,
@@ -311,7 +329,7 @@ pub async fn attest_payee(
         .find(|a| a.seq as u16 == seq)
         .map(|a| a.bond_key_address)
         .ok_or_else(|| MintError::Relay(format!("attest-unknown-seq: attestor {seq}")))?;
-    Ok((addr, terms::attest_fee(fee_zat, seqs)))
+    Ok((addr, terms::attest_fee(network, fee_zat, seqs)))
 }
 
 /// `BuildMint:1105-1106`: `max(required, 4 · FEE_MIN)` rounded up to 1,000 zat (MINT-5, K14);
@@ -335,19 +353,50 @@ pub async fn estimate(
     lock_blocks: u32,
     tip: u64,
 ) -> Result<MintEstimate, WalletError> {
-    terms::check_cents(cents)?;
+    terms::check_cents(wallet.network, cents)?;
     terms::class_for(wallet.network, lock_blocks)?;
+    // The gate first (H-1, H-5): an unarmed price or no mintable class blocks the mint before
+    // any estimate is shown; the server's parameter set must be this network's (H-9.3).
+    let gate = gate_now(wallet.network, yb).await?;
+    if let Some(reason) = gate.blocked {
+        return Err(MintError::Blocked { reason }.into());
+    }
     let e = yb.estimate_collateral(cents, lock_blocks, 0).await?;
     terms::check_estimate(wallet.network, tip, cents, lock_blocks, &e)?;
+    if !gate.mintable_classes.contains(&e.term_class.as_str()) {
+        return Err(MintError::Blocked {
+            reason: format!(
+                "class {} is not mintable now; mintable: {}",
+                e.term_class,
+                gate.mintable_classes.join(", ")
+            ),
+        }
+        .into());
+    }
+    if gate.requires_armed && !e.armed {
+        return Err(MintError::Blocked {
+            reason: format!(
+                "the price is not armed at the reference height {}: the node would make the mint VOID (mint-halted-unarmed)",
+                e.ref_height
+            ),
+        }
+        .into());
+    }
     let collateral_zat = collateral_for(e.required_zat);
     let owner_row = wallet.receive_address(false)?;
     let owner_key = wallet
         .key_for_hash(&owner_row.hash160)?
         .ok_or_else(|| WalletError::Other("owner key".into()))?;
-    let (fee_zat, payee) =
-        fee_payee(yb, e.ref_height as u32, collateral_zat, &owner_key.pubkey).await?;
+    let (fee_zat, payee) = fee_payee(
+        wallet.network,
+        yb,
+        e.ref_height as u32,
+        collateral_zat,
+        &owner_key.pubkey,
+    )
+    .await?;
     let bundle_seqs: Vec<u16> = e.bundle_seqs.iter().map(|s| *s as u16).collect();
-    let attest_fee_zat = terms::attest_fee(fee_zat, &bundle_seqs);
+    let attest_fee_zat = terms::attest_fee(wallet.network, fee_zat, &bundle_seqs);
     let total_zat =
         collateral_zat + TOKEN_VALUE + fee_zat + attest_fee_zat + CARRIER_VALUE + 2 * FEE_ZAT;
     let (avail, reserved) = coins::yec_balances(&wallet.spendable_utxos()?);
@@ -370,6 +419,19 @@ pub async fn estimate(
         total_zat,
         available_zat: avail + reserved,
     })
+}
+
+/// The mint gate now: `GetYellowbackInfo` (its parameter set checked against the network's,
+/// `terms::check_server_params`), `GetPrice` at the index tip and `GetStats`.
+pub async fn gate_now(
+    network: crate::params::Network,
+    yb: &mut YellowbackClient,
+) -> Result<terms::MintGate, WalletError> {
+    let info = yb.info().await?;
+    terms::check_server_params(network, info.params.as_ref())?;
+    let price = yb.price(0).await?;
+    let stats = yb.stats().await?;
+    Ok(terms::mint_gate(network, &info, &price, &stats)?)
 }
 
 /// True while a two-step's main transaction can still enter the mempool: `tip + 1 +
@@ -546,7 +608,7 @@ pub async fn start(
     // The fee payee for (R, ownerPubKey) is the estimate's (BuildMint:1121).
     let (fee_zat, payee) = (est.fee_zat, est.payee.clone());
     let (attest_payee_addr, attest_fee_zat) =
-        attest_payee(client, yb, r, &[], &seqs, fee_zat).await?;
+        attest_payee(wallet.network, client, yb, r, &[], &seqs, fee_zat).await?;
     let step = carrier_step(wallet, client, validator, &bundle_bytes, r, tip, branch_id).await?;
     let row = MintRow {
         id: 0,

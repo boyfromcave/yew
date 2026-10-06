@@ -34,14 +34,15 @@ fn inconsistent(what: impl Into<String>) -> MintError {
     MintError::Inconsistent { what: what.into() }
 }
 
-/// The mint amount bounds of MINT-2 (`MIN_MINT ≤ cents ≤ MAX_MINT`), which also keeps `cents`
-/// inside the payload's `u32` (audit G-9).
-pub fn check_cents(cents: u64) -> Result<(), MintError> {
-    if !(params::MIN_MINT_CENTS..=params::MAX_MINT_CENTS).contains(&cents) {
+/// The mint amount bounds of MINT-2 (`MIN_MINT ≤ cents ≤ MAX_MINT`, the network's `MAX_MINT`),
+/// which also keeps `cents` inside the payload's `u32` (audit G-9).
+pub fn check_cents(network: Network, cents: u64) -> Result<(), MintError> {
+    let max = network.max_mint_cents();
+    if !(params::MIN_MINT_CENTS..=max).contains(&cents) {
         return Err(MintError::BadAmount {
             cents,
             min: params::MIN_MINT_CENTS,
-            max: params::MAX_MINT_CENTS,
+            max,
         });
     }
     debug_assert!(cents <= u32::MAX as u64);
@@ -67,7 +68,7 @@ pub fn check_estimate(
     lock_blocks: u32,
     e: &rpc::YedCollateralEstimate,
 ) -> Result<&'static TermClass, MintError> {
-    check_cents(cents)?;
+    check_cents(network, cents)?;
     let class = class_for(network, lock_blocks)?;
     if e.term_class != class.letter {
         return Err(inconsistent(format!(
@@ -177,11 +178,16 @@ pub fn check_bundle_price(p_mint: i64, bundle: &[Attestation]) -> Result<(), Min
 /// The enforcement fee a server quotes for `collateral_zat` (audit G-2): FEE-0 (no payee) ⇒
 /// 0; otherwise exactly `feeZat(collateralZat)` — less and the node refuses the transaction
 /// (MINT-8 ⇒ VOID), more and the surplus is the server's to direct.
-pub fn check_fee(collateral_zat: i64, payee: &str, fee_zat: i64) -> Result<i64, MintError> {
+pub fn check_fee(
+    network: Network,
+    collateral_zat: i64,
+    payee: &str,
+    fee_zat: i64,
+) -> Result<i64, MintError> {
     if payee.is_empty() {
         return Ok(0);
     }
-    let local = params::fee_zat_for(collateral_zat);
+    let local = params::fee_zat_for(network, collateral_zat);
     if fee_zat != local {
         return Err(inconsistent(format!(
             "feeZat {fee_zat} for collateral {collateral_zat} (FEE-1 gives {local})"
@@ -191,11 +197,11 @@ pub fn check_fee(collateral_zat: i64, payee: &str, fee_zat: i64) -> Result<i64, 
 }
 
 /// The attestor fee for an enforcement fee (AFEE-1), computed locally.
-pub fn attest_fee(fee_zat: i64, seqs: &[u16]) -> i64 {
+pub fn attest_fee(network: Network, fee_zat: i64, seqs: &[u16]) -> i64 {
     if seqs.is_empty() {
         0
     } else {
-        params::attest_fee_zat_for(fee_zat)
+        params::attest_fee_zat_for(network, fee_zat)
     }
 }
 
@@ -232,6 +238,261 @@ pub fn check_vault(network: Network, v: &rpc::YedVault) -> Result<(), MintError>
                 )))
             }
         }
+    }
+    Ok(())
+}
+
+/// The parameter set a server reports (`GetYellowbackInfo.params`) against the one this build
+/// compiles for the network (audit G-1, G-2; hardening H-9.3 "recompute the fee floor and the
+/// height identities locally"). The wallet never prices a mint, a fee or a deadline from the
+/// server's figures; this check only refuses a server whose node runs another parameter set
+/// (a stale release, a hand-edited one, a lie), because every local check below would then
+/// disagree with the node that judges the transaction. Compared: `FEE_MIN`, `FEE_BPS`,
+/// `GRACE`, `REF_WINDOW`, `TOKEN_VALUE`, `ATTEST_FEE_BPS`, `RESIDUAL_MIN_ZAT` and each term
+/// class's range and base ratio (a disabled class is reported with its empty range, H-5).
+/// Values a regtest flag sets (`startHeight`, `enforceUntilHeight`, `sigmaRefBps`,
+/// `supplyCapBps`) are not compared.
+pub fn check_server_params(
+    network: Network,
+    p: Option<&rpc::YellowbackParams>,
+) -> Result<(), MintError> {
+    let p = p.ok_or_else(|| inconsistent("GetYellowbackInfo carries no params"))?;
+    let want = |what: &str, got: i64, local: i64| -> Result<(), MintError> {
+        if got != local {
+            return Err(inconsistent(format!(
+                "params.{what} {got} (this network's rule is {local})"
+            )));
+        }
+        Ok(())
+    };
+    want("feeMinZat", p.fee_min_zat, params::FEE_MIN_ZAT)?;
+    want("feeBps", p.fee_bps, network.fee_bps())?;
+    want("grace", p.grace, network.grace() as i64)?;
+    want("refWindow", p.ref_window, REF_WINDOW as i64)?;
+    want("tokenValueZat", p.token_value_zat, params::TOKEN_VALUE)?;
+    let a = p
+        .attest
+        .as_ref()
+        .ok_or_else(|| inconsistent("params.attest missing"))?;
+    want(
+        "attest.attestFeeBps",
+        a.attest_fee_bps,
+        network.attest_fee_bps(),
+    )?;
+    want(
+        "attest.residualMinZat",
+        a.residual_min_zat,
+        params::RESIDUAL_MIN_ZAT,
+    )?;
+    for c in network.term_classes() {
+        let s = p
+            .classes
+            .iter()
+            .find(|s| s.class == c.letter)
+            .ok_or_else(|| inconsistent(format!("params.classes has no class {}", c.letter)))?;
+        want(
+            &format!("classes.{}.minBlocks", c.letter),
+            s.min_blocks,
+            c.min_blocks as i64,
+        )?;
+        want(
+            &format!("classes.{}.maxBlocks", c.letter),
+            s.max_blocks,
+            c.max_blocks as i64,
+        )?;
+        want(
+            &format!("classes.{}.baseRatioBps", c.letter),
+            s.base_ratio_bps,
+            c.base_ratio_bps,
+        )?;
+    }
+    Ok(())
+}
+
+/// Whether a mint can be made now, and why not (hardening H-1, H-5, H-9.2; the Mint screen's
+/// gate). Built from `GetYellowbackInfo`, `GetPrice` (tip) and `GetStats` by [`mint_gate`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MintGate {
+    /// `MINT_REQUIRES_ARMED`: the network's fixed value (mainnet, testnet: true), or on regtest
+    /// the server's `mintRequiresArmed`.
+    pub requires_armed: bool,
+    /// `GetPrice.armed` at the index tip.
+    pub armed: bool,
+    /// `GetPrice.attestStatus` (`"ARMED"`, `"PENDING"`, `"DISARMED"`, ...).
+    pub attest_status: String,
+    /// The classes a mint can use now: `GetStats.mintableClasses`, each one a class this build
+    /// has enabled for the network. Empty = no class mintable.
+    pub mintable_classes: Vec<&'static str>,
+    /// `GetStats.haltMask` names.
+    pub halts: Vec<String>,
+    /// `None` when a mint may be made; otherwise the reason, as the screen shows it.
+    pub blocked: Option<String>,
+}
+
+/// The mint gate (pure; the network calls are the caller's). A server listing a class this
+/// build has disabled for the network (H-5: B or C on mainnet) is refused as inconsistent.
+pub fn mint_gate(
+    network: Network,
+    info: &rpc::YellowbackInfo,
+    price: &rpc::YedPrice,
+    stats: &rpc::YellowbackStats,
+) -> Result<MintGate, MintError> {
+    let requires_armed = network
+        .mint_requires_armed()
+        .unwrap_or(info.mint_requires_armed)
+        || info.mint_requires_armed;
+    let mut mintable_classes = Vec::new();
+    for letter in &stats.mintable_classes {
+        let class = network
+            .enabled_classes()
+            .find(|c| c.letter == letter)
+            .ok_or_else(|| {
+                inconsistent(format!(
+                    "mintableClasses lists class {letter:?}, which {} does not enable",
+                    network.chain_name()
+                ))
+            })?;
+        if !mintable_classes.contains(&class.letter) {
+            mintable_classes.push(class.letter);
+        }
+    }
+    let active = info
+        .activation
+        .as_ref()
+        .is_some_and(|a| a.status == crate::net::yellowback::STATUS_ACTIVE);
+    let blocked = if !info.enabled || !active {
+        Some("Yellowback is not active on this server's node: nothing can be minted.".to_string())
+    } else if requires_armed && !price.armed {
+        Some(format!(
+            "Minting is paused: the price feed is not armed (attestation {}). The node refuses every mint until enough attestors arm it. Redeeming and claiming are not affected.",
+            if price.attest_status.is_empty() { "status unknown" } else { price.attest_status.as_str() }
+        ))
+    } else if mintable_classes.is_empty() {
+        Some(if !stats.halt_mask.is_empty() {
+            format!(
+                "Minting is halted ({}): no term class is mintable now.",
+                stats.halt_mask.join(", ")
+            )
+        } else {
+            // The cap (W20, H-10) or the recapitalisation floor (W16) leaves no class.
+            "No term class is mintable now (the supply cap or the recapitalisation floor excludes every class).".to_string()
+        })
+    } else {
+        None
+    };
+    Ok(MintGate {
+        requires_armed,
+        armed: price.armed,
+        attest_status: price.attest_status.clone(),
+        mintable_classes,
+        halts: stats.halt_mask.clone(),
+        blocked,
+    })
+}
+
+/// A `ListClaimable` row's RED-5 residual against the vault's terms and the row's own `pClaim`
+/// (audit G-2; `ClaimAt`): a server inflating the residual moves the claimant's YEC to the
+/// owner. Returns the residual the CLAIM pays: the node builder's (`ClaimAt` drops a residual
+/// below `RESIDUAL_MIN_ZAT`; `yed_listclaimable` reports it unfloored, so both are accepted).
+/// Under clause (a) the vault must also be underwater at that `pClaim` (`IsUnderwater`).
+pub fn check_claimable(c: &rpc::YedClaimable) -> Result<i64, MintError> {
+    if c.claim_path != "a" && c.claim_path != "b" {
+        return Err(inconsistent(format!(
+            "claimPath {:?} for vault {}",
+            c.claim_path, c.vault
+        )));
+    }
+    if c.minted_cents <= 0 || c.collateral_zat <= 0 {
+        return Err(inconsistent(format!(
+            "vault {} has no debt or no collateral",
+            c.vault
+        )));
+    }
+    let cents = c.minted_cents as u64;
+    let floored = params::residual_zat_for(c.collateral_zat, cents, c.p_claim, &c.claim_path)
+        .ok_or_else(|| inconsistent(format!("pClaim undefined for vault {}", c.vault)))?;
+    let raw = if floored > 0 {
+        floored
+    } else {
+        // The unfloored figure the RPC reports (`EstimateClaim` has no RESIDUAL_MIN_ZAT).
+        let margin = if c.claim_path == "a" {
+            params::CLAIM_THRESHOLD_BPS
+        } else {
+            params::BPS
+        };
+        let num = (cents as u128) * (margin as u128) * (params::COIN as u128);
+        let max = num.div_ceil(c.p_claim as u128);
+        i64::try_from(max)
+            .ok()
+            .filter(|m| c.collateral_zat > *m)
+            .map(|m| c.collateral_zat - m)
+            .unwrap_or(0)
+    };
+    if c.residual_zat != floored && c.residual_zat != raw {
+        return Err(inconsistent(format!(
+            "residualZat {} for vault {} (RED-5 at pClaim {} gives {floored})",
+            c.residual_zat, c.vault, c.p_claim
+        )));
+    }
+    if c.claim_path == "a" {
+        let lhs = (c.collateral_zat as u128) * (c.p_claim as u128);
+        let rhs = (cents as u128) * (params::CLAIM_THRESHOLD_BPS as u128) * (params::COIN as u128);
+        if lhs >= rhs {
+            return Err(inconsistent(format!(
+                "vault {} is not underwater at pClaim {} (clause a)",
+                c.vault, c.p_claim
+            )));
+        }
+    }
+    Ok(floored)
+}
+
+/// The bounds the user saw on the Claimable screen (the light-client form of `yed_claim`'s
+/// `maxBurnCents` / `minOutZat`, audit C/F-1, hardening H-9.3): the claim is refused before
+/// anything is signed when the server's numbers would burn more YED or pay less YEC.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClaimBounds {
+    /// The most debt the claim may burn, cents (the row's `mintedCents` as shown).
+    pub max_burn_cents: u64,
+    /// The least YEC the claimant takes from the vault, zat: collateral − fees − residual −
+    /// the network fee, as shown.
+    pub min_out_zat: i64,
+}
+
+/// What the claimant takes from the vault (the carrier and YED inputs aside):
+/// `collateral − fee − attestFee − residual − FEE_ZAT`.
+pub fn claimant_take(
+    collateral_zat: i64,
+    fee_zat: i64,
+    attest_fee_zat: i64,
+    residual_zat: i64,
+) -> i64 {
+    collateral_zat - fee_zat - attest_fee_zat - residual_zat - params::FEE_ZAT
+}
+
+/// [`ClaimBounds`] against the claim about to be built.
+pub fn check_claim_bounds(
+    b: &ClaimBounds,
+    burn_cents: u64,
+    take_zat: i64,
+) -> Result<(), MintError> {
+    if burn_cents > b.max_burn_cents {
+        return Err(MintError::BoundExceeded {
+            what: "claim-burn-above-max",
+            detail: format!(
+                "the claim would burn {burn_cents} cents of YED, above the {} you confirmed",
+                b.max_burn_cents
+            ),
+        });
+    }
+    if take_zat < b.min_out_zat {
+        return Err(MintError::BoundExceeded {
+            what: "claim-out-below-min",
+            detail: format!(
+                "the claim would pay you {take_zat} zat, below the {} you confirmed",
+                b.min_out_zat
+            ),
+        });
     }
     Ok(())
 }
@@ -273,17 +534,39 @@ mod tests {
         assert_eq!(check(&honest()).unwrap().letter, "A");
         // The spec's worked numbers: $100 at 500 % and $0.52/YEC ≈ 961.54 YEC.
         assert_eq!(honest().required_zat, 96_153_846_154);
-        // Mainnet class B at tip 1_200_000.
+        // Mainnet class A at tip 1_200_000.
         let mut e = honest();
         e.ref_height = 1_199_990;
-        e.lock_height = 1_199_990 + 200_000;
+        e.lock_height = 1_199_990 + 50_000;
         e.claim_height = e.lock_height + 34_560;
-        e.term_class = "B".into();
-        e.base_ratio_bps = 40_000;
-        e.min_ratio_bps = 40_000;
-        e.required_zat = params::required_zat(10_000, 40_000, 520_000).unwrap();
         assert_eq!(
-            check_estimate(Network::Mainnet, 1_200_000, 10_000, 200_000, &e)
+            check_estimate(Network::Mainnet, 1_200_000, 10_000, 50_000, &e)
+                .unwrap()
+                .letter,
+            "A"
+        );
+        // Mainnet class B is disabled (H-5): refused as a lock outside every class.
+        let mut b = e.clone();
+        b.lock_height = 1_199_990 + 200_000;
+        b.claim_height = b.lock_height + 34_560;
+        b.term_class = "B".into();
+        b.base_ratio_bps = 40_000;
+        b.min_ratio_bps = 40_000;
+        b.required_zat = params::required_zat(10_000, 40_000, 520_000).unwrap();
+        assert!(matches!(
+            check_estimate(Network::Mainnet, 1_200_000, 10_000, 200_000, &b),
+            Err(MintError::BadLock { .. })
+        ));
+        // Regtest class B stays enabled.
+        let mut rb = honest();
+        rb.lock_height = 480 + 100;
+        rb.claim_height = rb.lock_height + 24;
+        rb.term_class = "B".into();
+        rb.base_ratio_bps = 40_000;
+        rb.min_ratio_bps = 40_000;
+        rb.required_zat = params::required_zat(10_000, 40_000, 520_000).unwrap();
+        assert_eq!(
+            check_estimate(Network::Regtest, 484, 10_000, 100, &rb)
                 .unwrap()
                 .letter,
             "B"
@@ -413,19 +696,37 @@ mod tests {
 
     #[test]
     fn amount_and_lock_bounds() {
+        let r = Network::Regtest;
         assert!(matches!(
-            check_cents(9_999),
+            check_cents(r, 9_999),
             Err(MintError::BadAmount { .. })
         ));
-        assert!(check_cents(10_000).is_ok());
-        assert!(check_cents(1_000_000).is_ok());
+        assert!(check_cents(r, 10_000).is_ok());
+        assert!(check_cents(r, 1_000_000).is_ok());
         assert!(matches!(
-            check_cents(1_000_001),
+            check_cents(r, 1_000_001),
             Err(MintError::BadAmount { .. })
         ));
         assert!(matches!(
-            check_cents(u32::MAX as u64 + 1),
+            check_cents(r, u32::MAX as u64 + 1),
             Err(MintError::BadAmount { .. })
+        ));
+        // H-12: $2,500 on mainnet and testnet.
+        for n in [Network::Mainnet, Network::Testnet] {
+            assert!(check_cents(n, 250_000).is_ok());
+            assert!(matches!(
+                check_cents(n, 250_001),
+                Err(MintError::BadAmount { max: 250_000, .. })
+            ));
+        }
+        // H-5: classes B and C are disabled on mainnet.
+        assert!(matches!(
+            class_for(Network::Mainnet, 200_000),
+            Err(MintError::BadLock { .. })
+        ));
+        assert!(matches!(
+            class_for(Network::Testnet, 103_681),
+            Err(MintError::BadLock { .. })
         ));
         assert!(matches!(
             class_for(Network::Regtest, 47),
@@ -464,23 +765,33 @@ mod tests {
     #[test]
     fn hostile_fees_are_refused() {
         let payee = "s1payee";
+        let r = Network::Regtest;
         assert_eq!(
-            check_fee(1_000_000_000, payee, 50_000_000).unwrap(),
+            check_fee(r, 1_000_000_000, payee, 50_000_000).unwrap(),
             50_000_000
         );
         assert_eq!(
-            check_fee(400_000_000_000, payee, 1_000_000_000).unwrap(),
+            check_fee(r, 400_000_000_000, payee, 1_000_000_000).unwrap(),
             1_000_000_000
         );
         // The audit's scenario: fee = collateral − 2,000 to the operator's pool.
-        assert!(check_fee(1_000_000_000, payee, 999_998_000).is_err());
-        assert!(check_fee(1_000_000_000, payee, 50_000_001).is_err());
-        assert!(check_fee(1_000_000_000, payee, 49_999_999).is_err());
-        assert!(check_fee(1_000_000_000, payee, 0).is_err());
+        assert!(check_fee(r, 1_000_000_000, payee, 999_998_000).is_err());
+        assert!(check_fee(r, 1_000_000_000, payee, 50_000_001).is_err());
+        assert!(check_fee(r, 1_000_000_000, payee, 49_999_999).is_err());
+        assert!(check_fee(r, 1_000_000_000, payee, 0).is_err());
         // FEE-0: no payee, no fee, whatever number the server attached.
-        assert_eq!(check_fee(1_000_000_000, "", 999_998_000).unwrap(), 0);
-        assert_eq!(attest_fee(50_000_000, &[0, 1]), 12_500_000);
-        assert_eq!(attest_fee(50_000_000, &[]), 0);
+        assert_eq!(check_fee(r, 1_000_000_000, "", 999_998_000).unwrap(), 0);
+        assert_eq!(attest_fee(r, 50_000_000, &[0, 1]), 12_500_000);
+        assert_eq!(attest_fee(r, 50_000_000, &[]), 0);
+        // H-4 on mainnet: 0.15 %, the attestor half. A server still quoting the v3 rate
+        // (0.25 %) is refused.
+        let m = Network::Mainnet;
+        assert_eq!(
+            check_fee(m, 400_000_000_000, payee, 600_000_000).unwrap(),
+            600_000_000
+        );
+        assert!(check_fee(m, 400_000_000_000, payee, 1_000_000_000).is_err());
+        assert_eq!(attest_fee(m, 600_000_000, &[0]), 300_000_000);
     }
 
     /// `GetVault` with bent script terms (audit G-1, the sync side).
@@ -533,5 +844,217 @@ mod tests {
         let mut v = void;
         v.term_class = "C".into();
         assert!(check_vault(Network::Regtest, &v).is_ok());
+    }
+
+    /// The regtest parameter set as the node reports it (`yed_getinfo.params`).
+    fn server_params(network: Network) -> rpc::YellowbackParams {
+        rpc::YellowbackParams {
+            fee_min_zat: params::FEE_MIN_ZAT,
+            fee_bps: network.fee_bps(),
+            grace: network.grace() as i64,
+            ref_window: REF_WINDOW as i64,
+            token_value_zat: params::TOKEN_VALUE,
+            attest: Some(rpc::YellowbackAttestParams {
+                attest_fee_bps: network.attest_fee_bps(),
+                residual_min_zat: params::RESIDUAL_MIN_ZAT,
+                ..Default::default()
+            }),
+            classes: network
+                .term_classes()
+                .iter()
+                .map(|c| rpc::YellowbackClassParams {
+                    base_ratio_bps: c.base_ratio_bps,
+                    class: c.letter.into(),
+                    max_blocks: c.max_blocks as i64,
+                    min_blocks: c.min_blocks as i64,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// H-9.3: the server's parameter set must be the network's.
+    #[test]
+    fn server_params_are_the_networks() {
+        for n in [Network::Mainnet, Network::Testnet, Network::Regtest] {
+            assert!(check_server_params(n, Some(&server_params(n))).is_ok());
+        }
+        assert!(check_server_params(Network::Regtest, None).is_err());
+        // A mainnet server still on the v3 set (fee 25 bps, attestor 25 %, B and C enabled).
+        assert!(
+            check_server_params(Network::Mainnet, Some(&server_params(Network::Regtest))).is_err()
+        );
+        let bends: Vec<Bend<rpc::YellowbackParams>> = vec![
+            Box::new(|p| p.fee_min_zat = 1),
+            Box::new(|p| p.fee_bps = 100),
+            Box::new(|p| p.grace = 1),
+            Box::new(|p| p.ref_window = 400),
+            Box::new(|p| p.token_value_zat = 20_000),
+            Box::new(|p| p.attest = None),
+            Box::new(|p| p.attest.as_mut().unwrap().attest_fee_bps = 9_000),
+            Box::new(|p| p.attest.as_mut().unwrap().residual_min_zat = 0),
+            Box::new(|p| p.classes.retain(|c| c.class != "B")),
+            Box::new(|p| p.classes[1].max_blocks = 420_480),
+            Box::new(|p| p.classes[0].base_ratio_bps = 10_000),
+            Box::new(|p| p.classes[0].min_blocks = 1),
+        ];
+        for (i, bend) in bends.iter().enumerate() {
+            let mut p = server_params(Network::Mainnet);
+            bend(&mut p);
+            assert!(
+                matches!(
+                    check_server_params(Network::Mainnet, Some(&p)),
+                    Err(MintError::Inconsistent { .. })
+                ),
+                "case {i}"
+            );
+        }
+    }
+
+    fn info(requires_armed: bool) -> rpc::YellowbackInfo {
+        rpc::YellowbackInfo {
+            enabled: true,
+            activation: Some(rpc::YellowbackActivationState {
+                status: "active".into(),
+                ..Default::default()
+            }),
+            mint_requires_armed: requires_armed,
+            ..Default::default()
+        }
+    }
+
+    fn price(armed: bool) -> rpc::YedPrice {
+        rpc::YedPrice {
+            armed,
+            attest_status: if armed { "ARMED" } else { "PENDING" }.into(),
+            ..Default::default()
+        }
+    }
+
+    fn stats(classes: &[&str], halts: &[&str]) -> rpc::YellowbackStats {
+        rpc::YellowbackStats {
+            mintable_classes: classes.iter().map(|c| c.to_string()).collect(),
+            halt_mask: halts.iter().map(|c| c.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// H-1, H-5: the mint gate's states.
+    #[test]
+    fn mint_gate_states() {
+        let r = Network::Regtest;
+        let m = Network::Mainnet;
+        // Armed, every class: open.
+        let g = mint_gate(r, &info(false), &price(true), &stats(&["A", "B", "C"], &[])).unwrap();
+        assert!(g.blocked.is_none() && g.mintable_classes == ["A", "B", "C"]);
+        // Regtest without the flag: an unarmed price does not block (the node does not either).
+        let g = mint_gate(r, &info(false), &price(false), &stats(&["A"], &[])).unwrap();
+        assert!(g.blocked.is_none() && !g.requires_armed);
+        // Regtest with the flag: blocked, with the attestation status in the reason.
+        let g = mint_gate(r, &info(true), &price(false), &stats(&[], &[])).unwrap();
+        assert!(g.requires_armed);
+        assert!(g
+            .blocked
+            .as_deref()
+            .unwrap()
+            .contains("not armed (attestation PENDING)"));
+        // Mainnet requires ARMED whatever the server says.
+        let g = mint_gate(m, &info(false), &price(false), &stats(&["A"], &[])).unwrap();
+        assert!(g.requires_armed && g.blocked.is_some());
+        let g = mint_gate(m, &info(true), &price(true), &stats(&["A"], &[])).unwrap();
+        assert!(g.blocked.is_none() && g.mintable_classes == ["A"]);
+        // Empty mintableClasses: no class mintable, with the halts named.
+        let g = mint_gate(
+            m,
+            &info(true),
+            &price(true),
+            &stats(&[], &["GLOBAL_RATIO", "PARTICIPATION"]),
+        )
+        .unwrap();
+        assert!(g.mintable_classes.is_empty());
+        assert!(g
+            .blocked
+            .as_deref()
+            .unwrap()
+            .contains("GLOBAL_RATIO, PARTICIPATION"));
+        let g = mint_gate(m, &info(true), &price(true), &stats(&[], &[])).unwrap();
+        assert!(g
+            .blocked
+            .as_deref()
+            .unwrap()
+            .starts_with("No term class is mintable now"));
+        // A mainnet server listing a disabled class is inconsistent (H-5).
+        assert!(matches!(
+            mint_gate(m, &info(true), &price(true), &stats(&["A", "B"], &[])),
+            Err(MintError::Inconsistent { .. })
+        ));
+        // Not active.
+        let mut i = info(true);
+        i.activation.as_mut().unwrap().status = "locked_in".into();
+        let g = mint_gate(r, &i, &price(true), &stats(&["A"], &[])).unwrap();
+        assert!(g.blocked.as_deref().unwrap().contains("not active"));
+    }
+
+    /// RED-5 recomputed from `pClaim`, and the claim bounds (H-9.3).
+    #[test]
+    fn claimable_residual_and_bounds() {
+        // $100 debt at pClaim $0.10/YEC: claimantMax = ⌈10⁴ · margin · 10⁸ / 10⁵⌉ — 1.1·10¹¹
+        // under clause (a), 10¹¹ under (b).
+        let (cm_a, cm_b) = (110_000_000_000i64, 100_000_000_000i64);
+        let row = |path: &str, collateral: i64, residual: i64| rpc::YedClaimable {
+            vault: format!("{}:0", "ab".repeat(32)),
+            claim_path: path.into(),
+            collateral_zat: collateral,
+            minted_cents: 10_000,
+            p_claim: 100_000,
+            residual_zat: residual,
+            ..Default::default()
+        };
+        // Clause (a): underwater means collateral < claimantMax, so the residual is 0.
+        assert_eq!(check_claimable(&row("a", cm_a - 1_000, 0)).unwrap(), 0);
+        // An invented residual under (a): refused.
+        assert!(check_claimable(&row("a", cm_a - 1_000, 50_000_000)).is_err());
+        // Not underwater at the row's own pClaim: refused even with a matching residual.
+        assert!(check_claimable(&row("a", cm_a + 50_000_000, 50_000_000)).is_err());
+        // Clause (b): no margin; the residual is RED-5's.
+        assert_eq!(
+            check_claimable(&row("b", cm_b + 70_000_000, 70_000_000)).unwrap(),
+            70_000_000
+        );
+        assert!(check_claimable(&row("b", cm_b + 70_000_000, 80_000_000)).is_err());
+        assert!(check_claimable(&row("b", cm_b + 70_000_000, 60_000_000)).is_err());
+        // A dust residual: the RPC's unfloored figure and 0 are both accepted; 0 is paid.
+        assert_eq!(check_claimable(&row("b", cm_b + 5_000, 5_000)).unwrap(), 0);
+        assert_eq!(check_claimable(&row("b", cm_b + 5_000, 0)).unwrap(), 0);
+        assert!(check_claimable(&row("c", cm_a - 1, 0)).is_err());
+        let mut undefined = row("a", cm_a - 1, 0);
+        undefined.p_claim = 0;
+        assert!(check_claimable(&undefined).is_err());
+
+        let take = claimant_take(10_000_000_000, 50_000_000, 12_500_000, 0);
+        assert_eq!(
+            take,
+            10_000_000_000 - 50_000_000 - 12_500_000 - params::FEE_ZAT
+        );
+        let bounds = ClaimBounds {
+            max_burn_cents: 10_000,
+            min_out_zat: take,
+        };
+        assert!(check_claim_bounds(&bounds, 10_000, take).is_ok());
+        assert!(check_claim_bounds(&bounds, 9_000, take + 1).is_ok());
+        assert!(matches!(
+            check_claim_bounds(&bounds, 10_001, take),
+            Err(MintError::BoundExceeded {
+                what: "claim-burn-above-max",
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_claim_bounds(&bounds, 10_000, take - 1),
+            Err(MintError::BoundExceeded {
+                what: "claim-out-below-min",
+                ..
+            })
+        ));
     }
 }

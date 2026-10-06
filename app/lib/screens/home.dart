@@ -13,6 +13,7 @@ import '../state/app_scope.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
 import '../widgets/balance_card.dart';
+import '../widgets/claim_warning.dart';
 import '../widgets/move_sheet.dart';
 import 'receive.dart';
 import 'send.dart';
@@ -66,6 +67,7 @@ class _HomeScreenState extends State<HomeScreen> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
           children: [
+            ClaimWarningBanner(vaults: app.vaults),
             BalanceCard(
               title: 'Yellowback',
               amount: formatYed(b.yedCents),

@@ -17,11 +17,11 @@ class TermClass {
   bool contains(int blocks) => blocks >= minBlocks && blocks <= maxBlocks;
 }
 
-/// Mainnet and testnet: 75-second blocks, 30–90 days / 90–365 days / 1–5 years.
+/// Mainnet and testnet: 75-second blocks, class A 30–90 days alone. Classes B (90 days – 1
+/// year) and C (1–5 years) are disabled by the node's parameter set (hardening H-5: an empty
+/// term range), so the picker does not offer them; the core refuses them too.
 const List<TermClass> _mainTerms = [
   TermClass('A', '30–90 days', 34560, 103680),
-  TermClass('B', '90 days – 1 year', 103681, 420480),
-  TermClass('C', '1–5 years', 420481, 2102400),
 ];
 
 /// Regtest (the devnet): the same three classes in blocks a laptop can mine.

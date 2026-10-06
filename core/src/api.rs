@@ -112,6 +112,9 @@ pub enum ErrorKind {
     Refused,
     /// Not enough YEC for the fee of a YED operation (§3.7 item 4).
     NeedYecForFees,
+    /// Minting is not possible now (hardening H-1: the price is not armed and the network
+    /// requires it; H-5 / W16 / W20: no term class is mintable). `message` is the reason.
+    MintBlocked,
     /// Bad input from the app (mnemonic, address, WIF, amount).
     Input,
     /// A preview id that no longer exists.
@@ -173,6 +176,9 @@ impl From<WalletError> for YewError {
                 crate::build::mint::MintError::BadAmount { .. }
                 | crate::build::mint::MintError::BadLock { .. },
             ) => YewError::new(ErrorKind::Input, text),
+            WalletError::Mint(crate::build::mint::MintError::Blocked { reason }) => {
+                YewError::new(ErrorKind::MintBlocked, reason)
+            }
             WalletError::Mint(m) => YewError::new(ErrorKind::Refused, m.to_string()),
             WalletError::Shielded(s) => YewError::from(s),
             other => YewError::new(ErrorKind::Other, other.to_string()),
@@ -770,6 +776,60 @@ pub struct VaultSummary {
     pub closing_txid: String,
     /// `voidReason`, empty unless VOID.
     pub void_reason: String,
+    /// `lockHeight` as a date (H-9.2): Unix seconds, estimated from the last synced height and
+    /// the chain's target spacing (75 s): `now + (lockHeight − tip) · 75`; in the past once
+    /// reached.
+    pub lock_time_secs: i64,
+    /// `claimHeight` as a date, estimated the same way.
+    pub claim_time_secs: i64,
+    /// Blocks until `claimHeight` (0 once reached).
+    pub blocks_until_claim: i64,
+    /// `ACTIVE` and `tip >= lockHeight`: the wallet offers **renew** (redeem, then re-mint the
+    /// same amount and term in one flow) beside redeem (H-9.2).
+    pub renewable: bool,
+    /// The lock to re-mint with on renew: the original mint's `lockBlocks` when this wallet
+    /// made it, else `lockHeight − mintHeight` clamped into the class (a restored wallet).
+    pub renew_lock_blocks: u32,
+    /// `ACTIVE` and `tip >= claimHeight − 1 day` (the network's day, `Network::day_blocks`):
+    /// the persistent warning that a liquidator may claim the vault once it is underwater
+    /// (H-9.2). No sunset warning (upgrade plan §7: H-9.2 kept, the sunset leg dropped).
+    pub claim_warning: bool,
+    /// `ACTIVE` and `tip >= claimHeight`: the claim path is open.
+    pub claim_open: bool,
+}
+
+/// Whether a mint can be made now (hardening H-1, H-5; the Mint screen's gate): read from
+/// `GetYellowbackInfo.mintRequiresArmed`, `GetPrice.armed` and `GetStats.mintableClasses`,
+/// with the server's parameter set checked against the network's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MintAvailability {
+    /// No reason blocks a mint.
+    pub allowed: bool,
+    /// Why not (empty when `allowed`), the text to show.
+    pub reason: String,
+    /// `MINT_REQUIRES_ARMED`.
+    pub mint_requires_armed: bool,
+    /// The price is armed at the index tip.
+    pub armed: bool,
+    /// The attestation status at the tip.
+    pub attest_status: String,
+    /// The term classes a mint can use now (empty = none).
+    pub mintable_classes: Vec<String>,
+    /// The term classes this network enables (H-5: `A` alone on mainnet and testnet).
+    pub enabled_classes: Vec<String>,
+    /// The halts in force (`GetStats.haltMask`).
+    pub halts: Vec<String>,
+}
+
+/// The bounds a claim was confirmed with (H-9.3; `yed_claim`'s `maxBurnCents` / `minOutZat`):
+/// from the [`ClaimableItem`] the user saw. The core refuses before signing when the server's
+/// numbers would burn more or pay less.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimTerms {
+    /// `ClaimableItem::cents`.
+    pub max_burn_cents: i64,
+    /// `ClaimableItem::claimant_zat`.
+    pub min_out_zat: i64,
 }
 
 /// One `ListClaimable` row (the liquidator persona, plan §5.3).
@@ -2239,14 +2299,53 @@ fn mint_status_of(m: &crate::store::MintRow, tip: u64) -> MintStatus {
     }
 }
 
+/// The lock to re-mint a vault with (H-9.2 renew): the original mint's `lock_blocks` when a
+/// `mints` row of this wallet made it, else `lockHeight − mintHeight` clamped into the
+/// vault's class (or class A) of `network`.
+fn renew_lock_blocks(
+    v: &crate::store::VaultRow,
+    mints: &[crate::store::MintRow],
+    network: Network,
+) -> u32 {
+    if let Some(m) = mints.iter().find(|m| {
+        m.kind == crate::store::MintKind::Mint && m.vault_txid == v.txid && m.lock_blocks > 0
+    }) {
+        return m.lock_blocks;
+    }
+    let class = network
+        .enabled_classes()
+        .find(|c| c.letter == v.term_class)
+        .or_else(|| network.enabled_classes().next());
+    let guess = (v.lock_height as i64 - v.mint_height as i64).max(0) as u32;
+    match class {
+        Some(c) => guess.clamp(c.min_blocks, c.max_blocks),
+        None => guess,
+    }
+}
+
+/// A height as a date: `now + (height − tip) · spacing` (H-9.2).
+fn height_time(network: Network, height: u64, tip: u64, now_secs: i64) -> i64 {
+    now_secs + (height as i64 - tip as i64) * network.target_spacing_secs()
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 fn vault_summary(
     v: &crate::store::VaultRow,
     tip: u64,
     price: Option<i64>,
     network: Network,
+    mints: &[crate::store::MintRow],
+    now_secs: i64,
 ) -> VaultSummary {
     let active = v.status == "ACTIVE";
     let void = v.status == "VOID";
+    let claim_warn_from = (v.claim_height as u64).saturating_sub(network.day_blocks() as u64);
     VaultSummary {
         vault_txid: txid_hex(&v.txid),
         status: v.status.clone(),
@@ -2270,6 +2369,13 @@ fn vault_summary(
         close_height: v.close_height as i64,
         closing_txid: v.closing_txid.clone(),
         void_reason: v.void_reason.clone(),
+        lock_time_secs: height_time(network, v.lock_height as u64, tip, now_secs),
+        claim_time_secs: height_time(network, v.claim_height as u64, tip, now_secs),
+        blocks_until_claim: (v.claim_height as i64 - tip as i64).max(0),
+        renewable: active && tip >= v.lock_height as u64,
+        renew_lock_blocks: renew_lock_blocks(v, mints, network),
+        claim_warning: active && tip >= claim_warn_from,
+        claim_open: active && tip >= v.claim_height as u64,
     }
 }
 
@@ -2293,6 +2399,35 @@ fn row_status(o: &Open, id: i64) -> Result<MintStatus, YewError> {
         .map_err(store_err)?
         .ok_or_else(|| YewError::new(ErrorKind::Input, format!("no mint with id {id}")))?;
     Ok(mint_status_of(&m, synced_tip(o)?))
+}
+
+/// Whether a mint can be made now (connects; no sync): the Mint screen calls it before the
+/// estimate and blocks the screen with `reason` when it is not `allowed` (hardening H-1:
+/// `mintRequiresArmed` and the price not armed; H-5: an empty `mintableClasses` = no class
+/// mintable, class A only at launch).
+pub fn mint_availability() -> Result<MintAvailability, YewError> {
+    with_open_async(|o| {
+        Box::pin(async move {
+            ensure_conn(o).await?;
+            let Open { wallet, conn, .. } = o;
+            let conn = conn.as_mut().expect("connected");
+            let g = wallet.mint_gate(&mut conn.validator).await?;
+            Ok(MintAvailability {
+                allowed: g.blocked.is_none(),
+                reason: g.blocked.clone().unwrap_or_default(),
+                mint_requires_armed: g.requires_armed,
+                armed: g.armed,
+                attest_status: g.attest_status.clone(),
+                mintable_classes: g.mintable_classes.iter().map(|c| c.to_string()).collect(),
+                enabled_classes: wallet
+                    .network
+                    .enabled_classes()
+                    .map(|c| c.letter.to_string())
+                    .collect(),
+                halts: g.halts.clone(),
+            })
+        })
+    })
 }
 
 /// The mint estimate (after a sync): collateral, fees, payee, heights, term class, attestor
@@ -2456,10 +2591,12 @@ pub fn vaults() -> Result<Vec<VaultSummary>, YewError> {
         let tip = synced_tip(o)?;
         let price = o.wallet.balances()?.price_micro_usd;
         let network = o.wallet.network;
+        let mints = o.wallet.mints()?;
+        let now = now_secs();
         Ok(o.wallet
             .vaults()?
             .iter()
-            .map(|v| vault_summary(v, tip, price, network))
+            .map(|v| vault_summary(v, tip, price, network, &mints, now))
             .collect())
     })
 }
@@ -2573,9 +2710,21 @@ pub fn claimable() -> Result<Vec<ClaimableItem>, YewError> {
 
 /// Start a claim of another wallet's claimable vault (after a sync): the bundle, the carrier
 /// through the gate, a row of kind `claim`. Returns the row; [`mint_finish`] sends the CLAIM
-/// once the carrier is confirmed.
-pub fn claim(vault_txid: String) -> Result<MintStatus, YewError> {
+/// once the carrier is confirmed. `confirmed` is the debt and the take the Claimable screen
+/// showed: a server answer that would burn more or pay less is refused before anything is
+/// signed (`claim-burn-above-max` / `claim-out-below-min`, H-9.3).
+pub fn claim(vault_txid: String, confirmed: ClaimTerms) -> Result<MintStatus, YewError> {
     let txid = parse_txid(&vault_txid)?;
+    if confirmed.max_burn_cents <= 0 || confirmed.min_out_zat <= 0 {
+        return Err(YewError::new(
+            ErrorKind::Input,
+            "A claim needs the debt and the take you confirmed.",
+        ));
+    }
+    let bounds = crate::build::terms::ClaimBounds {
+        max_burn_cents: confirmed.max_burn_cents as u64,
+        min_out_zat: confirmed.min_out_zat,
+    };
     with_open_async(|o| {
         Box::pin(async move {
             let r = o.sync().await?;
@@ -2587,6 +2736,7 @@ pub fn claim(vault_txid: String) -> Result<MintStatus, YewError> {
                         &mut conn.compact,
                         &mut conn.validator,
                         &txid,
+                        Some(&bounds),
                         r.tip,
                         r.branch_id,
                     )
@@ -2633,7 +2783,28 @@ mod tests {
         assert_eq!(vaults().unwrap_err().kind, ErrorKind::Locked);
         assert_eq!(mints().unwrap_err().kind, ErrorKind::Locked);
         // A malformed vault txid is refused before the wallet is looked at.
-        assert_eq!(claim("x".into()).unwrap_err().kind, ErrorKind::Input);
+        let terms = ClaimTerms {
+            max_burn_cents: 10_000,
+            min_out_zat: 1,
+        };
+        assert_eq!(
+            claim("x".into(), terms.clone()).unwrap_err().kind,
+            ErrorKind::Input
+        );
+        // A claim without the confirmed bounds is refused (H-9.3).
+        let unbounded = ClaimTerms {
+            max_burn_cents: 0,
+            min_out_zat: 0,
+        };
+        assert_eq!(
+            claim("ab".repeat(32), unbounded).unwrap_err().kind,
+            ErrorKind::Input
+        );
+        assert_eq!(mint_availability().unwrap_err().kind, ErrorKind::Locked);
+        assert_eq!(
+            claim("ab".repeat(32), terms).unwrap_err().kind,
+            ErrorKind::Locked
+        );
         assert_eq!(
             redeem_preview("zz".into()).unwrap_err().kind,
             ErrorKind::Input
@@ -2872,7 +3043,7 @@ mod tests {
         let done = MintRow {
             state: MintState::Done,
             main_txid: [0xcd; 32],
-            ..row
+            ..row.clone()
         };
         let s = mint_status_of(&done, 540);
         assert!(!s.in_progress && !s.can_finish && s.main_txid == txid_hex(&[0xcd; 32]));
@@ -2897,30 +3068,68 @@ mod tests {
             void_reason: String::new(),
             updated_height: 510,
         };
-        let v = vault_summary(&vault, 510, Some(520_000), Network::Regtest);
+        const NOW: i64 = 1_790_000_000;
+        let v = vault_summary(&vault, 510, Some(520_000), Network::Regtest, &[], NOW);
         assert!(v.open && !v.redeemable && !v.releasable && !v.underwater);
         assert_eq!(v.blocks_until_redeem, 8);
+        // H-9.2: the deadlines as dates (75 s blocks), no renew before lockHeight, no warning
+        // before claimHeight − 1 day (regtest's day is one block).
+        assert_eq!(v.lock_time_secs, NOW + 8 * 75);
+        assert_eq!(v.claim_time_secs, NOW + 28 * 75);
+        assert_eq!(v.blocks_until_claim, 28);
+        assert!(!v.renewable && !v.claim_warning && !v.claim_open);
+        // No mints row: the renew lock is lockHeight − mintHeight clamped into class A (48..96).
+        assert_eq!(v.renew_lock_blocks, 48);
+        let row_for_vault = MintRow {
+            vault_txid: [0xef; 32],
+            lock_blocks: 60,
+            ..row.clone()
+        };
+        let v = vault_summary(&vault, 536, None, Network::Regtest, &[row_for_vault], NOW);
+        assert!(v.renewable && !v.claim_warning && v.renew_lock_blocks == 60);
+        let v = vault_summary(&vault, 537, None, Network::Regtest, &[], NOW);
+        assert!(v.renewable && v.claim_warning && !v.claim_open);
+        assert_eq!(v.lock_time_secs, NOW - 19 * 75);
+        let v = vault_summary(&vault, 538, None, Network::Regtest, &[], NOW);
+        assert!(v.claim_warning && v.claim_open && v.blocks_until_claim == 0);
         assert_eq!(v.cents, 25_000);
         assert_eq!(
             v.owner_address,
             keys::encode_yellowback(Network::Regtest, &[2; 20])
         );
-        let v = vault_summary(&vault, 518, Some(390_000), Network::Regtest);
+        let v = vault_summary(&vault, 518, Some(390_000), Network::Regtest, &[], NOW);
         assert!(v.redeemable && v.underwater && v.blocks_until_redeem == 0);
         let void = VaultRow {
             status: "VOID".into(),
             void_reason: "abandoned".into(),
             ..vault.clone()
         };
-        let v = vault_summary(&void, 510, None, Network::Regtest);
+        let v = vault_summary(&void, 540, None, Network::Regtest, &[], NOW);
         assert!(v.open && v.releasable && !v.redeemable && !v.underwater);
+        assert!(!v.renewable && !v.claim_warning);
         let closed = VaultRow {
             status: "CLOSED".into(),
             close_height: 520,
             ..vault
         };
-        let v = vault_summary(&closed, 530, Some(100_000), Network::Regtest);
+        let v = vault_summary(&closed, 540, Some(100_000), Network::Regtest, &[], NOW);
         assert!(!v.open && !v.redeemable && !v.underwater && v.close_height == 520);
+        assert!(!v.renewable && !v.claim_warning && !v.claim_open);
+        // Mainnet: the warning opens 1,152 blocks (one day) before claimHeight.
+        let main = VaultRow {
+            lock_height: 1_000_000,
+            claim_height: 1_034_560,
+            mint_height: 930_000,
+            status: "ACTIVE".into(),
+            void_reason: String::new(),
+            ..void.clone()
+        };
+        let v = vault_summary(&main, 1_033_407, None, Network::Mainnet, &[], NOW);
+        assert!(v.renewable && !v.claim_warning);
+        assert_eq!(v.claim_time_secs, NOW + 1_153 * 75);
+        assert_eq!(v.renew_lock_blocks, 70_000);
+        let v = vault_summary(&main, 1_033_408, None, Network::Mainnet, &[], NOW);
+        assert!(v.claim_warning);
     }
 
     #[test]

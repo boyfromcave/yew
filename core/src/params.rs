@@ -17,7 +17,11 @@
 //! The protocol constants a server-supplied mint, claim or vault is checked against (audit
 //! G-1, G-2) live here too: the term classes, `GRACE`, `FEE_MIN` / `FEE_BPS`,
 //! `ATTEST_FEE_BPS`, the mint bounds. Every value is the node's compiled-in parameter set
-//! (`ycash-dd/src/yellowback/params.cpp` `SetCommon` `:14-104`, `RegtestParams` `:186-240`).
+//! (`ycash-dd/src/yellowback/params.cpp` `SetCommon` `:14-106`, `RegtestParams` `:196-263`),
+//! at branch `harden/yellowback` (hardening H-1, H-4, H-5, H-12: mainnet and testnet differ
+//! from regtest in `FEE_BPS`, `ATTEST_FEE_BPS`, `MAX_MINT` and the enabled classes, so those
+//! are per [`Network`]). The server's own `GetYellowbackInfo.params` is compared against them
+//! (`build::terms::check_server_params`) and never used in their place (audit G-1, G-2).
 
 /// The three Ycash networks. The chain name is what `GetLightdInfo.chainName` reports
 /// (`"main"`, `"test"`, `"regtest"`) and what `yellowback::Params::network` holds
@@ -141,6 +145,18 @@ pub struct TermClass {
     pub base_ratio_bps: i64,
 }
 
+impl TermClass {
+    /// `Params::IsClassEnabled` (hardening H-5): a class with an empty term range
+    /// (`classMin > classMax`) is disabled; no lock length falls in it.
+    pub fn enabled(&self) -> bool {
+        self.min_blocks <= self.max_blocks
+    }
+}
+
+/// Mainnet and testnet (`ycash-dd/src/yellowback/params.cpp` `SetCommon` `:52-58`, branch
+/// `harden/yellowback`): class A 30–90 days at 500 %; classes B and C are **disabled** by an empty
+/// term range `[classMax[A] + 1, classMax[A]]` (hardening H-5: `classMin > classMax`, MINT-2
+/// refuses every term in them). The enabled bounds were B 103,681–420,480 and C 420,481–2,102,400.
 const MAIN_CLASSES: [TermClass; 3] = [
     TermClass {
         index: 0,
@@ -153,14 +169,14 @@ const MAIN_CLASSES: [TermClass; 3] = [
         index: 1,
         letter: "B",
         min_blocks: 103_681,
-        max_blocks: 420_480,
+        max_blocks: 103_680,
         base_ratio_bps: 40_000,
     },
     TermClass {
         index: 2,
         letter: "C",
-        min_blocks: 420_481,
-        max_blocks: 2_102_400,
+        min_blocks: 103_681,
+        max_blocks: 103_680,
         base_ratio_bps: 30_000,
     },
 ];
@@ -214,6 +230,67 @@ impl Network {
         }
     }
 
+    /// The enabled term classes, in class order (hardening H-5: class A alone on mainnet and
+    /// testnet; all three on regtest).
+    pub fn enabled_classes(self) -> impl Iterator<Item = &'static TermClass> {
+        self.term_classes().iter().filter(|c| c.enabled())
+    }
+
+    /// `FEE_BPS`, the enforcement fee rate (FEE-1): 0.15 % on mainnet and testnet (hardening
+    /// H-4, `params.cpp:44`, was 25), 0.25 % on regtest (`RegtestParams` keeps the v3 value,
+    /// `params.cpp:222`).
+    pub fn fee_bps(self) -> i64 {
+        match self {
+            Network::Mainnet | Network::Testnet => 15,
+            Network::Regtest => 25,
+        }
+    }
+
+    /// `ATTEST_FEE_BPS`, the attestor fee as a share of the enforcement fee (AFEE-1): 50 % on
+    /// mainnet and testnet (H-4, `params.cpp:93`, D-3 had 2,500), 25 % on regtest (`:223`).
+    pub fn attest_fee_bps(self) -> i64 {
+        match self {
+            Network::Mainnet | Network::Testnet => 5_000,
+            Network::Regtest => 2_500,
+        }
+    }
+
+    /// `MAX_MINT` (MINT-2): $2,500 on mainnet and testnet (hardening H-12, `params.cpp:17`),
+    /// $10,000 on regtest (`:224`).
+    pub fn max_mint_cents(self) -> u64 {
+        match self {
+            Network::Mainnet | Network::Testnet => 250_000,
+            Network::Regtest => 1_000_000,
+        }
+    }
+
+    /// `MINT_REQUIRES_ARMED` where the network fixes it (hardening H-1, `params.cpp:105`):
+    /// `Some(true)` on mainnet and testnet, so a server reporting `mintRequiresArmed = false`
+    /// there is not believed; `None` on regtest, where `-yellowbackmintrequiresarmed` sets it
+    /// and the server's `GetYellowbackInfo.mintRequiresArmed` is the only source.
+    pub fn mint_requires_armed(self) -> Option<bool> {
+        match self {
+            Network::Mainnet | Network::Testnet => Some(true),
+            Network::Regtest => None,
+        }
+    }
+
+    /// The post-Blossom target block spacing, seconds: 75 on every network
+    /// (`ycash-dd/src/chainparams.cpp:107,360,570` `nPostBlossomPowTargetSpacing =
+    /// POST_BLOSSOM_POW_TARGET_SPACING`, `src/consensus/params.h` 75). The wallet's deadline
+    /// dates (H-9.2) are `now + (height − tip) · spacing`.
+    pub fn target_spacing_secs(self) -> i64 {
+        75
+    }
+
+    /// One day in blocks **on the network's own calendar**, the lead of the "claim opens
+    /// soon" warning (H-9.2: from `claimHeight − 1 day`): `⌈GRACE / 30⌉`, since `GRACE` is
+    /// 30 days (`params.cpp:46`). Mainnet and testnet: 1,152 blocks (= 86,400 s / 75 s);
+    /// regtest, whose classes and grace are scaled to blocks a laptop can mine (GRACE 24): 1.
+    pub fn day_blocks(self) -> u32 {
+        self.grace().div_ceil(30)
+    }
+
     /// The `consensusBranchId`s a server for this network may report: the Ycash epochs from the
     /// Ycash fork on (`ref/ycash/src/consensus/upgrades.cpp:33-57`, `chainparams.cpp:126-138`
     /// main, `:379-395` test). Sprout, Overwinter and Sapling are pre-fork and shared with
@@ -237,18 +314,8 @@ impl Network {
 /// `FEE_MIN`: the enforcement fee floor, 0.5 YEC (`params.cpp:43`, V10).
 pub const FEE_MIN_ZAT: i64 = 50_000_000;
 
-/// `FEE_BPS`: the enforcement fee rate, 0.25 % of the collateral (`params.cpp:44`).
-pub const FEE_BPS: i64 = 25;
-
-/// `ATTEST_FEE_BPS`: the attestor fee as a share of the enforcement fee (`params.cpp:94`,
-/// AFEE-1, D-3).
-pub const ATTEST_FEE_BPS: i64 = 2_500;
-
 /// `MIN_MINT`: $100 (`params.cpp:16`, MINT-2).
 pub const MIN_MINT_CENTS: u64 = 10_000;
-
-/// `MAX_MINT`: $10,000 (`params.cpp:17`, MINT-2).
-pub const MAX_MINT_CENTS: u64 = 1_000_000;
 
 /// `sigmaMultBps` is clamped to `[10⁴, SIGMA_MULT_MAX_BPS]` (spec SIGMA-1; `params.cpp:59`).
 pub const SIGMA_MULT_MIN_BPS: i64 = 10_000;
@@ -259,15 +326,60 @@ pub const SIGMA_MULT_MAX_BPS: i64 = 30_000;
 /// `ref/ycash/src/script/script.h` `LOCKTIME_THRESHOLD = 500000000`).
 pub const LOCKTIME_THRESHOLD: u32 = 500_000_000;
 
-/// **FEE-1**: `feeZat(collateralZat) = max(FEE_MIN, collateralZat · FEE_BPS / 10⁴)`
-/// (spec §3.3; `ycash-dd/src/yellowback/rules.cpp` `FeeZat`).
-pub fn fee_zat_for(collateral_zat: i64) -> i64 {
-    FEE_MIN_ZAT.max(collateral_zat.saturating_mul(FEE_BPS) / BPS)
+/// **FEE-1**: `feeZat(collateralZat) = max(FEE_MIN, collateralZat · FEE_BPS / 10⁴)` with the
+/// network's `FEE_BPS` (spec §3.3; `ycash-dd/src/yellowback/math.h` `FeeZat`).
+pub fn fee_zat_for(network: Network, collateral_zat: i64) -> i64 {
+    FEE_MIN_ZAT.max(collateral_zat.max(0).saturating_mul(network.fee_bps()) / BPS)
 }
 
-/// **AFEE-1**: `attestFeeZat = feeZat · ATTEST_FEE_BPS / 10⁴` (spec §3.3 v3).
-pub fn attest_fee_zat_for(fee_zat: i64) -> i64 {
-    fee_zat.saturating_mul(ATTEST_FEE_BPS) / BPS
+/// **AFEE-1**: `attestFeeZat = feeZat · ATTEST_FEE_BPS / 10⁴` (spec §3.3 v3; `math.h`
+/// `AttestFeeZat`).
+pub fn attest_fee_zat_for(network: Network, fee_zat: i64) -> i64 {
+    if fee_zat <= 0 {
+        return 0;
+    }
+    fee_zat.saturating_mul(network.attest_fee_bps()) / BPS
+}
+
+/// `CLAIM_THRESHOLD_BPS`: 110 % (`params.cpp:47`, every network): a vault is underwater at
+/// `pClaim` when `collateral · pClaim < mintedCents · 1.1 · COIN` (`math.h` `IsUnderwater`), and
+/// the claimant's take under clause (a) carries this margin (RED-5).
+pub const CLAIM_THRESHOLD_BPS: i64 = 11_000;
+
+/// `RESIDUAL_MIN_ZAT`: 0.001 YEC (`params.cpp:92`, RED-5): a smaller residual is not paid.
+pub const RESIDUAL_MIN_ZAT: i64 = 100_000;
+
+/// **RED-5**: the residual a CLAIM returns to the owner, from the vault's terms and `pClaim`
+/// (`ycash-dd/src/yellowback/txbuilder.cpp` `ClaimAt` `:917-919`, `math.h` `ClaimantMaxZat`,
+/// `ResidualZat`): `claimantMax = ⌈cents · margin · COIN / pClaim⌉` with `margin` =
+/// `CLAIM_THRESHOLD_BPS` under clause `"a"` and `10⁴` under `"b"` (R1: no margin under the
+/// emergency clause); `residual = collateral − claimantMax` when positive and at least
+/// `RESIDUAL_MIN_ZAT`, else 0. `None` when `pClaim` is undefined (the claim is refused).
+pub fn residual_zat_for(
+    collateral_zat: i64,
+    minted_cents: u64,
+    p_claim: i64,
+    claim_path: &str,
+) -> Option<i64> {
+    if p_claim <= 0 || minted_cents == 0 {
+        return None;
+    }
+    let margin = if claim_path == "a" {
+        CLAIM_THRESHOLD_BPS
+    } else {
+        BPS
+    };
+    let num = (minted_cents as u128) * (margin as u128) * (COIN as u128);
+    let claimant_max = num.div_ceil(p_claim as u128);
+    let residual = match i64::try_from(claimant_max) {
+        Ok(m) if collateral_zat > m => collateral_zat - m,
+        _ => 0,
+    };
+    Some(if residual >= RESIDUAL_MIN_ZAT {
+        residual
+    } else {
+        0
+    })
 }
 
 /// `requiredZat(cents, class, S) = ⌈cents · minRatioBps · COIN / pMint⌉` (spec §3.3 "Required
@@ -413,12 +525,27 @@ mod tests {
             assert_eq!(n.grace(), 34_560);
             assert_eq!(n.class_for_lock_blocks(34_560).unwrap().letter, "A");
             assert_eq!(n.class_for_lock_blocks(103_680).unwrap().letter, "A");
-            assert_eq!(n.class_for_lock_blocks(103_681).unwrap().letter, "B");
-            assert_eq!(n.class_for_lock_blocks(420_481).unwrap().letter, "C");
-            assert_eq!(n.class_for_lock_blocks(2_102_400).unwrap().index, 2);
             assert!(n.class_for_lock_blocks(34_559).is_none());
+            assert!(n.class_for_lock_blocks(2_102_400).is_none());
+            assert!(n.class_for_lock_blocks(103_681).is_none());
+            assert!(n.class_for_lock_blocks(420_481).is_none());
             assert!(n.class_for_lock_blocks(2_102_401).is_none());
+            // H-5: class A alone; H-4 / H-12 values.
+            let enabled: Vec<&str> = n.enabled_classes().map(|c| c.letter).collect();
+            assert_eq!(enabled, ["A"]);
+            assert_eq!(n.fee_bps(), 15);
+            assert_eq!(n.attest_fee_bps(), 5_000);
+            assert_eq!(n.max_mint_cents(), 250_000);
+            assert_eq!(n.mint_requires_armed(), Some(true));
+            assert_eq!(n.day_blocks(), 1_152);
+            assert_eq!(n.day_blocks() as i64 * n.target_spacing_secs(), 86_400);
         }
+        assert_eq!(Network::Regtest.enabled_classes().count(), 3);
+        assert_eq!(Network::Regtest.fee_bps(), 25);
+        assert_eq!(Network::Regtest.attest_fee_bps(), 2_500);
+        assert_eq!(Network::Regtest.max_mint_cents(), 1_000_000);
+        assert_eq!(Network::Regtest.mint_requires_armed(), None);
+        assert_eq!(Network::Regtest.day_blocks(), 1);
         assert_eq!(Network::Regtest.grace(), 24);
         assert_eq!(
             Network::Regtest.class_for_lock_blocks(48).unwrap().letter,
@@ -429,15 +556,39 @@ mod tests {
             "B"
         );
         assert_eq!(
+            Network::Regtest.class_for_lock_blocks(97).unwrap().letter,
+            "B"
+        );
+        assert_eq!(
             Network::Regtest.class_for_lock_blocks(240).unwrap().letter,
             "C"
         );
         assert!(Network::Regtest.class_for_lock_blocks(47).is_none());
         assert!(Network::Regtest.class_for_lock_blocks(241).is_none());
-        // FEE-1 / AFEE-1.
-        assert_eq!(fee_zat_for(1_000_000_000), 50_000_000);
-        assert_eq!(fee_zat_for(400_000_000_000), 1_000_000_000);
-        assert_eq!(attest_fee_zat_for(50_000_000), 12_500_000);
+        // FEE-1 / AFEE-1, per network.
+        let r = Network::Regtest;
+        assert_eq!(fee_zat_for(r, 1_000_000_000), 50_000_000);
+        assert_eq!(fee_zat_for(r, 400_000_000_000), 1_000_000_000);
+        assert_eq!(attest_fee_zat_for(r, 50_000_000), 12_500_000);
+        let m = Network::Mainnet;
+        assert_eq!(fee_zat_for(m, 1_000_000_000), 50_000_000);
+        assert_eq!(fee_zat_for(m, 400_000_000_000), 600_000_000);
+        assert_eq!(attest_fee_zat_for(m, 50_000_000), 25_000_000);
+        assert_eq!(attest_fee_zat_for(m, 0), 0);
+        // RED-5: $100 at $0.52 under clause (a): claimantMax = ⌈10⁴ · 1.1 · 10⁸ / 520,000⌉.
+        let cm = (10_000u128 * 11_000 * 100_000_000).div_ceil(520_000) as i64;
+        assert_eq!(
+            residual_zat_for(cm + 100_000, 10_000, 520_000, "a"),
+            Some(100_000)
+        );
+        assert_eq!(residual_zat_for(cm + 99_999, 10_000, 520_000, "a"), Some(0));
+        assert_eq!(residual_zat_for(cm - 1, 10_000, 520_000, "a"), Some(0));
+        let cb = (10_000u128 * 10_000 * 100_000_000).div_ceil(520_000) as i64;
+        assert_eq!(
+            residual_zat_for(cb + 500_000, 10_000, 520_000, "b"),
+            Some(500_000)
+        );
+        assert_eq!(residual_zat_for(cb, 10_000, 0, "a"), None);
         // The spec's worked example: $100 at 300 % and $0.05/YEC = 6,000 YEC.
         assert_eq!(required_zat(10_000, 30_000, 50_000), Some(600_000_000_000));
         assert_eq!(required_zat(10_000, 30_000, 0), None);

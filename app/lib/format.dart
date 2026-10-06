@@ -70,3 +70,34 @@ String formatUsdPerYec(int microUsd) {
 /// `ab12cd34…ef56` for a txid or an address.
 String shorten(String s, {int head = 10, int tail = 6}) =>
     s.length <= head + tail + 1 ? s : '${s.substring(0, head)}…${s.substring(s.length - tail)}';
+
+/// `2026-10-06 14:05` (local time) from Unix seconds: a deadline height as a date (H-9.2). The
+/// core estimates the date from the chain's 75-second target spacing; it is not a promise.
+String formatDate(int unixSecs) {
+  final d = DateTime.fromMillisecondsSinceEpoch(unixSecs * 1000).toLocal();
+  String two(int v) => v.toString().padLeft(2, '0');
+  return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
+}
+
+/// `in about 3 days` / `about 5 hours ago` / `in under an hour`, relative to [now] (default:
+/// the clock).
+String formatRelative(int unixSecs, {DateTime? now}) {
+  final at = DateTime.fromMillisecondsSinceEpoch(unixSecs * 1000);
+  final d = at.difference(now ?? DateTime.now());
+  final future = !d.isNegative;
+  final a = d.abs();
+  final String span;
+  if (a.inDays >= 2) {
+    span = '${a.inDays} days';
+  } else if (a.inHours >= 2) {
+    span = '${a.inHours} hours';
+  } else if (a.inMinutes >= 60) {
+    span = 'an hour';
+  } else {
+    return future ? 'in under an hour' : 'under an hour ago';
+  }
+  return future ? 'in about $span' : 'about $span ago';
+}
+
+/// `height 528 · 2026-10-06 14:05 (in about 3 days)`: a deadline as both.
+String formatDeadline(int height, int unixSecs, {DateTime? now}) => 'height $height · ${formatDate(unixSecs)} (${formatRelative(unixSecs, now: now)})';

@@ -54,7 +54,9 @@ class _ClaimableScreenState extends State<ClaimableScreen> {
     final app = AppScope.read(context);
     final v = _picked!;
     try {
-      final row = await app.api.claim(vaultTxid: v.vaultTxid);
+      // The row shown is the bound confirmed: the core refuses a claim that would burn more
+      // or pay less than this (H-9.3).
+      final row = await app.api.claim(vaultTxid: v.vaultTxid, confirmed: ClaimTerms(maxBurnCents: v.cents, minOutZat: v.claimantZat));
       await app.refresh();
       if (!mounted) return;
       Navigator.of(context).pushReplacement(MaterialPageRoute<void>(builder: (_) => MintProgressScreen(mintId: row.mintId)));

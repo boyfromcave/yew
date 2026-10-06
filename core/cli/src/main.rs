@@ -923,7 +923,23 @@ async fn main() {
         "claim" => {
             let txid = parse_txid(o.rest.get(1).unwrap_or_else(|| usage()));
             let (w, mut c, mut v, r) = synced(&o).await;
-            let id = fail(w.claim(&mut c, &mut v, &txid, r.tip, r.branch_id).await);
+            // The bounds are the ListClaimable row as `claimable` prints it (H-9.3).
+            let shown = txid_hex(&txid);
+            let entry = fail(w.claimable(&mut v).await)
+                .into_iter()
+                .find(|x| x.vault_txid == shown)
+                .unwrap_or_else(|| {
+                    eprintln!("claim-not-underwater: vault {shown} is not in ListClaimable");
+                    std::process::exit(1)
+                });
+            let bounds = yew_core::build::terms::ClaimBounds {
+                max_burn_cents: entry.minted_cents,
+                min_out_zat: entry.claimant_zat,
+            };
+            let id = fail(
+                w.claim(&mut c, &mut v, &txid, Some(&bounds), r.tip, r.branch_id)
+                    .await,
+            );
             let m = fail(w.store.mint(id)).expect("row");
             println!(
                 "claim {id} started: carrier {} sent; after one block: sync, then mint-finish {id}",

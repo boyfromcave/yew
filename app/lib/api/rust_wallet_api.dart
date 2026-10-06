@@ -147,6 +147,9 @@ class RustWalletApi implements WalletApi {
   Stream<SyncEvent> syncNow() => rust.syncNow();
 
   @override
+  Future<MintAvailability> mintAvailability() => rust.mintAvailability();
+
+  @override
   Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks}) =>
       rust.mintEstimate(cents: cents, lockBlocks: lockBlocks);
 
@@ -179,7 +182,8 @@ class RustWalletApi implements WalletApi {
   Future<List<ClaimableItem>> claimable() => rust.claimable();
 
   @override
-  Future<MintStatus> claim({required String vaultTxid}) => rust.claim(vaultTxid: vaultTxid);
+  Future<MintStatus> claim({required String vaultTxid, required ClaimTerms confirmed}) =>
+      rust.claim(vaultTxid: vaultTxid, confirmed: confirmed);
 
   @override
   String generateSeedWords({required int words}) => rust.generateSeedWords(words: words);

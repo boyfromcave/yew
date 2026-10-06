@@ -400,7 +400,8 @@ pub async fn build_redeem(
         let (sel, change, extra, stage) = select_yed_burn(wallet, v.minted_cents)?;
         let selector = crate::bundle::outpoint_selector(&v.txid, v.vout);
         // FEE-1 locally (audit G-2): a server quoting more is refused before anything is signed.
-        let (fee_zat, payee) = mint::fee_payee(yb, r, v.collateral_zat, &selector).await?;
+        let (fee_zat, payee) =
+            mint::fee_payee(wallet.network, yb, r, v.collateral_zat, &selector).await?;
         (sel, change, extra, stage, fee_zat, payee)
     } else {
         (Vec::new(), 0, 0, SelectStage::None, 0, String::new())

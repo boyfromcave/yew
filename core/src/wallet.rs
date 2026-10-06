@@ -20,6 +20,7 @@ use thiserror::Error;
 use crate::build::claim::{self, Claimable};
 use crate::build::mint::{self, ConfirmedTerms, Finished, MintError, MintEstimate};
 use crate::build::redeem::{self, RedeemBuild};
+use crate::build::terms::{ClaimBounds, MintGate};
 use crate::build::yed_transfer::TransferError;
 use crate::coins::{self, CoinError, Utxo};
 use crate::gate::{GateError, Validator};
@@ -504,21 +505,32 @@ impl Wallet {
         validator: &mut Validator,
     ) -> Result<Vec<Claimable>, WalletError> {
         let yb = validator.client_mut().ok_or(GateError::YellowbackAbsent)?;
-        claim::claimable(yb).await
+        claim::claimable(self.network, yb).await
     }
 
     /// `claim(vaultTxid)`: start the two-step claim (bundle, carrier funding transaction, the
     /// `mints` row of kind `Claim`). Returns the row id; [`Wallet::mint_finish`] sends the
-    /// CLAIM once the carrier is confirmed.
+    /// CLAIM once the carrier is confirmed. `bounds` are the debt and the take the Claimable
+    /// screen showed (H-9.3): the claim is refused before signing when the server's numbers
+    /// exceed them.
+    #[allow(clippy::too_many_arguments)]
     pub async fn claim(
         &self,
         client: &mut CompactClient,
         validator: &mut Validator,
         vault_txid: &[u8; 32],
+        bounds: Option<&ClaimBounds>,
         tip: u64,
         branch_id: u32,
     ) -> Result<i64, WalletError> {
-        claim::start(self, client, validator, vault_txid, tip, branch_id).await
+        claim::start(self, client, validator, vault_txid, bounds, tip, branch_id).await
+    }
+
+    /// The mint gate (hardening H-1, H-5): whether a mint can be made now and why not, from
+    /// `GetYellowbackInfo` (its parameter set checked), `GetPrice` and `GetStats`.
+    pub async fn mint_gate(&self, validator: &mut Validator) -> Result<MintGate, WalletError> {
+        let yb = validator.client_mut().ok_or(GateError::YellowbackAbsent)?;
+        mint::gate_now(self.network, yb).await
     }
 
     /// The UTXOs that are not locked (the input set every builder selects from).

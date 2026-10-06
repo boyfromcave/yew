@@ -1233,7 +1233,10 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
         .redeem_preview(&mut v, &v1.txid, r.tip, r.branch_id)
         .await
         .unwrap();
-    assert_eq!(p.fee_zat, yew_core::params::fee_zat_for(v1.collateral_zat));
+    assert_eq!(
+        p.fee_zat,
+        yew_core::params::fee_zat_for(Network::Regtest, v1.collateral_zat)
+    );
     let (sent, val) = a.redeem_confirm(&mut c, &mut v, &p).await.unwrap();
     assert_eq!(
         (val.verdict.as_str(), val.path.as_str(), val.burned),
@@ -1353,10 +1356,58 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     println!("claimable: {entry:?}");
     assert!(r.tip >= target_claim_height);
     let target_id = txid_from_hex(&target_txid).unwrap();
+    // H-9.3: bounds tighter than the server's numbers are refused before the carrier is funded
+    // (no row, nothing signed); the bounds the screen showed pass.
+    let rows_before = a.mints().unwrap().len();
+    for (what, bounds) in [
+        (
+            "claim-burn-above-max",
+            yew_core::build::terms::ClaimBounds {
+                max_burn_cents: entry.minted_cents - 1,
+                min_out_zat: entry.claimant_zat,
+            },
+        ),
+        (
+            "claim-out-below-min",
+            yew_core::build::terms::ClaimBounds {
+                max_burn_cents: entry.minted_cents,
+                min_out_zat: entry.claimant_zat + 1,
+            },
+        ),
+    ] {
+        let e = a
+            .claim(
+                &mut c,
+                &mut v,
+                &target_id,
+                Some(&bounds),
+                r.tip,
+                r.branch_id,
+            )
+            .await
+            .unwrap_err();
+        assert!(e.to_string().starts_with(what), "{what}: {e}");
+    }
+    assert_eq!(a.mints().unwrap().len(), rows_before);
+    let bounds = yew_core::build::terms::ClaimBounds {
+        max_burn_cents: entry.minted_cents,
+        min_out_zat: entry.claimant_zat,
+    };
     let idc = a
-        .claim(&mut c, &mut v, &target_id, r.tip, r.branch_id)
+        .claim(
+            &mut c,
+            &mut v,
+            &target_id,
+            Some(&bounds),
+            r.tip,
+            r.branch_id,
+        )
         .await
         .unwrap();
+    assert_eq!(
+        a.store.claim_bounds(idc).unwrap(),
+        Some((entry.minted_cents, entry.claimant_zat))
+    );
     let mc = a.store.mint(idc).unwrap().unwrap();
     assert_eq!(
         (mc.kind, mc.cents, mc.collateral_zat),
