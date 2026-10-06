@@ -85,7 +85,7 @@ class _ClaimableScreenState extends State<ClaimableScreen> {
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
           children: [
             Text(
-              'Vaults the node judges claimable at its tip. Claiming burns the vault\'s debt from your YED and pays you its collateral, in two transactions like a mint.',
+              'Vaults the node judges claimable at its tip. Claiming burns the vault\'s debt from your YED and moves its collateral into a claim for you, in two transactions like a mint; you release it after the claim delay unless an attestor cancels a wrong-price claim first (then the burn is not refunded). The fees are paid from your YEC.',
               style: t.bodyMedium?.copyWith(color: c.pending),
             ),
             const SizedBox(height: 12),

@@ -16,6 +16,7 @@ import '../widgets/claim_warning.dart';
 import 'claimable.dart';
 import 'mint.dart';
 import 'mint_progress.dart';
+import 'release.dart';
 import 'vault.dart';
 
 class YellowbackScreen extends StatelessWidget {
@@ -76,6 +77,17 @@ class YellowbackScreen extends StatelessWidget {
               Text('In progress', style: t.titleMedium),
               const SizedBox(height: 8),
               for (final m in moving) _MintTile(m),
+            ],
+            if (app.intents.isNotEmpty) ...[
+              const SizedBox(height: 24),
+              Text('Claims and releases', style: t.titleMedium),
+              const SizedBox(height: 4),
+              Text(
+                'A claim\'s collateral waits out the claim delay before you release it; until then one attestor can cancel a wrong-price claim.',
+                style: t.bodySmall?.copyWith(color: c.pending),
+              ),
+              const SizedBox(height: 8),
+              for (final i in app.intents) IntentTile(i),
             ],
             const SizedBox(height: 24),
             Text('Your vaults', style: t.titleMedium),
@@ -151,7 +163,11 @@ class _VaultTile extends StatelessWidget {
     final c = yewColors(context);
     final t = Theme.of(context).textTheme;
     final String when;
-    if (!v.open) {
+    if (v.claiming) {
+      when = 'being claimed (at ${v.closeHeight}): an attestor can still cancel the claim during the claim delay';
+    } else if (v.reopened) {
+      when = 'claim cancelled by the attestor set: the vault continues at ${shorten(v.closingTxid)}';
+    } else if (!v.open) {
       when = '${v.status.toLowerCase()} at ${v.closeHeight}';
     } else if (v.releasable) {
       when = 'void (${v.voidReason}) · release the collateral';

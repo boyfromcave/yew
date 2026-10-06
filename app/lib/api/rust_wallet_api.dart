@@ -186,6 +186,15 @@ class RustWalletApi implements WalletApi {
       rust.claim(vaultTxid: vaultTxid, confirmed: confirmed);
 
   @override
+  Future<List<ClaimIntent>> claimIntents() => rust.claimIntents();
+
+  @override
+  Future<ReleasePreview> releasePreview({required String intent}) => rust.releasePreview(intent: intent);
+
+  @override
+  Future<ReleaseResult> releaseConfirm({required String previewId}) => rust.releaseConfirm(previewId: previewId);
+
+  @override
   String generateSeedWords({required int words}) => rust.generateSeedWords(words: words);
 
   @override
