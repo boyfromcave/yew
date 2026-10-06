@@ -30,10 +30,12 @@ the standard source ycashd uses or an address set in Settings, and kept only if 
 fingerprints built into YEW.
 
 When you mint, redeem or claim, the wallet checks the server's terms against the network's
-rules before you confirm: the lock and claim heights, the collateral the price calls for, and
-the enforcement fee, which is always the rule's amount and never more. What it cannot check is
-the fee's recipient: the server chooses which eligible miner the fee goes to, or that none is
-due. Use a server you trust for these operations.
+rules before you confirm: the lock and claim heights, the collateral the price calls for, the
+enforcement fee, which is always the rule's amount and never more, and on a claim the share
+returned to the vault's owner. It then signs only what you confirmed: if the server's answer
+would lock more collateral, burn more YED or pay you less, nothing is signed. What it cannot
+check is the fee's recipient: the server chooses which eligible miner the fee goes to, or that
+none is due. Use a server you trust for these operations.
 
 Before any YED leaves the wallet, the transaction is checked twice: once here, against the
 wallet's own record of which coins are YED, and once by the server's node, which must answer

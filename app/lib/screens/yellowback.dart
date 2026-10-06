@@ -12,6 +12,7 @@ import '../format.dart';
 import '../state/app_scope.dart';
 import '../theme.dart';
 import '../widgets/balance_card.dart';
+import '../widgets/claim_warning.dart';
 import 'claimable.dart';
 import 'mint.dart';
 import 'mint_progress.dart';
@@ -36,6 +37,7 @@ class YellowbackScreen extends StatelessWidget {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
           children: [
+            ClaimWarningBanner(vaults: vaults),
             BalanceCard(
               title: 'YED you hold',
               amount: formatYed(b.yedCents),
@@ -154,16 +156,16 @@ class _VaultTile extends StatelessWidget {
     } else if (v.releasable) {
       when = 'void (${v.voidReason}) · release the collateral';
     } else if (v.redeemable) {
-      when = 'redeemable now (lock height ${v.lockHeight})';
+      when = 'redeemable now (lock height ${v.lockHeight}) · renew or redeem before ${formatDate(v.claimTimeSecs)}';
     } else {
-      when = 'redeemable at ${v.lockHeight} · ${v.blocksUntilRedeem} block${v.blocksUntilRedeem == 1 ? '' : 's'} to go';
+      when = 'redeemable at ${v.lockHeight} · ${v.blocksUntilRedeem} block${v.blocksUntilRedeem == 1 ? '' : 's'} to go (${formatDate(v.lockTimeSecs)})';
     }
     return Card(
       child: ListTile(
         key: Key('vault-${v.vaultTxid}'),
         leading: Icon(
-          v.underwater ? Icons.warning_amber_rounded : (v.open ? Icons.lock_rounded : Icons.lock_open_rounded),
-          color: v.underwater ? c.danger : (v.open ? c.yed : c.pending),
+          v.underwater ? Icons.warning_amber_rounded : (v.claimWarning ? Icons.schedule_rounded : (v.open ? Icons.lock_rounded : Icons.lock_open_rounded)),
+          color: v.underwater || v.claimWarning ? c.danger : (v.open ? c.yed : c.pending),
         ),
         title: Text('${formatYed(v.cents)} · ${formatYec(v.collateralZat)} YEC', style: t.titleMedium),
         subtitle: Text(
