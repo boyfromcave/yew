@@ -48,41 +48,45 @@ thiserror = "=2.0.21"
 flutter_rust_bridge = "=2.13.0"
 # Sapling key derivation (yew-shielded plan S0-1, `shielded_keys.rs`): ZIP-32 over the BIP39
 # seed, the Sapling key types and their Bech32 encodings. `zcash_keys` comes from
-# boyfromcave/librustzcash6 (= miodragpop/librustzcash @ ec525fae, the Ycash-aware librustzcash
-# ycashd 6.21.0 pins and x402-ycash/light builds on), by path from the workspace checkout beside
-# this repo; a release switches it to a git rev. `sapling` feature only. `sapling-crypto` 0.7.0
+# boyfromcave/librustzcash6 by git rev: 4867cf85 = miodragpop/librustzcash @ ec525fae (the
+# Ycash-aware librustzcash ycashd 6.21.0 pins) plus the vault network upgrade (`BranchId::Vault`
+# = 0x6d5b7a31, the revision ycash6 `upgrade/vault` and x402-ycash/light `upgrade/vault` pin;
+# upgrade plan §15 finding 58). One source and revision for every `zcash_*` crate below and
+# in the light library, so Cargo unifies them. `sapling` feature only. `sapling-crypto` 0.7.0
 # and `zip32` 0.2.0 are the versions librustzcash6 locks (named directly for the key types).
-zcash_keys = { version = "=0.14.0", path = "../../librustzcash6/zcash_keys", default-features = false, features = ["std", "sapling"] }
+zcash_keys = { version = "=0.14.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["std", "sapling"] }
 sapling-crypto = { version = "=0.7.0", default-features = false, features = ["std"] }
 zip32 = { version = "=0.2.0", default-features = false }
 # The Ycash Sapling light client (yew-shielded plan S1/S2): compact-block sync from lightwalletd-dd,
 # the note store (`zcash_client_sqlite`), reorg handling, broadcast. The library crate of
-# `boyfromcave/x402-ycash` (`light/`, crate `x402-ycash-light`, lib `x402_ycash_light`), by path from
-# the workspace checkout beside this repo; a release switches it to a git rev of that repository.
-x402-ycash-light = { version = "=0.1.0", path = "../../x402-ycash/light" }
+# `boyfromcave/x402-ycash` (`light/`, crate `x402-ycash-light`, lib `x402_ycash_light`), by git rev
+# of its `upgrade/vault` branch (8daa6fb: the light library on librustzcash6 4867cf85, regtest
+# `vault=<h>`, signing the next block's branch from `GetChainInfo`). Git, not a path: the build
+# does not depend on the workspace layout, and CI resolves the same source as Cargo.lock.
+x402-ycash-light = { version = "=0.1.0", git = "https://github.com/boyfromcave/x402-ycash.git", rev = "8daa6fbba5479a684b2ca483b4cac51aea12a89a" }
 # The shielded spend path and the note store, read beside the light client (`core/src/shielded.rs`):
 # the light library syncs, YEW proposes/proves/signs (privacy-first funding, transparent recipients,
 # memos, the fee preview) and fetches memos (`decrypt_and_store_transaction`) itself, on the same
-# `zcash_client_sqlite` database. All from boyfromcave/librustzcash6 by path, at the versions the
+# `zcash_client_sqlite` database. All from boyfromcave/librustzcash6 at the rev above, the versions the
 # light library locks; no feature beyond what it already enables. `rand` (0.8, `OsRng`) is the RNG
 # type `WalletDb` is generic over, already in the graph through the same crates.
-zcash_client_backend = { version = "=0.22.0", path = "../../librustzcash6/zcash_client_backend", default-features = false }
-zcash_client_sqlite = { version = "=0.20.2", path = "../../librustzcash6/zcash_client_sqlite", default-features = false }
+zcash_client_backend = { version = "=0.22.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false }
+zcash_client_sqlite = { version = "=0.20.2", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false }
 # `transparent-inputs` (yew-shielded plan S4, `shielded::Shielded::build_shield`): the builder
 # spends YEW's transparent `YEC` coins into a Sapling output to the wallet's own `ys1…` address
 # (shield). YEW still selects the coins (`coins::select_yec`, never the reserve, never a token)
 # and the gate checks them; the builder computes the ZIP-243 sighash over the Sapling bundle and
 # signs the transparent inputs with the keys YEW hands it for that one call.
-zcash_primitives = { version = "=0.28.0", path = "../../librustzcash6/zcash_primitives", default-features = false, features = ["std", "transparent-inputs"] }
+zcash_primitives = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["std", "transparent-inputs"] }
 # The transparent types the builder takes (outpoint, coin, address, signing set), same crate
 # librustzcash6 already links (no new crate in Cargo.lock).
-zcash_transparent = { version = "=0.8.0", path = "../../librustzcash6/zcash_transparent", default-features = false, features = ["std", "transparent-inputs"] }
+zcash_transparent = { version = "=0.8.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["std", "transparent-inputs"] }
 # The secp256k1 the librustzcash6 builder signs with (0.29.1, already in Cargo.lock through
 # bip32), renamed: YEW's own signer stays on secp256k1 0.33.1 above. Used only to hand the
 # builder the keys of the selected coins (S4 shield).
 secp256k1_zcash = { package = "secp256k1", version = "=0.29.1", default-features = false, features = ["alloc"] }
-zcash_proofs = { version = "=0.28.0", path = "../../librustzcash6/zcash_proofs", default-features = false, features = ["local-prover"] }
-zcash_protocol = { version = "=0.9.0", path = "../../librustzcash6/components/zcash_protocol", default-features = false, features = ["std"] }
+zcash_proofs = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["local-prover"] }
+zcash_protocol = { version = "=0.9.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["std"] }
 rand = { version = "=0.8.8", default-features = false, features = ["std", "std_rng", "getrandom"] }
 # The Sapling proving parameters are downloaded over HTTPS on first shielded send (S0-2,
 # `core/src/sapling_params.rs`): rustls through `tokio-rustls` (the version tonic's TLS already

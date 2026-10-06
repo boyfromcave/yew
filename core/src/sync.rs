@@ -118,15 +118,7 @@ pub async fn sync(
             {
                 branch_id = params::VAULT_BRANCH_ID;
             }
-            activation = ci
-                .upgrades
-                .iter()
-                .find(|u| {
-                    u32::from_str_radix(u.branch_id.trim_start_matches("0x"), 16)
-                        .is_ok_and(|b| b == params::VAULT_BRANCH_ID)
-                })
-                .filter(|u| u.activation_height > 0)
-                .map(|u| u.activation_height as u64);
+            activation = crate::net::yellowback::vault_activation(&ci);
         }
     }
     let branch_id = params::signing_branch_id(
@@ -140,10 +132,7 @@ pub async fn sync(
     wallet
         .store
         .set_meta("branch_id", &format!("{:08x}", branch_id))?;
-    wallet.store.set_meta(
-        "vault_activation_height",
-        &activation.unwrap_or(0).to_string(),
-    )?;
+    wallet.set_vault_activation(activation)?;
     let birthday = wallet.birthday()?;
     let scanned = wallet.store.meta_u64("scanned_height")?;
     let mut report = SyncReport {
