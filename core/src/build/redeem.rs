@@ -3,8 +3,9 @@
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
 //! The owner-path vault spend (plan §4 rule 6; spec §3.5 "REDEEM, owner path" and "VOID
-//! RELEASE"): `vin[0]` = the own vault with `<ownerSig> OP_1 <vaultScript>` and `nSequence
-//! 0xFFFFFFFE`, `vin[1..]` = own YED inputs covering `mintedCents` (the floor-aware selector
+//! RELEASE"): `vin[0]` = the own vault — since the vault upgrade the bare V template, spent
+//! with `<ownerSig> OP_2` (selector 2, U-23; the v2 form was `<ownerSig> OP_1 <vaultScript>`
+//! under P2SH) — and `nSequence 0xFFFFFFFE`, `vin[1..]` = own YED inputs covering `mintedCents` (the floor-aware selector
 //! with the BURN stage, H4), outputs = collateral to a fresh own key, the enforcement fee to
 //! `payee(R, vaultOutpoint)`, optional YED change, the REDEEM payload; `nLockTime =
 //! lockHeight`, `nExpiryHeight = R + REF_WINDOW`, `R` = the index tip. A VOID vault is

@@ -6,10 +6,13 @@
 //! §3.5 "CLAIM"): the vault must be in `ListClaimable`; `R` = the index tip; the bundle is
 //! `BuildBundle(R, outpointSelector(vault))`, verified against `ListAttestors` (rule 6); the
 //! carrier step is the mint's (`build::mint::carrier_step`); after one confirmation the CLAIM
-//! spends the vault at `vin[0]` with `OP_0 <vaultScript>` and `nLockTime = claimHeight`, own
-//! YED inputs covering `mintedCents` (BURN stage allowed), the carrier at `vin[last]`, and
-//! outputs collateral → fee → YED change → attestor fee → residual to the owner (RED-5) →
-//! payload, in the node's slot order.
+//! spends the vault at `vin[0]` — since the vault upgrade (U-23) the bare V template with
+//! selector 4 (`OP_4`, the APP branch) — with `nLockTime = claimHeight` (the V's `appHeight`),
+//! own YED inputs covering `mintedCents` (BURN stage allowed), YEC fee inputs, the carrier at
+//! `vin[last]`, and outputs claimant intent → fee → YED change → attestor fee → the owner's
+//! residual intent (RED-5) → payload → fee change, in the node's slot order ([`plan_claim`]).
+//! The claimant's intent is released after `CLAIM_DELAY` (`build::release`) unless one attestor
+//! cancels it first (then the burn is not refunded, U-24).
 //!
 //! Translation source (plan §3.6): `ycash-dd/src/yellowback/txbuilder.cpp` — `BuildClaim`
 //! `:1301-1330`, `ClaimAt` `:845-884` (the residual; the client takes `residualZat`,

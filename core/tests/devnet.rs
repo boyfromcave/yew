@@ -1622,6 +1622,159 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The vault upgrade (U-24): a claim an attestor cancels during the claim delay. YEW claims a
+/// fresh vault of node 0 after a −80 % shock; attestor node 5 cancels the claimant intent
+/// (`vault_buildcancel` → `set_signcancel` → `vault_send`); YEW's sync marks the intent
+/// `CANCELLED` (the burn is not refunded), refuses a release, and the node re-created the vault
+/// as ACTIVE at the cancel's output 0. Needs the vault-upgrade devnet (`scripts/devnet-w4.sh`).
+#[tokio::test]
+#[ignore = "needs the ARMED vault-upgrade regtest devnet (scripts/devnet-w4.sh) and YEW_DEVNET=1"]
+async fn w4_claim_cancelled_by_the_attestor_set() {
+    if std::env::var("YEW_DEVNET").ok().as_deref() != Some("1") {
+        eprintln!("YEW_DEVNET is not 1; skipping");
+        return;
+    }
+    let dn = Devnet::new("yb-devnet-w0c", "9");
+    let server =
+        Server::parse(&env_or("YEW_DEVNET_SERVER", "127.0.0.1:9267".into()), true).unwrap();
+    let channel = server.connect().await.expect("connect to lightwalletd");
+    let mut c = CompactClient::from_channel(channel.clone());
+    let info = c.lightd_info_for(Network::Regtest).await.unwrap();
+    let (mut v, availability) = Validator::detect(YellowbackClient::from_channel(channel))
+        .await
+        .expect("probe");
+    assert!(availability.usable(), "{availability:?}");
+    let dir = std::env::temp_dir().join(format!("yew-devnet-w4c-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (mut b, _) = fresh_wallet(&dir, "b", info.block_height.saturating_sub(1));
+    // A fresh $100 vault of node 0 (the target), and $100 of YED for B to burn.
+    let active = |dn: &Devnet| -> Vec<String> {
+        dn.node_json(0, &["yed_listvaults", "ACTIVE"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["txid"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let before = active(&dn);
+    let m = dn.node_json(0, &["yed_mint", "10000", "48", "", "", "false"]);
+    println!("target mint: {m}");
+    let start = Instant::now();
+    let target = loop {
+        let h = dn.mine_pool();
+        wait_for_height(&mut c, h).await;
+        if let Some(t) = active(&dn).into_iter().find(|t| !before.contains(t)) {
+            break t;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(300),
+            "the target mint never confirmed"
+        );
+    };
+    let tv = dn.node_json(0, &["yed_getvault", &target]);
+    let claim_height = tv["claimHeight"].as_u64().unwrap();
+    let addr = b.receive_address(true).unwrap();
+    for amount in ["5", "3", "2"] {
+        dn.node(fund_node(), &["sendtoaddress", &addr.address_s, amount]);
+    }
+    let y = dn.node_json(0, &["yed_send", &addr.address_ye, "10000"]);
+    confirm(&dn, &mut c, y["txid"].as_str().unwrap()).await;
+    let mut r = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
+    assert!(r.yed.0 >= 10_000, "{r:?}");
+    dn.run(&["price", "--shock=-80%"]);
+    *dn.price.borrow_mut() = "10".into();
+    let start = Instant::now();
+    let entry = loop {
+        assert!(
+            start.elapsed() < Duration::from_secs(1200),
+            "the target never became claimable"
+        );
+        let h = dn.mine_pool();
+        wait_for_height(&mut c, h).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        r = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
+        if r.tip < claim_height {
+            continue;
+        }
+        if let Some(e) = b
+            .claimable(&mut v)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|x| x.vault_txid == target)
+        {
+            break e;
+        }
+    };
+    let target_id = txid_from_hex(&target).unwrap();
+    let bounds = yew_core::build::terms::ClaimBounds {
+        max_burn_cents: entry.minted_cents,
+        min_out_zat: entry.claimant_zat,
+    };
+    let id = b
+        .claim(
+            &mut c,
+            &mut v,
+            &target_id,
+            Some(&bounds),
+            r.tip,
+            r.branch_id,
+        )
+        .await
+        .unwrap();
+    let mc = b.store.mint(id).unwrap().unwrap();
+    confirm(&dn, &mut c, &txid_hex(&mc.carrier_txid)).await;
+    let r = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
+    let fc = b
+        .mint_finish(&mut c, &mut v, id, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    assert_eq!(fc.validation.verdict, "ok");
+    confirm(&dn, &mut c, &fc.txid).await;
+    let r = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
+    let yed_after_claim = r.yed.0;
+    let intent = OutPoint {
+        txid: txid_from_hex(&fc.txid).unwrap(),
+        n: 0,
+    };
+    assert_eq!(
+        b.store.intent(&intent).unwrap().unwrap().state,
+        yew_core::store::IntentState::Pending
+    );
+    // Attestor node 5 cancels the claim within the delay.
+    let ip = format!("{}:0", fc.txid);
+    let built = dn.node_json(5, &["vault_buildcancel", &ip]);
+    println!("vault_buildcancel: {built}");
+    let signed = dn.node(5, &["set_signcancel", built["hex"].as_str().unwrap()]);
+    let signed_hex = serde_json::from_str::<Value>(&signed)
+        .ok()
+        .and_then(|j| j["hex"].as_str().map(String::from))
+        .unwrap_or(signed);
+    let cancel = dn.node(5, &["vault_send", &signed_hex]);
+    println!("cancel {cancel}");
+    confirm(&dn, &mut c, &cancel).await;
+    let r = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
+    let row = b.store.intent(&intent).unwrap().unwrap();
+    assert_eq!(
+        row.state,
+        yew_core::store::IntentState::Cancelled,
+        "{row:?}"
+    );
+    assert!(row.note.contains("not refunded"), "{row:?}");
+    assert!(b.release_preview(&intent, r.tip, r.branch_id).is_err());
+    assert_eq!(r.yed.0, yed_after_claim, "the burn is not refunded (U-24)");
+    let reopened = dn.node_json(0, &["yed_getvault", &cancel]);
+    assert_eq!(reopened["status"].as_str().unwrap(), "ACTIVE", "{reopened}");
+    let ti = v.client_mut().unwrap().tx_info(&cancel).await.unwrap();
+    assert_eq!(ti.r#type, "claim_cancel");
+    println!(
+        "W4 cancel acceptance ok: claim {} cancelled by {cancel}; the vault lives on at {cancel}:0",
+        fc.txid
+    );
+    dn.run(&["price", "50"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---- yew-shielded plan S2: Sapling receive / send / memo on either node line ----------------
 
 /// `z_sendmany` from a fresh, funded transparent address of node 0 to `to` with a text memo,
