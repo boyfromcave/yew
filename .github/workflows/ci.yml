@@ -1,82 +1,160 @@
-# YEW CI (plan §6.4): Rust core on Linux and macOS; Flutter analyze/test on macOS; the bridge
-# and the proto pin are verified, not trusted (docs/release.md §1). `cargo audit` and the
-# license listing run on Linux (W5). The devnet suite is nightly on the owner's machine, not
-# here. iOS signing is never done in CI.
+# YEW CI (plan §6.4; workspace CI/CD design 2026-10-06). The bridge and the proto pin are
+# verified, not trusted (docs/release.md §1). iOS signing is never done in CI.
+#
+# Push / PR tier (every push and pull request on the branches below), four parallel jobs:
+#   core-linux   fmt, clippy (-D warnings), cargo test; the proto pin against lightwalletd-dd at the
+#                commit proto/PIN records; the dependency allow-list; the licence listing
+#   audit        cargo audit (W5; blocks only on advisories with a fix, scripts/audit.sh)
+#   core-macos   clippy and cargo test on macOS (the platform code paths); the iOS core build
+#   app          Flutter analyze / test; the app import and trust-text checks; the bridge is
+#                regenerated and must equal the committed one
+# Not in CI: the devnet acceptance suites (scripts/devnet-*.sh). They need the whole workspace
+# devnet: an ARMED devnet (attestor nodes and the attest agent built from ycash-dd), lightwalletd-dd
+# built and serving --yellowback, the Python test framework; more than 60 min from cold on a runner.
+# They stay nightly on the owner's machine (README, "Tests").
+#
+# Third-party actions are pinned by commit, never by tag; the comment carries the tag (bump both).
 name: ci
+
 on:
   push:
-    branches: [main]
+    # The one branch list: harden/yellowback (P1 hardening), upgrade/vault (the network upgrade),
+    # main (the branch of record, AGENTS.md rule 2).
+    branches: &branches [main, harden/yellowback, upgrade/vault]
   pull_request:
+    branches: *branches
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  CARGO_AUDIT_VERSION: 0.22.2
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  # The Sapling crates are path dependencies on sibling checkouts (core/Cargo.toml):
+  # librustzcash6 (boyfromcave, = miodragpop/librustzcash @ ec525fae) and the x402-ycash light
+  # library. actions/checkout cannot write outside the workspace, so plain clones put them there
+  # (the clone steps below). The two revisions are the pins; bump them here.
+  LIBRUSTZCASH6_REV: ec525fae828ff67af0bf5d1995acfe445340ce66
+  X402_YCASH_REV: 0c1d3015e48a316f2ef8f8583911e33ee02c0cea
 
 jobs:
   core-linux:
     name: core (ubuntu)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      # The Sapling crates are path dependencies on sibling checkouts (core/Cargo.toml):
-      # librustzcash6 (boyfromcave, = miodragpop/librustzcash @ ec525fae) and the x402-ycash light
-      # library. actions/checkout cannot write outside the workspace, so plain clones put them there.
-      - name: clone librustzcash6 and x402-ycash beside the repo
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: clone librustzcash6, x402-ycash and lightwalletd-dd beside the repo
         run: |
-          git clone --filter=blob:none https://github.com/boyfromcave/librustzcash6.git "$GITHUB_WORKSPACE/../librustzcash6"
-          git -C "$GITHUB_WORKSPACE/../librustzcash6" checkout --quiet ec525fae828ff67af0bf5d1995acfe445340ce66
-          git clone --filter=blob:none https://github.com/boyfromcave/x402-ycash.git "$GITHUB_WORKSPACE/../x402-ycash"
-          git -C "$GITHUB_WORKSPACE/../x402-ycash" checkout --quiet 0c1d3015e48a316f2ef8f8583911e33ee02c0cea
+          clone() { git clone --quiet --filter=blob:none "https://github.com/boyfromcave/$1.git" "$GITHUB_WORKSPACE/../$2"
+                    git -C "$GITHUB_WORKSPACE/../$2" checkout --quiet "$3"; }
+          clone librustzcash6 librustzcash6 "$LIBRUSTZCASH6_REV"
+          clone x402-ycash x402-ycash "$X402_YCASH_REV"
+          # scripts/check-proto-pin.sh diffs proto/ against ../lightwalletd-dd/walletrpc: check it
+          # out at the commit proto/PIN records (without it the check skips itself).
+          clone lightwalletd lightwalletd-dd "$(awk '{print $2}' proto/PIN)"
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler && protoc --version
       - name: Rust toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain
-      - uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.8.0
+      # Keyed by rust-cache on rustc, Cargo.lock/Cargo.toml and the job, plus the sibling revisions
+      # (path dependencies are not in the lock's hash); saved from pushes only.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: lrz6-${{ env.LIBRUSTZCASH6_REV }}-x402-${{ env.X402_YCASH_REV }}
+          save-if: ${{ github.event_name != 'pull_request' }}
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace --locked
       - run: scripts/check-proto-pin.sh
       - run: scripts/check-deps.sh
       - run: scripts/check-licenses.sh
-      - name: cargo audit (W5; blocks only on advisories with a fix, scripts/audit.sh)
-        run: |
-          cargo install cargo-audit --version 0.22.2 --locked
-          scripts/audit.sh
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain
+      # cargo-audit at an exact version, cached by exact key (no restore-keys).
+      - name: cache cargo-audit
+        id: tools
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_AUDIT_VERSION }}
+      - name: install cargo-audit
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
+      # Reads Cargo.lock only: no sibling checkouts needed.
+      - run: scripts/audit.sh
 
   core-macos:
-    name: core + app (macos)
+    name: core (macos)
     runs-on: macos-latest
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      # The Sapling crates are path dependencies on sibling checkouts (core/Cargo.toml):
-      # librustzcash6 (boyfromcave, = miodragpop/librustzcash @ ec525fae) and the x402-ycash light
-      # library. actions/checkout cannot write outside the workspace, so plain clones put them there.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: clone librustzcash6 and x402-ycash beside the repo
         run: |
-          git clone --filter=blob:none https://github.com/boyfromcave/librustzcash6.git "$GITHUB_WORKSPACE/../librustzcash6"
-          git -C "$GITHUB_WORKSPACE/../librustzcash6" checkout --quiet ec525fae828ff67af0bf5d1995acfe445340ce66
-          git clone --filter=blob:none https://github.com/boyfromcave/x402-ycash.git "$GITHUB_WORKSPACE/../x402-ycash"
-          git -C "$GITHUB_WORKSPACE/../x402-ycash" checkout --quiet 0c1d3015e48a316f2ef8f8583911e33ee02c0cea
+          clone() { git clone --quiet --filter=blob:none "https://github.com/boyfromcave/$1.git" "$GITHUB_WORKSPACE/../$1"
+                    git -C "$GITHUB_WORKSPACE/../$1" checkout --quiet "$2"; }
+          clone librustzcash6 "$LIBRUSTZCASH6_REV"
+          clone x402-ycash "$X402_YCASH_REV"
       - name: Install protoc
         run: brew install protobuf && protoc --version
       - name: Rust toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain
-      - uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.8.0
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: lrz6-${{ env.LIBRUSTZCASH6_REV }}-x402-${{ env.X402_YCASH_REV }}
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
-      - run: scripts/check-proto-pin.sh
-      - run: scripts/check-deps.sh
-      - name: Flutter version from README.md
-        id: fl
-        run: echo "version=$(sed -n 's/^| Flutter *| `\([0-9.]*\)`.*/\1/p' README.md | head -1)" >> "$GITHUB_OUTPUT"
+      - name: iOS core build (unsigned, no xcframework signing)
+        run: scripts/build-core-ios.sh
+
+  app:
+    name: app (macos)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # The bridge codegen reads the core crate's metadata, which resolves the path dependencies.
+      - name: clone librustzcash6 and x402-ycash beside the repo
+        run: |
+          clone() { git clone --quiet --filter=blob:none "https://github.com/boyfromcave/$1.git" "$GITHUB_WORKSPACE/../$1"
+                    git -C "$GITHUB_WORKSPACE/../$1" checkout --quiet "$2"; }
+          clone librustzcash6 "$LIBRUSTZCASH6_REV"
+          clone x402-ycash "$X402_YCASH_REV"
+      - name: versions (Flutter from README.md, the bridge codegen from core/Cargo.toml)
+        id: v
+        run: |
+          echo "flutter=$(sed -n 's/^| Flutter *| `\([0-9.]*\)`.*/\1/p' README.md | head -1)" >> "$GITHUB_OUTPUT"
+          echo "frb=$(sed -n 's/^flutter_rust_bridge = "=\(.*\)"/\1/p' core/Cargo.toml)" >> "$GITHUB_OUTPUT"
+      # The SDK and the pub cache, keyed by the action on OS, channel, version, arch and pubspec.lock.
       - uses: subosito/flutter-action@fd55f4c5af5b953cc57a2be44cb082c8f6635e8e # v2.21.0
-        if: hashFiles('app/pubspec.yaml') != ''
         with:
           channel: stable
-          flutter-version: ${{ steps.fl.outputs.version }}
+          flutter-version: ${{ steps.v.outputs.flutter }}
+          cache: true
       - name: flutter analyze / test
-        if: hashFiles('app/pubspec.yaml') != ''
         working-directory: app
         run: |
           flutter --version
@@ -85,10 +163,22 @@ jobs:
           flutter test
       - run: scripts/check-app-imports.sh
       - run: scripts/check-trust-text.sh
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain
+      # The codegen at the crate's exact version, cached by exact key (no restore-keys): a hit
+      # skips a ~6 min source build.
+      - name: cache flutter_rust_bridge_codegen
+        id: frb
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cargo/bin/flutter_rust_bridge_codegen
+          key: frb-codegen-${{ runner.os }}-${{ runner.arch }}-${{ steps.v.outputs.frb }}
+      - name: install flutter_rust_bridge_codegen
+        if: steps.frb.outputs.cache-hit != 'true'
+        env:
+          FRB_VERSION: ${{ steps.v.outputs.frb }}
+        run: cargo install flutter_rust_bridge_codegen --version "$FRB_VERSION" --locked
       - name: bridge is up to date (regenerate and diff)
         run: |
-          cargo install flutter_rust_bridge_codegen --version "$(sed -n 's/^flutter_rust_bridge = "=\(.*\)"/\1/p' core/Cargo.toml)" --locked
           scripts/gen-bridge.sh
           git diff --exit-code -- core/src/frb_generated.rs app/lib/src/rust
-      - name: iOS core build (unsigned, no xcframework signing)
-        run: scripts/build-core-ios.sh
