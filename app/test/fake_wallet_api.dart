@@ -292,7 +292,7 @@ class FakeWalletApi implements WalletApi {
       chainName: 'regtest',
       tip: 484,
       taddrSupport: true,
-      yellowback: YellowbackStatus(present: true, usable: true, rpcversion: 3, enabled: true, active: true, serverVersion: 'lwd', feeZat: 1000),
+      yellowback: YellowbackStatus(present: true, usable: true, rpcversion: 4, enabled: true, active: true, serverVersion: 'lwd', feeZat: 1000),
     );
   }
 
@@ -337,7 +337,7 @@ class FakeWalletApi implements WalletApi {
     birthday: 1,
     syncHeight: 484,
     addresses: 40,
-    yellowback: const YellowbackStatus(present: true, usable: true, rpcversion: 3, enabled: true, active: true, serverVersion: 'lwd', feeZat: 1000),
+    yellowback: const YellowbackStatus(present: true, usable: true, rpcversion: 4, enabled: true, active: true, serverVersion: 'lwd', feeZat: 1000),
     coreVersion: '0.1.0',
   );
 
