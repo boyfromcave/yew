@@ -8,31 +8,37 @@ shielded Ycash address (`ys1…`), and lets you receive, send and see your histo
 them. YED is the main currency: 1 YED is a dollar; YED, its fees and every mint's collateral use
 public YEC. Beyond send and receive, the Yellowback tab lets you mint YED against locked YEC,
 watch and redeem your vaults, and claim an undercollateralized vault (the collateral is yours to
-release after a claim delay, unless the YED attestor set cancels a claim made at a wrong price). Public addresses, balances
-and transactions are visible on the chain; private payments hide the amount, the parties and
-the message (Home shows the two as **Private** and **Public**; a payment from private to a
-public address is marked before you confirm). Your keys never leave the phone; the app trusts one light-client server you choose for
-its view of the chain, and every YED transaction is checked by that server's node before it is
-sent. The full statement is [docs/trust.md](docs/trust.md).
+release after a claim delay, unless the attestors cancel a claim made at a wrong price). Public
+addresses, balances and transactions are visible on the chain; private payments hide the
+amount, the parties and the message (Home shows the two as **Private** and **Public**; a payment
+from private to a public address is marked before you confirm). Your keys never leave the phone;
+the app trusts one light-client server you choose for its view of the chain, and every YED
+transaction is checked by that server's node before it is sent. The full statement is [docs/trust.md](docs/trust.md).
 
-**The network: the vault upgrade.** This branch (`upgrade/vault`) targets Ycash nodes that carry
-the **vault network upgrade** (`UPGRADE_VAULT`, consensus branch ID `0x6d5b7a31`), a coordinated
-hard fork that adds a generic lock/unlock primitive with Yellowback as its one rule module: from
-the activation height YED's rules are consensus on every upgraded node. YEW speaks the Yellowback
-service at `rpcversion` 5 only; a mint's vault is the primitive's V template, an owner redeem
-signs its owner branch, a claim spends into a claimant intent that `release` pays out after
-`CLAIM_DELAY`, and every transparent and Sapling signature commits to the **next block's** branch
-ID, so sends keep working across the activation block (`core/src/params.rs`
-`signing_branch_id`). The activation height is compiled in per network and is **unset on mainnet
-and testnet**, as is the YED attestor set: only regtest takes both from the server, so YED works
-on a regtest devnet and nowhere else yet. The upgrade is not adopted by the Ycash Foundation, not
-audited and not activated on any public network; `harden/yellowback` is the no-upgrade line.
+## Yellowback and the vault upgrade
 
-**Status (2026-09-25; vault upgrade 2026-10-06).** Feature complete for the plan's scope and running on the iOS simulator
-and the Android emulator against a regtest devnet, where the full send/receive flow passes end
-to end. On the vault upgrade the devnet acceptance tests cover mint, claim, release after
-`CLAIM_DELAY`, an attestor-set cancel, and shielded spends across the activation. Not released: no public server endpoints yet, no store builds, no testnet run. See
-[What is left](#what-is-left) at the end.
+YED depends on a proposed Ycash network upgrade, **the vault upgrade**, which adds **vaults** to
+Ycash: YEC locked on chain under rules every node enforces, released only with the approval of a
+bonded **signer set**, after a delay during which the release can be cancelled. **Ycash Yellowback
+(YED)** is a dollar token built on vaults: lock YEC in a vault to mint YED (`1 YED = 1 US
+dollar`), return the YED to get the YEC back; if a vault's YEC becomes worth less than the YED it
+backs, others can claim it. The YEC/USD price comes from mining pools and from **attestors**,
+members of Yellowback's signer set who sign prices.
+
+- **What YEW does with it:** signs the vault spends behind mint, redeem, claim and release, and
+  signs every transaction for the consensus branch ID of the *next* block, so sends keep working
+  across the upgrade's activation block. YEW does not touch the wYEC bridge.
+- **What it needs:** a light-client server, [lightwalletd-dd](https://github.com/boyfromcave/lightwalletd)
+  with `--yellowback`, over a ycashd built from the `upgrade/vault` branch of
+  [ycash-dd](https://github.com/boyfromcave/ycash-dd) or
+  [ycash6](https://github.com/boyfromcave/ycash6).
+- **Status: proposed, not live.** It runs on a local test network (regtest) only. It has not been
+  adopted by the Ycash Foundation, has not been audited, and has no activation height on mainnet
+  or testnet. The app itself runs on the iOS simulator and the Android emulator against that
+  test network; there are no public servers and no store builds yet
+  ([What is left](#what-is-left)).
+- **Try it:** [Quick start for developers](#quick-start-for-developers) below brings up the local
+  test network and runs the app on it.
 
 ## Quick start for developers
 
@@ -46,12 +52,13 @@ cargo test --workspace                 # core, CLI and the node-generated vector
 (cd app && flutter test)               # widget tests over a fake bridge
 ```
 
-To run the app you need a Yellowback devnet and its lightwalletd, which live in the
-`yellowback-workspace` repository this repo is normally mounted in (at `yew/`). With that
-workspace beside you:
+To run the app you need the local test network (the "devnet": regtest nodes running the vault
+upgrade, with YED live) and a lightwalletd on it. The scripts expect this repo inside the
+`yellowback-workspace` checkout (at `yew/`), next to `ycash-dd/`, `lightwalletd-dd/` and the
+workspace's Python venv:
 
 ```bash
-scripts/devnet-w4.sh up                # once: an armed regtest devnet + lightwalletd on 127.0.0.1:9267
+scripts/devnet-w4.sh up                # once: a regtest devnet with prices live + lightwalletd on 127.0.0.1:9267
 scripts/devnet-w4.sh status            # is it up?
 scripts/run-ios.sh                     # build the core, run on the iPhone simulator
 scripts/run-android.sh                 # build the core, boot the emulator, run
@@ -112,7 +119,7 @@ Other things worth knowing before reading code:
   signed, addresses, mint/transfer/redeem templates and parameters, exported by the workspace's
   `yellowback-devnet vectors`; the core must reproduce them byte for byte.
 
-- **Shielded YEC lives in the core (yew-shielded plan S2) and on the existing screens (S3).** The same seed
+- **Shielded YEC lives in the core and on the existing screens.** The same seed
   derives one Ycash Sapling account at ZIP-32 `m/32'/347'/0'` (`shielded_keys.rs`,
   YWallet-compatible). `shielded.rs` keeps it in a `zcash_client_sqlite` store under
   `<data dir>/shielded/<wallet file stem>/`, synced by the Ycash light client
@@ -129,8 +136,8 @@ Other things worth knowing before reading code:
   reserve and every YED path never meet it. The Sapling proving parameters (52 MB) are fetched
   on first private send (`params_status` / `download_params`, `sapling_params.rs`) from a
   configurable HTTPS base URL and kept only if their SHA-256s match the pins; where they are
-  hosted is an owner decision (S0-2), so no URL is compiled in.
-- **Moving YEC between private and public (S4)** is one explicit action, Home → "Move…"
+  hosted is not decided yet, so no URL is compiled in.
+- **Moving YEC between private and public** is one explicit action, Home → "Move…"
   (`move_preview` / `move_confirm`, `build/yec_move.rs`). To private: plain `YEC` coins only
   (never the fee reserve, a token, a vault, a carrier or a held output) into one Sapling output
   to the wallet's own default `ys1…` address, transparent change back, ZIP-317 fee; built and
@@ -227,7 +234,7 @@ commit the protos were copied from; `check-proto-pin.sh` keeps them identical.
 
 ## Running against the devnet
 
-The armed regtest devnet (eight nodes, three attestors, the price layer live) comes from the
+The devnet (eight regtest nodes running the vault upgrade, three attestors, prices live) comes from the
 workspace's `ycash-dd/contrib/yellowback/devnet/yellowback-devnet`. `scripts/devnet-w4.sh`
 wraps it for YEW: directory `~/yb-devnet-w0c`, port seed 9, `lightwalletd-dd --yellowback` on
 `127.0.0.1:9267`, plain HTTP/2.
@@ -305,20 +312,20 @@ property; CA pinning in the core and CLI), storage (`0600` cache, no Android bac
 `FLAG_SECURE` on seed and key screens), and the bridge boundary. `cargo audit` and a license
 allow-list run in CI. The app has no telemetry and nothing in the core logs.
 
-The 2026-10-01 audit (workspace `docs/audits/`, §6 "yew") added: every server-supplied mint,
+An internal review on 2026-10-01 added: every server-supplied mint,
 claim and vault term is checked against the network's rules (`core/src/build/terms.rs`,
-`params.rs`) before anything is signed, the enforcement and attestor fees are computed locally,
+`params.rs`) before anything is signed, the pool and attestor fees are computed locally,
 a redeem is previewed (fee and payee on screen) before it is confirmed, the server's
 `consensusBranchId` must be a Ycash epoch, server streams are bounded, the Mozilla root bundle
 backs TLS on iOS, a certificate can be pinned from Settings, and "device unlock" binds the seed
 to the platform's presence check. What is still not checked locally is the fee **payee**: the
 node, not the wallet, knows which miners are eligible (`docs/trust.md`).
 
-Shielded (S2): the Sapling spending key is derived at unlock and never written by YEW; the
+Shielded YEC: the Sapling spending key is derived at unlock and never written by YEW; the
 private store holds the account's viewing key, notes and memos (privacy, not funds); the
 proving parameters are SHA-256 pinned. The private scan runs over YEW's own connection, so the
 server's pinned certificate (if set) and iOS's webpki roots apply to it like every other call
-(`docs/security-review.md` Z-3, closed 2026-10-04).
+(`docs/security-review.md`).
 
 ## What is left
 
@@ -337,12 +344,12 @@ Everything below needs a device, an account, a public server or a decision:
    YED attestor set, entered in `net/tls.rs` `default_servers` (mainnet and testnet
    ship empty; the app asks for a server until then).
 5. **Testnet run**, store metadata and signing: `docs/release.md`.
-6. **Private (Sapling) YEC, hardening (plan S5, `docs/plans/yew-shielded-plan.md`)**: the HTTPS
+6. **Private (Sapling) YEC, hardening**: the HTTPS
    Ycash-hosted mirror for the 52 MB proving files, to list first (today YEW defaults to the
    source ycashd uses; Settings can name another address); a YWallet-built `ys1…` address for the test seed to pin YWallet compatibility from a real
    binary; sync time, proving time and battery on real phones; `lite.ycash.xyz` upgraded to
    lightwalletd-dd with `GetChainInfo`. (Restore with a birthday, reorgs and interrupted sync
-   run on both node lines in `s5_`; the S3/S4 flow ran on the iOS simulator against both.)
+   run on both node lines in `s5_`; the private screens ran on the iOS simulator against both.)
 
 ## Further reading
 
