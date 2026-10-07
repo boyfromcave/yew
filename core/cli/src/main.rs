@@ -15,6 +15,7 @@
 //!           | mint-estimate <cents> <lockBlocks> | mint-start <cents> <lockBlocks>
 //!           | mint-status [<id>] | mint-finish <id> | mint-sweep <id>
 //!           | vaults | redeem <vaultTxid> | claimable | claim <vaultTxid>
+//!           | intents | release <txid:n>
 //! ```
 //!
 //! W4: `mint-start` funds the carrier and prints the mint id; after one block, `sync` (or any
@@ -70,6 +71,7 @@ fn usage() -> ! {
          \x20         | mint-estimate <cents> <lockBlocks> | mint-start <cents> <lockBlocks>\n\
          \x20         | mint-status [<id>] | mint-finish <id> | mint-sweep <id>\n\
          \x20         | vaults | redeem <vaultTxid> | claimable | claim <vaultTxid>\n\
+         \x20         | intents | release <txid:n>\n\
          seed: --seed-file or the YEW_SEED environment variable (a BIP39 mnemonic);\n\
          passphrase: --passphrase or YEW_PASSPHRASE (default empty)."
     );
