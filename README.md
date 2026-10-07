@@ -7,16 +7,31 @@ dollar on Ycash. iOS and Android, one Flutter UI over one Rust core.
 shielded Ycash address (`ys1…`), and lets you receive, send and see your history for all of
 them. YED is the main currency: 1 YED is a dollar; YED, its fees and every mint's collateral use
 public YEC. Beyond send and receive, the Yellowback tab lets you mint YED against locked YEC,
-watch and redeem your vaults, and claim an undercollateralized vault. Public addresses, balances
+watch and redeem your vaults, and claim an undercollateralized vault (the collateral is yours to
+release after a claim delay, unless the YED attestor set cancels a claim made at a wrong price). Public addresses, balances
 and transactions are visible on the chain; private payments hide the amount, the parties and
 the message (Home shows the two as **Private** and **Public**; a payment from private to a
 public address is marked before you confirm). Your keys never leave the phone; the app trusts one light-client server you choose for
 its view of the chain, and every YED transaction is checked by that server's node before it is
 sent. The full statement is [docs/trust.md](docs/trust.md).
 
-**Status (2026-09-25).** Feature complete for the plan's scope and running on the iOS simulator
+**The network: the vault upgrade.** This branch (`upgrade/vault`) targets Ycash nodes that carry
+the **vault network upgrade** (`UPGRADE_VAULT`, consensus branch ID `0x6d5b7a31`), a coordinated
+hard fork that adds a generic lock/unlock primitive with Yellowback as its one rule module: from
+the activation height YED's rules are consensus on every upgraded node. YEW speaks the Yellowback
+service at `rpcversion` 5 only; a mint's vault is the primitive's V template, an owner redeem
+signs its owner branch, a claim spends into a claimant intent that `release` pays out after
+`CLAIM_DELAY`, and every transparent and Sapling signature commits to the **next block's** branch
+ID, so sends keep working across the activation block (`core/src/params.rs`
+`signing_branch_id`). The activation height is compiled in per network and is **unset on mainnet
+and testnet**, as is the YED attestor set: only regtest takes both from the server, so YED works
+on a regtest devnet and nowhere else yet. The upgrade is not adopted by the Ycash Foundation, not
+audited and not activated on any public network; `harden/yellowback` is the no-upgrade line.
+
+**Status (2026-09-25; vault upgrade 2026-10-06).** Feature complete for the plan's scope and running on the iOS simulator
 and the Android emulator against a regtest devnet, where the full send/receive flow passes end
-to end. Not released: no public server endpoints yet, no store builds, no testnet run. See
+to end. On the vault upgrade the devnet acceptance tests cover mint, claim, release after
+`CLAIM_DELAY`, an attestor-set cancel, and shielded spends across the activation. Not released: no public server endpoints yet, no store builds, no testnet run. See
 [What is left](#what-is-left) at the end.
 
 ## Quick start for developers
@@ -272,7 +287,8 @@ yew-cli [--server host:port] [--plain] [--ca-pem PATH] [--wallet PATH] [--networ
         | export-wif <addr> | import-wif <wif>
         | mint-estimate <cents> <lockBlocks> | mint-start <cents> <lockBlocks>
         | mint-status [<id>] | mint-finish <id> | mint-sweep <id>
-        | vaults | redeem <vaultTxid> | claimable | claim <vaultTxid> | version
+        | vaults | redeem <vaultTxid> | claimable | claim <vaultTxid>
+        | intents | release <txid>:<n> | version
 ```
 
 Defaults: `127.0.0.1:9067`, TLS on (`--plain` is refused outside regtest; `--ca-pem` pins one
@@ -316,8 +332,9 @@ Everything below needs a device, an account, a public server or a decision:
 3. **Security decisions**: a SHA-256 certificate pin (needs `rustls` on the allow-list) versus
    the CA pin; recovery of a carrier stranded by deleting the database mid-mint; iOS switcher
    blur; the keystore binding, the iOS backup exclusion and the webpki roots on real devices.
-4. **Public endpoints**: a `lightwalletd-dd --yellowback` over a `ycashd -yellowback
-   -insightexplorer` behind TLS, entered in `net/tls.rs` `default_servers` (mainnet and testnet
+4. **Public endpoints**: a `lightwalletd-dd --yellowback` over a `ycashd -insightexplorer`
+   running the vault upgrade, behind TLS, once a release sets the network's activation height and
+   YED attestor set, entered in `net/tls.rs` `default_servers` (mainnet and testnet
    ship empty; the app asks for a server until then).
 5. **Testnet run**, store metadata and signing: `docs/release.md`.
 6. **Private (Sapling) YEC, hardening (plan S5, `docs/plans/yew-shielded-plan.md`)**: the HTTPS
