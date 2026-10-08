@@ -1254,9 +1254,10 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
         (val.verdict.as_str(), val.path.as_str(), val.burned),
         ("ok", "owner", 10_000)
     );
+    // In-term D-IT-15: the owner path's nLockTime is the V's ownerHeight (refHeight + 1).
     assert_eq!(
-        (p.lock_time, p.burn_cents, p.change_cents),
-        (v1.lock_height, 10_000, 0)
+        (p.lock_time, p.burn_cents, p.change_cents, p.early_redeem_fee_zat),
+        (v1.owner_height, 10_000, 0, 0)
     );
     assert_eq!(p.expiry_height, p.ref_height + REF_WINDOW);
     assert!(p.fee_zat > 0 && !p.payee.is_empty());
@@ -1361,9 +1362,10 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     let mut claimable = Vec::new();
     let mut r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     let start = Instant::now();
+    // rpcversion 6: the target is listed in term above θ with claimable false; wait for true.
     while claimable
         .iter()
-        .all(|x: &yew_core::build::claim::Claimable| x.vault_txid != target_txid)
+        .all(|x: &yew_core::build::claim::Claimable| x.vault_txid != target_txid || !x.claimable)
     {
         assert!(
             start.elapsed() < Duration::from_secs(900),
@@ -1393,7 +1395,8 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
         .unwrap()
         .clone();
     println!("claimable: {entry:?}");
-    assert!(r.tip >= target_claim_height);
+    // In-term claims: claimable once under θ, in term or not (no claimHeight wait).
+    assert!(entry.claimable);
     let target_id = txid_from_hex(&target_txid).unwrap();
     // H-9.3: bounds tighter than the server's numbers are refused before the carrier is funded
     // (no row, nothing signed); the bounds the screen showed pass.
@@ -1477,7 +1480,13 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
         target_cents as i64 + fc.validation.yed_in - fc.validation.yed_out - target_cents as i64
     );
     let (ctx, _) = Transaction::parse(&fc.raw).unwrap();
-    assert_eq!(ctx.lock_time as u64, target_claim_height);
+    // nLockTime is the V's appHeight: refHeight + 1 for an in-term mint (IT-1), claimHeight before.
+    let target_app = target["refHeight"].as_u64().unwrap() + 1;
+    assert!(
+        ctx.lock_time as u64 == target_app || ctx.lock_time as u64 == target_claim_height,
+        "nLockTime {} is neither appHeight {target_app} nor claimHeight {target_claim_height}",
+        ctx.lock_time
+    );
     assert_eq!(
         ctx.vin[0].prevout,
         OutPoint {
@@ -1780,6 +1789,340 @@ async fn w4_claim_cancelled_by_the_attestor_set() {
 /// `z_sendmany` from a fresh, funded transparent address of node 0 to `to` with a text memo,
 /// waiting for the operation; returns the txid. The 6.21.0 line needs a privacy policy for the
 /// transparent change (x402 X-F12); the 4.5.0 line takes an explicit fee.
+/// Mine pool blocks until lightwalletd's latest height reaches `h`, pacing under the server's
+/// per-peer rate limit, then sync `w`.
+async fn mine_and_sync(
+    dn: &Devnet,
+    c: &mut CompactClient,
+    v: &mut Validator,
+    w: &mut Wallet,
+) -> yew_core::sync::SyncReport {
+    let h = dn.mine_pool();
+    wait_for_height(c, h).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    sync(w, c, v.client_mut()).await.unwrap()
+}
+
+/// In-term claims (the workspace's `docs/plans/yellowback-in-term-claims-plan.md`, rpcversion 6):
+/// on an ARMED devnet of the in-term node (`scripts/devnet-it.sh`) with the in-term lightwalletd,
+///
+/// 1. a YEW mint's V opens both branches at `refHeight + 1` (IT-1, D-IT-15);
+/// 2. YEW redeems it **in term**: the preview carries the early-redeem fee (IT-9: 5 % of the
+///    collateral for class A, on the FEE-1 payee's output, computed locally and equal to the
+///    node's `yed_estimateredeem` quote for the same vault), the node accepts the bytes and closes
+///    the vault;
+/// 3. node 0's fresh class-C vault is listed above θ with `claimable: false` and YEW refuses to
+///    claim it before anything is funded; after a −80 % shock it becomes claimable **in term**
+///    and YEW claims it (`nLockTime` = its `appHeight` = `refHeight + 1`, below `lockHeight`), the
+///    node marks it CLAIMING; the claimant intent is released after the claim delay;
+/// 4. YEW's own second vault, claimable after the shock, is redeemed in term by its owner before
+///    anyone claims it ("redeeming stops it", IT-8), again with the early-redeem fee.
+#[tokio::test]
+#[ignore = "needs an ARMED in-term regtest devnet (scripts/devnet-it.sh) and YEW_DEVNET=1"]
+async fn it_early_redeem_and_in_term_claim() {
+    use yew_core::build::mint::window_open;
+    use yew_core::params::{early_redeem_fee_zat, fee_zat_for, CLAIM_THRESHOLD_BPS};
+    if std::env::var("YEW_DEVNET").ok().as_deref() != Some("1") {
+        eprintln!("YEW_DEVNET is not 1; skipping");
+        return;
+    }
+    let dn = Devnet::new("yb-devnet-it", "741");
+    let server =
+        Server::parse(&env_or("YEW_DEVNET_SERVER", "127.0.0.1:9741".into()), true).unwrap();
+    let channel = server.connect().await.expect("connect to lightwalletd");
+    let mut c = CompactClient::from_channel(channel.clone());
+    let info = c.lightd_info_for(Network::Regtest).await.unwrap();
+    let (mut v, availability) = Validator::detect(YellowbackClient::from_channel(channel))
+        .await
+        .expect("probe");
+    assert!(availability.usable(), "{availability:?}");
+    let ref_lag = match &availability {
+        Availability::Present { info, .. } => {
+            assert_eq!(info.rpcversion, 6, "the in-term line");
+            let p = info.params.as_ref().unwrap();
+            assert!(p.in_term_claims, "params.inTermClaims");
+            assert_eq!(p.claim_threshold_bps, CLAIM_THRESHOLD_BPS);
+            assert_eq!(p.early_redeem_fee_bps, vec![500, 250, 100]);
+            p.ref_lag as u32
+        }
+        Availability::Absent => unreachable!(),
+    };
+    loop {
+        let yb = v.client_mut().unwrap();
+        let p = yb.price(0).await.unwrap();
+        let at_ref = yb
+            .price((p.height as u32).saturating_sub(ref_lag))
+            .await
+            .unwrap();
+        if p.p_mint > 0 && at_ref.p_mint > 0 {
+            break;
+        }
+        let h = dn.mine_pool();
+        wait_for_height(&mut c, h).await;
+    }
+    let dir = std::env::temp_dir().join(format!("yew-devnet-it-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let birthday = info.block_height.saturating_sub(1);
+    let (mut a, _mnemonic) = fresh_wallet(&dir, "a", birthday);
+    let addr = a.receive_address(true).unwrap();
+    let fund = fund_node();
+    for amount in ["15", "10", "8", "5"] {
+        let t = dn.node(fund, &["sendtoaddress", &addr.address_s, amount]);
+        assert_eq!(t.len(), 64, "{t}");
+    }
+    let addr2 = a.receive_address(true).unwrap();
+    let t = dn.node(fund, &["sendtoaddress", &addr2.address_s, "2"]);
+    confirm(&dn, &mut c, &t).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(r.yec.0 + r.yec.1, 40 * 100_000_000, "{r:?}");
+
+    // A two-step mint from A ($100), returning the vault row once the node reports it.
+    async fn mint_vault(
+        dn: &Devnet,
+        a: &mut Wallet,
+        c: &mut CompactClient,
+        v: &mut Validator,
+        lock_blocks: u32,
+    ) -> yew_core::store::VaultRow {
+        let r = sync(a, c, v.client_mut()).await.unwrap();
+        let id = a
+            .mint_start(c, v, 10_000, lock_blocks, None, r.tip, r.branch_id)
+            .await
+            .unwrap();
+        let m = a.store.mint(id).unwrap().unwrap();
+        confirm(dn, c, &txid_hex(&m.carrier_txid)).await;
+        let r = sync(a, c, v.client_mut()).await.unwrap();
+        assert!(window_open(r.tip, m.expiry_height));
+        let f = a.mint_finish(c, v, id, r.tip, r.branch_id).await.unwrap();
+        assert_eq!(f.validation.verdict, "ok");
+        confirm(dn, c, &f.txid).await;
+        sync(a, c, v.client_mut()).await.unwrap();
+        let row = a
+            .vaults()
+            .unwrap()
+            .into_iter()
+            .find(|x| txid_hex(&x.txid) == f.txid)
+            .expect("the minted vault");
+        // IT-1 / D-IT-15: the V the node holds opens both branches at refHeight + 1.
+        let gv = v.client_mut().unwrap().vault(&f.txid).await.unwrap();
+        let p = yew_core::vault::parse_vault(&keys::unhex(&gv.script_pub_key).unwrap()).unwrap();
+        assert_eq!(
+            (p.owner_height, p.app_height),
+            (m.ref_height as i64 + 1, m.ref_height as i64 + 1),
+            "IT-1: the in-term V"
+        );
+        assert_eq!(
+            (row.owner_height, row.app_height),
+            (m.ref_height + 1, m.ref_height + 1)
+        );
+        assert_eq!(row.lock_height, m.ref_height + lock_blocks);
+        row
+    }
+
+    // 1-2. Mint, then redeem in term with the early-redeem fee.
+    let v1 = mint_vault(&dn, &mut a, &mut c, &mut v, 48).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert!(r.tip + 1 < v1.lock_height as u64, "in term");
+    let p = a
+        .redeem_preview(&mut v, &v1.txid, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    let fee1 = fee_zat_for(Network::Regtest, v1.collateral_zat);
+    let early = early_redeem_fee_zat(v1.collateral_zat, 500);
+    assert_eq!(
+        (p.early_redeem_fee_zat, p.fee_zat, p.lock_time),
+        (early, fee1 + early, v1.owner_height),
+        "{p:?}"
+    );
+    assert!(!p.payee.is_empty());
+    let (rtx, _) = Transaction::parse(&p.raw).unwrap();
+    assert_eq!(rtx.vout[1].value, fee1 + early, "the early fee rides on the FEE-1 output");
+    // The node's own quote for the same vault (its owner key imported into node 5): the same fee.
+    let owner_addr = keys::encode_yellowback(Network::Regtest, &v1.owner_hash160);
+    let wif = a.export_wif(&owner_addr).unwrap();
+    dn.node(5, &["importprivkey", &wif, "yew-it-owner", "true"]);
+    let quote = dn.node_try(5, &["yed_estimateredeem", &txid_hex(&v1.txid)]);
+    println!("node 5 yed_estimateredeem: {quote}");
+    if let Ok(q) = serde_json::from_str::<Value>(&quote) {
+        assert_eq!(q["earlyRedeemFeeZat"].as_i64(), Some(early), "{q}");
+        assert_eq!(q["feeZat"].as_i64(), Some(fee1 + early), "{q}");
+        assert_eq!(q["early"].as_bool(), Some(true), "{q}");
+    } else {
+        panic!("yed_estimateredeem did not answer a quote: {quote}");
+    }
+    let (sent, val) = a.redeem_confirm(&mut c, &mut v, &p).await.unwrap();
+    assert_eq!(
+        (val.verdict.as_str(), val.path.as_str(), val.burned),
+        ("ok", "owner", 10_000)
+    );
+    let h_redeem = confirm(&dn, &mut c, &sent).await;
+    assert!(h_redeem < v1.lock_height as u64, "mined in term at {h_redeem}");
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(a.store.vault(&v1.txid).unwrap().unwrap().status, "CLOSED");
+    let ti = v.client_mut().unwrap().tx_info(&sent).await.unwrap();
+    assert_eq!(
+        (ti.r#type.as_str(), ti.verdict.as_str(), ti.fee_zat),
+        ("redeem", "ok", fee1 + early),
+        "{ti:?}"
+    );
+    println!(
+        "early redeem {sent} at {h_redeem} < lockHeight {}: FEE-1 {fee1} + early-redeem fee {early} zat, collateral {} back",
+        v1.lock_height, p.collateral_out
+    );
+    assert_eq!(r.yed, (0, 0), "{r:?}");
+
+    // 3. Node 0's fresh class-C vault (240 blocks: in term through the price fall).
+    let before: Vec<String> = dn
+        .node_json(0, &["yed_listvaults", "ACTIVE"])
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["txid"].as_str().unwrap().to_string())
+        .collect();
+    let m = dn.node_json(0, &["yed_mint", "10000", "240", "", "", "false"]);
+    println!("node 0 mint (class C): {m}");
+    let start = Instant::now();
+    let target = loop {
+        let now = dn.node_json(0, &["yed_listvaults", "ACTIVE"]);
+        if let Some(x) = now
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| !before.contains(&x["txid"].as_str().unwrap().to_string()))
+        {
+            break x.clone();
+        }
+        assert!(start.elapsed() < Duration::from_secs(300), "node 0's mint never confirmed");
+        let h = dn.mine_pool();
+        wait_for_height(&mut c, h).await;
+    };
+    let target_txid = target["txid"].as_str().unwrap().to_string();
+    let target_id = txid_from_hex(&target_txid).unwrap();
+    let target_cents = target["mintedCents"].as_u64().unwrap();
+    let target_lock = target["lockHeight"].as_u64().unwrap();
+    let target_ref = target["refHeight"].as_u64().unwrap();
+    assert_eq!(target["termClass"].as_str(), Some("C"), "{target}");
+    // YEW's second vault (class A, 96 blocks), to be redeemed in term once it is claimable.
+    let v2 = mint_vault(&dn, &mut a, &mut c, &mut v, 96).await;
+    // Above θ: listed (the claim branch is open), claimable false, refused before any funding.
+    let mut r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    let rows = a.claimable(&mut v).await.unwrap();
+    let row = rows
+        .iter()
+        .find(|x| x.vault_txid == target_txid)
+        .expect("IT-7: the in-term vault is listed");
+    assert!(!row.claimable && row.in_term && row.underwater_at > 0, "{row:?}");
+    let mints_before = a.mints().unwrap().len();
+    let e = a
+        .claim(&mut c, &mut v, &target_id, None, r.tip, r.branch_id)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("claim-not-underwater"), "{e}");
+    assert_eq!(a.mints().unwrap().len(), mints_before, "nothing funded");
+    // A needs the target's debt in YED (its own $100 stays for v2's redeem).
+    let a_addr = a.receive_address(true).unwrap();
+    let fund_yed = dn.node_json(
+        0,
+        &["yed_send", &a_addr.address_ye, &target_cents.to_string()],
+    );
+    confirm(&dn, &mut c, fund_yed["txid"].as_str().unwrap()).await;
+    r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(r.yed.0, 10_000 + target_cents, "{r:?}");
+    dn.run(&["price", "--shock=-80%"]);
+    *dn.price.borrow_mut() = "10".into();
+    let start = Instant::now();
+    let entry = loop {
+        assert!(start.elapsed() < Duration::from_secs(1200), "the vault never became claimable");
+        r = mine_and_sync(&dn, &mut c, &mut v, &mut a).await;
+        assert!(r.tip < target_lock, "the target left its term before it became claimable");
+        let rows = a.claimable(&mut v).await.unwrap();
+        if let Some(x) = rows.iter().find(|x| x.vault_txid == target_txid && x.claimable) {
+            break x.clone();
+        }
+        if r.tip % 10 == 0 {
+            let p = v.client_mut().unwrap().price(0).await.unwrap();
+            println!("tip {} pClaim {} target listed {:?}", r.tip, p.p_claim, rows.iter().find(|x| x.vault_txid == target_txid).map(|x| (x.claimable, x.underwater_at)));
+        }
+    };
+    println!("claimable in term: {entry:?}");
+    assert!(entry.in_term && entry.claim_path == "a", "{entry:?}");
+    // 4 (first half). YEW's own v2 is as underwater: the store says so (VaultSummary's warning).
+    let v2_now = a.store.vault(&v2.txid).unwrap().unwrap();
+    println!("v2 after the shock: claimable {} underwaterAt {}", v2_now.claimable, v2_now.underwater_at);
+    // The claim (in term).
+    let bounds = yew_core::build::terms::ClaimBounds {
+        max_burn_cents: entry.minted_cents,
+        min_out_zat: entry.claimant_zat,
+    };
+    let idc = a
+        .claim(&mut c, &mut v, &target_id, Some(&bounds), r.tip, r.branch_id)
+        .await
+        .unwrap();
+    let mc = a.store.mint(idc).unwrap().unwrap();
+    confirm(&dn, &mut c, &txid_hex(&mc.carrier_txid)).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    let fc = a
+        .mint_finish(&mut c, &mut v, idc, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        (fc.validation.verdict.as_str(), fc.validation.path.as_str()),
+        ("ok", "claim")
+    );
+    let (ctx, _) = Transaction::parse(&fc.raw).unwrap();
+    assert_eq!(ctx.lock_time as u64, target_ref + 1, "IT-1: nLockTime = appHeight = refHeight + 1");
+    assert_eq!(ctx.vin[0].script_sig, vec![0x54]);
+    let h_claim = confirm(&dn, &mut c, &fc.txid).await;
+    assert!(h_claim < target_lock, "the claim was mined in term ({h_claim} < {target_lock})");
+    let node_vault = dn.node_json(0, &["yed_getvault", &target_txid]);
+    assert_eq!(node_vault["status"].as_str(), Some("CLAIMING"), "{node_vault}");
+    println!("in-term claim {} at {h_claim} < lockHeight {target_lock}", fc.txid);
+
+    // 4 (second half). "Redeeming stops it": v2's owner redeems it in term, early-redeem fee paid.
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    let p2 = a
+        .redeem_preview(&mut v, &v2.txid, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    let early2 = early_redeem_fee_zat(v2.collateral_zat, 500);
+    assert_eq!(p2.early_redeem_fee_zat, early2, "{p2:?}");
+    let (sent2, val2) = a.redeem_confirm(&mut c, &mut v, &p2).await.unwrap();
+    assert_eq!((val2.verdict.as_str(), val2.path.as_str()), ("ok", "owner"));
+    let h2 = confirm(&dn, &mut c, &sent2).await;
+    assert!(h2 < v2.lock_height as u64);
+    let mut r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(a.store.vault(&v2.txid).unwrap().unwrap().status, "CLOSED");
+    println!("v2 (claimable: {}) redeemed in term by its owner: {sent2} at {h2}, early fee {early2}", v2_now.claimable);
+
+    // The claimant intent, released after the claim delay.
+    let intent_op = OutPoint {
+        txid: txid_from_hex(&fc.txid).unwrap(),
+        n: 0,
+    };
+    while yew_core::build::release::not_releasable(
+        &a.store.intent(&intent_op).unwrap().unwrap(),
+        r.tip,
+    )
+    .is_some()
+    {
+        r = mine_and_sync(&dn, &mut c, &mut v, &mut a).await;
+    }
+    let rp = a.release_preview(&intent_op, r.tip, r.branch_id).unwrap();
+    let (rel, rv) = a.release_confirm(&mut c, &mut v, &rp).await.unwrap();
+    assert_eq!(rv.verdict, "ok");
+    confirm(&dn, &mut c, &rel).await;
+    sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(
+        dn.node_json(0, &["yed_getvault", &target_txid])["status"].as_str(),
+        Some("CLAIMED")
+    );
+    println!(
+        "IN-TERM devnet acceptance ok: early redeem {sent} / in-term claim {} released {rel} / owner redeem of a claimable vault {sent2}",
+        fc.txid
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn z_fund_from_node0(dn: &Devnet, line: &str, to: &str, amount: &str, memo: &str) -> String {
     let taddr = node0_coins(dn, 1).remove(0);
     z_send_from_node0(dn, line, &taddr, to, amount, memo)
