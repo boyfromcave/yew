@@ -18,9 +18,11 @@
 //! G-1, G-2) live here too: the term classes, `GRACE`, `FEE_MIN` / `FEE_BPS`,
 //! `ATTEST_FEE_BPS`, the mint bounds. Every value is the node's compiled-in parameter set
 //! (`ycash-dd/src/yellowback/params.cpp` `SetCommon` `:14-106`, `RegtestParams` `:196-263`),
-//! at branch `harden/yellowback` (hardening H-1, H-4, H-5, H-12: mainnet and testnet differ
-//! from regtest in `FEE_BPS`, `ATTEST_FEE_BPS`, `MAX_MINT` and the enabled classes, so those
-//! are per [`Network`]). The server's own `GetYellowbackInfo.params` is compared against them
+//! at branch `harden/yellowback` (hardening H-1, H-4, H-12: mainnet and testnet differ
+//! from regtest in `FEE_BPS`, `ATTEST_FEE_BPS` and `MAX_MINT`, so those are per [`Network`]),
+//! with the in-term claims parameter set of branch `upgrade/vault-in-term` (the workspace's
+//! `docs/plans/yellowback-in-term-claims-plan.md` §3: classes A/B/C at 300 / 400 / 500 %, θ
+//! 125 %, the σ multiplier pinned at 1, `CLAIM_DELAY` 12 h, the early-redeem fee per class). The server's own `GetYellowbackInfo.params` is compared against them
 //! (`build::terms::check_server_params`) and never used in their place (audit G-1, G-2).
 
 /// The three Ycash networks. The chain name is what `GetLightdInfo.chainName` reports
@@ -141,8 +143,11 @@ pub struct TermClass {
     pub min_blocks: u32,
     /// `classMax`.
     pub max_blocks: u32,
-    /// `baseRatioBps`: 500 %, 400 %, 300 %.
+    /// `baseRatioBps`: 300 %, 400 %, 500 % (in-term plan D-IT-4: the longer the term, the higher).
     pub base_ratio_bps: i64,
+    /// `earlyRedeemFeeBps` (in-term plan IT-9, D-IT-16): of the collateral, paid on top of FEE-1 by a
+    /// redeem before `lockHeight` — 5 %, 2.5 %, 1 %.
+    pub early_redeem_fee_bps: i64,
 }
 
 impl TermClass {
@@ -153,31 +158,34 @@ impl TermClass {
     }
 }
 
-/// Mainnet and testnet (`ycash-dd/src/yellowback/params.cpp` `SetCommon` `:52-58`, branch
-/// `harden/yellowback`): class A 30–90 days at 500 %; classes B and C are **disabled** by an empty
-/// term range `[classMax[A] + 1, classMax[A]]` (hardening H-5: `classMin > classMax`, MINT-2
-/// refuses every term in them). The enabled bounds were B 103,681–420,480 and C 420,481–2,102,400.
+/// Mainnet and testnet (`ycash-dd/src/yellowback/params.cpp` `SetCommon`, branch
+/// `upgrade/vault-in-term`; in-term plan D-IT-4, D-IT-9, D-IT-10): three flat tiers — A 30–90
+/// days at 300 %, B 91–180 days at 400 %, C 181–365 days at 500 % (hardening H-5's disabling of B
+/// and C is reversed), with the early-redeem fee 5 / 2.5 / 1 % (D-IT-16).
 const MAIN_CLASSES: [TermClass; 3] = [
     TermClass {
         index: 0,
         letter: "A",
         min_blocks: 34_560,
         max_blocks: 103_680,
-        base_ratio_bps: 50_000,
+        base_ratio_bps: 30_000,
+        early_redeem_fee_bps: 500,
     },
     TermClass {
         index: 1,
         letter: "B",
         min_blocks: 103_681,
-        max_blocks: 103_680,
+        max_blocks: 207_360,
         base_ratio_bps: 40_000,
+        early_redeem_fee_bps: 250,
     },
     TermClass {
         index: 2,
         letter: "C",
-        min_blocks: 103_681,
-        max_blocks: 103_680,
-        base_ratio_bps: 30_000,
+        min_blocks: 207_361,
+        max_blocks: 420_480,
+        base_ratio_bps: 50_000,
+        early_redeem_fee_bps: 100,
     },
 ];
 
@@ -187,7 +195,8 @@ const REGTEST_CLASSES: [TermClass; 3] = [
         letter: "A",
         min_blocks: 48,
         max_blocks: 96,
-        base_ratio_bps: 50_000,
+        base_ratio_bps: 30_000,
+        early_redeem_fee_bps: 500,
     },
     TermClass {
         index: 1,
@@ -195,13 +204,15 @@ const REGTEST_CLASSES: [TermClass; 3] = [
         min_blocks: 97,
         max_blocks: 144,
         base_ratio_bps: 40_000,
+        early_redeem_fee_bps: 250,
     },
     TermClass {
         index: 2,
         letter: "C",
         min_blocks: 145,
         max_blocks: 240,
-        base_ratio_bps: 30_000,
+        base_ratio_bps: 50_000,
+        early_redeem_fee_bps: 100,
     },
 ];
 
@@ -230,8 +241,8 @@ impl Network {
         }
     }
 
-    /// The enabled term classes, in class order (hardening H-5: class A alone on mainnet and
-    /// testnet; all three on regtest).
+    /// The enabled term classes, in class order (all three on every network since the in-term
+    /// plan's D-IT-9; the filter stays for a parameter set that disables one, H-5).
     pub fn enabled_classes(self) -> impl Iterator<Item = &'static TermClass> {
         self.term_classes().iter().filter(|c| c.enabled())
     }
@@ -314,12 +325,13 @@ impl Network {
 
 impl Network {
     /// `CLAIM_DELAY` (upgrade plan U-23, `ycash-dd/src/yellowback/params.cpp` `SetCommon`
-    /// `claimDelay = 1152`, `RegtestParams` `claimDelay = 10`, branch `upgrade/vault`): the YED
-    /// vault's delay, i.e. how long a claim's intents wait before release, the window in which one
-    /// attestor can cancel a wrong-price claim. A server reporting another value is refused.
+    /// `claimDelay = 576` — 12 h, in-term plan D-IT-13, was 1,152 —, `RegtestParams` `claimDelay =
+    /// 10`, branch `upgrade/vault-in-term`): the YED vault's delay, i.e. how long a claim's intents
+    /// wait before release, the window in which one attestor can cancel a wrong-price claim. A
+    /// server reporting another value is refused.
     pub fn claim_delay(self) -> i64 {
         match self {
-            Network::Mainnet | Network::Testnet => 1_152,
+            Network::Mainnet | Network::Testnet => 576,
             Network::Regtest => 10,
         }
     }
@@ -429,10 +441,12 @@ pub const FEE_MIN_ZAT: i64 = 50_000_000;
 /// `MIN_MINT`: $100 (`params.cpp:16`, MINT-2).
 pub const MIN_MINT_CENTS: u64 = 10_000;
 
-/// `sigmaMultBps` is clamped to `[10⁴, SIGMA_MULT_MAX_BPS]` (spec SIGMA-1; `params.cpp:59`).
+/// `sigmaMultBps` is clamped to `[10⁴, SIGMA_MULT_MAX_BPS]` (spec SIGMA-1; `params.cpp:59`). In-term
+/// plan D-IT-5: the multiplier is pinned at 1 (`sigmaRefBps = 0`, `sigmaMultMaxBps = 10,000`), so the
+/// required ratio is the class's base ratio.
 pub const SIGMA_MULT_MIN_BPS: i64 = 10_000;
 /// See [`SIGMA_MULT_MIN_BPS`].
-pub const SIGMA_MULT_MAX_BPS: i64 = 30_000;
+pub const SIGMA_MULT_MAX_BPS: i64 = 10_000;
 
 /// `LOCKTIME_THRESHOLD`: a vault's `claimHeight` must be below it (MINT-2;
 /// `ref/ycash/src/script/script.h` `LOCKTIME_THRESHOLD = 500000000`).
@@ -453,10 +467,40 @@ pub fn attest_fee_zat_for(network: Network, fee_zat: i64) -> i64 {
     fee_zat.saturating_mul(network.attest_fee_bps()) / BPS
 }
 
-/// `CLAIM_THRESHOLD_BPS`: 110 % (`params.cpp:47`, every network): a vault is underwater at
-/// `pClaim` when `collateral · pClaim < mintedCents · 1.1 · COIN` (`math.h` `IsUnderwater`), and
-/// the claimant's take under clause (a) carries this margin (RED-5).
-pub const CLAIM_THRESHOLD_BPS: i64 = 11_000;
+/// `CLAIM_THRESHOLD_BPS` θ: 125 % (in-term plan D-IT-2, `params.cpp` `SetCommon`, every network;
+/// the upgrade line had 110 %): a vault is underwater at `pClaim` when `collateral · pClaim <
+/// mintedCents · 1.25 · COIN` (`math.h` `IsUnderwater`), and the claimant's take under clause (a)
+/// carries this margin (RED-5). Since IT-2 a claim is valid at that test at every height from
+/// the block after the mint, in term too.
+pub const CLAIM_THRESHOLD_BPS: i64 = 12_500;
+
+/// How close the claim price may come to a vault's claimable-at price (`underwaterAt`) before the
+/// wallet warns (in-term plan IT-8: "your wallet will warn you"): within 25 % above it, the same
+/// margin as YecWallet's `YellowbackPositionsModel::WARN_MARGIN_BPS`.
+pub const WARN_MARGIN_BPS: i64 = 2_500;
+
+/// The early-redeem fee of IT-9 (`ycash-dd/src/yellowback/math.h` `EarlyRedeemFeeZat`, branch
+/// `upgrade/vault-in-term`): `collateral · earlyRedeemFeeBps / 10⁴`, floor, no minimum; 0 for a
+/// negative collateral or a class without a fee. Charged (RED-3, `bad-redeem-early-fee`) on an
+/// owner redeem mined at a height below `lockHeight`, on top of FEE-1, on the FEE-1 payee's
+/// output; not due under FEE-0 (no eligible payee).
+pub fn early_redeem_fee_zat(collateral_zat: i64, early_redeem_fee_bps: i64) -> i64 {
+    if collateral_zat < 0 || early_redeem_fee_bps <= 0 {
+        return 0;
+    }
+    let f = (collateral_zat as u128) * (early_redeem_fee_bps as u128) / (BPS as u128);
+    i64::try_from(f).unwrap_or(i64::MAX)
+}
+
+/// True when the claim price `p_claim` (micro-USD per YEC) is within [`WARN_MARGIN_BPS`] above
+/// the vault's claimable-at price `underwater_at`: the "your wallet will warn you" state of IT-8.
+/// False when either price is unknown (≤ 0).
+pub fn near_threshold(p_claim: i64, underwater_at: i64) -> bool {
+    p_claim > 0
+        && underwater_at > 0
+        && (p_claim as i128) * (BPS as i128)
+            < (underwater_at as i128) * ((BPS + WARN_MARGIN_BPS) as i128)
+}
 
 /// `RESIDUAL_MIN_ZAT`: 0.001 YEC (`params.cpp:92`, RED-5): a smaller residual is not paid.
 pub const RESIDUAL_MIN_ZAT: i64 = 100_000;
@@ -639,12 +683,23 @@ mod tests {
             assert_eq!(n.class_for_lock_blocks(103_680).unwrap().letter, "A");
             assert!(n.class_for_lock_blocks(34_559).is_none());
             assert!(n.class_for_lock_blocks(2_102_400).is_none());
-            assert!(n.class_for_lock_blocks(103_681).is_none());
+            // In-term plan D-IT-9 / D-IT-10: B 91–180 d, C 181–365 d, enabled again.
+            assert_eq!(n.class_for_lock_blocks(103_681).unwrap().letter, "B");
+            assert_eq!(n.class_for_lock_blocks(207_360).unwrap().letter, "B");
+            assert_eq!(n.class_for_lock_blocks(207_361).unwrap().letter, "C");
+            assert_eq!(n.class_for_lock_blocks(420_480).unwrap().letter, "C");
             assert!(n.class_for_lock_blocks(420_481).is_none());
-            assert!(n.class_for_lock_blocks(2_102_401).is_none());
-            // H-5: class A alone; H-4 / H-12 values.
             let enabled: Vec<&str> = n.enabled_classes().map(|c| c.letter).collect();
-            assert_eq!(enabled, ["A"]);
+            assert_eq!(enabled, ["A", "B", "C"]);
+            // D-IT-4 / D-IT-16: 300 / 400 / 500 %, the early-redeem fee 5 / 2.5 / 1 %.
+            let ratios: Vec<i64> = n.term_classes().iter().map(|c| c.base_ratio_bps).collect();
+            assert_eq!(ratios, [30_000, 40_000, 50_000]);
+            let fees: Vec<i64> = n
+                .term_classes()
+                .iter()
+                .map(|c| c.early_redeem_fee_bps)
+                .collect();
+            assert_eq!(fees, [500, 250, 100]);
             assert_eq!(n.fee_bps(), 15);
             assert_eq!(n.attest_fee_bps(), 5_000);
             assert_eq!(n.max_mint_cents(), 250_000);
@@ -687,8 +742,8 @@ mod tests {
         assert_eq!(fee_zat_for(m, 400_000_000_000), 600_000_000);
         assert_eq!(attest_fee_zat_for(m, 50_000_000), 25_000_000);
         assert_eq!(attest_fee_zat_for(m, 0), 0);
-        // RED-5: $100 at $0.52 under clause (a): claimantMax = ⌈10⁴ · 1.1 · 10⁸ / 520,000⌉.
-        let cm = (10_000u128 * 11_000 * 100_000_000).div_ceil(520_000) as i64;
+        // RED-5: $100 at $0.52 under clause (a): claimantMax = ⌈10⁴ · 1.25 · 10⁸ / 520,000⌉.
+        let cm = (10_000u128 * 12_500 * 100_000_000).div_ceil(520_000) as i64;
         assert_eq!(
             residual_zat_for(cm + 100_000, 10_000, 520_000, "a"),
             Some(100_000)
@@ -714,8 +769,38 @@ mod tests {
             assert!(!n.branch_ids().contains(&0));
             assert!(n.branch_ids().contains(&VAULT_BRANCH_ID));
         }
-        assert_eq!(Network::Mainnet.claim_delay(), 1_152);
+        assert_eq!(Network::Mainnet.claim_delay(), 576);
         assert_eq!(Network::Regtest.claim_delay(), 10);
+        assert_eq!(CLAIM_THRESHOLD_BPS, 12_500);
+        assert_eq!(SIGMA_MULT_MAX_BPS, SIGMA_MULT_MIN_BPS);
+        let rr: Vec<i64> = Network::Regtest
+            .term_classes()
+            .iter()
+            .map(|c| c.base_ratio_bps)
+            .collect();
+        assert_eq!(rr, [30_000, 40_000, 50_000]);
+    }
+
+    #[test]
+    fn early_redeem_fee_is_the_nodes() {
+        // math.h EarlyRedeemFeeZat (yellowback_math_tests.cpp): 5 % of 6,000 YEC = 300 YEC; floor.
+        assert_eq!(early_redeem_fee_zat(600_000_000_000, 500), 30_000_000_000);
+        assert_eq!(early_redeem_fee_zat(600_000_000_000, 0), 0);
+        assert_eq!(early_redeem_fee_zat(-1, 500), 0);
+        assert_eq!(early_redeem_fee_zat(19_999, 500), 999);
+        assert_eq!(early_redeem_fee_zat(251_889_169_000, 500), 12_594_458_450); // the in-term contract's sample
+        assert_eq!(early_redeem_fee_zat(i64::MAX, 10_000), i64::MAX);
+    }
+
+    #[test]
+    fn warning_within_a_quarter_above_the_claimable_price() {
+        // YecWallet's nearThreshold: pClaim · 10⁴ < underwaterAt · 12,500.
+        assert!(near_threshold(500_000, 400_001));
+        assert!(!near_threshold(500_000, 400_000));
+        assert!(near_threshold(400_000, 400_000));
+        assert!(near_threshold(1, 400_000));
+        assert!(!near_threshold(0, 400_000));
+        assert!(!near_threshold(500_000, 0));
     }
 
     #[test]

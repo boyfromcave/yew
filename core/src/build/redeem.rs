@@ -8,8 +8,11 @@
 //! under P2SH) — and `nSequence 0xFFFFFFFE`, `vin[1..]` = own YED inputs covering `mintedCents` (the floor-aware selector
 //! with the BURN stage, H4), outputs = collateral to a fresh own key, the enforcement fee to
 //! `payee(R, vaultOutpoint)`, optional YED change, the REDEEM payload; `nLockTime =
-//! lockHeight`, `nExpiryHeight = R + REF_WINDOW`, `R` = the index tip. A VOID vault is
-//! released with no burn, no fee and no payload (L14, K3).
+//! ownerHeight` (the V's owner branch height: since the in-term plan's D-IT-15 `refHeight + 1`
+//! of the mint, so the owner redeems at any height), `nExpiryHeight = R + REF_WINDOW`, `R` = the
+//! index tip. A redeem before `lockHeight` pays the early-redeem fee on top of FEE-1, on the same
+//! payee output (IT-9; not due under FEE-0). A VOID vault is released with no burn, no fee and no
+//! payload (L14, K3).
 //!
 //! Translation source (plan §3.6): `ycash-dd/src/yellowback/txbuilder.cpp` — `PlanVaultSpend`
 //! `:57-133` (the slot order COLLATERAL, FEE, CHANGE, [PAYLOAD], ATTEST, RESIDUAL, PAYLOAD and
@@ -45,8 +48,12 @@ pub struct VaultSpendShape {
     pub vault_value: i64,
     /// `lockHeight` (owner path `nLockTime`).
     pub lock_height: u32,
-    /// `claimHeight` (claim path `nLockTime`).
+    /// `claimHeight`.
     pub claim_height: u32,
+    /// The V's `ownerHeight` (owner path `nLockTime`).
+    pub owner_height: u32,
+    /// The V's `appHeight` (claim path `nLockTime`).
+    pub app_height: u32,
     /// Owner path or claim path.
     pub owner_path: bool,
     /// With the REDEEM payload (false for a VOID release).
@@ -61,7 +68,8 @@ pub struct VaultSpendShape {
     pub change_script: Vec<u8>,
     /// The fee payee's script (`None` under FEE-0).
     pub payee_script: Option<Vec<u8>>,
-    /// The enforcement fee.
+    /// The fee output's value: the enforcement fee, plus the early-redeem fee on an owner redeem
+    /// before `lockHeight` (IT-9).
     pub fee_zat: i64,
     /// The attestor payee's script (`None` under AFEE-0).
     pub attest_script: Option<Vec<u8>>,
@@ -112,12 +120,13 @@ enum Slot {
     Payload,
 }
 
-/// `PlanVaultSpend` (`txbuilder.cpp:57-133`), the transparent-destination branch.
+/// `PlanVaultSpend` (`txbuilder.cpp:57-133`), the transparent-destination branch; `nLockTime` is
+/// the V's branch height (`ownerPath ? ownerHeight : appHeight`, branch `upgrade/vault-in-term`).
 pub fn plan_vault_spend(s: &VaultSpendShape) -> Result<VaultSpendPlan, WalletError> {
     let lock_time = if s.owner_path {
-        s.lock_height
+        s.owner_height
     } else {
-        s.claim_height
+        s.app_height
     };
     let mut vin = vec![TxIn {
         prevout: s.vault_out,
@@ -326,8 +335,14 @@ pub struct RedeemBuild {
     pub extra_burn_cents: u64,
     /// YED change (cents).
     pub change_cents: u64,
-    /// The enforcement fee (0 under FEE-0).
+    /// What the fee output pays (0 under FEE-0): the enforcement fee plus the early-redeem fee.
     pub fee_zat: i64,
+    /// The early-redeem fee within `fee_zat` (IT-9): `collateral · earlyRedeemFeeBps[class] / 10⁴`
+    /// when the redeem confirms before `lockHeight` (judged at `R + 1`, the node builder's
+    /// reading), 0 at or after it and under FEE-0.
+    pub early_redeem_fee_zat: i64,
+    /// The vault's `lockHeight`: a redeem confirming before it pays the early-redeem fee.
+    pub lock_height: u32,
     /// The fee payee (`s…`), empty under FEE-0.
     pub payee: String,
     /// The collateral returned, zat.
@@ -336,7 +351,7 @@ pub struct RedeemBuild {
     pub collateral_address: String,
     /// `R`.
     pub ref_height: u32,
-    /// `nLockTime` (= `lockHeight`).
+    /// `nLockTime` (= the V's `ownerHeight`).
     pub lock_time: u32,
     /// `nExpiryHeight`.
     pub expiry_height: u32,
@@ -346,11 +361,19 @@ pub struct RedeemBuild {
     pub txid: [u8; 32],
 }
 
-/// The V script of a stored vault under the vault upgrade's terms (U-23).
+/// The V script of a stored vault under the vault upgrade's terms (U-23), with its own branch
+/// heights (in-term IT-1: `refHeight + 1` for a mint since the rule, `lockHeight` / `lockHeight +
+/// GRACE` before it), as the last refresh checked them against `GetVault.scriptPubKey`.
 pub fn vault_script_of(
     v: &VaultRow,
     vt: &super::terms::VaultTerms,
 ) -> Result<Vec<u8>, WalletError> {
+    if v.owner_height == 0 || v.app_height == 0 {
+        return Err(WalletError::Other(format!(
+            "vault-not-synced: vault {} has no checked branch heights yet; sync and try again",
+            txid_hex(&v.txid)
+        )));
+    }
     if v.claim_height != v.lock_height + vt.grace {
         return Err(MintError::Inconsistent {
             what: format!(
@@ -362,11 +385,34 @@ pub fn vault_script_of(
         }
         .into());
     }
-    Ok(vt.vault_script(&v.owner_pubkey, v.lock_height)?)
+    Ok(vt.vault_script_at(&v.owner_pubkey, v.owner_height, v.app_height)?)
 }
 
-/// `BuildRedeem` (`txbuilder.cpp:1286-1299`): the owner-path spend of an own open vault at or
-/// past `lockHeight`. `R` is the relay node's index tip (`GetYellowbackInfo.height`). This is
+/// IT-9's early-redeem fee of an owner redeem of `v` built at index height `r` (`EarlyRedeemFeeAt`
+/// / `BuildVaultSpend`, `ycash-dd` branch `upgrade/vault-in-term`): the spend confirms at `r + 1`
+/// at the earliest, so the fee is due when `r + 1 < lockHeight`; 0 at or past it, for a vault that
+/// is not ACTIVE, under FEE-0 (`payee_known` false: RED-3 then charges neither fee), and for a
+/// class this network does not know.
+pub fn early_redeem_fee_for(
+    network: crate::params::Network,
+    v: &VaultRow,
+    r: u32,
+    payee_known: bool,
+) -> i64 {
+    if v.status != "ACTIVE" || !payee_known || r as u64 + 1 >= v.lock_height as u64 {
+        return 0;
+    }
+    network
+        .term_classes()
+        .iter()
+        .find(|c| c.letter == v.term_class && c.enabled())
+        .map(|c| crate::params::early_redeem_fee_zat(v.collateral_zat, c.early_redeem_fee_bps))
+        .unwrap_or(0)
+}
+
+/// `BuildRedeem` (`txbuilder.cpp:1286-1299`): the owner-path spend of an own open vault at any
+/// height from the V's `ownerHeight` (the block after the mint since D-IT-15; before `lockHeight`
+/// with the early-redeem fee). `R` is the relay node's index tip (`GetYellowbackInfo.height`). This is
 /// the **preview** (audit G-2): nothing is broadcast until [`broadcast`] is called with it,
 /// so the fee, the payee and the collateral returned are on screen before the slider.
 pub async fn build_redeem(
@@ -388,10 +434,16 @@ pub async fn build_redeem(
     }
     let info = yb.info().await?;
     let r = info.height as u32;
-    if (r as u64) < v.lock_height as u64 || tip < v.lock_height as u64 {
+    if v.owner_height == 0 {
+        return Err(WalletError::Other(
+            "vault-not-synced: the vault's branch heights are not checked yet; sync and try again"
+                .into(),
+        ));
+    }
+    if (r as u64) < v.owner_height as u64 || tip < v.owner_height as u64 {
         return Err(WalletError::Other(format!(
             "vault-locked: the vault is locked until height {} (tip {tip}, index {r})",
-            v.lock_height
+            v.owner_height
         )));
     }
     let expiry_height = r + REF_WINDOW;
@@ -421,6 +473,9 @@ pub async fn build_redeem(
     } else {
         (Vec::new(), 0, 0, SelectStage::None, 0, String::new())
     };
+    // IT-9 locally: the early-redeem fee rides on the FEE-1 payee's output (RED-3 checks that
+    // output against FEE-1 + the early fee; AFEE-1 gives the owner path no attestor share).
+    let early_redeem_fee_zat = early_redeem_fee_for(wallet.network, &v, r, !payee.is_empty());
     let change_row = if change_cents > 0 {
         Some(mint::fresh_external(wallet)?)
     } else {
@@ -431,6 +486,8 @@ pub async fn build_redeem(
         vault_value: v.collateral_zat,
         lock_height: v.lock_height,
         claim_height: v.claim_height,
+        owner_height: v.owner_height,
+        app_height: v.app_height,
         owner_path: true,
         with_payload: active,
         ref_height: r,
@@ -445,7 +502,11 @@ pub async fn build_redeem(
         } else {
             Some(mint::p2pkh_of_address(wallet, &payee)?)
         },
-        fee_zat: if payee.is_empty() { 0 } else { fee_zat },
+        fee_zat: if payee.is_empty() {
+            0
+        } else {
+            fee_zat + early_redeem_fee_zat
+        },
         attest_script: None,
         attest_fee_zat: 0,
         residual_zat: 0,
@@ -479,6 +540,8 @@ pub async fn build_redeem(
         extra_burn_cents: extra_burn,
         change_cents,
         fee_zat: shape.fee_zat,
+        early_redeem_fee_zat,
+        lock_height: v.lock_height,
         payee,
         collateral_out: plan.collateral_out,
         collateral_address: dest.address_s,
@@ -617,6 +680,8 @@ mod tests {
             vault_value: 1_000_000_000,
             lock_height: 431,
             claim_height: 455,
+            owner_height: 431,
+            app_height: 455,
             owner_path: true,
             with_payload,
             ref_height: 431,
@@ -691,5 +756,76 @@ mod tests {
         let mut tiny = shape(true, true, 0, false, 0);
         tiny.vault_value = 1_000;
         assert!(plan_vault_spend(&tiny).is_err());
+    }
+
+    #[test]
+    fn in_term_owner_redeem_locks_at_owner_height_and_pays_the_early_fee() {
+        // In-term IT-1 / D-IT-15: a V minted at R = 400 has ownerHeight = appHeight = 401; the
+        // owner path's nLockTime is ownerHeight (the CLTV of the OWNER branch), the claim's appHeight.
+        let mut s = shape(true, true, 0, false, 0);
+        s.owner_height = 401;
+        s.app_height = 401;
+        let early = crate::params::early_redeem_fee_zat(s.vault_value, 500);
+        s.fee_zat = 50_000_000 + early;
+        let p = plan_vault_spend(&s).unwrap();
+        assert_eq!(p.lock_time, 401);
+        // IT-9: the early-redeem fee rides on the FEE-1 payee's output; the collateral pays it.
+        assert_eq!(p.vout[p.fee_vout as usize].value, 50_000_000 + 50_000_000);
+        assert_eq!(
+            p.collateral_out,
+            1_000_000_000 + 20_000 - 1_000 - 100_000_000
+        );
+        s.owner_path = false;
+        assert_eq!(plan_vault_spend(&s).unwrap().lock_time, 401);
+    }
+
+    #[test]
+    fn early_redeem_fee_follows_the_node_builder() {
+        let v = VaultRow {
+            txid: [1; 32],
+            vout: 0,
+            status: "ACTIVE".into(),
+            owner_hash160: [2; 20],
+            owner_pubkey: [2; 33],
+            term_class: "B".into(),
+            lock_height: 600,
+            claim_height: 624,
+            collateral_zat: 400_000_000_000,
+            minted_cents: 10_000,
+            mint_height: 498,
+            claimable: false,
+            underwater_at: 0,
+            sweep_before: 0,
+            close_height: 0,
+            closing_txid: String::new(),
+            void_reason: String::new(),
+            updated_height: 500,
+            owner_height: 498,
+            app_height: 498,
+        };
+        let r = crate::params::Network::Regtest;
+        // Class B: 2.5 % of 4,000 YEC = 100 YEC while R + 1 < lockHeight.
+        assert_eq!(early_redeem_fee_for(r, &v, 500, true), 10_000_000_000);
+        assert_eq!(early_redeem_fee_for(r, &v, 598, true), 10_000_000_000);
+        // Built at R = 599 the spend confirms at 600 = lockHeight at the earliest: no fee.
+        assert_eq!(early_redeem_fee_for(r, &v, 599, true), 0);
+        assert_eq!(early_redeem_fee_for(r, &v, 700, true), 0);
+        // FEE-0 (no eligible payee): RED-3 charges neither fee.
+        assert_eq!(early_redeem_fee_for(r, &v, 500, false), 0);
+        let void = VaultRow {
+            status: "VOID".into(),
+            ..v.clone()
+        };
+        assert_eq!(early_redeem_fee_for(r, &void, 500, true), 0);
+        let a = VaultRow {
+            term_class: "A".into(),
+            ..v.clone()
+        };
+        assert_eq!(early_redeem_fee_for(r, &a, 500, true), 20_000_000_000);
+        let c = VaultRow {
+            term_class: "C".into(),
+            ..v
+        };
+        assert_eq!(early_redeem_fee_for(r, &c, 500, true), 4_000_000_000);
     }
 }

@@ -1765,8 +1765,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ClaimableItem dco_decode_claimable_item(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 12)
-      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
+    if (arr.length != 16)
+      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
     return ClaimableItem(
       vaultTxid: dco_decode_String(arr[0]),
       ownerAddress: dco_decode_String(arr[1]),
@@ -1780,6 +1780,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       residualZat: dco_decode_i_64(arr[9]),
       claimantZat: dco_decode_i_64(arr[10]),
       payee: dco_decode_String(arr[11]),
+      claimable: dco_decode_bool(arr[12]),
+      underwaterAtMicroUsd: dco_decode_i_64(arr[13]),
+      lockHeight: dco_decode_i_64(arr[14]),
+      inTerm: dco_decode_bool(arr[15]),
     );
   }
 
@@ -2119,8 +2123,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   RedeemPreview dco_decode_redeem_preview(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 14)
-      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
+    if (arr.length != 17)
+      throw Exception('unexpected arr length: expect 17 but see ${arr.length}');
     return RedeemPreview(
       previewId: dco_decode_String(arr[0]),
       vaultTxid: dco_decode_String(arr[1]),
@@ -2130,12 +2134,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       changeCents: dco_decode_i_64(arr[5]),
       yedInputs: dco_decode_u_32(arr[6]),
       feeZat: dco_decode_i_64(arr[7]),
-      payee: dco_decode_String(arr[8]),
-      collateralZat: dco_decode_i_64(arr[9]),
-      collateralAddress: dco_decode_String(arr[10]),
-      lockTime: dco_decode_i_64(arr[11]),
-      expiryHeight: dco_decode_i_64(arr[12]),
-      txid: dco_decode_String(arr[13]),
+      enforcementFeeZat: dco_decode_i_64(arr[8]),
+      earlyRedeemFeeZat: dco_decode_i_64(arr[9]),
+      lockHeight: dco_decode_i_64(arr[10]),
+      payee: dco_decode_String(arr[11]),
+      collateralZat: dco_decode_i_64(arr[12]),
+      collateralAddress: dco_decode_String(arr[13]),
+      lockTime: dco_decode_i_64(arr[14]),
+      expiryHeight: dco_decode_i_64(arr[15]),
+      txid: dco_decode_String(arr[16]),
     );
   }
 
@@ -2143,8 +2150,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   RedeemResult dco_decode_redeem_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 12)
-      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
+    if (arr.length != 13)
+      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
     return RedeemResult(
       txid: dco_decode_String(arr[0]),
       verdict: dco_decode_String(arr[1]),
@@ -2153,11 +2160,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       extraBurnCents: dco_decode_i_64(arr[4]),
       changeCents: dco_decode_i_64(arr[5]),
       feeZat: dco_decode_i_64(arr[6]),
-      payee: dco_decode_String(arr[7]),
-      collateralZat: dco_decode_i_64(arr[8]),
-      collateralAddress: dco_decode_String(arr[9]),
-      lockTime: dco_decode_i_64(arr[10]),
-      expiryHeight: dco_decode_i_64(arr[11]),
+      earlyRedeemFeeZat: dco_decode_i_64(arr[7]),
+      payee: dco_decode_String(arr[8]),
+      collateralZat: dco_decode_i_64(arr[9]),
+      collateralAddress: dco_decode_String(arr[10]),
+      lockTime: dco_decode_i_64(arr[11]),
+      expiryHeight: dco_decode_i_64(arr[12]),
     );
   }
 
@@ -2288,8 +2296,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   VaultSummary dco_decode_vault_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 29)
-      throw Exception('unexpected arr length: expect 29 but see ${arr.length}');
+    if (arr.length != 37)
+      throw Exception('unexpected arr length: expect 37 but see ${arr.length}');
     return VaultSummary(
       vaultTxid: dco_decode_String(arr[0]),
       status: dco_decode_String(arr[1]),
@@ -2304,22 +2312,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       open: dco_decode_bool(arr[10]),
       redeemable: dco_decode_bool(arr[11]),
       blocksUntilRedeem: dco_decode_i_64(arr[12]),
-      releasable: dco_decode_bool(arr[13]),
-      claimable: dco_decode_bool(arr[14]),
-      underwaterAtMicroUsd: dco_decode_i_64(arr[15]),
-      underwater: dco_decode_bool(arr[16]),
-      closeHeight: dco_decode_i_64(arr[17]),
-      closingTxid: dco_decode_String(arr[18]),
-      voidReason: dco_decode_String(arr[19]),
-      lockTimeSecs: dco_decode_i_64(arr[20]),
-      claimTimeSecs: dco_decode_i_64(arr[21]),
-      blocksUntilClaim: dco_decode_i_64(arr[22]),
-      renewable: dco_decode_bool(arr[23]),
-      renewLockBlocks: dco_decode_u_32(arr[24]),
-      claimWarning: dco_decode_bool(arr[25]),
-      claimOpen: dco_decode_bool(arr[26]),
-      claiming: dco_decode_bool(arr[27]),
-      reopened: dco_decode_bool(arr[28]),
+      blocksUntilTermEnd: dco_decode_i_64(arr[13]),
+      earlyRedeem: dco_decode_bool(arr[14]),
+      earlyRedeemFeeZat: dco_decode_i_64(arr[15]),
+      earlyRedeemFeeBps: dco_decode_i_64(arr[16]),
+      inTermClaims: dco_decode_bool(arr[17]),
+      claimThresholdBps: dco_decode_i_64(arr[18]),
+      claimPriceMicroUsd: dco_decode_i_64(arr[19]),
+      nearThreshold: dco_decode_bool(arr[20]),
+      releasable: dco_decode_bool(arr[21]),
+      claimable: dco_decode_bool(arr[22]),
+      underwaterAtMicroUsd: dco_decode_i_64(arr[23]),
+      underwater: dco_decode_bool(arr[24]),
+      closeHeight: dco_decode_i_64(arr[25]),
+      closingTxid: dco_decode_String(arr[26]),
+      voidReason: dco_decode_String(arr[27]),
+      lockTimeSecs: dco_decode_i_64(arr[28]),
+      claimTimeSecs: dco_decode_i_64(arr[29]),
+      blocksUntilClaim: dco_decode_i_64(arr[30]),
+      renewable: dco_decode_bool(arr[31]),
+      renewLockBlocks: dco_decode_u_32(arr[32]),
+      claimWarning: dco_decode_bool(arr[33]),
+      claimOpen: dco_decode_bool(arr[34]),
+      claiming: dco_decode_bool(arr[35]),
+      reopened: dco_decode_bool(arr[36]),
     );
   }
 
@@ -2598,6 +2614,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_residualZat = sse_decode_i_64(deserializer);
     var var_claimantZat = sse_decode_i_64(deserializer);
     var var_payee = sse_decode_String(deserializer);
+    var var_claimable = sse_decode_bool(deserializer);
+    var var_underwaterAtMicroUsd = sse_decode_i_64(deserializer);
+    var var_lockHeight = sse_decode_i_64(deserializer);
+    var var_inTerm = sse_decode_bool(deserializer);
     return ClaimableItem(
       vaultTxid: var_vaultTxid,
       ownerAddress: var_ownerAddress,
@@ -2611,6 +2631,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       residualZat: var_residualZat,
       claimantZat: var_claimantZat,
       payee: var_payee,
+      claimable: var_claimable,
+      underwaterAtMicroUsd: var_underwaterAtMicroUsd,
+      lockHeight: var_lockHeight,
+      inTerm: var_inTerm,
     );
   }
 
@@ -3085,6 +3109,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_changeCents = sse_decode_i_64(deserializer);
     var var_yedInputs = sse_decode_u_32(deserializer);
     var var_feeZat = sse_decode_i_64(deserializer);
+    var var_enforcementFeeZat = sse_decode_i_64(deserializer);
+    var var_earlyRedeemFeeZat = sse_decode_i_64(deserializer);
+    var var_lockHeight = sse_decode_i_64(deserializer);
     var var_payee = sse_decode_String(deserializer);
     var var_collateralZat = sse_decode_i_64(deserializer);
     var var_collateralAddress = sse_decode_String(deserializer);
@@ -3100,6 +3127,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       changeCents: var_changeCents,
       yedInputs: var_yedInputs,
       feeZat: var_feeZat,
+      enforcementFeeZat: var_enforcementFeeZat,
+      earlyRedeemFeeZat: var_earlyRedeemFeeZat,
+      lockHeight: var_lockHeight,
       payee: var_payee,
       collateralZat: var_collateralZat,
       collateralAddress: var_collateralAddress,
@@ -3119,6 +3149,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_extraBurnCents = sse_decode_i_64(deserializer);
     var var_changeCents = sse_decode_i_64(deserializer);
     var var_feeZat = sse_decode_i_64(deserializer);
+    var var_earlyRedeemFeeZat = sse_decode_i_64(deserializer);
     var var_payee = sse_decode_String(deserializer);
     var var_collateralZat = sse_decode_i_64(deserializer);
     var var_collateralAddress = sse_decode_String(deserializer);
@@ -3132,6 +3163,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       extraBurnCents: var_extraBurnCents,
       changeCents: var_changeCents,
       feeZat: var_feeZat,
+      earlyRedeemFeeZat: var_earlyRedeemFeeZat,
       payee: var_payee,
       collateralZat: var_collateralZat,
       collateralAddress: var_collateralAddress,
@@ -3297,6 +3329,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_open = sse_decode_bool(deserializer);
     var var_redeemable = sse_decode_bool(deserializer);
     var var_blocksUntilRedeem = sse_decode_i_64(deserializer);
+    var var_blocksUntilTermEnd = sse_decode_i_64(deserializer);
+    var var_earlyRedeem = sse_decode_bool(deserializer);
+    var var_earlyRedeemFeeZat = sse_decode_i_64(deserializer);
+    var var_earlyRedeemFeeBps = sse_decode_i_64(deserializer);
+    var var_inTermClaims = sse_decode_bool(deserializer);
+    var var_claimThresholdBps = sse_decode_i_64(deserializer);
+    var var_claimPriceMicroUsd = sse_decode_i_64(deserializer);
+    var var_nearThreshold = sse_decode_bool(deserializer);
     var var_releasable = sse_decode_bool(deserializer);
     var var_claimable = sse_decode_bool(deserializer);
     var var_underwaterAtMicroUsd = sse_decode_i_64(deserializer);
@@ -3327,6 +3367,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       open: var_open,
       redeemable: var_redeemable,
       blocksUntilRedeem: var_blocksUntilRedeem,
+      blocksUntilTermEnd: var_blocksUntilTermEnd,
+      earlyRedeem: var_earlyRedeem,
+      earlyRedeemFeeZat: var_earlyRedeemFeeZat,
+      earlyRedeemFeeBps: var_earlyRedeemFeeBps,
+      inTermClaims: var_inTermClaims,
+      claimThresholdBps: var_claimThresholdBps,
+      claimPriceMicroUsd: var_claimPriceMicroUsd,
+      nearThreshold: var_nearThreshold,
       releasable: var_releasable,
       claimable: var_claimable,
       underwaterAtMicroUsd: var_underwaterAtMicroUsd,
@@ -3626,6 +3674,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_64(self.residualZat, serializer);
     sse_encode_i_64(self.claimantZat, serializer);
     sse_encode_String(self.payee, serializer);
+    sse_encode_bool(self.claimable, serializer);
+    sse_encode_i_64(self.underwaterAtMicroUsd, serializer);
+    sse_encode_i_64(self.lockHeight, serializer);
+    sse_encode_bool(self.inTerm, serializer);
   }
 
   @protected
@@ -3990,6 +4042,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_64(self.changeCents, serializer);
     sse_encode_u_32(self.yedInputs, serializer);
     sse_encode_i_64(self.feeZat, serializer);
+    sse_encode_i_64(self.enforcementFeeZat, serializer);
+    sse_encode_i_64(self.earlyRedeemFeeZat, serializer);
+    sse_encode_i_64(self.lockHeight, serializer);
     sse_encode_String(self.payee, serializer);
     sse_encode_i_64(self.collateralZat, serializer);
     sse_encode_String(self.collateralAddress, serializer);
@@ -4008,6 +4063,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_64(self.extraBurnCents, serializer);
     sse_encode_i_64(self.changeCents, serializer);
     sse_encode_i_64(self.feeZat, serializer);
+    sse_encode_i_64(self.earlyRedeemFeeZat, serializer);
     sse_encode_String(self.payee, serializer);
     sse_encode_i_64(self.collateralZat, serializer);
     sse_encode_String(self.collateralAddress, serializer);
@@ -4126,6 +4182,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.open, serializer);
     sse_encode_bool(self.redeemable, serializer);
     sse_encode_i_64(self.blocksUntilRedeem, serializer);
+    sse_encode_i_64(self.blocksUntilTermEnd, serializer);
+    sse_encode_bool(self.earlyRedeem, serializer);
+    sse_encode_i_64(self.earlyRedeemFeeZat, serializer);
+    sse_encode_i_64(self.earlyRedeemFeeBps, serializer);
+    sse_encode_bool(self.inTermClaims, serializer);
+    sse_encode_i_64(self.claimThresholdBps, serializer);
+    sse_encode_i_64(self.claimPriceMicroUsd, serializer);
+    sse_encode_bool(self.nearThreshold, serializer);
     sse_encode_bool(self.releasable, serializer);
     sse_encode_bool(self.claimable, serializer);
     sse_encode_i_64(self.underwaterAtMicroUsd, serializer);

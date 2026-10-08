@@ -8,7 +8,9 @@
 //! `rusqlite`, bundled. Schema v2 (W2) adds `utxos.cents`, the history label columns and
 //! `own_tokens`; schema v3 (W4) adds the `mints` and `vaults` tables (plan §5.3: `Estimated →
 //! CarrierSent → CarrierConfirmed → MainSent → Done | Lapsed → Swept`, persisted so a killed
-//! app resumes). Every migration is additive (`ALTER TABLE` / `CREATE TABLE IF NOT EXISTS`).
+//! app resumes); schema v4 (in-term claims, IT-1) adds the V's branch heights to `vaults`
+//! (`owner_height`, `app_height`). Every migration is additive (`ALTER TABLE` / `CREATE TABLE IF
+//! NOT EXISTS`).
 //!
 //! The database is a cache: deleting it and restoring from seed plus birthday rebuilds it.
 //! The seed is never here. Imported keys (D-W-11, "outside the HD tree") have to live
@@ -35,7 +37,7 @@ pub enum StoreError {
 }
 
 /// The schema version this build writes and reads.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// The `chain` column value of an imported key (D-W-11): outside the HD tree.
 pub const CHAIN_IMPORTED: u32 = 2;
@@ -299,6 +301,12 @@ pub struct VaultRow {
     pub void_reason: String,
     /// The tip at the last refresh.
     pub updated_height: u64,
+    /// The V's `ownerHeight` (in-term plan IT-1, D-IT-15: `refHeight + 1`; `lockHeight` for a vault
+    /// minted before the rule): the owner's redeem is valid from here. 0 = not yet refreshed.
+    pub owner_height: u32,
+    /// The V's `appHeight` (`refHeight + 1`; `lockHeight + GRACE` before the rule): a claim may be
+    /// made from here, RED-4's threshold deciding. 0 = not yet refreshed.
+    pub app_height: u32,
 }
 
 /// The state of a claim intent this wallet is paid by (the vault upgrade, U-23).
@@ -440,7 +448,8 @@ CREATE TABLE IF NOT EXISTS vaults (
   claim_height INTEGER NOT NULL, collateral_zat INTEGER NOT NULL, minted_cents INTEGER NOT NULL,
   mint_height INTEGER NOT NULL, claimable INTEGER NOT NULL, underwater_at INTEGER NOT NULL,
   sweep_before INTEGER NOT NULL, close_height INTEGER NOT NULL, closing_txid TEXT NOT NULL,
-  void_reason TEXT NOT NULL, updated_height INTEGER NOT NULL);
+  void_reason TEXT NOT NULL, updated_height INTEGER NOT NULL,
+  owner_height INTEGER NOT NULL DEFAULT 0, app_height INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS claim_bounds (
   mint_id INTEGER PRIMARY KEY, max_burn_cents INTEGER NOT NULL, min_out_zat INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS claim_intents (
@@ -458,6 +467,12 @@ ALTER TABLE history ADD COLUMN kind TEXT NOT NULL DEFAULT '';
 ALTER TABLE history ADD COLUMN verdict TEXT NOT NULL DEFAULT '';
 ALTER TABLE history ADD COLUMN label TEXT NOT NULL DEFAULT '';
 ALTER TABLE history ADD COLUMN labelled INTEGER NOT NULL DEFAULT 0;
+";
+
+/// The additive v3 → v4 migration (in-term claims): the V's branch heights.
+const MIGRATE_3_TO_4: &str = "
+ALTER TABLE vaults ADD COLUMN owner_height INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE vaults ADD COLUMN app_height INTEGER NOT NULL DEFAULT 0;
 ";
 
 impl Store {
@@ -506,11 +521,15 @@ impl Store {
                 [],
             )?;
         }
+        // v3 → v4: the vaults table exists and gains two columns (a v1 / v2 store gets them from SCHEMA).
+        if existing.as_deref() == Some("3") {
+            conn.execute_batch(MIGRATE_3_TO_4)?;
+        }
         conn.execute_batch(SCHEMA)?;
-        // v2 → v3 (W4) is the two new tables SCHEMA just created: bump the version.
-        if matches!(existing.as_deref(), Some("1") | Some("2")) {
+        // v2 → v3 (W4) is the two new tables SCHEMA just created; v3 → v4 the columns above.
+        if matches!(existing.as_deref(), Some("1") | Some("2") | Some("3")) {
             conn.execute(
-                "UPDATE meta SET value = '3' WHERE key = 'schema_version'",
+                "UPDATE meta SET value = '4' WHERE key = 'schema_version'",
                 [],
             )?;
         }
@@ -1302,13 +1321,13 @@ impl Store {
         self.conn.execute(
             "INSERT OR REPLACE INTO vaults (txid, vout, status, owner_hash160, owner_pubkey, term_class, lock_height, claim_height,
                collateral_zat, minted_cents, mint_height, claimable, underwater_at, sweep_before, close_height, closing_txid,
-               void_reason, updated_height)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+               void_reason, updated_height, owner_height, app_height)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 v.txid.as_slice(), v.vout, v.status, v.owner_hash160.as_slice(), v.owner_pubkey.as_slice(), v.term_class,
                 v.lock_height, v.claim_height, v.collateral_zat, v.minted_cents as i64, v.mint_height as i64,
                 v.claimable as i64, v.underwater_at, v.sweep_before as i64, v.close_height as i64, v.closing_txid,
-                v.void_reason, v.updated_height as i64
+                v.void_reason, v.updated_height as i64, v.owner_height, v.app_height
             ],
         )?;
         Ok(())
@@ -1324,7 +1343,7 @@ impl Store {
         let mut st = self.conn.prepare(
             "SELECT txid, vout, status, owner_hash160, owner_pubkey, term_class, lock_height, claim_height, collateral_zat,
                minted_cents, mint_height, claimable, underwater_at, sweep_before, close_height, closing_txid, void_reason,
-               updated_height FROM vaults ORDER BY mint_height, txid",
+               updated_height, owner_height, app_height FROM vaults ORDER BY mint_height, txid",
         )?;
         let rows = st.query_map([], |r| {
             Ok((
@@ -1346,6 +1365,8 @@ impl Store {
                 r.get::<_, String>(15)?,
                 r.get::<_, String>(16)?,
                 r.get::<_, i64>(17)?,
+                r.get::<_, u32>(18)?,
+                r.get::<_, u32>(19)?,
             ))
         })?;
         let mut out = Vec::new();
@@ -1369,6 +1390,8 @@ impl Store {
                 closing_txid,
                 void_reason,
                 updated,
+                owner_height,
+                app_height,
             ) = row?;
             let owner_pubkey: [u8; 33] = opk
                 .as_slice()
@@ -1393,6 +1416,8 @@ impl Store {
                 closing_txid,
                 void_reason,
                 updated_height: updated.max(0) as u64,
+                owner_height,
+                app_height,
             });
         }
         Ok(out)
@@ -1496,7 +1521,7 @@ mod tests {
     #[test]
     fn schema_meta_addresses_utxos_locks_history() {
         let mut s = Store::open_in_memory().unwrap();
-        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("3"));
+        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("4"));
         s.set_meta("network", "regtest").unwrap();
         s.set_meta("network", "regtest").unwrap();
         assert_eq!(s.meta("network").unwrap().as_deref(), Some("regtest"));
@@ -1624,7 +1649,7 @@ mod tests {
         )
         .unwrap();
         let s = Store::init(conn).unwrap();
-        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("3"));
+        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("4"));
         assert!(s.mints().unwrap().is_empty() && s.vaults().unwrap().is_empty());
         assert!(s.utxos().unwrap().is_empty());
         let h = s.history().unwrap();
@@ -1643,6 +1668,33 @@ mod tests {
     }
 
     #[test]
+    fn v3_file_gains_the_vault_heights() {
+        // A schema-v3 store (W4 tables, no V heights) migrates in place: its vault row reads back
+        // with heights 0 (refreshed from GetVault on the next sync).
+        let s = Store::open_in_memory().unwrap();
+        s.conn
+            .execute_batch(
+                "DROP TABLE vaults;
+                 CREATE TABLE vaults (
+                   txid BLOB PRIMARY KEY, vout INTEGER NOT NULL, status TEXT NOT NULL, owner_hash160 BLOB NOT NULL,
+                   owner_pubkey BLOB NOT NULL, term_class TEXT NOT NULL, lock_height INTEGER NOT NULL,
+                   claim_height INTEGER NOT NULL, collateral_zat INTEGER NOT NULL, minted_cents INTEGER NOT NULL,
+                   mint_height INTEGER NOT NULL, claimable INTEGER NOT NULL, underwater_at INTEGER NOT NULL,
+                   sweep_before INTEGER NOT NULL, close_height INTEGER NOT NULL, closing_txid TEXT NOT NULL,
+                   void_reason TEXT NOT NULL, updated_height INTEGER NOT NULL);
+                 INSERT INTO vaults VALUES (x'0606060606060606060606060606060606060606060606060606060606060606', 0, 'ACTIVE',
+                   x'0202020202020202020202020202020202020202', x'020202020202020202020202020202020202020202020202020202020202020202',
+                   'A', 526, 550, 1000000000, 10000, 481, 0, 0, 0, 0, '', '', 490);
+                 UPDATE meta SET value = '3' WHERE key = 'schema_version';",
+            )
+            .unwrap();
+        let s = Store::init(s.conn).unwrap();
+        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("4"));
+        let v = s.vault(&[6; 32]).unwrap().unwrap();
+        assert_eq!((v.lock_height, v.owner_height, v.app_height), (526, 0, 0));
+    }
+
+    #[test]
     fn v2_file_gains_the_w4_tables_and_rows_round_trip() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -1651,7 +1703,7 @@ mod tests {
         )
         .unwrap();
         let s = Store::init(conn).unwrap();
-        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("3"));
+        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("4"));
         let m = MintRow {
             id: 0,
             kind: MintKind::Mint,
@@ -1724,6 +1776,8 @@ mod tests {
             closing_txid: String::new(),
             void_reason: String::new(),
             updated_height: 490,
+            owner_height: 479,
+            app_height: 479,
         };
         s.upsert_vault(&v).unwrap();
         assert_eq!(s.vault(&[6; 32]).unwrap(), Some(v.clone()));

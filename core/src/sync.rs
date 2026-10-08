@@ -319,6 +319,10 @@ pub async fn sync(
             "price_micro_usd",
             &report.price_micro_usd.unwrap_or(0).to_string(),
         )?;
+        // In-term IT-8: the claim price the vault warnings compare against `underwaterAt`.
+        wallet
+            .store
+            .set_meta("claim_price_micro_usd", &p.p_claim.max(0).to_string())?;
     }
 
     // 5. W4: the two-step rows, the own vaults, and the VAULT / CARRIER rows.
@@ -343,7 +347,13 @@ pub async fn sync(
         }
         // The vault upgrade (U-23): the vault is the bare V template, which no address lists.
         let Some(t) = vt.as_ref() else { continue };
-        let vs = t.vault_script(&v.owner_pubkey, v.lock_height)?;
+        // In-term IT-1: the V's own branch heights, as the last refresh checked them (0 = a store
+        // migrated from schema v3 before its first refresh: the in-term mint's V is not
+        // derivable without refHeight, so the row waits for GetVault).
+        if v.owner_height == 0 || v.app_height == 0 {
+            continue;
+        }
+        let vs = t.vault_script_at(&v.owner_pubkey, v.owner_height, v.app_height)?;
         utxos.push(Utxo {
             outpoint: op,
             address: String::new(),
@@ -592,7 +602,7 @@ pub async fn refresh_vaults(
         // The script terms the wallet would sign against, checked before the vault is shown
         // as redeemable (audit G-1); an inconsistent answer fails the sync with that error.
         terms::check_vault(wallet.network, &v)?;
-        let vault_script = terms::check_vault_script(&vt, &v)?;
+        let yv = terms::check_vault_script(&vt, &v)?;
         let vault_txid = txid_from_hex(&v.txid).unwrap_or(txid);
         wallet.store.upsert_vault(&VaultRow {
             txid: vault_txid,
@@ -613,10 +623,12 @@ pub async fn refresh_vaults(
             closing_txid: v.closing_txid.clone(),
             void_reason: v.void_reason.clone(),
             updated_height: tip,
+            owner_height: yv.owner_height(),
+            app_height: yv.app_height(),
         })?;
         n += 1;
         if v.status == "CLAIMING" {
-            record_residual_intents(wallet, yb, &vt, &v, &pk, &vault_script, vault_txid).await?;
+            record_residual_intents(wallet, yb, &v, &pk, &yv, vault_txid).await?;
         }
     }
     // U-24: a vault the node no longer knows under its old outpoint was either re-created by an
@@ -643,11 +655,13 @@ pub async fn refresh_vaults(
                 continue;
             }
             terms::check_vault(wallet.network, &v)?;
-            terms::check_vault_script(&vt, &v)?;
+            let yv = terms::check_vault_script(&vt, &v)?;
             wallet.store.upsert_vault(&VaultRow {
                 txid: t,
                 vout: v.vout,
                 status: v.status.clone(),
+                owner_height: yv.owner_height(),
+                app_height: yv.app_height(),
                 collateral_zat: v.collateral_zat,
                 claimable: v.claimable,
                 underwater_at: v.underwater_at,
@@ -680,10 +694,9 @@ pub async fn refresh_vaults(
 async fn record_residual_intents(
     wallet: &Wallet,
     yb: &mut YellowbackClient,
-    vt: &terms::VaultTerms,
     v: &crate::net::rpc::YedVault,
     owner: &[u8; 33],
-    vault_script: &[u8],
+    yv: &terms::YedV,
     vault_txid: [u8; 32],
 ) -> Result<(), WalletError> {
     let residual: Vec<_> = v
@@ -696,9 +709,7 @@ async fn record_residual_intents(
     }
     let recipient = script::p2pkh_script(&keys::hash160(owner));
     let want = crate::vault::build_intent(&crate::vault::intent_for(
-        &vt.vault_params(owner, v.lock_height as u32),
-        vault_script,
-        &recipient,
+        &yv.params, &yv.script, &recipient,
     ))
     .ok_or_else(|| WalletError::Other("cannot build the residual intent".into()))?;
     let live = yb
@@ -728,7 +739,7 @@ async fn record_residual_intents(
             value: o.valuezat,
             recipient_script: recipient.clone(),
             intent_script: want.clone(),
-            delay: vt.claim_delay,
+            delay: yv.params.delay,
             height: i.height.max(0) as u64,
             state: IntentState::Pending,
             spend_txid: [0; 32],

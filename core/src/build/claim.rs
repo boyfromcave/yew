@@ -7,7 +7,9 @@
 //! `BuildBundle(R, outpointSelector(vault))`, verified against `ListAttestors` (rule 6); the
 //! carrier step is the mint's (`build::mint::carrier_step`); after one confirmation the CLAIM
 //! spends the vault at `vin[0]` — since the vault upgrade (U-23) the bare V template with
-//! selector 4 (`OP_4`, the APP branch) — with `nLockTime = claimHeight` (the V's `appHeight`),
+//! selector 4 (`OP_4`, the APP branch) — with `nLockTime` = the V's `appHeight` (since the
+//! in-term plan's IT-1 `refHeight + 1` of the mint: a claim is valid in term once the vault is
+//! under θ at the claim price, IT-2; `claimHeight` for a vault minted before the rule),
 //! own YED inputs covering `mintedCents` (BURN stage allowed), YEC fee inputs, the carrier at
 //! `vin[last]`, and outputs claimant intent → fee → YED change → attestor fee → the owner's
 //! residual intent (RED-5) → payload → fee change, in the node's slot order ([`plan_claim`]).
@@ -51,7 +53,16 @@ pub struct Claimable {
     pub collateral_zat: i64,
     /// `claimHeight`.
     pub claim_height: u32,
-    /// `"a"` (underwater at `pClaim`) or `"b"` (notice + emergency price).
+    /// `lockHeight` (rpcversion 6): a claim before it is a claim in term.
+    pub lock_height: u32,
+    /// The node's index tip is below `lockHeight`: the vault is in its term.
+    pub in_term: bool,
+    /// rpcversion 6 (in-term IT-7): RED-4 would pass at the node's tip. A row with `false` is
+    /// listed because its claim branch is open, but it is above θ: no claim is offered.
+    pub claimable: bool,
+    /// `underwaterAt`: the claim price (micro-USD per YEC) below which the vault is claimable.
+    pub underwater_at: i64,
+    /// `"a"` (underwater at `pClaim`) or `"b"` (notice + emergency price); empty when not claimable.
     pub claim_path: String,
     /// `pClaim` at the node's tip.
     pub p_claim: i64,
@@ -91,6 +102,29 @@ pub async fn claimable(
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
         let selector = bundle::outpoint_selector(&txid, vout);
+        if !c.claimable {
+            // Listed, not claimable (above θ): shown greyed with its claimable-at price; no fee
+            // payee is asked for and nothing in the row is relied on.
+            out.push(Claimable {
+                vault_txid,
+                owner_address: c.owner_address,
+                minted_cents: c.minted_cents.max(0) as u64,
+                collateral_zat: c.collateral_zat,
+                claim_height: c.claim_height as u32,
+                lock_height: c.lock_height.max(0) as u32,
+                in_term: (r as i64) < c.lock_height,
+                claimable: false,
+                underwater_at: c.underwater_at,
+                claim_path: String::new(),
+                p_claim: c.p_claim,
+                fee_zat: crate::params::fee_zat_for(network, c.collateral_zat),
+                attest_fee_zat: 0,
+                residual_zat: 0,
+                claimant_zat: 0,
+                payee: String::new(),
+            });
+            continue;
+        }
         let residual_zat = terms::check_claimable(&c)?;
         let (fee_zat, payee) = mint::fee_payee(network, yb, r, c.collateral_zat, &selector).await?;
         if !payee.is_empty() && c.fee_zat != fee_zat {
@@ -123,6 +157,10 @@ pub async fn claimable(
             minted_cents: c.minted_cents.max(0) as u64,
             collateral_zat: c.collateral_zat,
             claim_height: c.claim_height as u32,
+            lock_height: c.lock_height.max(0) as u32,
+            in_term: (r as i64) < c.lock_height,
+            claimable: true,
+            underwater_at: c.underwater_at,
             claim_path: c.claim_path,
             p_claim: c.p_claim,
             fee_zat,
@@ -167,6 +205,12 @@ pub async fn start(
                 "claim-not-underwater: vault {txid_str} is not in ListClaimable"
             ))
         })?;
+    if !entry.claimable {
+        return Err(WalletError::Other(format!(
+            "claim-not-underwater: vault {txid_str} is listed but above the claim threshold (claimable below {} µUSD per YEC)",
+            entry.underwater_at
+        )));
+    }
     let v = yb.vault(&txid_str).await?;
     if v.status != "ACTIVE" {
         return Err(WalletError::Other(format!(
@@ -178,7 +222,7 @@ pub async fn start(
     // script must be the YED vault this wallet rebuilds (U-23) — the one the claim spends.
     terms::check_vault(wallet.network, &v)?;
     let vt = mint::vault_terms_now(wallet, yb).await?;
-    terms::check_vault_script(&vt, &v)?;
+    let yv = terms::check_vault_script(&vt, &v)?;
     if v.minted_cents.max(0) as u64 != entry.minted_cents
         || v.collateral_zat != entry.collateral_zat
     {
@@ -192,10 +236,12 @@ pub async fn start(
     }
     let info = yb.info().await?;
     let r = info.height as u32;
-    if tip < v.claim_height as u64 || (r as u64) < v.claim_height as u64 {
+    // IT-2: the claim branch opens at the V's appHeight (the block after the mint since IT-1);
+    // from there RED-4's threshold test decides, which ListClaimable's `claimable` reports.
+    if tip < yv.app_height() as u64 || (r as u64) < yv.app_height() as u64 {
         return Err(WalletError::Other(format!(
             "claim-not-yet: the claim path opens at height {} (tip {tip}, index {r})",
-            v.claim_height
+            yv.app_height()
         )));
     }
     let owner_pubkey: [u8; 33] = unhex(&v.owner_pub_key)
@@ -593,11 +639,25 @@ pub async fn finish(
         .as_slice()
         .try_into()
         .map_err(|_| WalletError::Other("owner pubkey length".into()))?;
-    let vt = {
+    // The V the claim spends, re-read and checked (in-term IT-1: its branch heights come from the
+    // vault's own mint, `refHeight + 1`, which the claim row does not hold).
+    let (vt, yv) = {
         let yb = validator
             .client_mut()
             .ok_or(gate::GateError::YellowbackAbsent)?;
-        mint::vault_terms_now(wallet, yb).await?
+        let vt = mint::vault_terms_now(wallet, yb).await?;
+        let v = yb.vault(&txid_hex(&m.vault_txid)).await?;
+        if keys::unhex(&v.owner_pub_key).ok().as_deref() != Some(&m.owner_pubkey[..]) {
+            return Err(MintError::Inconsistent {
+                what: format!(
+                    "GetVault {}: ownerPubKey changed since the claim started",
+                    v.txid
+                ),
+            }
+            .into());
+        }
+        let yv = terms::check_vault_script(&vt, &v)?;
+        (vt, yv)
     };
     if m.claim_height != m.lock_height + vt.grace {
         return Err(MintError::Inconsistent {
@@ -608,8 +668,7 @@ pub async fn finish(
         }
         .into());
     }
-    let vault = vt.vault_params(&owner_pubkey, m.lock_height);
-    let vault_script = vt.vault_script(&owner_pubkey, m.lock_height)?;
+    let (vault, vault_script) = (yv.params, yv.script);
     let vault_out = OutPoint {
         txid: m.vault_txid,
         n: 0,

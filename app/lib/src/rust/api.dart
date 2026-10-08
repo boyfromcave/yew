@@ -669,6 +669,19 @@ class ClaimableItem {
   /// The enforcement fee payee (`s…`), empty under FEE-0.
   final String payee;
 
+  /// rpcversion 6 (in-term IT-7): a claim of this vault would be accepted now. A `false` row is
+  /// listed (its claim branch is open) but above θ: [`claim`] refuses it.
+  final bool claimable;
+
+  /// The claimable-at price (`underwaterAt`), micro-USD per YEC.
+  final PlatformInt64 underwaterAtMicroUsd;
+
+  /// `lockHeight`.
+  final PlatformInt64 lockHeight;
+
+  /// The vault is still in its term (a claim now is a claim in term).
+  final bool inTerm;
+
   const ClaimableItem({
     required this.vaultTxid,
     required this.ownerAddress,
@@ -682,6 +695,10 @@ class ClaimableItem {
     required this.residualZat,
     required this.claimantZat,
     required this.payee,
+    required this.claimable,
+    required this.underwaterAtMicroUsd,
+    required this.lockHeight,
+    required this.inTerm,
   });
 
   @override
@@ -697,7 +714,11 @@ class ClaimableItem {
       attestFeeZat.hashCode ^
       residualZat.hashCode ^
       claimantZat.hashCode ^
-      payee.hashCode;
+      payee.hashCode ^
+      claimable.hashCode ^
+      underwaterAtMicroUsd.hashCode ^
+      lockHeight.hashCode ^
+      inTerm.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -715,7 +736,11 @@ class ClaimableItem {
           attestFeeZat == other.attestFeeZat &&
           residualZat == other.residualZat &&
           claimantZat == other.claimantZat &&
-          payee == other.payee;
+          payee == other.payee &&
+          claimable == other.claimable &&
+          underwaterAtMicroUsd == other.underwaterAtMicroUsd &&
+          lockHeight == other.lockHeight &&
+          inTerm == other.inTerm;
 }
 
 /// The result of [`create_wallet`].
@@ -1588,8 +1613,19 @@ class RedeemPreview {
   /// YED inputs spent.
   final int yedInputs;
 
-  /// The enforcement fee, zat (FEE-1, checked locally).
+  /// What the fee output pays, zat: the enforcement fee (FEE-1, checked locally) plus the
+  /// early-redeem fee.
   final PlatformInt64 feeZat;
+
+  /// The enforcement fee alone (FEE-1).
+  final PlatformInt64 enforcementFeeZat;
+
+  /// The early-redeem fee within `fee_zat` (IT-9): due when the redeem confirms before
+  /// `lockHeight`, 0 otherwise and under FEE-0. Shown before the slider.
+  final PlatformInt64 earlyRedeemFeeZat;
+
+  /// The vault's `lockHeight` (the end of the term).
+  final PlatformInt64 lockHeight;
 
   /// The enforcement fee payee (`s…`), empty under FEE-0.
   final String payee;
@@ -1600,7 +1636,7 @@ class RedeemPreview {
   /// The own address it returns to.
   final String collateralAddress;
 
-  /// `nLockTime` (= `lockHeight`).
+  /// `nLockTime` (= the V's `ownerHeight`).
   final PlatformInt64 lockTime;
 
   /// `nExpiryHeight`.
@@ -1618,6 +1654,9 @@ class RedeemPreview {
     required this.changeCents,
     required this.yedInputs,
     required this.feeZat,
+    required this.enforcementFeeZat,
+    required this.earlyRedeemFeeZat,
+    required this.lockHeight,
     required this.payee,
     required this.collateralZat,
     required this.collateralAddress,
@@ -1636,6 +1675,9 @@ class RedeemPreview {
       changeCents.hashCode ^
       yedInputs.hashCode ^
       feeZat.hashCode ^
+      enforcementFeeZat.hashCode ^
+      earlyRedeemFeeZat.hashCode ^
+      lockHeight.hashCode ^
       payee.hashCode ^
       collateralZat.hashCode ^
       collateralAddress.hashCode ^
@@ -1656,6 +1698,9 @@ class RedeemPreview {
           changeCents == other.changeCents &&
           yedInputs == other.yedInputs &&
           feeZat == other.feeZat &&
+          enforcementFeeZat == other.enforcementFeeZat &&
+          earlyRedeemFeeZat == other.earlyRedeemFeeZat &&
+          lockHeight == other.lockHeight &&
           payee == other.payee &&
           collateralZat == other.collateralZat &&
           collateralAddress == other.collateralAddress &&
@@ -1687,6 +1732,9 @@ class RedeemResult {
   /// The enforcement fee, zat.
   final PlatformInt64 feeZat;
 
+  /// The early-redeem fee within `fee_zat` (IT-9).
+  final PlatformInt64 earlyRedeemFeeZat;
+
   /// The enforcement fee payee (`s…`), empty under FEE-0.
   final String payee;
 
@@ -1696,7 +1744,7 @@ class RedeemResult {
   /// The own address it returns to.
   final String collateralAddress;
 
-  /// `nLockTime` (= `lockHeight`).
+  /// `nLockTime` (= the V's `ownerHeight`).
   final PlatformInt64 lockTime;
 
   /// `nExpiryHeight`.
@@ -1710,6 +1758,7 @@ class RedeemResult {
     required this.extraBurnCents,
     required this.changeCents,
     required this.feeZat,
+    required this.earlyRedeemFeeZat,
     required this.payee,
     required this.collateralZat,
     required this.collateralAddress,
@@ -1726,6 +1775,7 @@ class RedeemResult {
       extraBurnCents.hashCode ^
       changeCents.hashCode ^
       feeZat.hashCode ^
+      earlyRedeemFeeZat.hashCode ^
       payee.hashCode ^
       collateralZat.hashCode ^
       collateralAddress.hashCode ^
@@ -1744,6 +1794,7 @@ class RedeemResult {
           extraBurnCents == other.extraBurnCents &&
           changeCents == other.changeCents &&
           feeZat == other.feeZat &&
+          earlyRedeemFeeZat == other.earlyRedeemFeeZat &&
           payee == other.payee &&
           collateralZat == other.collateralZat &&
           collateralAddress == other.collateralAddress &&
@@ -2128,22 +2179,56 @@ class VaultSummary {
   /// `ACTIVE` or `VOID`: still spendable by its owner.
   final bool open;
 
-  /// `ACTIVE` and `tip >= lockHeight`: [`redeem`] builds the owner-path REDEEM.
+  /// `ACTIVE` and `tip >= ownerHeight`: [`redeem`] builds the owner-path REDEEM. Since the
+  /// in-term plan's D-IT-15 that is any height after the mint; before `lockHeight` the redeem
+  /// also pays the early-redeem fee ([`VaultSummary::early_redeem`]).
   final bool redeemable;
 
-  /// Blocks until `lockHeight` (0 once reached).
+  /// Blocks until the owner's branch opens (`ownerHeight`; 0 once reached).
   final PlatformInt64 blocksUntilRedeem;
+
+  /// Blocks until `lockHeight`, the end of the term (0 once reached): a redeem before it pays
+  /// the early-redeem fee.
+  final PlatformInt64 blocksUntilTermEnd;
+
+  /// `ACTIVE` and the next block is below `lockHeight`: a redeem now pays the early-redeem fee
+  /// (IT-9).
+  final bool earlyRedeem;
+
+  /// The early-redeem fee a redeem now would pay, zat: `collateral · earlyRedeemFeeBps[class] /
+  /// 10⁴` while [`VaultSummary::early_redeem`], else 0 (the preview's figure is the one signed:
+  /// it is 0 under FEE-0, which this offline summary cannot know).
+  final PlatformInt64 earlyRedeemFeeZat;
+
+  /// The class's early-redeem fee rate, bps of the collateral (500 / 250 / 100).
+  final PlatformInt64 earlyRedeemFeeBps;
+
+  /// Claims are judged by the threshold at every height (in-term plan IT-2): always true on this
+  /// build (the server's `inTermClaims` is checked at connect).
+  final bool inTermClaims;
+
+  /// The claim threshold θ, bps (12,500).
+  final PlatformInt64 claimThresholdBps;
+
+  /// The claim price at the last sync, micro-USD per YEC (0 when unknown).
+  final PlatformInt64 claimPriceMicroUsd;
+
+  /// `ACTIVE`, not claimable, and the claim price within 25 % above `underwaterAt`
+  /// (`WARN_MARGIN_BPS`): the warning before the threshold (IT-8: "your wallet will warn you").
+  final bool nearThreshold;
 
   /// `VOID`: [`redeem`] releases the collateral without a payload.
   final bool releasable;
 
-  /// `claimable` as the node judged it at its tip (a liquidator may take it).
+  /// `claimable` as the node judged it at its tip: anyone may close it now by paying its debt
+  /// (in term too, IT-2); redeeming stops it.
   final bool claimable;
 
-  /// `underwaterAt`, micro-USD per YEC (0 when undefined).
+  /// `underwaterAt`, micro-USD per YEC (0 when undefined): the claimable-at price — below it the
+  /// vault's collateral is worth less than θ × its debt at the claim price.
   final PlatformInt64 underwaterAtMicroUsd;
 
-  /// The last sync's `pMint` is at or below `underwaterAt`: the warning.
+  /// The last sync's claim price (else `pMint`) is at or below `underwaterAt`.
   final bool underwater;
 
   /// `closeHeight`, 0 while open.
@@ -2174,12 +2259,13 @@ class VaultSummary {
   /// made it, else `lockHeight − mintHeight` clamped into the class (a restored wallet).
   final int renewLockBlocks;
 
-  /// `ACTIVE` and `tip >= claimHeight − 1 day` (the network's day, `Network::day_blocks`):
-  /// the persistent warning that a liquidator may claim the vault once it is underwater
-  /// (H-9.2). No sunset warning (upgrade plan §7: H-9.2 kept, the sunset leg dropped).
+  /// The persistent warning (H-9.2 as the in-term plan's IT-8 reshapes it): `ACTIVE` and either
+  /// claimable now or [`VaultSummary::near_threshold`]. With in-term claims the danger is the
+  /// threshold, not a height. No sunset warning (upgrade plan §7).
   final bool claimWarning;
 
-  /// `ACTIVE` and `tip >= claimHeight`: the claim path is open.
+  /// `ACTIVE` and `tip >= appHeight`: the claim branch is open (from the block after the mint
+  /// since IT-1); RED-4's threshold decides a claim.
   final bool claimOpen;
 
   /// `CLAIMING` (the vault upgrade, U-23): a liquidator moved the collateral into a claim
@@ -2205,6 +2291,14 @@ class VaultSummary {
     required this.open,
     required this.redeemable,
     required this.blocksUntilRedeem,
+    required this.blocksUntilTermEnd,
+    required this.earlyRedeem,
+    required this.earlyRedeemFeeZat,
+    required this.earlyRedeemFeeBps,
+    required this.inTermClaims,
+    required this.claimThresholdBps,
+    required this.claimPriceMicroUsd,
+    required this.nearThreshold,
     required this.releasable,
     required this.claimable,
     required this.underwaterAtMicroUsd,
@@ -2238,6 +2332,14 @@ class VaultSummary {
       open.hashCode ^
       redeemable.hashCode ^
       blocksUntilRedeem.hashCode ^
+      blocksUntilTermEnd.hashCode ^
+      earlyRedeem.hashCode ^
+      earlyRedeemFeeZat.hashCode ^
+      earlyRedeemFeeBps.hashCode ^
+      inTermClaims.hashCode ^
+      claimThresholdBps.hashCode ^
+      claimPriceMicroUsd.hashCode ^
+      nearThreshold.hashCode ^
       releasable.hashCode ^
       claimable.hashCode ^
       underwaterAtMicroUsd.hashCode ^
@@ -2273,6 +2375,14 @@ class VaultSummary {
           open == other.open &&
           redeemable == other.redeemable &&
           blocksUntilRedeem == other.blocksUntilRedeem &&
+          blocksUntilTermEnd == other.blocksUntilTermEnd &&
+          earlyRedeem == other.earlyRedeem &&
+          earlyRedeemFeeZat == other.earlyRedeemFeeZat &&
+          earlyRedeemFeeBps == other.earlyRedeemFeeBps &&
+          inTermClaims == other.inTermClaims &&
+          claimThresholdBps == other.claimThresholdBps &&
+          claimPriceMicroUsd == other.claimPriceMicroUsd &&
+          nearThreshold == other.nearThreshold &&
           releasable == other.releasable &&
           claimable == other.claimable &&
           underwaterAtMicroUsd == other.underwaterAtMicroUsd &&

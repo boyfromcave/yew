@@ -529,6 +529,10 @@ fn w4_templates_reproduce_the_node_scripts_and_payloads() {
         vault_value,
         lock_height,
         claim_height,
+        // The vectors were taken on the upgrade line (a pre-plan V: ownerHeight = lockHeight,
+        // appHeight = lockHeight + GRACE), which the in-term node still spends.
+        owner_height: lock_height,
+        app_height: claim_height,
         owner_path: true,
         with_payload: true,
         ref_height: r,

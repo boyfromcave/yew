@@ -218,8 +218,63 @@ pub struct VaultTerms {
 }
 
 impl VaultTerms {
-    /// The V of a mint by `owner` locked until `lock_height` (`YedVaultScript`).
-    pub fn vault_params(&self, owner: &[u8; 33], lock_height: u32) -> crate::vault::VaultParams {
+    /// The V of a new mint by `owner` at reference height `ref_height` (`YedVaultScript(P, owner,
+    /// R)`, in-term plan IT-1, D-IT-15): `ownerHeight = appHeight = R + 1`.
+    pub fn mint_vault_params(
+        &self,
+        owner: &[u8; 33],
+        ref_height: u32,
+    ) -> crate::vault::VaultParams {
+        crate::vault::yed_mint_vault_params(
+            &self.attestor_set_id,
+            self.claim_delay,
+            owner,
+            ref_height,
+        )
+    }
+
+    /// The V scriptPubKey of a new mint by `owner` at reference height `ref_height`.
+    pub fn mint_vault_script(
+        &self,
+        owner: &[u8; 33],
+        ref_height: u32,
+    ) -> Result<Vec<u8>, MintError> {
+        build_or_refuse(&self.mint_vault_params(owner, ref_height))
+    }
+
+    /// The V of an existing vault with the given branch heights (`YedVaultScriptAt`).
+    pub fn vault_params_at(
+        &self,
+        owner: &[u8; 33],
+        owner_height: u32,
+        app_height: u32,
+    ) -> crate::vault::VaultParams {
+        crate::vault::yed_vault_params_at(
+            &self.attestor_set_id,
+            self.claim_delay,
+            owner,
+            owner_height as i64,
+            app_height as i64,
+        )
+    }
+
+    /// The V scriptPubKey of an existing vault with the given branch heights.
+    pub fn vault_script_at(
+        &self,
+        owner: &[u8; 33],
+        owner_height: u32,
+        app_height: u32,
+    ) -> Result<Vec<u8>, MintError> {
+        build_or_refuse(&self.vault_params_at(owner, owner_height, app_height))
+    }
+
+    /// The pre-plan V of a vault locked until `lock_height` (`ownerHeight = lockHeight`,
+    /// `appHeight = lockHeight + GRACE`): minted before the in-term rule, still spendable.
+    pub fn pre_plan_vault_params(
+        &self,
+        owner: &[u8; 33],
+        lock_height: u32,
+    ) -> crate::vault::VaultParams {
         crate::vault::yed_vault_params(
             &self.attestor_set_id,
             self.claim_delay,
@@ -228,14 +283,35 @@ impl VaultTerms {
             lock_height,
         )
     }
+}
 
-    /// The V scriptPubKey of a mint by `owner` locked until `lock_height`.
-    pub fn vault_script(&self, owner: &[u8; 33], lock_height: u32) -> Result<Vec<u8>, MintError> {
-        crate::vault::build_vault(&self.vault_params(owner, lock_height)).ok_or_else(|| {
-            inconsistent(format!(
-                "the vault of lockHeight {lock_height} is outside the template's ranges"
-            ))
-        })
+fn build_or_refuse(p: &crate::vault::VaultParams) -> Result<Vec<u8>, MintError> {
+    crate::vault::build_vault(p).ok_or_else(|| {
+        inconsistent(format!(
+            "the vault of ownerHeight {} / appHeight {} is outside the template's ranges",
+            p.owner_height, p.app_height
+        ))
+    })
+}
+
+/// A YED vault's V as this wallet rebuilds it: its parameters (the branch heights) and its
+/// scriptPubKey.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct YedV {
+    /// The V parameters.
+    pub params: crate::vault::VaultParams,
+    /// `BuildVault(params)`.
+    pub script: Vec<u8>,
+}
+
+impl YedV {
+    /// `ownerHeight`: the owner's redeem is valid from here (the redeem's `nLockTime`).
+    pub fn owner_height(&self) -> u32 {
+        self.params.owner_height as u32
+    }
+    /// `appHeight`: the claim branch is open from here (the claim's `nLockTime`).
+    pub fn app_height(&self) -> u32 {
+        self.params.app_height as u32
     }
 }
 
@@ -305,22 +381,36 @@ pub fn vault_terms(network: Network, info: &rpc::YellowbackInfo) -> Result<Vault
     })
 }
 
-/// A `GetVault` record's V script (rpcversion 5, U-23): the node's `scriptPubKey` must be the
-/// YED vault this wallet rebuilds from the owner key, `lockHeight` and the [`VaultTerms`], the
-/// script it will sign against (owner) or name in its claim intents (claimant). Returns it.
-pub fn check_vault_script(t: &VaultTerms, v: &rpc::YedVault) -> Result<Vec<u8>, MintError> {
+/// A `GetVault` record's V script (rpcversion 5, U-23; rpcversion 6, in-term IT-1): the node's
+/// `scriptPubKey` must be the YED vault this wallet rebuilds from the owner key and the
+/// [`VaultTerms`] — the in-term mint's V (`ownerHeight = appHeight = refHeight + 1`) or, for a
+/// vault minted before the in-term rule, the pre-plan V of its `lockHeight` — the script it
+/// will sign against (owner) or name in its claim intents (claimant). Returns it with its
+/// branch heights.
+pub fn check_vault_script(t: &VaultTerms, v: &rpc::YedVault) -> Result<YedV, MintError> {
     let owner: [u8; 33] = crate::keys::unhex(&v.owner_pub_key)
         .ok()
         .and_then(|b| b.as_slice().try_into().ok())
         .ok_or_else(|| inconsistent(format!("vault {}: ownerPubKey", v.txid)))?;
-    let ours = t.vault_script(&owner, v.lock_height as u32)?;
-    if crate::keys::hex(&ours) != v.script_pub_key.to_ascii_lowercase() {
-        return Err(inconsistent(format!(
-            "vault {}: scriptPubKey is not the YED vault of its owner and lockHeight",
-            v.txid
-        )));
+    let theirs = v.script_pub_key.to_ascii_lowercase();
+    let mut candidates = Vec::new();
+    if let Ok(r) = u32::try_from(v.ref_height) {
+        candidates.push(t.mint_vault_params(&owner, r));
     }
-    Ok(ours)
+    if let Ok(l) = u32::try_from(v.lock_height) {
+        candidates.push(t.pre_plan_vault_params(&owner, l));
+    }
+    for params in candidates {
+        if let Some(script) = crate::vault::build_vault(&params) {
+            if crate::keys::hex(&script) == theirs {
+                return Ok(YedV { params, script });
+            }
+        }
+    }
+    Err(inconsistent(format!(
+        "vault {}: scriptPubKey is not the YED vault of its owner, refHeight and lockHeight",
+        v.txid
+    )))
 }
 
 /// A `GetVault` record's script terms (audit G-1, `sync::refresh_vaults`): `claimHeight =
@@ -390,6 +480,31 @@ pub fn check_server_params(
     want("tokenValueZat", p.token_value_zat, params::TOKEN_VALUE)?;
     // rpcversion 5 (U-23): CLAIM_DELAY is the YED vault's delay, part of every vault script.
     want("claimDelay", p.claim_delay, network.claim_delay())?;
+    // rpcversion 6 (in-term plan IT-7, IT-9): this build implements the in-term rule set — a claim
+    // is judged by θ at every height, the owner redeems at any height with the early-redeem fee
+    // before lockHeight. A server whose node runs another rule set is refused.
+    if !p.in_term_claims {
+        return Err(inconsistent(
+            "params.inTermClaims is false: the node does not run the in-term claims rules this wallet implements",
+        ));
+    }
+    want(
+        "claimThresholdBps",
+        p.claim_threshold_bps,
+        params::CLAIM_THRESHOLD_BPS,
+    )?;
+    want("sigmaMultMaxBps", p.sigma_mult_max_bps, SIGMA_MULT_MAX_BPS)?;
+    let local: Vec<i64> = network
+        .term_classes()
+        .iter()
+        .map(|c| c.early_redeem_fee_bps)
+        .collect();
+    if p.early_redeem_fee_bps != local {
+        return Err(inconsistent(format!(
+            "params.earlyRedeemFeeBps {:?} (this network's rule is {local:?})",
+            p.early_redeem_fee_bps
+        )));
+    }
     let a = p
         .attest
         .as_ref()
@@ -424,6 +539,11 @@ pub fn check_server_params(
             &format!("classes.{}.baseRatioBps", c.letter),
             s.base_ratio_bps,
             c.base_ratio_bps,
+        )?;
+        want(
+            &format!("classes.{}.earlyRedeemFeeBps", c.letter),
+            s.early_redeem_fee_bps,
+            c.early_redeem_fee_bps,
         )?;
     }
     Ok(())
@@ -516,6 +636,11 @@ pub fn mint_gate(
 /// below `RESIDUAL_MIN_ZAT`; `yed_listclaimable` reports it unfloored, so both are accepted).
 /// Under clause (a) the vault must also be underwater at that `pClaim` (`IsUnderwater`).
 pub fn check_claimable(c: &rpc::YedClaimable) -> Result<i64, MintError> {
+    // rpcversion 6 (in-term IT-7): a row above θ is listed with `claimable: false`, no claim path
+    // and no residual; it is shown, never claimed, so nothing in it is relied on.
+    if !c.claimable {
+        return Ok(0);
+    }
     if c.claim_path != "a" && c.claim_path != "b" {
         return Err(inconsistent(format!(
             "claimPath {:?} for vault {}",
@@ -623,21 +748,22 @@ mod tests {
 
     type Bend<T> = Box<dyn Fn(&mut T)>;
 
-    /// An honest regtest answer for $100 over 48 blocks at tip 484, $0.52/YEC, 500 %.
+    /// An honest regtest answer for $100 over 48 blocks at tip 484, $0.52/YEC, 300 % (class A
+    /// since the in-term plan's D-IT-4).
     fn honest() -> rpc::YedCollateralEstimate {
         rpc::YedCollateralEstimate {
             a_mint: 520_000,
             armed: true,
             attest_fee_zat: 12_500_000,
-            base_ratio_bps: 50_000,
+            base_ratio_bps: 30_000,
             bundle_seqs: vec![0, 1, 2],
             claim_height: 480 + 48 + 24,
             divergence_bps: 0,
             lock_height: 480 + 48,
-            min_ratio_bps: 50_000,
+            min_ratio_bps: 30_000,
             p_mint: 520_000,
             ref_height: 480,
-            required_zat: params::required_zat(10_000, 50_000, 520_000).unwrap(),
+            required_zat: params::required_zat(10_000, 30_000, 520_000).unwrap(),
             sigma_mult_bps: 10_000,
             source: "attest".into(),
             term_class: "A".into(),
@@ -652,8 +778,8 @@ mod tests {
     #[test]
     fn honest_estimate_passes() {
         assert_eq!(check(&honest()).unwrap().letter, "A");
-        // The spec's worked numbers: $100 at 500 % and $0.52/YEC ≈ 961.54 YEC.
-        assert_eq!(honest().required_zat, 96_153_846_154);
+        // $100 at 300 % and $0.52/YEC ≈ 576.92 YEC.
+        assert_eq!(honest().required_zat, 57_692_307_693);
         // Mainnet class A at tip 1_200_000.
         let mut e = honest();
         e.ref_height = 1_199_990;
@@ -665,7 +791,7 @@ mod tests {
                 .letter,
             "A"
         );
-        // Mainnet class B is disabled (H-5): refused as a lock outside every class.
+        // Mainnet class B is enabled again (in-term D-IT-9): 91–180 days at 400 %.
         let mut b = e.clone();
         b.lock_height = 1_199_990 + 200_000;
         b.claim_height = b.lock_height + 34_560;
@@ -673,8 +799,18 @@ mod tests {
         b.base_ratio_bps = 40_000;
         b.min_ratio_bps = 40_000;
         b.required_zat = params::required_zat(10_000, 40_000, 520_000).unwrap();
+        assert_eq!(
+            check_estimate(Network::Mainnet, 1_200_000, 10_000, 200_000, &b)
+                .unwrap()
+                .letter,
+            "B"
+        );
+        // Beyond class C's 365 days: outside every class.
+        let mut c = b.clone();
+        c.lock_height = 1_199_990 + 420_481;
+        c.claim_height = c.lock_height + 34_560;
         assert!(matches!(
-            check_estimate(Network::Mainnet, 1_200_000, 10_000, 200_000, &b),
+            check_estimate(Network::Mainnet, 1_200_000, 10_000, 420_481, &c),
             Err(MintError::BadLock { .. })
         ));
         // Regtest class B stays enabled.
@@ -762,9 +898,9 @@ mod tests {
             (
                 "base ratio of another class",
                 Box::new(|e| {
-                    e.base_ratio_bps = 30_000;
-                    e.min_ratio_bps = 30_000;
-                    e.required_zat = params::required_zat(10_000, 30_000, 520_000).unwrap();
+                    e.base_ratio_bps = 50_000;
+                    e.min_ratio_bps = 50_000;
+                    e.required_zat = params::required_zat(10_000, 50_000, 520_000).unwrap();
                 }),
             ),
             (
@@ -798,14 +934,15 @@ mod tests {
         }
         // The node's own rounding (up to 1,000 zat) is accepted.
         let mut e = honest();
-        e.required_zat = 96_153_847_000;
+        e.required_zat = 57_692_308_000;
         assert!(check(&e).is_ok());
-        // A higher sigma multiplier is legitimate when the ratio and the collateral follow it.
+        // In-term D-IT-5: the sigma multiplier is pinned at 1; a server reporting 2x — even with
+        // the ratio and the collateral following it — runs another rule set and is refused.
         let mut e = honest();
         e.sigma_mult_bps = 20_000;
-        e.min_ratio_bps = 100_000;
-        e.required_zat = params::required_zat(10_000, 100_000, 520_000).unwrap();
-        assert!(check(&e).is_ok());
+        e.min_ratio_bps = 60_000;
+        e.required_zat = params::required_zat(10_000, 60_000, 520_000).unwrap();
+        assert!(matches!(check(&e), Err(MintError::Inconsistent { .. })));
         // Not armed: the min(x, a) rule is not applied (the node refuses the mint anyway).
         let mut e = honest();
         e.armed = false;
@@ -839,13 +976,12 @@ mod tests {
                 Err(MintError::BadAmount { max: 250_000, .. })
             ));
         }
-        // H-5: classes B and C are disabled on mainnet.
+        // In-term D-IT-9: classes B and C are enabled on mainnet and testnet again (H-5 reversed).
+        assert_eq!(class_for(Network::Mainnet, 200_000).unwrap().letter, "B");
+        assert_eq!(class_for(Network::Testnet, 103_681).unwrap().letter, "B");
+        assert_eq!(class_for(Network::Mainnet, 420_480).unwrap().letter, "C");
         assert!(matches!(
-            class_for(Network::Mainnet, 200_000),
-            Err(MintError::BadLock { .. })
-        ));
-        assert!(matches!(
-            class_for(Network::Testnet, 103_681),
+            class_for(Network::Mainnet, 420_481),
             Err(MintError::BadLock { .. })
         ));
         assert!(matches!(
@@ -988,8 +1124,18 @@ mod tests {
                     class: c.letter.into(),
                     max_blocks: c.max_blocks as i64,
                     min_blocks: c.min_blocks as i64,
+                    early_redeem_fee_bps: c.early_redeem_fee_bps,
                 })
                 .collect(),
+            // rpcversion 6 (in-term IT-7, IT-9)
+            claim_threshold_bps: params::CLAIM_THRESHOLD_BPS,
+            early_redeem_fee_bps: network
+                .term_classes()
+                .iter()
+                .map(|c| c.early_redeem_fee_bps)
+                .collect(),
+            sigma_mult_max_bps: SIGMA_MULT_MAX_BPS,
+            in_term_claims: true,
             ..Default::default()
         }
     }
@@ -1019,6 +1165,13 @@ mod tests {
             Box::new(|p| p.classes[1].max_blocks = 420_480),
             Box::new(|p| p.classes[0].base_ratio_bps = 10_000),
             Box::new(|p| p.classes[0].min_blocks = 1),
+            // rpcversion 6 (in-term): the rule set the wallet implements
+            Box::new(|p| p.in_term_claims = false),
+            Box::new(|p| p.claim_threshold_bps = 11_000),
+            Box::new(|p| p.sigma_mult_max_bps = 30_000),
+            Box::new(|p| p.early_redeem_fee_bps = vec![500, 250]),
+            Box::new(|p| p.early_redeem_fee_bps[0] = 0),
+            Box::new(|p| p.classes[2].early_redeem_fee_bps = 500),
         ];
         for (i, bend) in bends.iter().enumerate() {
             let mut p = server_params(Network::Mainnet);
@@ -1105,9 +1258,10 @@ mod tests {
             .as_deref()
             .unwrap()
             .starts_with("No term class is mintable now"));
-        // A mainnet server listing a disabled class is inconsistent (H-5).
+        // A mainnet server listing a class this build does not enable is inconsistent (H-5).
+        assert!(mint_gate(m, &info(true), &price(true), &stats(&["A", "B", "C"], &[])).is_ok());
         assert!(matches!(
-            mint_gate(m, &info(true), &price(true), &stats(&["A", "B"], &[])),
+            mint_gate(m, &info(true), &price(true), &stats(&["A", "D"], &[])),
             Err(MintError::Inconsistent { .. })
         ));
         // Not active.
@@ -1120,11 +1274,12 @@ mod tests {
     /// RED-5 recomputed from `pClaim`, and the claim bounds (H-9.3).
     #[test]
     fn claimable_residual_and_bounds() {
-        // $100 debt at pClaim $0.10/YEC: claimantMax = ⌈10⁴ · margin · 10⁸ / 10⁵⌉ — 1.1·10¹¹
-        // under clause (a), 10¹¹ under (b).
-        let (cm_a, cm_b) = (110_000_000_000i64, 100_000_000_000i64);
+        // $100 debt at pClaim $0.10/YEC: claimantMax = ⌈10⁴ · margin · 10⁸ / 10⁵⌉ — 1.25·10¹¹
+        // under clause (a) (θ 125 %, in-term D-IT-2), 10¹¹ under (b).
+        let (cm_a, cm_b) = (125_000_000_000i64, 100_000_000_000i64);
         let row = |path: &str, collateral: i64, residual: i64| rpc::YedClaimable {
             vault: format!("{}:0", "ab".repeat(32)),
+            claimable: true,
             claim_path: path.into(),
             collateral_zat: collateral,
             minted_cents: 10_000,
@@ -1152,6 +1307,15 @@ mod tests {
         let mut undefined = row("a", cm_a - 1, 0);
         undefined.p_claim = 0;
         assert!(check_claimable(&undefined).is_err());
+        // rpcversion 6: a row listed above θ (claimable false, no path, pClaim maybe null) is
+        // shown, not claimed: nothing in it is checked or relied on.
+        let listed = rpc::YedClaimable {
+            claimable: false,
+            claim_path: String::new(),
+            p_claim: 0,
+            ..row("a", cm_a * 2, 0)
+        };
+        assert_eq!(check_claimable(&listed).unwrap(), 0);
 
         let take = claimant_take(10_000_000_000, 50_000_000, 12_500_000, 0);
         assert_eq!(
@@ -1221,28 +1385,42 @@ mod tests {
         i.upgrade = None;
         assert!(vault_terms(r, &i).is_ok());
 
-        // The vault script a server reports must be the one rebuilt from owner and lockHeight.
+        // The vault script a server reports must be the one rebuilt from owner and refHeight
+        // (in-term IT-1: ownerHeight = appHeight = R + 1) — or, for a vault minted before the
+        // rule, from owner and lockHeight (ownerHeight = L, appHeight = L + GRACE).
         let owner = secp256k1::PublicKey::from_secret_key(
             &secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap(),
         )
         .serialize();
-        let spk = t.vault_script(&owner, 377).unwrap();
+        let spk = t.mint_vault_script(&owner, 329).unwrap();
         let p = crate::vault::parse_vault(&spk).unwrap();
         assert_eq!(p.tag, crate::vault::YED_TAG);
-        assert_eq!((p.owner_height, p.app_height, p.delay), (377, 401, 10));
+        assert_eq!((p.owner_height, p.app_height, p.delay), (330, 330, 10));
         let mut v = rpc::YedVault {
             txid: "ab".repeat(32),
             owner_pub_key: crate::keys::hex(&owner),
+            ref_height: 329,
             lock_height: 377,
             claim_height: 401,
             script_pub_key: crate::keys::hex(&spk).to_uppercase(),
             ..Default::default()
         };
-        assert_eq!(check_vault_script(&t, &v).unwrap(), spk);
-        v.lock_height = 378;
+        let yv = check_vault_script(&t, &v).unwrap();
+        assert_eq!(
+            (yv.script.clone(), yv.owner_height(), yv.app_height()),
+            (spk.clone(), 330, 330)
+        );
+        v.ref_height = 330;
         assert!(check_vault_script(&t, &v).is_err());
-        v.lock_height = 377;
-        v.script_pub_key = crate::keys::hex(&t.vault_script(&[2; 33], 377).unwrap());
+        v.ref_height = 329;
+        v.script_pub_key = crate::keys::hex(&t.mint_vault_script(&[2; 33], 329).unwrap());
+        assert!(check_vault_script(&t, &v).is_err());
+        // A pre-plan vault (the upgrade line's V) is still recognised, with its own heights.
+        let old = crate::vault::build_vault(&t.pre_plan_vault_params(&owner, 377)).unwrap();
+        v.script_pub_key = crate::keys::hex(&old);
+        let yv = check_vault_script(&t, &v).unwrap();
+        assert_eq!((yv.owner_height(), yv.app_height()), (377, 401));
+        v.lock_height = 378;
         assert!(check_vault_script(&t, &v).is_err());
     }
 }
