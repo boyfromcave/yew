@@ -4,9 +4,9 @@
 # lightwalletd-dd of the same branch serving --yellowback. Runs core/tests/devnet.rs it_* (a YEW
 # mint and its early redeem in term, the node's own quote for it, an in-term claim of node 0's
 # vault after a -80 % shock, the owner's in-term redeem of a claimable vault); `test w4` runs the
-# W4 suite (mint, resume, lapse, redeem, claim, cancel) against the same devnet.
+# W4 suites (mint, resume, lapse, redeem, claim, cancel) against the same devnet.
 #
-#   scripts/devnet-it.sh up | lwd | test [w4|all] | status | down [--wipe]
+#   scripts/devnet-it.sh up | lwd | test [it|w4] | status | down [--wipe]
 #
 # The in-term line is not a main tree: point the script at it. YEW_DEVNET_TOOL (default
 # <workspace>/ycash-dd/contrib/yellowback/devnet/yellowback-devnet; use the in-term checkout's),
@@ -45,14 +45,18 @@ case "${1:-}" in
     ;;
   test)
     cd "$here"
+    # w4: the main suite first, then the cancel case (its -80 % shock leaves a global-ratio halt in
+    # which only class C mints, IT-5). The W4 main suite claims a vault of node 0: give node 0 one
+    # first on a fresh devnet (`yellowback-devnet cli -- yed_mint 20000 96 "" "" false`, mine).
     case "${2:-it}" in
-      it) filter=it_ ;;
-      w4) filter=w4_ ;;
-      all) filter="" ;;
-      *) echo "devnet-it: test [it|w4|all]" >&2; exit 2 ;;
+      it) filters=(it_) ;;
+      w4) filters=(w4_mint w4_claim) ;;
+      *) echo "devnet-it: test [it|w4]" >&2; exit 2 ;;
     esac
-    YEW_DEVNET=1 YEW_DEVNET_SERVER="127.0.0.1:$lwd_port" YEW_DEVNET_PYTHON="$py" YEW_DEVNET_TOOL="$tool" \
-      cargo test -p yew-core --test devnet -- --ignored --nocapture --test-threads=1 $filter
+    for filter in "${filters[@]}"; do
+      YEW_DEVNET=1 YEW_DEVNET_SERVER="127.0.0.1:$lwd_port" YEW_DEVNET_PYTHON="$py" YEW_DEVNET_TOOL="$tool" \
+        cargo test -p yew-core --test devnet -- --ignored --nocapture --test-threads=1 "$filter"
+    done
     ;;
   status)
     dn status || true

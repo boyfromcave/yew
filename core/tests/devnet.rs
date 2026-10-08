@@ -1160,9 +1160,13 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     let node5_yed = dn.node_json(5, &["yed_getbalance"])["confirmedCents"]
         .as_u64()
         .unwrap();
-    let early = dn.node_try(5, &["yed_redeem", &f2.txid]);
+    // In-term D-IT-15: a redeem before lockHeight is valid (with the early-redeem fee), so node 5
+    // would close vault 2 here with the imported key and the YED at its address; the probe asks
+    // for the quote only (yed_estimateredeem), and the redeem stays in 5b.
+    let early = dn.node_try(5, &["yed_estimateredeem", &f2.txid]);
+    assert!(early.contains("\"early\": true"), "{early}");
     println!(
-        "Q6: node 5 after importprivkey: yed_listvaults lists vault 2 = {seen5} yed_getbalance {node5_yed} cents; yed_redeem before lockHeight -> {early}"
+        "Q6: node 5 after importprivkey: yed_listvaults lists vault 2 = {seen5} yed_getbalance {node5_yed} cents; yed_estimateredeem before lockHeight -> {early}"
     );
 
     // 4. Forced lapse: a third mint left unfinished until refHeight + REF_WINDOW passes, then
