@@ -1260,7 +1260,12 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     );
     // In-term D-IT-15: the owner path's nLockTime is the V's ownerHeight (refHeight + 1).
     assert_eq!(
-        (p.lock_time, p.burn_cents, p.change_cents, p.early_redeem_fee_zat),
+        (
+            p.lock_time,
+            p.burn_cents,
+            p.change_cents,
+            p.early_redeem_fee_zat
+        ),
         (v1.owner_height, 10_000, 0, 0)
     );
     assert_eq!(p.expiry_height, p.ref_height + REF_WINDOW);
@@ -1940,7 +1945,11 @@ async fn it_early_redeem_and_in_term_claim() {
     );
     assert!(!p.payee.is_empty());
     let (rtx, _) = Transaction::parse(&p.raw).unwrap();
-    assert_eq!(rtx.vout[1].value, fee1 + early, "the early fee rides on the FEE-1 output");
+    assert_eq!(
+        rtx.vout[1].value,
+        fee1 + early,
+        "the early fee rides on the FEE-1 output"
+    );
     // The node's own quote for the same vault (its owner key imported into node 5): the same fee.
     let owner_addr = keys::encode_yellowback(Network::Regtest, &v1.owner_hash160);
     let wif = a.export_wif(&owner_addr).unwrap();
@@ -1960,7 +1969,10 @@ async fn it_early_redeem_and_in_term_claim() {
         ("ok", "owner", 10_000)
     );
     let h_redeem = confirm(&dn, &mut c, &sent).await;
-    assert!(h_redeem < v1.lock_height as u64, "mined in term at {h_redeem}");
+    assert!(
+        h_redeem < v1.lock_height as u64,
+        "mined in term at {h_redeem}"
+    );
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     assert_eq!(a.store.vault(&v1.txid).unwrap().unwrap().status, "CLOSED");
     let ti = v.client_mut().unwrap().tx_info(&sent).await.unwrap();
@@ -1996,7 +2008,10 @@ async fn it_early_redeem_and_in_term_claim() {
         {
             break x.clone();
         }
-        assert!(start.elapsed() < Duration::from_secs(300), "node 0's mint never confirmed");
+        assert!(
+            start.elapsed() < Duration::from_secs(300),
+            "node 0's mint never confirmed"
+        );
         let h = dn.mine_pool();
         wait_for_height(&mut c, h).await;
     };
@@ -2015,7 +2030,10 @@ async fn it_early_redeem_and_in_term_claim() {
         .iter()
         .find(|x| x.vault_txid == target_txid)
         .expect("IT-7: the in-term vault is listed");
-    assert!(!row.claimable && row.in_term && row.underwater_at > 0, "{row:?}");
+    assert!(
+        !row.claimable && row.in_term && row.underwater_at > 0,
+        "{row:?}"
+    );
     let mints_before = a.mints().unwrap().len();
     let e = a
         .claim(&mut c, &mut v, &target_id, None, r.tip, r.branch_id)
@@ -2036,30 +2054,56 @@ async fn it_early_redeem_and_in_term_claim() {
     *dn.price.borrow_mut() = "10".into();
     let start = Instant::now();
     let entry = loop {
-        assert!(start.elapsed() < Duration::from_secs(1200), "the vault never became claimable");
+        assert!(
+            start.elapsed() < Duration::from_secs(1200),
+            "the vault never became claimable"
+        );
         r = mine_and_sync(&dn, &mut c, &mut v, &mut a).await;
-        assert!(r.tip < target_lock, "the target left its term before it became claimable");
+        assert!(
+            r.tip < target_lock,
+            "the target left its term before it became claimable"
+        );
         let rows = a.claimable(&mut v).await.unwrap();
-        if let Some(x) = rows.iter().find(|x| x.vault_txid == target_txid && x.claimable) {
+        if let Some(x) = rows
+            .iter()
+            .find(|x| x.vault_txid == target_txid && x.claimable)
+        {
             break x.clone();
         }
         if r.tip % 10 == 0 {
             let p = v.client_mut().unwrap().price(0).await.unwrap();
-            println!("tip {} pClaim {} target listed {:?}", r.tip, p.p_claim, rows.iter().find(|x| x.vault_txid == target_txid).map(|x| (x.claimable, x.underwater_at)));
+            println!(
+                "tip {} pClaim {} target listed {:?}",
+                r.tip,
+                p.p_claim,
+                rows.iter()
+                    .find(|x| x.vault_txid == target_txid)
+                    .map(|x| (x.claimable, x.underwater_at))
+            );
         }
     };
     println!("claimable in term: {entry:?}");
     assert!(entry.in_term && entry.claim_path == "a", "{entry:?}");
     // 4 (first half). YEW's own v2 is as underwater: the store says so (VaultSummary's warning).
     let v2_now = a.store.vault(&v2.txid).unwrap().unwrap();
-    println!("v2 after the shock: claimable {} underwaterAt {}", v2_now.claimable, v2_now.underwater_at);
+    println!(
+        "v2 after the shock: claimable {} underwaterAt {}",
+        v2_now.claimable, v2_now.underwater_at
+    );
     // The claim (in term).
     let bounds = yew_core::build::terms::ClaimBounds {
         max_burn_cents: entry.minted_cents,
         min_out_zat: entry.claimant_zat,
     };
     let idc = a
-        .claim(&mut c, &mut v, &target_id, Some(&bounds), r.tip, r.branch_id)
+        .claim(
+            &mut c,
+            &mut v,
+            &target_id,
+            Some(&bounds),
+            r.tip,
+            r.branch_id,
+        )
         .await
         .unwrap();
     let mc = a.store.mint(idc).unwrap().unwrap();
@@ -2074,13 +2118,27 @@ async fn it_early_redeem_and_in_term_claim() {
         ("ok", "claim")
     );
     let (ctx, _) = Transaction::parse(&fc.raw).unwrap();
-    assert_eq!(ctx.lock_time as u64, target_ref + 1, "IT-1: nLockTime = appHeight = refHeight + 1");
+    assert_eq!(
+        ctx.lock_time as u64,
+        target_ref + 1,
+        "IT-1: nLockTime = appHeight = refHeight + 1"
+    );
     assert_eq!(ctx.vin[0].script_sig, vec![0x54]);
     let h_claim = confirm(&dn, &mut c, &fc.txid).await;
-    assert!(h_claim < target_lock, "the claim was mined in term ({h_claim} < {target_lock})");
+    assert!(
+        h_claim < target_lock,
+        "the claim was mined in term ({h_claim} < {target_lock})"
+    );
     let node_vault = dn.node_json(0, &["yed_getvault", &target_txid]);
-    assert_eq!(node_vault["status"].as_str(), Some("CLAIMING"), "{node_vault}");
-    println!("in-term claim {} at {h_claim} < lockHeight {target_lock}", fc.txid);
+    assert_eq!(
+        node_vault["status"].as_str(),
+        Some("CLAIMING"),
+        "{node_vault}"
+    );
+    println!(
+        "in-term claim {} at {h_claim} < lockHeight {target_lock}",
+        fc.txid
+    );
 
     // 4 (second half). "Redeeming stops it": v2's owner redeems it in term, early-redeem fee paid.
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
@@ -2096,7 +2154,10 @@ async fn it_early_redeem_and_in_term_claim() {
     assert!(h2 < v2.lock_height as u64);
     let mut r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     assert_eq!(a.store.vault(&v2.txid).unwrap().unwrap().status, "CLOSED");
-    println!("v2 (claimable: {}) redeemed in term by its owner: {sent2} at {h2}, early fee {early2}", v2_now.claimable);
+    println!(
+        "v2 (claimable: {}) redeemed in term by its owner: {sent2} at {h2}, early fee {early2}",
+        v2_now.claimable
+    );
 
     // The claimant intent, released after the claim delay.
     let intent_op = OutPoint {
