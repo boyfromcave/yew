@@ -35,8 +35,9 @@ void main() {
     expect(find.text('\$25.00'), findsOneWidget);
     expect(find.text('0.95000000 YEC'), findsOneWidget); // collateral
     expect(find.text('class A · 48 blocks'), findsOneWidget);
-    expect(find.text('height 528'), findsOneWidget); // lock
-    expect(find.text('height 548'), findsOneWidget); // claim
+    // In-term claims: the term's end, not a lock; claimable at the threshold at any height.
+    expect(find.text('height 528'), findsOneWidget);
+    expect(find.text('below 125 % of the debt'), findsOneWidget);
     expect(find.text('0.00001000 YEC'), findsOneWidget); // enforcement fee
     expect(find.text('0.95023000 YEC'), findsOneWidget); // total
     expect(find.text('480 · window closes at 520'), findsOneWidget);

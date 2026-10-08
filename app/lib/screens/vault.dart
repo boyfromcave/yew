@@ -2,16 +2,20 @@
 // Distributed under the MIT software license, see the accompanying
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
-// Vault (plan §5.3): the details of one own vault; Redeem once `lockHeight` is reached
-// (burning the debt from the wallet's YED); Release when the node reports it VOID. Both are
+// Vault (plan §5.3): the details of one own vault; Redeem at any height after the mint (the
+// in-term claims plan's D-IT-15; before `lockHeight` the redeem also pays the early-redeem fee,
+// IT-9, shown in the preview before the slider), burning the debt from the wallet's YED; Release
+// when the node reports it VOID. Both are
 // two calls of the core (audit G-2): `redeemPreview` builds and signs and the card shows the
 // collateral back, the enforcement fee and its payee and the burn; the slider then calls
 // `redeemConfirm`, which gates and broadcasts those same bytes.
 //
-// Deadlines (hardening H-9.2): the lock and claim heights are shown as dates; from `lockHeight`
-// the screen offers Renew (the redeem above, then a mint of the same amount and term, opened
-// from the redeemed view) beside Redeem; from `claimHeight − 1 day` it warns that a liquidator
-// may claim the vault once it is underwater. No sunset warning (upgrade plan §7).
+// The claim (in-term IT-2, IT-8): anyone may close the vault at any height once its collateral is
+// under θ × its debt at the claim price; the screen shows the claimable-at price (`underwaterAt`),
+// warns while the claim price is within 25 % above it, and says "claimable now" once the node
+// does. From `lockHeight` (the end of the term, shown as a date) it offers Renew (the redeem above,
+// then a mint of the same amount and term, opened from the redeemed view) beside Redeem. No
+// sunset warning (upgrade plan §7).
 import 'package:flutter/material.dart';
 
 import '../api/wallet_api.dart';
@@ -95,10 +99,12 @@ class _VaultScreenState extends State<VaultScreen> {
     final String status;
     if (v.releasable) {
       status = 'VOID (${v.voidReason}): the collateral can be released';
+    } else if (v.redeemable && v.earlyRedeem) {
+      status = 'Redeemable now, before the term ends at height ${v.lockHeight} (${v.blocksUntilTermEnd} block${v.blocksUntilTermEnd == 1 ? '' : 's'} to go): an early redeem also pays the early-redeem fee of ${formatBps(v.earlyRedeemFeeBps)} of the collateral (synced to ${v.tip})';
     } else if (v.redeemable) {
-      status = 'Redeemable: the lock height ${v.lockHeight} is reached (synced to ${v.tip})';
+      status = 'Redeemable: the term ended at height ${v.lockHeight}, no early-redeem fee (synced to ${v.tip})';
     } else if (v.open) {
-      status = 'Locked until height ${v.lockHeight}: ${v.blocksUntilRedeem} block${v.blocksUntilRedeem == 1 ? '' : 's'} to go (synced to ${v.tip})';
+      status = 'Redeemable in ${v.blocksUntilRedeem} block${v.blocksUntilRedeem == 1 ? '' : 's'} (synced to ${v.tip})';
     } else {
       status = '${v.status} at height ${v.closeHeight}';
     }
@@ -115,21 +121,21 @@ class _VaultScreenState extends State<VaultScreen> {
             if (v.claimWarning) ...[
               const SizedBox(height: 8),
               Card(
-                color: c.danger.withValues(alpha: 0.08),
+                color: c.danger.withValues(alpha: v.claimable ? 0.16 : 0.08),
                 child: Padding(
                   padding: const EdgeInsets.all(16),
-                  child: Text(claimDeadlineText(v), key: const Key('claim-warning'), style: t.bodyMedium),
+                  child: Text(claimDeadlineText(v), key: Key(v.claimable ? 'claimable-now' : 'claim-warning'), style: t.bodyMedium),
                 ),
               ),
             ],
-            if (v.underwater) ...[
+            if (v.underwater && !v.claimable) ...[
               const SizedBox(height: 8),
               Card(
                 color: c.danger.withValues(alpha: 0.08),
                 child: Padding(
                   padding: const EdgeInsets.all(16),
                   child: Text(
-                    'Underwater: the price is at or below ${formatUsdPerYec(v.underwaterAtMicroUsd)}. A liquidator may claim this vault; redeem it when the lock allows.',
+                    'Underwater: the claim price is at or below ${formatUsdPerYec(v.underwaterAtMicroUsd)}. Anyone may claim this vault once the node judges it so; redeem it now to stop that.',
                     key: const Key('underwater'),
                     style: t.bodyMedium,
                   ),
@@ -145,12 +151,14 @@ class _VaultScreenState extends State<VaultScreen> {
                     PreviewRow('Status', v.status),
                     PreviewRow('Term', 'class ${v.termClass}'),
                     PreviewRow('Minted at', 'height ${v.mintHeight}'),
-                    PreviewRow('Lock height', '${v.lockHeight}'),
-                    if (v.status == 'ACTIVE') PreviewRow('Redeemable from', formatDate(v.lockTimeSecs), key: const Key('lock-date')),
-                    PreviewRow('Claim height', '${v.claimHeight}'),
-                    if (v.status == 'ACTIVE') PreviewRow('Claimable by a liquidator from', formatDate(v.claimTimeSecs), key: const Key('claim-date')),
-                    if (v.underwaterAtMicroUsd > 0) PreviewRow('Underwater at', formatUsdPerYec(v.underwaterAtMicroUsd)),
-                    PreviewRow('Claimable (node)', v.claimable ? 'yes' : 'no'),
+                    PreviewRow('Term ends', 'height ${v.lockHeight}'),
+                    if (v.status == 'ACTIVE') PreviewRow('Term ends on', formatDate(v.lockTimeSecs), key: const Key('lock-date')),
+                    if (v.status == 'ACTIVE' && v.earlyRedeem)
+                      PreviewRow('Early-redeem fee now', '${formatBps(v.earlyRedeemFeeBps)} · about ${formatYec(v.earlyRedeemFeeZat)} YEC', key: const Key('early-fee-now')),
+                    if (v.underwaterAtMicroUsd > 0)
+                      PreviewRow('Claimable below', '${formatUsdPerYec(v.underwaterAtMicroUsd)} (under ${formatBps(v.claimThresholdBps)} of the debt)', key: const Key('claimable-at')),
+                    if (v.claimPriceMicroUsd > 0) PreviewRow('Claim price now', formatUsdPerYec(v.claimPriceMicroUsd), key: const Key('claim-price')),
+                    PreviewRow('Claimable now', v.claimable ? 'YES: redeem to stop it' : (v.nearThreshold ? 'no, but within ${formatBps(2500)} of it' : 'no'), key: const Key('claimable-state')),
                     PreviewRow('Owner', shorten(v.ownerAddress, head: 14, tail: 8)),
                     PreviewRow('Vault', shorten(v.vaultTxid)),
                     if (v.closingTxid.isNotEmpty) PreviewRow('Closed by', shorten(v.closingTxid)),
@@ -198,7 +206,7 @@ class _VaultScreenState extends State<VaultScreen> {
                 SlideToConfirm(
                   label: v.releasable
                       ? 'Slide to release ${formatYec(_preview!.collateralZat)} YEC'
-                      : '${_renewing ? 'Slide to renew' : 'Slide to redeem'}: burn ${formatYed(_preview!.burnCents)}, pay ${formatYec(_preview!.feeZat)} YEC fee',
+                      : '${_renewing ? 'Slide to renew' : 'Slide to redeem'}: burn ${formatYed(_preview!.burnCents)}, pay ${formatYec(_preview!.feeZat)} YEC ${_preview!.earlyRedeemFeeZat > 0 ? 'in fees, early-redeem fee included' : 'fee'}',
                   color: v.releasable ? c.yec : c.yed,
                   enabled: canAct && (v.releasable || enoughYed),
                   onConfirmed: _confirm,
@@ -216,7 +224,7 @@ class _VaultScreenState extends State<VaultScreen> {
               if (!canAct)
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
-                  child: Text('Redeem unlocks at height ${v.lockHeight}.', key: const Key('locked'), textAlign: TextAlign.center, style: t.bodySmall?.copyWith(color: c.pending)),
+                  child: Text('Redeem opens in ${v.blocksUntilRedeem} block${v.blocksUntilRedeem == 1 ? '' : 's'} (sync to refresh).', key: const Key('locked'), textAlign: TextAlign.center, style: t.bodySmall?.copyWith(color: c.pending)),
                 ),
             ],
           ],
@@ -246,8 +254,10 @@ class _RedeemPreviewCard extends StatelessWidget {
             if (!released) PreviewRow('You burn', formatYed(p.burnCents), emphasis: true, color: c.yed),
             if (p.extraBurnCents > 0) PreviewRow('Of which remainder', formatYed(p.extraBurnCents)),
             if (p.changeCents > 0) PreviewRow('YED change', formatYed(p.changeCents)),
-            PreviewRow('Enforcement fee', p.feeZat > 0 ? '${formatYec(p.feeZat)} YEC' : 'none'),
-            if (p.payee.isNotEmpty) PreviewRow('Fee paid to', shorten(p.payee, head: 10, tail: 6)),
+            PreviewRow('Enforcement fee', p.enforcementFeeZat > 0 ? '${formatYec(p.enforcementFeeZat)} YEC' : 'none'),
+            if (p.earlyRedeemFeeZat > 0)
+              PreviewRow('Early-redeem fee', '${formatYec(p.earlyRedeemFeeZat)} YEC (redeeming before the term ends at height ${p.lockHeight})', key: const Key('early-fee'), emphasis: true),
+            if (p.payee.isNotEmpty) PreviewRow('Fees paid to', shorten(p.payee, head: 10, tail: 6)),
             PreviewRow('To', shorten(p.collateralAddress, head: 14, tail: 8)),
             PreviewRow('Expires', 'height ${p.expiryHeight}'),
           ],
@@ -297,7 +307,8 @@ class _RedeemedView extends StatelessWidget {
                     if (!released) PreviewRow('Burned', formatYed(r.burnCents), emphasis: true, color: c.yed),
                     if (r.extraBurnCents > 0) PreviewRow('Of which remainder', formatYed(r.extraBurnCents)),
                     if (r.changeCents > 0) PreviewRow('YED change', formatYed(r.changeCents)),
-                    if (r.feeZat > 0) PreviewRow('Enforcement fee', '${formatYec(r.feeZat)} YEC'),
+                    if (r.feeZat > 0) PreviewRow('Enforcement fee', '${formatYec(r.feeZat - r.earlyRedeemFeeZat)} YEC'),
+                    if (r.earlyRedeemFeeZat > 0) PreviewRow('Early-redeem fee', '${formatYec(r.earlyRedeemFeeZat)} YEC'),
                     if (r.payee.isNotEmpty) PreviewRow('Fee paid to', shorten(r.payee, head: 10, tail: 6)),
                     PreviewRow('To', shorten(r.collateralAddress, head: 14, tail: 8)),
                     PreviewRow('Expires', 'height ${r.expiryHeight}'),

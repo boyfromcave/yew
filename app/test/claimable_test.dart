@@ -21,6 +21,30 @@ const claimable1 = ClaimableItem(
   residualZat: 0,
   claimantZat: 949998000,
   payee: fakeS,
+  claimable: true,
+  underwaterAtMicroUsd: 120000,
+  lockHeight: 500,
+  inTerm: true,
+);
+
+/// rpcversion 6: listed because its claim branch is open, but above θ — shown, not offered.
+const listed1 = ClaimableItem(
+  vaultTxid: 'e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1',
+  ownerAddress: 'yr1another',
+  cents: 1000,
+  collateralZat: 950000000,
+  claimHeight: 470,
+  claimPath: '',
+  pClaimMicroUsd: 500000,
+  feeZat: 50000000,
+  attestFeeZat: 0,
+  residualZat: 0,
+  claimantZat: 0,
+  payee: '',
+  claimable: false,
+  underwaterAtMicroUsd: 131578,
+  lockHeight: 500,
+  inTerm: true,
 );
 
 Future<void> openClaimable(WidgetTester tester, Harness h) async {
@@ -50,6 +74,24 @@ void main() {
     expect(find.text('claiming'), findsOneWidget);
     expect(find.text('CARRIER_SENT'), findsOneWidget);
     expect(h.state.mintsInProgress.single.kind, 'claim');
+  });
+
+  testWidgets('rpcversion 6: a listed row above the threshold is greyed with its claimable-at price and cannot be picked', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.claimableAnswer = const [listed1, claimable1];
+    await openClaimable(tester, h);
+    expect(find.text('not claimable: above \$0.13 per YEC · yr1another'), findsOneWidget);
+    expect(find.textContaining('claimable now (in term) · you keep about 9.49998000 YEC'), findsOneWidget);
+    expect(find.byKey(const Key('none')), findsNothing);
+    await tester.tap(find.byKey(Key('claimable-${listed1.vaultTxid}')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('slide-to-confirm')), findsNothing);
+    // Only listed rows: "nothing is claimable".
+    h.api.claimableAnswer = const [listed1];
+    await tester.tap(find.byKey(const Key('reload')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('none')), findsOneWidget);
+    expect(h.api.calls.where((c) => c.startsWith('claim ')), isEmpty);
   });
 
   testWidgets('nothing claimable; a core error while listing is shown verbatim', (tester) async {

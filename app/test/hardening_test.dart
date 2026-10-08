@@ -97,15 +97,16 @@ void main() {
     expect(h.api.calls.where((c) => c == 'mintAvailability').length, 2);
   });
 
-  testWidgets('deadlines: an ACTIVE vault shows its lock and claim heights as dates; no renew and no warning yet', (tester) async {
+  testWidgets('deadlines: an ACTIVE vault shows the end of its term as a date and its claimable-at price; no renew and no warning yet', (tester) async {
     final h = Harness(withWallet: true);
     final txid = 'd1' * 32;
     h.api.vaultsAnswer = [h.api.vault(txid: txid, lockHeight: 528)];
     await openVault(tester, h, txid);
     expect(find.byKey(const Key('lock-date')), findsOneWidget);
-    expect(find.byKey(const Key('claim-date')), findsOneWidget);
+    // In-term claims: no claim height to show; the claim opens at the threshold, at any height.
+    expect(find.byKey(const Key('claim-date')), findsNothing);
+    expect(find.byKey(const Key('claimable-at')), findsOneWidget);
     expect(find.text(formatDate(FakeWalletApi.nowSecs + 44 * 75)), findsOneWidget);
-    expect(find.text(formatDate(FakeWalletApi.nowSecs + 64 * 75)), findsOneWidget);
     expect(find.byKey(const Key('renew')), findsNothing);
     expect(find.byKey(const Key('claim-warning')), findsNothing);
     expect(find.textContaining('sunset'), findsNothing);
@@ -152,17 +153,18 @@ void main() {
     expect(find.byKey(const Key('remint')), findsNothing);
   });
 
-  testWidgets('claim warning: from claimHeight − 1 day, persistent on Home, the Yellowback tab and the vault', (tester) async {
+  testWidgets('claim warning (in-term IT-8): within 25 % above the claimable-at price, persistent on Home, the Yellowback tab and the vault', (tester) async {
     final h = Harness(withWallet: true);
     final due = 'd4' * 32;
     final calm = 'd5' * 32;
-    // tip 484: the due vault's claimHeight is 485 (one regtest day away), the calm one's 548.
-    h.api.vaultsAnswer = [h.api.vault(txid: due, lockHeight: 465), h.api.vault(txid: calm, lockHeight: 528)];
+    // Both claimable below $0.40: the due one's claim price $0.45 is within 25 % of it, the calm one's $0.52 is not.
+    h.api.vaultsAnswer = [h.api.vault(txid: due, lockHeight: 465, claimPrice: 450000), h.api.vault(txid: calm, lockHeight: 528)];
     await h.pump(tester);
     expect(find.byKey(const Key('claim-warning-banner')), findsOneWidget);
     expect(find.byKey(Key('claim-warning-$due')), findsOneWidget);
     expect(find.byKey(Key('claim-warning-$calm')), findsNothing);
-    expect(find.textContaining('a liquidator may claim this vault if it is underwater'), findsOneWidget);
+    expect(find.text('A vault is near its claim threshold'), findsOneWidget);
+    expect(find.textContaining('the price below which anyone may close this vault by paying its debt'), findsOneWidget);
     await tester.tap(find.byKey(const Key('tab-yellowback')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('claim-warning-banner')), findsOneWidget);
@@ -173,19 +175,21 @@ void main() {
     expect(find.textContaining('sunset'), findsNothing);
   });
 
-  testWidgets('claim warning: once the claim path is open the text says so; closed vaults never warn', (tester) async {
+  testWidgets('claim warning: a claimable vault says CLAIMABLE NOW, in term too; closed and void vaults never warn', (tester) async {
     final h = Harness(withWallet: true);
     final open = 'd6' * 32;
     h.api.vaultsAnswer = [
-      h.api.vault(txid: open, lockHeight: 400),
-      h.api.vault(txid: 'd7' * 32, status: 'CLOSED', lockHeight: 400),
-      h.api.vault(txid: 'd8' * 32, status: 'VOID', voidReason: 'abandoned', lockHeight: 400),
+      h.api.vault(txid: open, lockHeight: 528, underwater: true, claimPrice: 390000),
+      h.api.vault(txid: 'd7' * 32, status: 'CLOSED', lockHeight: 400, claimPrice: 390000),
+      h.api.vault(txid: 'd8' * 32, status: 'VOID', voidReason: 'abandoned', lockHeight: 400, claimPrice: 390000),
     ];
     await h.pump(tester);
     expect(find.byKey(Key('claim-warning-$open')), findsOneWidget);
     expect(find.byKey(Key('claim-warning-${'d7' * 32}')), findsNothing);
     expect(find.byKey(Key('claim-warning-${'d8' * 32}')), findsNothing);
-    expect(find.textContaining('The claim path of this vault is open since'), findsOneWidget);
+    expect(find.text('A vault is claimable now'), findsOneWidget);
+    expect(find.textContaining('CLAIMABLE NOW: its collateral is worth less than 125 % of its debt'), findsOneWidget);
+    expect(find.textContaining('early-redeem fee of 5 %'), findsOneWidget);
   });
 
   testWidgets('claim: the row shown is the bound the core is handed (H-9.3)', (tester) async {

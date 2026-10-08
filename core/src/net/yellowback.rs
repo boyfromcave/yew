@@ -29,7 +29,12 @@ use crate::tx::{txid_from_hex, OutPoint};
 /// lightwalletd plan §3.4: "a client refuses an `rpcversion` it does not know"). `5` is the
 /// vault upgrade (`ycash-dd/doc/yellowback-rpc.md`, branch `upgrade/vault`): YED is a consensus
 /// module of the vault primitive, the vault is the V template, a claim moves it into intents.
-pub const KNOWN_RPCVERSION: i64 = 5;
+/// `6` is the in-term claims line this build implements (branch `upgrade/vault-in-term`, the
+/// workspace's `docs/plans/yellowback-in-term-claims-plan.md` §4.1): `ListClaimable` lists every
+/// ACTIVE vault whose claim branch is open, in term too, with `claimable` true or false; the
+/// params carry `inTermClaims`, `claimThresholdBps` and `earlyRedeemFeeBps`. The match stays
+/// exact: an rpcversion-5 node's rows would read as `claimable: false`, which is not what it meant.
+pub const KNOWN_RPCVERSION: i64 = 6;
 
 /// The upgrade status string that means "active" (`YellowbackActivation.status`, rpcversion 5:
 /// `"pending"` | `"active"`).
