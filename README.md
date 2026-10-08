@@ -39,6 +39,17 @@ members of Yellowback's signer set who sign prices.
   ([What is left](#what-is-left)).
 - **Try it:** [Quick start for developers](#quick-start-for-developers) below brings up the local
   test network and runs the app on it.
+- **This branch, `upgrade/vault-in-term`: in-term claims** (the workspace's
+  `docs/plans/yellowback-in-term-claims-plan.md`, node `rpcversion` 6, lightwalletd-dd of the same
+  branch). A vault can be claimed at any height once its collateral is worth less than 125 % of its
+  debt at the claim price, and its owner can redeem at any height; before the term ends the redeem
+  also pays an early-redeem fee of 5 / 2.5 / 1 % of the collateral (class A / B / C, 300 / 400 / 500 %
+  collateral). YEW computes that fee itself, shows it before the slider, shows each vault's
+  claimable-at price, warns while the claim price is within 25 % above it and says "claimable now"
+  once the node does; the Claimable screen greys rows the node lists above the threshold. The
+  trust statement carries the in-term promise verbatim (`scripts/check-trust-text.sh` checks it
+  against the node's generated spec). Devnet: `scripts/devnet-it.sh` (point it at the in-term
+  ycash-dd checkout and binaries, see its header).
 
 ## Quick start for developers
 
@@ -274,7 +285,7 @@ were written smaller (see [What is left](#what-is-left)).
 | Unit | `core/src/**` `#[test]` | `cargo test`; includes property tests that no YEC-path transaction ever spends a token, vault or carrier input, on thousands of random coin sets |
 | Node vectors | `core/tests/vectors.rs` | `cargo test`; twelve node-signed transactions, addresses, templates reproduced byte for byte |
 | Widget | `app/test/` | `flutter test`; 29 tests over the fake bridge |
-| Devnet acceptance | `core/tests/devnet.rs` | `scripts/devnet-w1.sh test`, `devnet-w2.sh test`, `devnet-w4.sh test`; YEC round trip and restore, YED transfer and gate refusal, mint/redeem/claim/lapse/resume; nightly, not CI |
+| Devnet acceptance | `core/tests/devnet.rs` | `scripts/devnet-w1.sh test`, `devnet-w2.sh test`, `devnet-w4.sh test`; YEC round trip and restore, YED transfer and gate refusal, mint/redeem/claim/lapse/resume; `devnet-it.sh test [it|w4]` on the in-term line (early redeem in term, the in-term claim, listed-not-claimable refusal); nightly, not CI |
 | Shielded devnet | `core/tests/devnet.rs` `s2_` | `scripts/devnet-s2.sh dd <seed>` and `scripts/devnet-s2.sh 6 <seed>` (the 4.5.0 and 6.21.0 node lines; builds lightwalletd-dd 0b3448e+, needs the Sapling parameters on the machine): restore with a memo, z→z with a memo confirmed by `z_listreceivedbyaddress`, z→t with `revealsShielded`, transparent fallback, transparent YEC and YED regressions, no spending key in any file; `s4_`: move 1 YEC to private, 0.5 YEC to public, all to private, the mint shortfall to public and the mint, with YED and the fee reserve untouched and balances exact; `s5_`: restore with a birthday (at, after and without one), reorgs under a synced wallet (re-mined, dropped and re-mined, a send dropped past its expiry) with lightwalletd-dd following, an interrupted sync (future dropped, process killed) resuming to the same state |
 | Device integration | `app/integration_test/` | `scripts/run-ios.sh --test m1`, `run-android.sh --test m1` |
 
