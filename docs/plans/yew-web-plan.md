@@ -413,6 +413,15 @@ Sapling send in WASM; the slide-to-confirm plus progress sheet carries over.
   (`JsValue::from_str(Display)`); a typed error object can come later; (g) the store directory
   is `yew/<network>` — `open_at` exists for a second wallet; deleting a store (OPFS
   `clear_all`/`delete_db`) is not exposed yet.
+  **Re-run against the kind cluster itself, 2026-10-09**, after ycash-infra `146c5a8` activated the
+  seven regtest upgrades at height 1 (the chain had Vault only, then Overwinter+Sapling only: the
+  light clients' regtest parameters assume Canopy from 1, and a pre-Canopy note is undecryptable
+  to them) and `fund-helper.py` passed `AllowLinkingAccountAddresses` to `z_shieldcoinbase` and
+  `z_sendmany` (6.22's default policy refuses to link the node account's own t-addresses): release
+  — open 166 ms, first sync 21 blocks in 55 ms, funded 1.5 YEC, **the note spendable 4.4 s after
+  the helper answered** (one block), restore from height 1: 212 blocks / 6 outputs in 178 ms
+  (~1 200 blocks/s); debug the same within 10 %. `YEW_WEB_LWD=http://localhost:9067
+  web/scripts/test-core-wasm.sh` is now the kind acceptance for W2.
 - [ ] W0 complete
 - [ ] W1
 - [ ] W2

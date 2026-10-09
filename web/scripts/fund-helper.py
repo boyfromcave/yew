@@ -60,7 +60,9 @@ def private_balance(zaddr, minconf=1):
 def ensure_private(zaddr, need_yec):
     if private_balance(zaddr) >= need_yec:
         return
-    r = cli("z_shieldcoinbase", "*", zaddr)  # ZIP-317 fee, the default limit
+    # fee null (the node's policy), the default limit (50), no memo; the coinbases sit on many of the
+    # account's own t-addresses, which the default privacy policy refuses to link.
+    r = cli("z_shieldcoinbase", "*", zaddr, "null", "50", "", "AllowLinkingAccountAddresses")
     txid = wait_opid(r["opid"])
     print(f"fund-helper: shielded {r['shieldingValue']} YEC in {txid}; waiting for a confirmation", flush=True)
     t0 = time.time()
@@ -74,7 +76,9 @@ def fund(addr, zat):
     yec = zat / 1e8
     zaddr = node_zaddr()
     ensure_private(zaddr, yec + 0.001)
-    r = cli("z_sendmany", zaddr, json.dumps([{"address": addr, "amount": f"{yec:.8f}"}]), "1")  # ZIP-317 fee
+    # fee null = ZIP-317 (6.22 refuses an explicit 0.0001); the node's account may hold the shielded
+    # coinbase under several of its own addresses, which the default policy refuses to link.
+    r = cli("z_sendmany", zaddr, json.dumps([{"address": addr, "amount": f"{yec:.8f}"}]), "1", "null", "AllowLinkingAccountAddresses")
     opid = r if isinstance(r, str) else r.get("opid")
     txid = wait_opid(opid)
     print(f"fund-helper: sent {yec} YEC to {addr} in {txid}", flush=True)
