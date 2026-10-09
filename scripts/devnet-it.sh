@@ -3,8 +3,9 @@
 # rpcversion 6): an ARMED devnet of the in-term node (ycash-dd branch upgrade/vault-in-term) and
 # lightwalletd-dd of the same branch serving --yellowback. Runs core/tests/devnet.rs it_* (a YEW
 # mint and its early redeem in term, the node's own quote for it, an in-term claim of node 0's
-# vault after a -80 % shock, the owner's in-term redeem of a claimable vault); `test w4` runs the
-# W4 suites (mint, resume, lapse, redeem, claim, cancel) against the same devnet.
+# vault after a -80 % shock, the owner's in-term redeem of a claimable vault) against the running
+# devnet; `test w4` runs the W4 suites (mint, resume, lapse, redeem, claim, cancel), each on a
+# devnet of its own that it brings up (`down --wipe` + `up`): it replaces the running devnet.
 #
 #   scripts/devnet-it.sh up | lwd | test [it|w4] | status | down [--wipe]
 #
@@ -45,18 +46,39 @@ case "${1:-}" in
     ;;
   test)
     cd "$here"
-    # w4: the main suite first, then the cancel case (its -80 % shock leaves a global-ratio halt in
-    # which only class C mints, IT-5). The W4 main suite claims a vault of node 0: give node 0 one
-    # first on a fresh devnet (`yellowback-devnet cli -- yed_mint 20000 96 "" "" false`, mine).
+    run_filter() {
+      YEW_DEVNET=1 YEW_DEVNET_SERVER="127.0.0.1:$lwd_port" YEW_DEVNET_PYTHON="$py" YEW_DEVNET_TOOL="$tool" \
+        cargo test -p yew-core --test devnet -- --ignored --nocapture --test-threads=1 "$1"
+    }
+    fresh() {
+      dn lightwalletd stop || true
+      dn down --wipe || true
+      dn up --force --portseed "$YELLOWBACK_DEVNET_PORTSEED"
+      dn lightwalletd start --port "$lwd_port" --extra=--yellowback
+    }
     case "${2:-it}" in
-      it) filters=(it_) ;;
-      w4) filters=(w4_mint w4_claim) ;;
+      it) run_filter it_ ;;
+      w4)
+        # Both W4 suites end in a -80 % shock that is never reversed (the main suite's liquidator
+        # step, the cancel case's claim), which leaves the global ratio below HALT-2's 250 %: only
+        # class C mints after it (IT-5), and the next suite's class-A mint is refused
+        # mintpol-global-ratio. So each suite gets a fresh devnet, deterministically.
+        fresh
+        # The main suite claims a vault of node 0: give node 0 one (class A, 96 blocks) and mine
+        # on the pools (blocks node 0 mines carry no quote tag) until it is ACTIVE.
+        dn cli -- yed_mint 20000 96 "" "" false >/dev/null
+        for i in $(seq 1 30); do
+          dn mine 1 $((2 + i % 3)) >/dev/null
+          sleep 2
+          if dn cli -- yed_listvaults ACTIVE | grep -q '"txid"'; then break; fi
+          [[ $i -lt 30 ]] || { echo "devnet-it: node 0's vault never confirmed" >&2; exit 1; }
+        done
+        run_filter w4_mint
+        fresh
+        run_filter w4_claim
+        ;;
       *) echo "devnet-it: test [it|w4]" >&2; exit 2 ;;
     esac
-    for filter in "${filters[@]}"; do
-      YEW_DEVNET=1 YEW_DEVNET_SERVER="127.0.0.1:$lwd_port" YEW_DEVNET_PYTHON="$py" YEW_DEVNET_TOOL="$tool" \
-        cargo test -p yew-core --test devnet -- --ignored --nocapture --test-threads=1 "$filter"
-    done
     ;;
   status)
     dn status || true
