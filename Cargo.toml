@@ -23,3 +23,25 @@ strip = true
 opt-level = 3
 debug-assertions = false
 overflow-checks = false
+
+# rusqlite 0.39 (yew/web plan §2, owner decisions 2026-10-09): schemerz-rusqlite has no release for
+# it; librustzcash6 carries the 0.370 source with its requirement raised (components/).
+# LOCAL PATHS until librustzcash6 and x402-ycash up/web are pushed; then the same by git rev.
+[patch.crates-io]
+schemerz-rusqlite = { path = "../librustzcash6-web/components/schemerz-rusqlite" }
+
+[patch."https://github.com/boyfromcave/librustzcash6.git"]
+zcash_protocol = { path = "../librustzcash6-web/components/zcash_protocol" }
+zcash_primitives = { path = "../librustzcash6-web/zcash_primitives" }
+f4jumble = { path = "../librustzcash6-web/components/f4jumble" }
+zcash_address = { path = "../librustzcash6-web/components/zcash_address" }
+zcash_encoding = { path = "../librustzcash6-web/components/zcash_encoding" }
+zcash_transparent = { path = "../librustzcash6-web/zcash_transparent" }
+zcash_client_backend = { path = "../librustzcash6-web/zcash_client_backend" }
+zcash_client_sqlite = { path = "../librustzcash6-web/zcash_client_sqlite" }
+zcash_keys = { path = "../librustzcash6-web/zcash_keys" }
+zcash_proofs = { path = "../librustzcash6-web/zcash_proofs" }
+zip321 = { path = "../librustzcash6-web/components/zip321" }
+
+[patch."https://github.com/boyfromcave/x402-ycash.git"]
+x402-ycash-light = { path = "../x402-web/light" }

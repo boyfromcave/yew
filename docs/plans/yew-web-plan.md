@@ -15,6 +15,15 @@ rebase `up/web` when it lands). The backend it runs against is the `ycash-infra`
 | I-3 | Scope of the first release | **Sapling from day one** (private YEC, memos, shield/unshield), plus everything the Flutter app does: public YEC, YED, mint/redeem/claim. |
 | I-4 | Storage | **sqlite-wasm over OPFS**: keep `rusqlite` and `zcash_client_sqlite`; no IndexedDB rewrite of the store. |
 
+**Decisions of 2026-10-09** (after W0.1; the owner leans to the most recent toolchains that still compile):
+
+| # | Decision | Answer |
+|---|---|---|
+| D-1 | librustzcash6 toolchain pin on `up/web` | **1.96.0** (ycash6's pin, which already builds librustzcash6 inside its depends) |
+| D-2 | rusqlite / arti line | **rusqlite 0.39 + arti 0.44** (+ fs-mistrust 0.15, `time-core` unpinned → `time` 0.3.55): the most recent set that resolves; arti 0.47 is blocked by the next RustCrypto generation against librustzcash6's pinned pre-releases. One-line tor.rs change (`Arc<TorClient>`). |
+| D-3 | Consumers (`x402-ycash/light`, `yew-core`) | **move now**, on their own `up/web` branches |
+| D-4 | Patched `schemerz-rusqlite` | **vendored** under `librustzcash6/components/` |
+
 ## 1. The shape
 
 ```
@@ -109,6 +118,13 @@ Sapling send in WASM; the slide-to-confirm plus progress sheet carries over.
      a version-matched driver. `getrandom` needs its `js` feature.
   Not yet covered: `FsBlockDb` (the compact-block cache is `std::fs` on disk) and the Sapling
   prover on wasm32 — the next W0 tasks, in that order.
+  **Applied 2026-10-09 per D-1..D-4:** librustzcash6 `up/web` `7cc50e16` (rusqlite 0.39, arti 0.44,
+  toolchain 1.96.0; 134 `zcash_client_sqlite` tests green; the browser spike green on 0.39);
+  `x402-ycash` `up/web` `05bece7` (light on 0.39; 31+5 tests green); `yew` `up/web` (this commit:
+  `yew-core` on `=0.39.0`; 123+6 tests, deps/licence checks green). **Until librustzcash6 and
+  x402-ycash `up/web` are pushed, the three root manifests carry LOCAL path patches** (flagged
+  in each `Cargo.toml`); the push replaces them with git revs, in the order librustzcash6 →
+  x402-ycash → yew.
 - [ ] W0.2 `FsBlockDb` → a `BlockSource` over OPFS (or `MemBlockCache`) for the browser
 - [ ] W0.3 `zcash_proofs` local prover in a Web Worker (single-thread first; `wasm-bindgen-rayon` after)
 - [ ] W0.4 `yew-core` `wasm` feature: tonic-web-wasm-client channel, the clock, no tokio runtime
