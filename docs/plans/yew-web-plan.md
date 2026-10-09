@@ -151,11 +151,10 @@ Sapling send in WASM; the slide-to-confirm plus progress sheet carries over.
      and `local-prover` = `directories` pulls `home`, `xdg`, `known-folders`; **`home` 0.5.12
      does not compile for wasm32** (`home_dir_inner` exists only for unix/windows). The spike
      gets past it with a test-only `[patch.crates-io] home = { path = "shim/home" }` returning
-     `None`. **W0.4 needs the real fix in librustzcash6 `up/web`:** either ungate `pub mod
-     prover` (it uses only `std::fs`/`io`, which compile for wasm32 and fail at run time) and gate
-     `new(Path)`/`with_default_location` on the feature, or make the `directories` dependencies
-     `[target.'cfg(not(target_arch = "wasm32"))']`. Either is a two-line change; the first is the
-     cleaner (`from_bytes` is the API the browser uses). `sapling-crypto` needs `circuit` (not
+     `None`. **Fixed 2026-10-09 in librustzcash6 `up/web` (`f04a2ab9`):** the `directories`
+     dependencies are `[target.'cfg(not(target_arch = "wasm32"))']` and the default-location
+     lookup (`default_params_folder`, `with_default_location`) is native-only; `from_bytes` is
+     the browser API. The spike builds without its shim (removed). `sapling-crypto` needs `circuit` (not
      `multicore`), which `zcash_proofs` already enables through `zcash_primitives/circuits`;
      `cargo tree -i rayon` is empty.
   2. **Parameters reach the prover as bytes, no filesystem**: `fetch_param` looks in the Cache
