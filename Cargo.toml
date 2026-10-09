@@ -44,4 +44,4 @@ zcash_proofs = { path = "../librustzcash6-web/zcash_proofs" }
 zip321 = { path = "../librustzcash6-web/components/zip321" }
 
 [patch."https://github.com/boyfromcave/x402-ycash.git"]
-x402-ycash-light = { path = "../x402-w05/light" }
+x402-ycash-light = { path = "../x402-web/light" }
