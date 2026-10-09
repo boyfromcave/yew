@@ -26,14 +26,24 @@
 //! `zcutil/fetch-params.sh` uses today. The pinned SHA-256s make the host a question of
 //! availability, not trust.
 
+//!
+//! wasm32 (the browser wallet): the pins, [`status`], [`ensure_verified`] and [`ParamsSource`]
+//! compile; the fetch ([`download`] and the HTTP/TLS client below it, tokio + rustls) is native
+//! only — the browser fetches into the Cache API with the same pins (yew/web plan §2, W0.3).
+
 use std::fs::{self, File};
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::net::TcpStream;
 
 /// One parameter file and its pin.
@@ -74,8 +84,10 @@ pub const DEFAULT_SOURCES: &[&str] = &["https://download.z.cash/downloads/"];
 /// Total bytes of a download from nothing.
 pub const TOTAL_BYTES: u64 = SPEND.bytes + OUTPUT.bytes;
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Redirects followed per file.
 const MAX_REDIRECTS: usize = 5;
+#[cfg(not(target_arch = "wasm32"))]
 /// Bound on a response header block.
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 
@@ -291,6 +303,7 @@ impl ParamsSource {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Download progress: bytes so far of `total` (the files still missing when the call began).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Progress {
@@ -302,6 +315,7 @@ pub struct Progress {
     pub total: u64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Fetch every missing or wrong file from `source` into `dir` (created `0700` if absent),
 /// verifying each against its pin before it is renamed into place. Files already present and
 /// matching are kept. Returns the final [`ParamsState`] (verified).
@@ -354,6 +368,7 @@ pub async fn download(
     Ok(status(dir))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// The sink of one file: the `.part` file and the running hash, bounded by the pinned length.
 struct Sink<'a> {
     file: File,
@@ -366,6 +381,7 @@ struct Sink<'a> {
     path: &'a Path,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Sink<'_> {
     fn write(&mut self, buf: &[u8]) -> Result<(), ParamsError> {
         if self.n + buf.len() as u64 > self.f.bytes {
@@ -398,6 +414,7 @@ impl Sink<'_> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn fetch_one(
     source: &ParamsSource,
     f: &ParamFile,
@@ -466,6 +483,7 @@ async fn fetch_one(
     sink.finish()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Resolve a `Location` against the current target. A redirect may not downgrade TLS.
 fn redirect_target(cur: &ParamsSource, location: &str) -> Result<ParamsSource, String> {
     let ParamsSource::Http {
@@ -506,19 +524,24 @@ fn redirect_target(cur: &ParamsSource, location: &str) -> Result<ParamsSource, S
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn read_line(r: &mut BufReader<Box<dyn Io>>, line: &mut Vec<u8>) -> std::io::Result<usize> {
     line.clear();
     r.read_until(b'\n', line).await
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 enum Fetched {
     Done,
     Redirect(String),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 trait Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+#[cfg(not(target_arch = "wasm32"))]
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> Io for T {}
 
+#[cfg(not(target_arch = "wasm32"))]
 fn tls_config() -> Arc<tokio_rustls::rustls::ClientConfig> {
     static CFG: OnceLock<Arc<tokio_rustls::rustls::ClientConfig>> = OnceLock::new();
     CFG.get_or_init(|| {
@@ -536,6 +559,7 @@ fn tls_config() -> Arc<tokio_rustls::rustls::ClientConfig> {
     .clone()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn connect(tls: bool, host: &str, port: u16) -> Result<Box<dyn Io>, String> {
     let tcp = TcpStream::connect((host.trim_matches(|c| c == '[' || c == ']'), port))
         .await
@@ -554,6 +578,7 @@ async fn connect(tls: bool, host: &str, port: u16) -> Result<Box<dyn Io>, String
     Ok(Box::new(stream))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// One `GET`; the body goes to `sink`. A 3xx with `Location` is returned for the caller.
 async fn http_get(target: &ParamsSource, sink: &mut Sink<'_>) -> Result<Fetched, ParamsError> {
     let ParamsSource::Http {
@@ -702,6 +727,7 @@ async fn http_get(target: &ParamsSource, sink: &mut Sink<'_>) -> Result<Fetched,
     Ok(Fetched::Done)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(test)]
 mod tests {
     use super::*;

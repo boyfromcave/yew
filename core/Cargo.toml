@@ -34,18 +34,14 @@ bs58 = "=0.5.1"
 # roots. `rustls-native-certs` has no iOS backend, so without it every TLS connection on iOS
 # failed the handshake. `webpki-roots` is pinned here as a direct dependency so its version is
 # exact (plan §3.3 allow-list: scripts/allowed-deps.txt).
-tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "channel", "tls-ring", "tls-native-roots", "tls-webpki-roots"] }
-webpki-roots = "=1.0.9"
+# tonic and tokio are per target (the tables at the end of this file): the HTTP/2 channel with
+# rustls and the runtime natively, codegen and the runtime-free parts in the browser.
 tonic-prost = "=0.14.6"
 prost = "=0.14.4"
-tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 rusqlite = { version = "=0.39.0", features = ["bundled"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 thiserror = "=2.0.21"
-# The bridge (api.rs): the crate and flutter_rust_bridge_codegen are the same version (W0a); the
-# Dart package in app/pubspec.yaml is pinned to it too.
-flutter_rust_bridge = "=2.13.0"
 # Sapling key derivation (yew-shielded plan S0-1, `shielded_keys.rs`): ZIP-32 over the BIP39
 # seed, the Sapling key types and their Bech32 encodings. `zcash_keys` comes from
 # boyfromcave/librustzcash6 by git rev: 4867cf85 = miodragpop/librustzcash @ ec525fae (the
@@ -85,13 +81,8 @@ zcash_transparent = { version = "=0.8.0", git = "https://github.com/boyfromcave/
 # bip32), renamed: YEW's own signer stays on secp256k1 0.33.1 above. Used only to hand the
 # builder the keys of the selected coins (S4 shield).
 secp256k1_zcash = { package = "secp256k1", version = "=0.29.1", default-features = false, features = ["alloc"] }
-zcash_proofs = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["local-prover"] }
 zcash_protocol = { version = "=0.9.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["std"] }
 rand = { version = "=0.8.8", default-features = false, features = ["std", "std_rng", "getrandom"] }
-# The Sapling proving parameters are downloaded over HTTPS on first shielded send (S0-2,
-# `core/src/sapling_params.rs`): rustls through `tokio-rustls` (the version tonic's TLS already
-# links) with the Mozilla roots above; the SHA-256 pins, not the transport, are the integrity check.
-tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring"] }
 
 # flutter_rust_bridge's macros test `cfg(frb_expand)`.
 [lints.rust]
@@ -101,7 +92,40 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
 tonic-prost-build = "=0.14.6"
 prost-build = "=0.14.4"
 
-# The browser shell (docs/plans/yew-web-plan.md §2): on wasm32 `getrandom` must be told to use the
-# Web Crypto API; a no-op on every other target.
+# Per-target dependencies (docs/plans/yew-web-plan.md §2, W0.4). Native (iOS, Android, the CLI,
+# the tests) is byte-for-byte what it was: the two tables below are the lines that used to sit in
+# [dependencies], with the same features. wasm32-unknown-unknown (the browser shell) gets what
+# compiles there and no more: the generated clients over gRPC-web (`tonic-web-wasm-client`; the
+# browser's `fetch` does TLS), tokio's runtime-free parts, and `wasm-bindgen-futures` for the
+# tasks the native side spawns on its runtime. Not linked in the browser: tonic's channel and
+# rustls, `webpki-roots`, `tokio-rustls` (the parameters fetch, S0-2), `flutter_rust_bridge`
+# (the Dart bridge, `api.rs`) and `zcash_proofs` (the prover: its `local-prover` pulls `home`,
+# which has no wasm32 build — W0.3 brings the browser prover).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# `tls-webpki-roots` (audit G-4): the Mozilla bundle as a root store beside the platform's
+# roots. `rustls-native-certs` has no iOS backend, so without it every TLS connection on iOS
+# failed the handshake. `webpki-roots` is pinned here as a direct dependency so its version is
+# exact (plan §3.3 allow-list: scripts/allowed-deps.txt).
+tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "channel", "tls-ring", "tls-native-roots", "tls-webpki-roots"] }
+webpki-roots = "=1.0.9"
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+# The bridge (api.rs): the crate and flutter_rust_bridge_codegen are the same version (W0a); the
+# Dart package in app/pubspec.yaml is pinned to it too.
+flutter_rust_bridge = "=2.13.0"
+zcash_proofs = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["local-prover"] }
+# The Sapling proving parameters are downloaded over HTTPS on first shielded send (S0-2,
+# `core/src/sapling_params.rs`): rustls through `tokio-rustls` (the version tonic's TLS already
+# links) with the Mozilla roots above; the SHA-256 pins, not the transport, are the integrity check.
+tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
+# 0.9 is the tonic 0.14 line (0.7 was tonic 0.13); MIT/Apache-2.0.
+tonic-web-wasm-client = "=0.9.2"
+tokio = { version = "=1.53.1", default-features = false, features = ["sync"] }
+wasm-bindgen-futures = "=0.4.78"
+# Both `getrandom` lines in the graph must be told to use the Web Crypto API: 0.2 (rand 0.8, the
+# librustzcash6 crates) by its `js` feature; 0.3 (secp256k1 0.33 -> rand 0.9) by `wasm_js` plus
+# the `getrandom_backend="wasm_js"` cfg flag in `.cargo/config.toml`.
 getrandom = { version = "0.2", features = ["js"] }
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }

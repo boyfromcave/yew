@@ -18,11 +18,10 @@
 //! reads [`Token`] and `YedTxInfo`. The remaining results are returned as the generated
 //! messages (`super::rpc`), whose field names are the node contract's JSON names.
 
-use tonic::transport::Channel;
 use tonic::Code;
 
 use super::rpc;
-use super::{limits, NetError, Server, YellowbackStreamerClient};
+use super::{limits, Channel, NetError, Server, YellowbackStreamerClient};
 use crate::tx::{txid_from_hex, OutPoint};
 
 /// The node `rpcversion` this build implements (`ycash-dd/doc/yellowback-rpc-contract.json`;

@@ -127,7 +127,80 @@ Sapling send in WASM; the slide-to-confirm plus progress sheet carries over.
   x402-ycash → yew.
 - [ ] W0.2 `FsBlockDb` → a `BlockSource` over OPFS (or `MemBlockCache`) for the browser
 - [ ] W0.3 `zcash_proofs` local prover in a Web Worker (single-thread first; `wasm-bindgen-rayon` after)
-- [ ] W0.4 `yew-core` `wasm` feature: tonic-web-wasm-client channel, the clock, no tokio runtime
+- [x] **W0.4 `yew-core` and `x402-ycash/light` compile for wasm32 (network layer) — done
+  2026-10-09.** `cargo check -p yew-core --target wasm32-unknown-unknown` and `cargo check
+  --target wasm32-unknown-unknown` of `x402-ycash/light` (lib and bin) pass, warning-free;
+  native is unchanged: yew 123+6 tests, `check-deps.sh` (now `--target all`), `check-licenses.sh`
+  (364 crates), fmt; light 31+5 tests. `web/spike-net` (`web/scripts/test-spike-net.sh`) builds
+  the whole of yew-core for wasm32 and runs three `wasm-bindgen-test`s in headless Chrome, debug
+  and release: a `GetLightdInfo` over an `https://` gRPC-web channel and a `GetYellowbackInfo`
+  over a plain one each come back as a `Status` error (no server listens: the channel builds
+  offline and the request is attempted), and a pinned certificate is refused in the browser.
+  Branches `up/web-core` in yew (`core/`, this commit) and x402-ycash (`light/`).
+  **Not a cargo feature.** Plan §2 said `features = ["wasm"]`; the delta is pure
+  `cfg(target_arch = "wasm32")`: per-target dependency tables and item gates. A feature would
+  have to be asked for by every consumer and could be set on a native build; the target cfg
+  cannot, and the native graph is byte-for-byte the old one (the native table is the old
+  `[dependencies]` lines, same features). What changed per crate:
+  - **`x402-ycash/light`** (the consumer yew-core reaches the Sapling sync through): `tokio`,
+    `tonic`, the binary's deps (hyper, clap, tracing-subscriber), `zcash_proofs`,
+    `zcash_client_sqlite` and `zcash_primitives` are per target; `lwd::Channel` is a per-target
+    type alias (`tonic::transport::Channel` / `tonic_web_wasm_client::Client`) and
+    `Options::channel`, `Wallet::channel()`, `lwd::connect` use it; the sync producer is
+    `tokio::spawn` natively and `wasm_bindgen_futures::spawn_local` in the browser
+    (`sync::spawn_producer`); `Wallet::build` answers `Error::ProverUnsupported` on wasm32 and
+    `spend::assemble` is native-only; the `x402-light` binary is an empty program on wasm32.
+    **The client stubs are now generated in `light/build.rs` from the vendored protos over the
+    backend's message types** (`extern_path`, as librustzcash's own build does; `Exclude` maps
+    to `GetMempoolTxRequest`, `CompactSpend`/`CompactOutput` to the Sapling names), and the
+    `lightwalletd-tonic` feature of `zcash_client_backend` is dropped: its checked-in
+    `service.rs` carries an unconditional `connect` over `tonic::transport::Channel`, which no
+    tonic feature provides on wasm32 (the alternative was a librustzcash6 change —
+    `build_transport(false)` — in a worktree this task does not own; worth doing there later so
+    the feature can come back). Both targets use the same generated client.
+  - **`yew-core`**: `net::Channel` is the same per-target alias (so one channel still serves the
+    private sync, Z-3); `Server::connect` builds a `tonic_web_wasm_client::Client` from
+    `Server::uri()` in the browser and refuses `ca_pem` (TLS is the browser's; a pin the page
+    cannot honour must not look honoured); `net/tls.rs`'s endpoint/TLS, `NetError::Transport`,
+    `api.rs` + `frb_generated.rs` (the Dart bridge and its tokio runtime), the parameters fetch
+    in `sapling_params.rs` (`download` and the HTTP/TLS client under it; `status`,
+    `ensure_verified`, `ParamsSource` stay) and the prover (`Shielded::build`, `build_shield`,
+    `load_prover`) are native-only; on wasm32 `build`/`build_shield` answer
+    `ShieldedError::ProverUnsupported`, and `Shielded::sync` runs without the progress ticker
+    (a tokio task on a second store connection; the browser gets the final progress calls).
+    `build.rs` generates both clients with `build_transport(false)` (nothing used the generated
+    `connect`). `.cargo/config.toml` (new) sets `--cfg getrandom_backend="wasm_js"` for the
+    wasm32 target.
+  Dependency table (`core/Cargo.toml`; `light/Cargo.toml` mirrors it with caret versions):
+
+  | Crate | native (unchanged) | wasm32-unknown-unknown |
+  |---|---|---|
+  | `tonic` 0.14.6 | `codegen, channel, tls-ring, tls-native-roots, tls-webpki-roots` | `codegen` only |
+  | `tonic-web-wasm-client` | — | **0.9.2** (the tonic 0.14 line; 0.7 = tonic 0.13; MIT/Apache-2.0) |
+  | `tokio` 1.53.1 | `rt-multi-thread, macros, sync, time, net, io-util` | `sync` (light: `sync, macros`) |
+  | `wasm-bindgen-futures` | — | 0.4.78 |
+  | `getrandom` | — | 0.2 `js` **and** 0.3 `wasm_js` (+ the cfg flag; secp256k1 0.33 → rand 0.9) |
+  | `webpki-roots`, `tokio-rustls`, `flutter_rust_bridge` | as before | not linked |
+  | `zcash_proofs` | `local-prover` | not linked (`local-prover` → `home`, no wasm32 build; W0.3) |
+  | `zcash_client_sqlite` / `zcash_primitives` (light) | defaults (`multicore`) | `default-features = false`: halo2_proofs refuses `multicore` on wasm32 without atomics |
+
+  Traps: (1) `zcash_client_backend` `lightwalletd-tonic` does not compile without tonic
+  `channel` (above). (2) `zcash_proofs` `local-prover` is unbuildable on wasm32 through `home`.
+  (3) halo2_proofs: `multicore` on, serial `maybe-rayon` → compile error; `multicore` must be
+  off everywhere in the wasm32 graph, so every consumer declares `zcash_client_sqlite` and
+  `zcash_primitives` without defaults there. (4) getrandom 0.3's wasm backend needs a cfg flag,
+  not just a feature. (5) `cargo tree` without `--target all` does not show the wasm32 table
+  (the deps check now passes it). (6) The generated gRPC clients' `connect` is the one thing in
+  tonic codegen that names the transport; `build_transport(false)` on both build scripts.
+  **Stubs W0.2 / W0.3 replace** (they compile on wasm32 and fail at run time, or answer
+  `Unsupported`): `x402_ycash_light::Wallet::open` (`std::fs`, `FsBlockDb`, the `wallet.lock`
+  file lock, `SystemClock`) and `sync.rs`'s `fs::write` of block files and `std::time::Instant`
+  timings; `yew_core::shielded::Shielded::open` (`std::fs`, `SystemClock`); `Shielded::sync`'s
+  `Instant::now()`; the two `ProverUnsupported` stubs (light `Wallet::build`, yew
+  `Shielded::build` / `build_shield`) and `sapling_params::download` (native-only; the browser
+  fetch into the Cache API); `rusqlite` on wasm32 needs the sahpool VFS installed before any
+  open (W0.1's `install_opfs`). `web/core-wasm` can now depend on `yew-core` (its comment says
+  how); it still exposes `status()` only.
 - [ ] W0 complete
 - [ ] W0 complete
 - [ ] W1
