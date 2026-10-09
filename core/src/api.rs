@@ -1749,7 +1749,7 @@ pub fn history(page: u32, page_size: u32) -> Result<HistoryPage, YewError> {
             page_size as usize
         };
         let mut merged: Vec<HistoryItem> = all.iter().map(history_item).collect();
-        if let Some(sh) = o.wallet.shielded.as_ref() {
+        if let Some(sh) = o.wallet.shielded.as_mut() {
             for z in sh.history()?.iter().filter(|z| !z.expired) {
                 merge_shielded(&mut merged, z);
             }

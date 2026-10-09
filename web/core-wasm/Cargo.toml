@@ -1,10 +1,10 @@
 # yew-web-core: the wasm-bindgen binding over yew-core for the browser shell (plan §1).
 # Built with `wasm-pack build --target web` by web/scripts/build-core-wasm.sh; kept out of the
 # root workspace because its dependency graph (tonic-web-wasm-client, sqlite-wasm-rs) only
-# resolves for wasm32-unknown-unknown. yew-core compiles for wasm32 since W0.4 (no cargo feature:
-# its per-target tables and `cfg(target_arch = "wasm32")` do the job; see web/spike-net for the
-# channel in headless Chrome); the binding over it lands with W0.2/W0.3 — until then the crate
-# exposes `status()` only.
+# resolves for wasm32-unknown-unknown. yew-core compiles for wasm32 since W0.4 (no cargo
+# feature: its per-target tables and `cfg(target_arch = "wasm32")` do the job); since W0.5 the
+# crate binds the real core (storage on OPFS, the private sync, balances, the address) and
+# web/scripts/test-core-wasm.sh runs it end to end against a lightwalletd gateway in headless Chrome.
 [package]
 name = "yew-web-core"
 version = "0.1.0"
@@ -18,18 +18,45 @@ crate-type = ["cdylib", "rlib"]
 [workspace]
 
 [dependencies]
-wasm-bindgen = "=0.2.100"
-wasm-bindgen-futures = "=0.4.50"
-js-sys = "=0.3.77"
+yew-core = { path = "../../core" }
+# The versions yew-core's wasm32 table pins (one copy of each in the graph).
+wasm-bindgen = "=0.2.128"
+wasm-bindgen-futures = "=0.4.78"
+js-sys = "=0.3.105"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde-wasm-bindgen = "=0.6.5"
-# W0 (plan §2), gated behind the `core` feature until yew-core builds for wasm32:
-# yew-core = { path = "../../core", optional = true }   # plus the root's [patch] tables
 
-[features]
-default = []
-core = []   # W0: ["dep:yew-core"]
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+web-sys = { version = "=0.3.105", features = ["WorkerGlobalScope", "Response"] }
 
 [profile.release]
 opt-level = "s"
 lto = true
+
+# As the root manifest: dependencies optimised in dev builds too (trial decryption, the shard
+# tree and SQLite at opt-level 0 overrun the test runner's timeout; proving takes minutes).
+[profile.dev.package."*"]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+# LOCAL PATHS, as in the root Cargo.toml (patches do not propagate through dependencies).
+[patch.crates-io]
+schemerz-rusqlite = { path = "../../../librustzcash6-web/components/schemerz-rusqlite" }
+
+[patch."https://github.com/boyfromcave/librustzcash6.git"]
+zcash_protocol = { path = "../../../librustzcash6-web/components/zcash_protocol" }
+zcash_primitives = { path = "../../../librustzcash6-web/zcash_primitives" }
+f4jumble = { path = "../../../librustzcash6-web/components/f4jumble" }
+zcash_address = { path = "../../../librustzcash6-web/components/zcash_address" }
+zcash_encoding = { path = "../../../librustzcash6-web/components/zcash_encoding" }
+zcash_transparent = { path = "../../../librustzcash6-web/zcash_transparent" }
+zcash_client_backend = { path = "../../../librustzcash6-web/zcash_client_backend" }
+zcash_client_sqlite = { path = "../../../librustzcash6-web/zcash_client_sqlite" }
+zcash_keys = { path = "../../../librustzcash6-web/zcash_keys" }
+zcash_proofs = { path = "../../../librustzcash6-web/zcash_proofs" }
+zip321 = { path = "../../../librustzcash6-web/components/zip321" }
+
+[patch."https://github.com/boyfromcave/x402-ycash.git"]
+x402-ycash-light = { path = "../../../x402-w05/light" }

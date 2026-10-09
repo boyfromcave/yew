@@ -52,3 +52,8 @@ getrandom
 # browser's task spawner where the native side uses its tokio runtime.
 tonic-web-wasm-client
 wasm-bindgen-futures
+# yew/web plan W0.5 (2026-10-09): the browser's parameter fetch into the Cache API
+# (core/src/sapling_params.rs `fetch`), wasm32-unknown-unknown only; the SHA-256 pins stay the check.
+wasm-bindgen
+js-sys
+web-sys

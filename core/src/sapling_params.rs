@@ -27,9 +27,12 @@
 //! availability, not trust.
 
 //!
-//! wasm32 (the browser wallet): the pins, [`status`], [`ensure_verified`] and [`ParamsSource`]
-//! compile; the fetch ([`download`] and the HTTP/TLS client below it, tokio + rustls) is native
-//! only — the browser fetches into the Cache API with the same pins (yew/web plan §2, W0.3).
+//! wasm32 (the browser wallet, yew/web plan W0.3/W0.5): the pins, [`verify_bytes`], [`status`],
+//! [`ensure_verified`] and [`ParamsSource`] compile; the download ([`download`] and the HTTP/TLS
+//! client below it, tokio + rustls) is native only. The browser has no files: [`fetch`] looks in
+//! the Cache API (`caches.open(CACHE_NAME)`), else fetches each file from the sources in order
+//! with the browser's `fetch`, keeps bytes only if they verify against the same pins, and hands
+//! them to `Shielded::set_prover_bytes`. A cache entry that no longer verifies is deleted.
 
 use std::fs::{self, File};
 #[cfg(not(target_arch = "wasm32"))]
@@ -83,6 +86,10 @@ pub const DEFAULT_SOURCES: &[&str] = &["https://download.z.cash/downloads/"];
 
 /// Total bytes of a download from nothing.
 pub const TOTAL_BYTES: u64 = SPEND.bytes + OUTPUT.bytes;
+
+/// The browser's Cache API cache holding the verified files (the replacement for the
+/// parameters directory).
+pub const CACHE_NAME: &str = "yew-sapling-params-v1";
 
 #[cfg(not(target_arch = "wasm32"))]
 /// Redirects followed per file.
@@ -199,6 +206,21 @@ fn hash_file(path: &Path) -> Result<(u64, String), std::io::Error> {
         n += k as u64;
     }
     Ok((n, crate::keys::hex(&h.finalize())))
+}
+
+/// Refuse `data` unless its length and SHA-256 are `f`'s pins.
+pub fn verify_bytes(f: &ParamFile, data: &[u8]) -> Result<(), ParamsError> {
+    let got_sha256 = crate::keys::hex(&Sha256::digest(data));
+    if data.len() as u64 != f.bytes || got_sha256 != f.sha256 {
+        return Err(ParamsError::Mismatch {
+            name: f.name,
+            got_bytes: data.len() as u64,
+            got_sha256,
+            bytes: f.bytes,
+            sha256: f.sha256,
+        });
+    }
+    Ok(())
 }
 
 fn check_file(dir: &Path, f: &ParamFile) -> Result<(), ParamsError> {
@@ -725,6 +747,94 @@ async fn http_get(target: &ParamsSource, sink: &mut Sink<'_>) -> Result<Fetched,
         }
     }
     Ok(Fetched::Done)
+}
+
+/// The browser fetch (translated from `web/spike-prover`): both files as verified bytes, the
+/// Cache API copy when there is one, else the first of `sources` (base URLs ending in `/`;
+/// [`DEFAULT_SOURCES`] when empty) that serves bytes matching the pin, which is then cached.
+/// Runs in the worker the core lives in (the Cache API is available there).
+#[cfg(target_arch = "wasm32")]
+pub async fn fetch(sources: &[&str]) -> Result<(Vec<u8>, Vec<u8>), ParamsError> {
+    let sources = if sources.is_empty() {
+        DEFAULT_SOURCES
+    } else {
+        sources
+    };
+    let spend = web::fetch_param(&SPEND, sources).await?;
+    let output = web::fetch_param(&OUTPUT, sources).await?;
+    Ok((spend, output))
+}
+
+#[cfg(target_arch = "wasm32")]
+mod web {
+    use super::{ParamFile, ParamsError, CACHE_NAME};
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+
+    fn scope() -> web_sys::WorkerGlobalScope {
+        js_sys::global().unchecked_into()
+    }
+
+    fn transfer(name: &'static str, e: JsValue) -> ParamsError {
+        ParamsError::Transfer(name.into(), format!("{e:?}"))
+    }
+
+    async fn response_bytes(
+        name: &'static str,
+        resp: &web_sys::Response,
+    ) -> Result<Vec<u8>, ParamsError> {
+        let buf = JsFuture::from(resp.array_buffer().map_err(|e| transfer(name, e))?)
+            .await
+            .map_err(|e| transfer(name, e))?;
+        Ok(js_sys::Uint8Array::new(&buf).to_vec())
+    }
+
+    pub async fn fetch_param(f: &ParamFile, sources: &[&str]) -> Result<Vec<u8>, ParamsError> {
+        let name = f.name;
+        let caches = scope().caches().map_err(|e| transfer(name, e))?;
+        let cache: web_sys::Cache = JsFuture::from(caches.open(CACHE_NAME))
+            .await
+            .map_err(|e| transfer(name, e))?
+            .unchecked_into();
+        let key = format!("/{name}");
+        let hit = JsFuture::from(cache.match_with_str(&key))
+            .await
+            .map_err(|e| transfer(name, e))?;
+        if !hit.is_undefined() {
+            let data = response_bytes(name, &hit.unchecked_into()).await?;
+            if super::verify_bytes(f, &data).is_ok() {
+                return Ok(data);
+            }
+            // A cache entry that no longer matches the pin is dropped, not used.
+            let _ = JsFuture::from(cache.delete_with_str(&key)).await;
+        }
+        let mut last = ParamsError::Transfer(name.into(), "no source".into());
+        for base in sources {
+            let url = format!("{base}{name}");
+            let resp: web_sys::Response = match JsFuture::from(scope().fetch_with_str(&url)).await {
+                Ok(r) => r.unchecked_into(),
+                Err(e) => {
+                    last = ParamsError::Transfer(name.into(), format!("{url}: {e:?}"));
+                    continue;
+                }
+            };
+            if !resp.ok() {
+                last = ParamsError::Transfer(name.into(), format!("{url}: HTTP {}", resp.status()));
+                continue;
+            }
+            let data = response_bytes(name, &resp).await?;
+            if let Err(e) = super::verify_bytes(f, &data) {
+                last = e;
+                continue;
+            }
+            let body = js_sys::Uint8Array::from(data.as_slice());
+            if let Ok(cached) = web_sys::Response::new_with_opt_buffer_source(Some(&body)) {
+                let _ = JsFuture::from(cache.put_with_str(&key, &cached)).await;
+            }
+            return Ok(data);
+        }
+        Err(last)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

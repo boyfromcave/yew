@@ -716,8 +716,8 @@ async fn main() {
             );
         }
         "history" => {
-            let w = open_wallet(&o);
-            if let Some(sh) = w.shielded.as_ref() {
+            let mut w = open_wallet(&o);
+            if let Some(sh) = w.shielded.as_mut() {
                 for z in fail(sh.history()) {
                     println!(
                         "{} {:>8} {:>+14} zat private{}{}",

@@ -37,15 +37,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
-use std::time::Instant;
 
 use rand::rngs::OsRng;
 use thiserror::Error;
+use x402_ycash_light::wallet::{clock, elapsed_ms, now_ms};
 use x402_ycash_light::{Options as LightOptions, Wallet as LightWallet, YcashNetwork};
-#[cfg(not(target_arch = "wasm32"))]
-use zcash_client_backend::data_api::wallet::{create_proposed_transactions, SpendingKeys};
 use zcash_client_backend::data_api::wallet::{
-    decrypt_and_store_transaction, propose_standard_transfer_to_address, ConfirmationsPolicy,
+    create_proposed_transactions, decrypt_and_store_transaction,
+    propose_standard_transfer_to_address, ConfirmationsPolicy, SpendingKeys,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use zcash_client_backend::data_api::WalletSummary;
@@ -54,37 +53,32 @@ use zcash_client_backend::data_api::{
 };
 use zcash_client_backend::fees::StandardFeeRule;
 use zcash_client_backend::proposal::Proposal;
-#[cfg(not(target_arch = "wasm32"))]
 use zcash_client_backend::wallet::OvkPolicy;
-use zcash_client_sqlite::util::SystemClock;
 use zcash_client_sqlite::wallet::init::init_wallet_db;
 use zcash_client_sqlite::{AccountUuid, ReceivedNoteId, WalletDb};
 use zcash_keys::address::Address;
 use zcash_primitives::transaction::builder::{BuildConfig, Builder};
 use zcash_primitives::transaction::fees::zip317;
 use zcash_primitives::transaction::Transaction as ZTransaction;
-#[cfg(not(target_arch = "wasm32"))]
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::consensus::{BlockHeight, BranchId, NetworkUpgrade, Parameters};
 use zcash_protocol::memo::{Memo, MemoBytes};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::ShieldedProtocol;
-#[cfg(not(target_arch = "wasm32"))]
 use zcash_protocol::TxId;
 use zcash_transparent::address::TransparentAddress;
-#[cfg(not(target_arch = "wasm32"))]
 use zcash_transparent::builder::TransparentSigningSet;
 use zcash_transparent::bundle::{OutPoint, TxOut};
 
 use crate::net::{Channel, CompactClient, NetError};
 use crate::params::{Network, TOKEN_VALUE};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::sapling_params;
 use crate::sapling_params::ParamsError;
 use crate::shielded_keys::SaplingAccount;
 
-/// The note store type: `zcash_client_sqlite` over Ycash parameters.
-pub type Db = WalletDb<rusqlite::Connection, YcashNetwork, SystemClock, OsRng>;
+/// The note store type: `zcash_client_sqlite` over Ycash parameters, with the light library's
+/// per-target clock (the system clock natively, `Date.now()` in the browser).
+pub type Db = x402_ycash_light::wallet::Db;
 
 /// The longest memo text (ZIP-302: 512 bytes, UTF-8).
 pub const MAX_MEMO_BYTES: usize = 512;
@@ -110,9 +104,6 @@ pub enum ShieldedError {
     /// The note store.
     #[error("private wallet store: {0}")]
     Store(String),
-    /// wasm32: the browser prover is not wired yet (yew/web plan W0.3).
-    #[error("Private sends are not available in the browser yet.")]
-    ProverUnsupported,
     /// The light client (sync, registration).
     #[error("private sync: {0}")]
     Light(x402_ycash_light::wallet::Error),
@@ -333,8 +324,7 @@ pub struct SpendPlan {
     /// The height the transaction is built for (the store's tip + 1); its branch id is the one
     /// every signature commits to.
     pub target_height: u32,
-    /// Read by `build` (native until W0.3).
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    /// Read by `build`.
     proposal: Proposal<StandardFeeRule, ReceivedNoteId>,
 }
 
@@ -410,15 +400,21 @@ pub struct Shielded {
     network: Network,
     params: YcashNetwork,
     dir: PathBuf,
-    db: Db,
+    /// YEW's own store handle. Natively always open. In the browser the OPFS VFS allows one
+    /// connection per file (yew/web plan W0.1 finding 3), so it is closed while the light
+    /// client is open and every read goes through the light client's handle ([`Shielded::store`]).
+    db: Option<Db>,
     account: SaplingAccount,
     light: Option<LightWallet>,
     light_lwd: String,
-    /// The loaded prover (parameters verified once, parsed once per session). Native only
-    /// until the browser prover lands (yew/web plan W0.3).
-    #[cfg(not(target_arch = "wasm32"))]
+    /// The loaded prover (parameters verified once, parsed once per session), with the
+    /// directory it was loaded from — or [`PROVER_FROM_BYTES`] when injected as bytes
+    /// ([`Shielded::set_prover_bytes`], the browser).
     prover: Option<(PathBuf, LocalTxProver)>,
 }
+
+/// The `prover` tag of a prover built from bytes rather than a directory.
+const PROVER_FROM_BYTES: &str = "<bytes>";
 
 impl std::fmt::Debug for Shielded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -451,34 +447,67 @@ impl Shielded {
         network: Network,
         account: SaplingAccount,
     ) -> Result<Shielded, ShieldedError> {
-        std::fs::create_dir_all(dir).map_err(store_err)?;
-        #[cfg(unix)]
+        // The browser has no directories: OPFS files are named by their path string, and
+        // `wasm::install_opfs` has run before this (yew/web plan W0.5).
+        #[cfg(not(target_arch = "wasm32"))]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+            std::fs::create_dir_all(dir).map_err(store_err)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+            }
         }
         let params = ycash_network(network);
-        let mut db = WalletDb::for_path(dir.join("wallet.sqlite"), params, SystemClock, OsRng)
-            .map_err(store_err)?;
-        init_wallet_db(&mut db, None).map_err(store_err)?;
+        let db = open_db(dir, params)?;
         let s = Shielded {
             network,
             params,
             dir: dir.to_path_buf(),
-            db,
+            db: Some(db),
             account,
             light: None,
             light_lwd: String::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             prover: None,
         };
         s.check_account()?;
         Ok(s)
     }
 
+    /// The store: YEW's own handle, or the light client's while that is open and ours is
+    /// closed (the browser; see the `db` field).
+    fn store(&self) -> Result<&Db, ShieldedError> {
+        if let Some(db) = self.db.as_ref() {
+            return Ok(db);
+        }
+        self.light
+            .as_ref()
+            .map(LightWallet::db)
+            .ok_or_else(|| store_err("the private store is closed"))
+    }
+
+    /// See [`Shielded::store`].
+    fn store_mut(&mut self) -> Result<&mut Db, ShieldedError> {
+        if let Some(db) = self.db.as_mut() {
+            return Ok(db);
+        }
+        self.light
+            .as_mut()
+            .map(LightWallet::db_mut)
+            .ok_or_else(|| store_err("the private store is closed"))
+    }
+
+    /// Reopen YEW's own handle if it is closed (the browser, after the light client is dropped).
+    fn reopen_db(&mut self) -> Result<(), ShieldedError> {
+        if self.db.is_none() {
+            self.db = Some(open_db(&self.dir, self.params)?);
+        }
+        Ok(())
+    }
+
     fn account_id(&self) -> Result<Option<AccountUuid>, ShieldedError> {
         Ok(self
-            .db
+            .store()?
             .get_account_ids()
             .map_err(store_err)?
             .into_iter()
@@ -491,7 +520,7 @@ impl Shielded {
             return Ok(());
         };
         let acct = self
-            .db
+            .store()?
             .get_account(id)
             .map_err(store_err)?
             .ok_or_else(|| store_err("account vanished"))?;
@@ -546,7 +575,11 @@ impl Shielded {
             registered: true,
             ..Default::default()
         };
-        if let Some(s) = self.db.get_wallet_summary(policy()).map_err(store_err)? {
+        if let Some(s) = self
+            .store()?
+            .get_wallet_summary(policy())
+            .map_err(store_err)?
+        {
             out.scanned_height = u32::from(s.fully_scanned_height()) as u64;
             out.tip_height = u32::from(s.chain_tip_height()) as u64;
             out.sendable = s.is_synced();
@@ -572,20 +605,38 @@ impl Shielded {
     ) -> Result<&mut LightWallet, ShieldedError> {
         if self.light.is_none() || self.light_lwd != lwd {
             self.light = None;
-            let w = LightWallet::open(LightOptions {
+            // The browser: one connection per file, so ours closes while the light client's
+            // is open (reads go through it; `disconnect` reopens ours).
+            #[cfg(target_arch = "wasm32")]
+            {
+                self.db = None;
+            }
+            let opened = LightWallet::open(LightOptions {
                 channel: Some(channel.clone()),
                 ..LightOptions::new(self.dir.clone(), lwd, self.params)
             })
-            .await?;
+            .await;
+            let w = match opened {
+                Ok(w) => w,
+                Err(e) => {
+                    self.reopen_db()?;
+                    return Err(e.into());
+                }
+            };
             self.light = Some(w);
             self.light_lwd = lwd.to_string();
         }
         Ok(self.light.as_mut().expect("opened above"))
     }
 
-    /// Drop the light client (its connection); the next sync reopens it.
+    /// Drop the light client (its connection); the next sync reopens it. In the browser this
+    /// also reopens YEW's own store handle (closed while the light client held the file).
     pub fn disconnect(&mut self) {
         self.light = None;
+        if self.reopen_db().is_err() {
+            // `store()` reports the closed store; the next `light()` reopens through it.
+            self.db = None;
+        }
     }
 
     /// One shielded sync: register the account at `birthday` on the first run (`None`: the
@@ -600,21 +651,26 @@ impl Shielded {
         progress: ProgressFn,
     ) -> Result<ShieldedSyncReport, ShieldedError> {
         let channel = client.channel();
-        let started = Instant::now();
+        let started = now_ms();
         let mut report = ShieldedSyncReport::default();
         if !self.registered()? {
             let extsk = self.account.extended_spending_key();
             let light = self.light(lwd, &channel).await?;
-            light
+            let registered = light
                 .register_key(
                     extsk,
                     birthday.map(|b| u32::try_from(b).unwrap_or(u32::MAX)),
                 )
-                .await?;
+                .await;
             // The light wallet now holds the key in memory; reopen it without.
-            self.light = None;
+            self.disconnect();
+            registered?;
             report.registered_now = true;
         }
+        // The browser's progress (no ticker task there): the height scanned before this sync is
+        // the base of the percentage the chunk callback reports.
+        #[cfg(target_arch = "wasm32")]
+        let base = self.balance()?.scanned_height;
 
         let stop = Arc::new(AtomicBool::new(false));
         let stop_guard = StopOnDrop(stop.clone());
@@ -628,7 +684,7 @@ impl Shielded {
             let params = self.params;
             let progress = progress.clone();
             tokio::spawn(async move {
-                let Ok(db) = WalletDb::for_path(&path, params, SystemClock, OsRng) else {
+                let Ok(db) = WalletDb::for_path(&path, params, clock(), OsRng) else {
                     return;
                 };
                 while !stop.load(Ordering::SeqCst) {
@@ -644,11 +700,34 @@ impl Shielded {
                 }
             })
         };
+        // The browser gets its progress from the light library after each scanned chunk (the
+        // ticker above is native: a task and a second connection, neither exists there).
+        #[cfg(target_arch = "wasm32")]
+        let progress_chunk = progress.clone();
+        #[cfg(target_arch = "wasm32")]
+        let mut on_chunk = move |scanned: u32, tip: u32| {
+            let (scanned, tip) = (scanned as u64, tip as u64);
+            let percent = if tip > base && scanned >= base {
+                (((scanned - base) * 100) / (tip - base)).min(99) as u8
+            } else {
+                0
+            };
+            progress_chunk(ShieldedProgress {
+                scanned_height: scanned,
+                tip_height: tip,
+                percent,
+                enhancing: false,
+            });
+        };
+        #[cfg(target_arch = "wasm32")]
+        let on_chunk: Option<x402_ycash_light::sync::OnChunk<'_>> = Some(&mut on_chunk);
+        #[cfg(not(target_arch = "wasm32"))]
+        let on_chunk: Option<x402_ycash_light::sync::OnChunk<'_>> = None;
         // Reorgs, including those within ten blocks of the birthday (Z-9), are rewound in
         // the light library.
         let r = match self.light(lwd, &channel).await {
             Ok(l) => l
-                .sync(x402_ycash_light::sync::DEFAULT_CHUNK_BLOCKS)
+                .sync_with(x402_ycash_light::sync::DEFAULT_CHUNK_BLOCKS, on_chunk)
                 .await
                 .map_err(ShieldedError::from),
             Err(e) => Err(e),
@@ -660,7 +739,7 @@ impl Shielded {
             Ok(r) => r,
             Err(e) => {
                 // A failed connection is reopened next time.
-                self.light = None;
+                self.disconnect();
                 return Err(e);
             }
         };
@@ -685,7 +764,7 @@ impl Shielded {
         let b = self.balance()?;
         report.scanned_height = b.scanned_height;
         report.sendable = b.sendable;
-        report.millis = started.elapsed().as_millis() as u64;
+        report.millis = elapsed_ms(started) as u64;
         progress(ShieldedProgress {
             scanned_height: b.scanned_height,
             tip_height: b.tip_height,
@@ -702,7 +781,10 @@ impl Shielded {
         client: &mut CompactClient,
         tip: u64,
     ) -> Result<(u64, u64), ShieldedError> {
-        let requests = self.db.transaction_data_requests().map_err(store_err)?;
+        let requests = self
+            .store()?
+            .transaction_data_requests()
+            .map_err(store_err)?;
         let (mut enhanced, mut statuses) = (0u64, 0u64);
         for req in requests.into_iter().take(MAX_ENHANCE_PER_SYNC) {
             #[allow(unreachable_patterns)] // the transparent-inputs variant is not compiled in
@@ -724,12 +806,13 @@ impl Shielded {
                                     tx.txid()
                                 )));
                             }
-                            decrypt_and_store_transaction(&self.params, &mut self.db, &tx, mined)
+                            let params = self.params;
+                            decrypt_and_store_transaction(&params, self.store_mut()?, &tx, mined)
                                 .map_err(store_err)?;
                             enhanced += 1;
                         }
                         None => {
-                            self.db
+                            self.store_mut()?
                                 .set_transaction_status(txid, TransactionStatus::TxidNotRecognized)
                                 .map_err(store_err)?;
                             statuses += 1;
@@ -744,7 +827,7 @@ impl Shielded {
                         Some(_) => TransactionStatus::NotInMainChain,
                         None => TransactionStatus::TxidNotRecognized,
                     };
-                    self.db
+                    self.store_mut()?
                         .set_transaction_status(txid, status)
                         .map_err(store_err)?;
                     statuses += 1;
@@ -815,10 +898,11 @@ impl Shielded {
         if params == self.params {
             return Ok(false);
         }
-        let db = WalletDb::for_path(self.dir.join("wallet.sqlite"), params, SystemClock, OsRng)
-            .map_err(store_err)?;
+        // Both handles go first (one connection per file in the browser), then ours reopens
+        // with the new parameters; the light client reopens at the next sync.
         self.light = None;
-        self.db = db;
+        self.db = None;
+        self.db = Some(open_db(&self.dir, params)?);
         self.params = params;
         Ok(true)
     }
@@ -886,7 +970,7 @@ impl Shielded {
             .map_err(|_| ShieldedError::Propose(format!("bad amount {amount_zat}")))?;
         let params = self.params;
         let proposal = propose_standard_transfer_to_address::<_, _, std::convert::Infallible>(
-            &mut self.db,
+            self.store_mut()?,
             &params,
             StandardFeeRule::Zip317,
             id,
@@ -957,16 +1041,16 @@ impl Shielded {
 
     /// Prove and sign `plan` with the parameters in `params_dir` (verified against their
     /// SHA-256 pins first). The transaction is recorded in the store (its notes count as spent
-    /// until it is mined or expires); the caller runs the gate and broadcasts.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// until it is mined or expires); the caller runs the gate and broadcasts. In the browser
+    /// `params_dir` is unused: the prover comes from [`Shielded::set_prover_bytes`].
     pub fn build(
         &mut self,
         plan: &SpendPlan,
         params_dir: &Path,
     ) -> Result<SpendBuilt, ShieldedError> {
         let params_millis = self.load_prover(params_dir)?;
-        let t1 = Instant::now();
-        let (_, prover) = self.prover.as_ref().expect("loaded above");
+        let t1 = now_ms();
+        let (_, prover) = self.prover.take().expect("loaded above");
         let usk = x402_ycash_light::keys::usk_from_extsk(&self.account.extended_spending_key());
         let params = self.params;
         let created = create_proposed_transactions::<
@@ -977,17 +1061,18 @@ impl Shielded {
             std::convert::Infallible,
             _,
         >(
-            &mut self.db,
+            self.store_mut()?,
             &params,
-            prover,
-            prover,
+            &prover,
+            &prover,
             &SpendingKeys::from_unified_spending_key(usk),
             OvkPolicy::Sender,
             &plan.proposal,
             None,
-        )
-        .map_err(|e| ShieldedError::Create(e.to_string()))?;
-        let prove_millis = t1.elapsed().as_millis() as u64;
+        );
+        self.prover = Some((self.prover_tag(params_dir), prover));
+        let created = created.map_err(|e| ShieldedError::Create(e.to_string()))?;
+        let prove_millis = elapsed_ms(t1) as u64;
         if created.len() != 1 {
             return Err(ShieldedError::Create(format!(
                 "expected one transaction, built {}",
@@ -996,7 +1081,7 @@ impl Shielded {
         }
         let txid: TxId = created.head;
         let tx = self
-            .db
+            .store()?
             .get_transaction(txid)
             .map_err(store_err)?
             .ok_or_else(|| ShieldedError::Create("built transaction not stored".into()))?;
@@ -1083,7 +1168,6 @@ impl Shielded {
     /// `secrets` (one 32-byte key per input, in order; used for this call only). The fee must
     /// be exactly what [`Shielded::shield_fee`] said, or the builder refuses. Nothing is written
     /// to the note store: the output is found by the next scan once mined.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn build_shield(
         &mut self,
         target: u32,
@@ -1099,7 +1183,7 @@ impl Shielded {
             ));
         }
         let params_millis = self.load_prover(params_dir)?;
-        let t1 = Instant::now();
+        let t1 = now_ms();
         let b = self.shield_builder(target, inputs, amount_zat, change)?;
         // The fee the builder charges (its own ZIP-317 computation; `fee_paid` cannot see the
         // transparent input values once built).
@@ -1136,61 +1220,124 @@ impl Shielded {
             expiry_height: u32::from(tx.expiry_height()),
             fee_zat,
             params_millis,
-            prove_millis: t1.elapsed().as_millis() as u64,
+            prove_millis: elapsed_ms(t1) as u64,
         })
     }
 
-    /// The browser (wasm32): proving is not wired yet — the prover over the parameters fetched
-    /// into the Cache API is yew/web plan W0.3; until then [`Shielded::build`] and
-    /// [`Shielded::build_shield`] answer [`ShieldedError::ProverUnsupported`]. Planning
-    /// ([`Shielded::plan`], [`Shielded::shield_fee`]), sync, balances and history work.
-    #[cfg(target_arch = "wasm32")]
-    pub fn build(
-        &mut self,
-        _plan: &SpendPlan,
-        _params_dir: &Path,
-    ) -> Result<SpendBuilt, ShieldedError> {
-        Err(ShieldedError::ProverUnsupported)
+    /// The prover from the two parameter files' bytes (yew/web plan W0.3: the browser fetches
+    /// them into the Cache API, [`sapling_params::fetch`]); each is checked against its pin
+    /// first and refused otherwise. Replaces a prover loaded before. Usable natively too.
+    pub fn set_prover_bytes(&mut self, spend: &[u8], output: &[u8]) -> Result<(), ShieldedError> {
+        sapling_params::verify_bytes(&sapling_params::SPEND, spend)?;
+        sapling_params::verify_bytes(&sapling_params::OUTPUT, output)?;
+        self.prover = Some((
+            PathBuf::from(PROVER_FROM_BYTES),
+            LocalTxProver::from_bytes(spend, output),
+        ));
+        Ok(())
     }
 
-    /// See [`Shielded::build`] (wasm32).
-    #[cfg(target_arch = "wasm32")]
-    pub fn build_shield(
-        &mut self,
-        _target: u32,
-        _inputs: &[ShieldInput],
-        _secrets: &[[u8; 32]],
-        _amount_zat: u64,
-        _change: Option<([u8; 20], u64)>,
-        _params_dir: &Path,
-    ) -> Result<SpendBuilt, ShieldedError> {
-        Err(ShieldedError::ProverUnsupported)
+    /// A prover is loaded (from a directory or from bytes).
+    pub fn has_prover(&self) -> bool {
+        self.prover.is_some()
+    }
+
+    /// What `prover` records for the prover loaded for `params_dir`: the directory natively,
+    /// the bytes tag in the browser (where `params_dir` is never read).
+    fn prover_tag(&self, params_dir: &Path) -> PathBuf {
+        if cfg!(target_arch = "wasm32") {
+            PathBuf::from(PROVER_FROM_BYTES)
+        } else {
+            params_dir.to_path_buf()
+        }
     }
 
     /// Verify (once) and load the proving parameters from `params_dir`; returns the
-    /// milliseconds it took (0 when already loaded from that directory).
-    #[cfg(not(target_arch = "wasm32"))]
+    /// milliseconds it took (0 when already loaded from that directory, or injected as bytes).
+    /// The browser never reads a directory: without [`Shielded::set_prover_bytes`] the
+    /// parameters are [`ParamsError::Missing`].
     fn load_prover(&mut self, params_dir: &Path) -> Result<u64, ShieldedError> {
-        let t0 = Instant::now();
-        if matches!(&self.prover, Some((d, _)) if d == params_dir) {
+        let t0 = now_ms();
+        if matches!(&self.prover, Some((d, _)) if d == params_dir || d.as_os_str() == std::ffi::OsStr::new(PROVER_FROM_BYTES))
+        {
             return Ok(0);
         }
-        sapling_params::ensure_verified(params_dir)?;
-        let prover = LocalTxProver::new(
-            &params_dir.join(sapling_params::SPEND.name),
-            &params_dir.join(sapling_params::OUTPUT.name),
-        );
-        self.prover = Some((params_dir.to_path_buf(), prover));
-        Ok(t0.elapsed().as_millis() as u64)
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = t0;
+            return Err(
+                ParamsError::Missing("no prover bytes set (set_prover_bytes)".into()).into(),
+            );
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            sapling_params::ensure_verified(params_dir)?;
+            let prover = LocalTxProver::new(
+                &params_dir.join(sapling_params::SPEND.name),
+                &params_dir.join(sapling_params::OUTPUT.name),
+            );
+            self.prover = Some((params_dir.to_path_buf(), prover));
+            Ok(elapsed_ms(t0) as u64)
+        }
     }
 
-    /// The shielded history, newest first (unmined first).
-    pub fn history(&self) -> Result<Vec<ShieldedTx>, ShieldedError> {
-        let conn = rusqlite::Connection::open_with_flags(
-            self.dir.join("wallet.sqlite"),
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .map_err(store_err)?;
+    /// The shielded history, newest first (unmined first). Natively a second, read-only
+    /// connection; in the browser (one connection per file) every handle is closed around the
+    /// query and YEW's own reopened after it (the light client reopens at the next sync).
+    pub fn history(&mut self) -> Result<Vec<ShieldedTx>, ShieldedError> {
+        let path = self.dir.join("wallet.sqlite");
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.light = None;
+            self.db = None;
+            let r = rusqlite::Connection::open(&path)
+                .map_err(store_err)
+                .and_then(|conn| history_rows(&conn));
+            self.reopen_db()?;
+            r
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let conn = rusqlite::Connection::open_with_flags(
+                path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .map_err(store_err)?;
+            history_rows(&conn)
+        }
+    }
+
+    /// The Sapling activation height of this network (the lowest useful birthday).
+    pub fn sapling_activation(&self) -> u64 {
+        self.params
+            .activation_height(NetworkUpgrade::Sapling)
+            .map(|h| u32::from(h) as u64)
+            .unwrap_or(1)
+    }
+}
+
+/// The browser's storage setup (yew/web plan W0.1/W0.5): SQLite on OPFS through the sahpool
+/// VFS, installed once per worker before the first [`Shielded::open`]; later calls are no-ops.
+/// The light library owns the VFS (`x402_ycash_light::wasm::install_opfs`).
+#[cfg(target_arch = "wasm32")]
+pub async fn install_storage() -> Result<(), ShieldedError> {
+    x402_ycash_light::wasm::install_opfs()
+        .await
+        .map_err(ShieldedError::Store)
+}
+
+/// Open (creating if needed) the store file under `dir` and run its migrations.
+fn open_db(dir: &Path, params: YcashNetwork) -> Result<Db, ShieldedError> {
+    let mut db =
+        WalletDb::for_path(dir.join("wallet.sqlite"), params, clock(), OsRng).map_err(store_err)?;
+    init_wallet_db(&mut db, None).map_err(store_err)?;
+    Ok(db)
+}
+
+/// The history rows (`v_transactions` / `v_tx_outputs`) over an open connection.
+fn history_rows(conn: &rusqlite::Connection) -> Result<Vec<ShieldedTx>, ShieldedError> {
+    {
         let mut stmt = conn
             .prepare(
                 "SELECT txid, mined_height, account_balance_delta, fee_paid, expired_unmined
@@ -1241,14 +1388,6 @@ impl Shielded {
             });
         }
         Ok(out)
-    }
-
-    /// The Sapling activation height of this network (the lowest useful birthday).
-    pub fn sapling_activation(&self) -> u64 {
-        self.params
-            .activation_height(NetworkUpgrade::Sapling)
-            .map(|h| u32::from(h) as u64)
-            .unwrap_or(1)
     }
 }
 
@@ -1486,7 +1625,8 @@ mod tests {
         let s = Shielded::open(&dir, Network::Regtest, account(Network::Regtest, "")).unwrap();
         // Register the account the way the light library does (viewing key + birthday at 0),
         // without a server: the store then belongs to this seed.
-        let mut db = s.db;
+        let mut s = s;
+        let mut db = s.db.take().unwrap();
         let usk = x402_ycash_light::keys::usk_from_extsk(&s.account.extended_spending_key());
         let genesis = zcash_client_backend::data_api::chain::ChainState::empty(
             BlockHeight::from_u32(0),

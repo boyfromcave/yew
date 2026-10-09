@@ -129,3 +129,13 @@ wasm-bindgen-futures = "=0.4.78"
 # the `getrandom_backend="wasm_js"` cfg flag in `.cargo/config.toml`.
 getrandom = { version = "0.2", features = ["js"] }
 getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+# The browser prover (yew/web plan W0.3/W0.5): `LocalTxProver::from_bytes` (`local-prover` gates
+# the module; librustzcash6 up/web keeps its filesystem lookup native-only), serial — no `multicore`.
+zcash_proofs = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["local-prover"] }
+# The browser prover's parameters (yew/web plan W0.3/W0.5, `sapling_params::fetch`): the
+# Cache API and `fetch` of the worker the core runs in (`web-sys`, the listed interfaces only),
+# `js-sys` for the byte buffers and the global scope, `wasm-bindgen` for the casts. The versions
+# are the ones `tonic-web-wasm-client` / `wasm-bindgen-futures` already lock.
+wasm-bindgen = "=0.2.128"
+js-sys = "=0.3.105"
+web-sys = { version = "=0.3.105", features = ["WorkerGlobalScope", "Cache", "CacheStorage", "Response"] }

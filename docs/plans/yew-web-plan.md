@@ -311,6 +311,108 @@ Sapling send in WASM; the slide-to-confirm plus progress sheet carries over.
   fetch into the Cache API); `rusqlite` on wasm32 needs the sahpool VFS installed before any
   open (W0.1's `install_opfs`). `web/core-wasm` can now depend on `yew-core` (its comment says
   how); it still exposes `status()` only.
+- [x] **W0.5 the spikes wired into `x402-ycash/light`, `yew-core` and `yew-web-core`; the first
+  end-to-end sync in the browser — done 2026-10-09.** Branches `up/web-wire` in yew (this
+  commit) and x402-ycash (`light/`, `ecc90cd`); ycash-infra `upgrade/vault` `8917b28` (CORS).
+  **What was wired.**
+  - `light`: `src/cache.rs` = W0.2's `BlockCache` over `BlockDb` (one file, `cache.sqlite`,
+    beside `wallet.sqlite`, **on both targets** — `FsBlockDb`, `blocks/` and the `BlockMeta`
+    rows are gone natively too, so the native devnet path is the code the browser runs; the
+    rayon `yield_now` drain stays `cfg(wasm32)`), `Wallet::open` without `create_dir_all` or the
+    lock file on wasm32, a per-target store `Clock` (`SystemClock` / `JsClock` = W0.1's; in the
+    `Db` alias, with `clock()`), `now_ms`/`elapsed_ms` (`SystemTime` natively, `Date.now()`
+    in the browser) for every `Instant` timing site, `src/wasm.rs` `install_opfs` (idempotent,
+    a thread-local flag), the prover from bytes (`Wallet::set_prover_bytes`; `build` and
+    `spend::assemble` are one function on both targets, `take_prover` loads from the directory
+    natively and answers `NoProvingParams` in the browser without injected bytes;
+    `Error::ProverUnsupported` is gone), `Wallet::db`/`db_mut`, and `sync_with(chunk_blocks,
+    on_chunk)` reporting `(scanned, tip)` after every scanned chunk. 32 + 5 native tests (one
+    new: the cache round trip, miss, truncate), wasm32 check clean.
+  - `yew-core` (`shielded.rs`): `Db` is the light library's alias; `open` skips the directory
+    work on wasm32; `Shielded::db` is an `Option` behind `store()`/`store_mut()`: **in the
+    browser YEW's own handle closes while the light client is open and every read goes through
+    `LightWallet::db`** (the one-connection-per-file rule of W0.1 finding 3 — the native code
+    kept both handles open and does so still); `disconnect`/`set_vault_activation`/`history`
+    close and reopen in the right order. `sync` has no `Instant`; the progress ticker (a tokio
+    task on a second connection) stays native-only — **the browser gets its ticks from the
+    light library's `on_chunk` callback instead** (percent by blocks from the height scanned
+    before the sync to the tip; the ticker was not re-added as a same-connection poll because
+    the light sync holds the store mutably across its awaits). `history` takes `&mut self` on
+    both targets (callers in `api.rs`, the CLI and the devnet tests adjusted); in the browser it
+    drops both handles, queries, and reopens its own. `build`/`build_shield` are one function on
+    both targets over `prover: Option<(PathBuf, LocalTxProver)>`; `set_prover_bytes(spend,
+    output)` verifies both against the pins (`sapling_params::verify_bytes`, shared with
+    `check_file`) and tags the prover `<bytes>`; `load_prover` in the browser answers
+    `ParamsError::Missing` without it. `ShieldedError::ProverUnsupported` is gone.
+    `sapling_params::fetch(sources)` (wasm32) is W0.3's `fetch_param` over the Cache API
+    (`CACHE_NAME`, the same pins, a stale entry deleted); `install_storage()` re-exports the
+    VFS install. New wasm32-only direct deps: `wasm-bindgen`, `js-sys`, `web-sys`
+    (`WorkerGlobalScope`, `Cache`, `CacheStorage`, `Response`) and `zcash_proofs`
+    (`local-prover`, no `multicore`) — allow-list updated. 123 + 6 native tests, `check-deps`
+    (35 direct deps), `check-licenses` (384 crates), fmt, wasm32 check all green.
+  - `web/core-wasm` (`yew-web-core`) depends on `yew-core` (no feature; the root's patch tables
+    repeated) and exports `install_storage()`, `new_seed_words()`, `latest_height(server,
+    network)`, `open(seed_words, birthday, server_url, network)` / `open_at(…, store_dir)`,
+    `sync()`, `progress()`, `shielded_balance()`, `receive_address()`, `network()`, `close()`,
+    `status()`. One session per worker in a thread-local; a call that needs it takes it out for
+    its duration. `open` parses `http://host:port` (plain) / `https://host:port`, derives the
+    Sapling account (`SaplingAccount::from_mnemonic`), opens `yew/<network>/` on OPFS, connects
+    the gRPC-web channel and takes the vault activation height from `GetChainInfo`
+    (`set_vault_activation`), as the app does.
+  **The end-to-end test** (`web/core-wasm/tests/web.rs`, `web/scripts/test-core-wasm.sh`,
+  headless Chrome 154, dedicated worker, debug and release): a random seed, birthday = tip − 20,
+  sync to the tip, balance 0; then the script's funding helper (`web/scripts/fund-helper.py`, a
+  loopback HTTP server the test calls: `z_shieldcoinbase` once, `z_sendmany` 1.5 YEC from the
+  node's wallet) pays the wallet and the test re-syncs until the note is spendable; then a
+  restore from height 1 scans the whole chain, and a second seed is refused on the first store.
+  **Result (release, 2026-10-09; debug within 10 %):** open 195 ms (OPFS store + migrations +
+  `GetChainInfo`); first sync of 21 blocks / 4 outputs from birthday 208 to tip 228 in **113 ms**;
+  the payment seen spendable **4.4 s** after the node answered (one 5 s block); restore from
+  height 1: **230 blocks, 10 outputs in 163 ms (1 400 blocks/s)** — an empty regtest chain, so
+  this is the floor of per-block cost (download + cache + scan), not trial decryption.
+  **Against which server.** Not the kind cluster: its regtest activates only the vault upgrade
+  (`ycashd.extraArgs: "-nuparams=6d5b7a31:1"`, values-kind.yaml), so **Sapling is not active
+  there** (`getblockchaininfo.upgrades` lists Vault alone; `z_gettreestate` has no `sapling`
+  section) and lightwalletd answers every `GetTreeState` with "zcashd did not return
+  treestate" — the first sync fails at the birthday checkpoint, and no shielded transaction can
+  exist on that chain. The run above is against a **local ycash6 devnet** (`yellowback-devnet
+  up --no-attest --heartbeat-rate 5`, every upgrade through Canopy at 1 and the vault at 103)
+  with lightwalletd-dd (`--yellowback`) behind **`grpcwebproxy`** (improbable-eng, gRPC-web +
+  CORS over plain HTTP) — the recipe is in the script's header. What the kind cluster did
+  prove: `open` works over its gRPC-web listener (OPFS store, `GetChainInfo` → vault at 1).
+  Fixing the cluster is an ycash-infra change (`-nuparams` for Overwinter…Canopy at 1 beside the
+  vault, and a chain reset since the existing coinbases are pre-Overwinter v1) that this task
+  did not make.
+  **Gateway CORS (ycash-infra `8917b28`, applied to the kind cluster):** the plain listener
+  already transcodes gRPC-web (Envoy Gateway adds the filter by default) but had no CORS, so
+  the test runner's origin was refused at the preflight; `gateway.plaintextGrpcCors` (kind only)
+  adds a `SecurityPolicy` with `cors` (any origin, POST/OPTIONS, the grpc-* headers exposed).
+  Envoy Gateway 1.3 refuses `sectionName` on a SecurityPolicy, so it targets the GRPCRoute,
+  which puts the policy on the HTTPS listener of a kind cluster too; production never sets it.
+  **Traps.** (1) The sahpool rule reaches yew-core: YEW and the light library each opened the
+  store, so the browser needed the `store()` indirection above; the second-open assertion fires
+  on close, not open, so a wrong order shows up late. (2) `OnChunk` must be `+ Send` or the
+  native binary's tokio tasks stop compiling. (3) `zcash_proofs` must be in every consumer's
+  wasm32 table (`local-prover`, no `multicore`); the native line already had no `multicore` in
+  yew-core. (4) `z_sendmany`/`z_shieldcoinbase` on 6.22 refuse a 0.0001 fee (ZIP-317: "greater
+  than 4 times the conventional fee"); the helper omits the fee. (5) The devnet's heartbeat is
+  off until `heartbeat start`; a chain that does not move never confirms the funding.
+  (6) The spike crates keep their own path patches: `spike-net` now points at
+  `../x402-w05/light` like the root manifest. All four spike scripts stay green (prover: 18.0 s
+  release / 21.1 s debug, unchanged).
+  **What W1 (the shell) needs from `yew-web-core`.** The surface above is enough for "restore
+  or create, sync, show the private balance and address". W1 will want: (a) a progress event
+  rather than `progress()` polling (a `js_sys::Function` callback on `sync`); (b) the public
+  (transparent) side (`wallet.rs`/`sync.rs`/`store.rs` are not bound yet — the W0 work kept to
+  the private path the spikes covered); (c) the spend path: `plan`, `set_prover_bytes` after
+  `sapling_params::fetch` (bind `fetch_params(sources)` and surface its progress — 52 MB), `build`,
+  the gate and `send_transaction`, and `history`; (d) `open` takes the seed words every time —
+  the shell must keep them (its own encryption, plan §3) and the core never persists them;
+  (e) one worker, one session: every call is serialised by the session take/put, and a second
+  concurrent call answers "a call is in progress" — the shell queues; (f) errors are strings
+  (`JsValue::from_str(Display)`); a typed error object can come later; (g) the store directory
+  is `yew/<network>` — `open_at` exists for a second wallet; deleting a store (OPFS
+  `clear_all`/`delete_db`) is not exposed yet.
 - [ ] W0 complete
 - [ ] W1
 - [ ] W2
