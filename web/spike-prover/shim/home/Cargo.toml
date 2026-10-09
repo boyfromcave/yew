@@ -1,0 +1,10 @@
+# Test-only stand-in for the `home` crate, which zcash_proofs' `local-prover` feature pulls in
+# (`default_params_folder`) and which does not compile for wasm32-unknown-unknown (0.5.12 has no
+# `home_dir_inner` outside unix/windows). The prover module itself is gated on that feature, so
+# this crate is the smallest way to reach `LocalTxProver::from_bytes` without editing
+# librustzcash6; the real fix is in zcash_proofs (plan §5 W0.3, for W0.4).
+[package]
+name = "home"
+version = "0.5.12"
+edition = "2021"
+publish = false

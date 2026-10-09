@@ -126,7 +126,68 @@ Sapling send in WASM; the slide-to-confirm plus progress sheet carries over.
   in each `Cargo.toml`); the push replaces them with git revs, in the order librustzcash6 →
   x402-ycash → yew.
 - [ ] W0.2 `FsBlockDb` → a `BlockSource` over OPFS (or `MemBlockCache`) for the browser
-- [ ] W0.3 `zcash_proofs` local prover in a Web Worker (single-thread first; `wasm-bindgen-rayon` after)
+- [x] **W0.3 `zcash_proofs` local prover in a Web Worker — done 2026-10-09, verdict: yes,
+  single-threaded, ~18 s for a spend + two outputs.** `web/spike-prover`
+  (`web/scripts/test-spike-prover.sh`) runs two `wasm-bindgen-test`s in headless Chrome 154, in a
+  dedicated worker, debug and release: the Sapling parameters fetched as bytes and pinned, a
+  `LocalTxProver::from_bytes`, and **one Sapling spend + two outputs built, proved and signed**
+  with it (`sapling_crypto::builder::Builder`, the shape of `zcash_primitives`' own
+  `binding_sig_present_if_shielded_spend` test). Measured on the owner's M-series laptop (10
+  cores, one used):
+
+  | build | fetch (local http) | parse params | prove 1 spend + 2 outputs | linear memory after |
+  |---|---|---|---|---|
+  | dev (deps at opt-level 3, spike at 0) | 993 ms | 360 ms | **21.0 s** | 115 MiB |
+  | release (lto, no wasm-opt) | 905 ms | 275 ms | **18.2 s** | 115 MiB |
+
+  The 115 MiB is `WebAssembly.Memory` after parse and after prove (same figure: linear memory
+  only grows, so it is a peak, and the proof itself fits in what the 52 MB download + the parsed
+  parameters already reserved). The release test `.wasm` is 1.9 MB before wasm-opt.
+  Findings, in order of consequence:
+  1. **`zcash_proofs` feature set for wasm32: `default-features = false, features =
+     ["local-prover"]`** — `multicore` off (rayon; no threads), `download-params`/`bundled-prover`
+     off. `local-prover` cannot be dropped: `pub mod prover` (`LocalTxProver`, `from_bytes`
+     included) is gated on `any(local-prover, bundled-prover)` (`zcash_proofs/src/lib.rs:32`),
+     and `local-prover` = `directories` pulls `home`, `xdg`, `known-folders`; **`home` 0.5.12
+     does not compile for wasm32** (`home_dir_inner` exists only for unix/windows). The spike
+     gets past it with a test-only `[patch.crates-io] home = { path = "shim/home" }` returning
+     `None`. **W0.4 needs the real fix in librustzcash6 `up/web`:** either ungate `pub mod
+     prover` (it uses only `std::fs`/`io`, which compile for wasm32 and fail at run time) and gate
+     `new(Path)`/`with_default_location` on the feature, or make the `directories` dependencies
+     `[target.'cfg(not(target_arch = "wasm32"))']`. Either is a two-line change; the first is the
+     cleaner (`from_bytes` is the API the browser uses). `sapling-crypto` needs `circuit` (not
+     `multicore`), which `zcash_proofs` already enables through `zcash_primitives/circuits`;
+     `cargo tree -i rayon` is empty.
+  2. **Parameters reach the prover as bytes, no filesystem**: `fetch_param` looks in the Cache
+     API (`caches.open("yew-sapling-params-v1")`), else fetches `<source><name>` for the sources
+     in order, and keeps bytes only if length and SHA-256 equal the pins
+     `core/src/sapling_params.rs` carries (`SPEND`/`OUTPUT`/`DEFAULT_SOURCES`, copied verbatim
+     into the spike with a citation; W0.4 links the module itself). A cache entry that no longer
+     verifies is deleted, not used. Then `LocalTxProver::from_bytes(&spend, &output)` — the
+     constructor `x402-ycash/light`'s `take_prover` and `yec_private.rs` should call on wasm
+     instead of `new(Path)`. The test script serves the two files from `~/.cache/yew-web/
+     sapling-params` (fetched once from download.z.cash; SHA-256 checked by the test anyway)
+     over a 10-line Python HTTP server with `Access-Control-Allow-Origin: *`, base URL passed at
+     compile time as `SPIKE_PARAMS_URL`; without it the test falls through to download.z.cash.
+     `include_bytes!` was rejected: 52 MB in every test binary.
+  3. **Threading decision: single-threaded for W1.** The proof runs inside the dedicated worker
+     the test already uses, so the UI thread is free; 18 s per spend+2 outputs on one core is
+     usable with a progress UI (`ProverProgress` is already a hook in `create_proofs`). The
+     `wasm-bindgen-rayon` step was **not attempted**: it needs the std rebuilt with
+     `+atomics,+bulk-memory,+mutable-globals` (`-Zbuild-std`, nightly only), and the yew
+     toolchain pin is stable 1.92.0. The harness is not the blocker: wasm-bindgen-test-runner
+     0.2.129 does serve `Cross-Origin-Opener-Policy: same-origin` /
+     `Cross-Origin-Embedder-Policy: require-corp`, and the Vite shell already sets both. Revisit
+     once stable ships an atomics std for wasm32 (or if the owner accepts a nightly for the web
+     build only); expect roughly a 4–6x gain on an 8–10-core device from bellman's multiexp.
+  4. Clocks and entropy: `std::time::Instant` is unavailable on wasm32, so the spike times with
+     `performance.now()` from `WorkerGlobalScope`; `getrandom` 0.2 needs `js`; `OsRng` then
+     works for the prover's randomness.
+  5. Not covered: a Sapling *transaction* (the `zcash_primitives` `Builder` with fees and the
+     transparent/`zcash_client_backend` plumbing) — only the Sapling bundle; the full build is
+     W0.4's job once `yew-core` compiles for wasm32. Orchard is linked (`zcash_primitives/
+     circuits` enables `orchard/circuit`) but not used; W0.4 may want `sapling` only to cut the
+     binary.
 - [ ] W0.4 `yew-core` `wasm` feature: tonic-web-wasm-client channel, the clock, no tokio runtime
 - [ ] W0 complete
 - [ ] W0 complete
