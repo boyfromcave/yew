@@ -46,3 +46,4 @@ tokio-rustls
 # transparent types; secp256k1 0.29.1 (renamed `secp256k1_zcash` in Cargo.toml, listed above under its
 # package name) is the version that builder signs with. Both were already in Cargo.lock.
 zcash_transparent
+getrandom

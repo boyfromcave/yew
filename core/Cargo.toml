@@ -100,3 +100,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
 [build-dependencies]
 tonic-prost-build = "=0.14.6"
 prost-build = "=0.14.4"
+
+# The browser shell (docs/plans/yew-web-plan.md §2): on wasm32 `getrandom` must be told to use the
+# Web Crypto API; a no-op on every other target.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
