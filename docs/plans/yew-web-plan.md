@@ -79,8 +79,40 @@ Sapling send in WASM; the slide-to-confirm plus progress sheet carries over.
 ## 5. Status
 
 - [x] W0 scaffold (2026-10-08): `web/` tree, `yew-web-core` crate skeleton, Vite shell with
-  COOP/COEP dev headers, this plan. **Nothing compiles to wasm yet**: the first W0 task is the
-  `sqlite-wasm-rs` verification (I-4), then the feature gating of §2.
+  COOP/COEP dev headers, this plan.
+- [x] **W0.1 sqlite-wasm verification (I-4) — done 2026-10-08, verdict: yes.** `web/spike-sqlite`
+  (`web/scripts/test-spike-sqlite.sh`) runs two `wasm-bindgen-test`s in headless Chrome, in a
+  dedicated worker, debug and release: a SQLite round trip that persists across connections on
+  OPFS (sahpool VFS), and **`zcash_client_sqlite`'s `WalletDb` opening on OPFS with every
+  migration run**. Findings, in order of consequence:
+  1. **rusqlite 0.38 is the first release with a wasm32-unknown-unknown backend** (`sqlite-wasm-rs`
+     0.5 behind its default `ffi-sqlite-wasm-rs` feature); librustzcash6 pins 0.37. The bump is
+     in `librustzcash6` branch `up/web` (`wt/librustzcash6-web`, `2e7b5902`): rusqlite 0.38 with
+     `fallible_uint` (0.38 moved the u64/usize SQL conversions behind that feature; with it,
+     `zcash_client_sqlite` compiles **unchanged**), `schemerz-rusqlite` 0.370 carried under
+     `components/` with its requirement raised (there is no 0.380), arti 0.39 + fs-mistrust 0.13
+     for the `tor` feature (the only arti line that takes rusqlite 0.38 without moving `time`).
+     **Owner decision:** arti 0.39 needs rustc 1.86 and librustzcash6's toolchain pin is 1.85.1;
+     either raise the pin (ycash6 builds it with a newer toolchain anyway) or leave the `tor`
+     feature unresolvable in that workspace. Checked natively with 1.92.
+  2. Consumers must follow: `x402-ycash/light` (`rusqlite = "0.37"`) and `yew-core`
+     (`rusqlite = "=0.37.0"`, allow-list) move to 0.38, and each root manifest repeats the
+     `schemerz-rusqlite` path/git patch (patches do not propagate through dependencies).
+  3. `sqlite-wasm-vfs` **0.2** is the VFS crate for this line (0.3 needs `sqlite-wasm-rs` 0.6,
+     which no rusqlite release uses yet). Its sahpool tracks open files by name: one connection
+     per file at a time, or its debug assertion fires on the second close.
+  4. `SystemTime::now()` is unavailable on wasm32: the spike's `JsClock` (`js_sys::Date`)
+     implements `zcash_client_sqlite::util::Clock`; `yew-core` needs the same under `wasm`.
+  5. Toolchain: Apple clang cannot target wasm32 (secp256k1-sys compiles C), so Homebrew LLVM's
+     clang via `CC_wasm32_unknown_unknown`; wasm-pack's ChromeDriver download can be newer than
+     the installed Chrome and it ignores `$CHROMEDRIVER`, so the script drives `cargo test` with
+     a version-matched driver. `getrandom` needs its `js` feature.
+  Not yet covered: `FsBlockDb` (the compact-block cache is `std::fs` on disk) and the Sapling
+  prover on wasm32 — the next W0 tasks, in that order.
+- [ ] W0.2 `FsBlockDb` → a `BlockSource` over OPFS (or `MemBlockCache`) for the browser
+- [ ] W0.3 `zcash_proofs` local prover in a Web Worker (single-thread first; `wasm-bindgen-rayon` after)
+- [ ] W0.4 `yew-core` `wasm` feature: tonic-web-wasm-client channel, the clock, no tokio runtime
+- [ ] W0 complete
 - [ ] W0 complete
 - [ ] W1
 - [ ] W2
