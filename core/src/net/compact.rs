@@ -9,10 +9,8 @@
 //! Nothing here interprets bytes: raw transactions go to [`crate::tx::Transaction::parse`],
 //! scripts to [`crate::coins`].
 
-use tonic::transport::Channel;
-
 use super::rpc;
-use super::{limits, CompactTxStreamerClient, NetError, Server};
+use super::{limits, Channel, CompactTxStreamerClient, NetError, Server};
 use crate::params::Network;
 
 /// What `GetLightdInfo` told us, reduced to what the wallet keeps (plan §3.5).

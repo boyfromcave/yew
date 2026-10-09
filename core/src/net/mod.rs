@@ -21,6 +21,15 @@ pub mod compact;
 pub mod tls;
 pub mod yellowback;
 
+/// The channel both clients run over, per target (yew/web plan §2, W0.4): tonic's HTTP/2
+/// channel with YEW's TLS (`tls.rs`) natively; in the browser `tonic-web-wasm-client`
+/// (gRPC-web over `fetch`; TLS, roots and the certificate pin are the browser's). The light
+/// library's `lwd::Channel` is the same type, so one channel serves the private sync too (Z-3).
+#[cfg(not(target_arch = "wasm32"))]
+pub type Channel = tonic::transport::Channel;
+#[cfg(target_arch = "wasm32")]
+pub type Channel = tonic_web_wasm_client::Client;
+
 pub use compact::{CompactClient, LightdInfo, Utxo as ServerUtxo};
 pub use rpc::compact_tx_streamer_client::CompactTxStreamerClient;
 pub use rpc::yellowback_streamer_client::YellowbackStreamerClient;
@@ -49,6 +58,7 @@ pub mod limits {
 }
 
 /// An error's message followed by every source in its chain, `: `-joined.
+#[cfg(not(target_arch = "wasm32"))]
 fn with_sources(e: &dyn std::error::Error) -> String {
     let mut s = e.to_string();
     let mut cur = e.source();
@@ -70,6 +80,7 @@ pub enum NetError {
     /// "transport error"; the cause (connection refused, TLS, DNS) is in its source chain, so the
     /// message walks it (W6: the app shows this verbatim).
     #[error("transport: {}", with_sources(.0))]
+    #[cfg(not(target_arch = "wasm32"))]
     Transport(#[from] tonic::transport::Error),
     /// A gRPC status from the server.
     #[error("rpc {}: {}", .0.code(), .0.message())]
@@ -117,15 +128,11 @@ mod tests {
 
     #[test]
     fn both_services_are_generated() {
-        // Compile-time proof that the two client types exist over a `tonic::transport::Channel`.
-        fn _compact(
-            c: tonic::transport::Channel,
-        ) -> super::CompactTxStreamerClient<tonic::transport::Channel> {
+        // Compile-time proof that the two client types exist over this target's `Channel`.
+        fn _compact(c: super::Channel) -> super::CompactTxStreamerClient<super::Channel> {
             super::CompactTxStreamerClient::new(c)
         }
-        fn _yellowback(
-            c: tonic::transport::Channel,
-        ) -> super::YellowbackStreamerClient<tonic::transport::Channel> {
+        fn _yellowback(c: super::Channel) -> super::YellowbackStreamerClient<super::Channel> {
             super::YellowbackStreamerClient::new(c)
         }
         let info = rpc::LightdInfo::default();

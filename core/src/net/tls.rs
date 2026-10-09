@@ -8,9 +8,10 @@
 //! selects `http://`; an optional pinned certificate (`ca_pem`) replaces every root; the
 //! default endpoint table (`docs/release.md`).
 
-use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
+#[cfg(not(target_arch = "wasm32"))]
+use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 
-use super::NetError;
+use super::{Channel, NetError};
 use crate::params::Network;
 
 /// A default endpoint the app offers (plan §3.5, §8 Q4; `docs/release.md` "Default endpoints").
@@ -129,11 +130,28 @@ impl Server {
     /// Open the channel: `h2` over `rustls` with the platform's native roots and the
     /// `webpki-roots` bundle (on iOS only the bundle is populated) — or, when a certificate
     /// is pinned, that certificate alone — unless `plain`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn connect(&self) -> Result<Channel, NetError> {
         Ok(self.endpoint()?.connect().await?)
     }
 
+    /// The browser: a gRPC-web client for [`Server::uri`]. Nothing is dialed here (the first
+    /// call is); TLS and its roots are the browser's, so `ca_pem` is refused rather than
+    /// silently ignored — a pin the page cannot honour must not look honoured. The gateway in
+    /// front of lightwalletd must speak gRPC-web and allow the page's origin.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn connect(&self) -> Result<Channel, NetError> {
+        if self.ca_pem.is_some() {
+            return Err(NetError::Config(
+                "a pinned certificate cannot be applied in the browser (its TLS is the browser's)"
+                    .into(),
+            ));
+        }
+        Ok(tonic_web_wasm_client::Client::new(self.uri()))
+    }
+
     /// The configured endpoint [`Server::connect`] dials (TLS settings and pin applied).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn endpoint(&self) -> Result<Endpoint, NetError> {
         let mut endpoint = Endpoint::from_shared(self.uri())
             .map_err(|e| NetError::Config(format!("invalid endpoint {}: {e}", self.uri())))?;
@@ -203,6 +221,7 @@ mod tests {
         assert!(Server::check_ca_pem("not a certificate").is_err());
         assert!(Server::check_ca_pem("-----BEGIN PRIVATE KEY-----").is_err());
         // The bundle is linked: a non-empty root store exists even where native roots are absent.
+        #[cfg(not(target_arch = "wasm32"))]
         assert!(!webpki_roots::TLS_SERVER_ROOTS.is_empty());
         assert!(default_servers(Network::Mainnet).is_empty());
         assert!(default_servers(Network::Testnet).is_empty());

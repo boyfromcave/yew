@@ -9,7 +9,8 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$here"
-actual="$(cargo tree -e normal --prefix none --no-dedupe -p yew-core --depth 1 \
+# `--target all`: the per-target tables (wasm32, yew/web plan W0.4) are checked too.
+actual="$(cargo tree -e normal --prefix none --no-dedupe -p yew-core --depth 1 --target all \
   | awk '{print $1}' | grep -vx 'yew-core' | sort -u)"
 allowed="$(grep -v '^#' scripts/allowed-deps.txt | sed '/^$/d' | sort -u)"
 extra="$(comm -23 <(printf '%s\n' "$actual") <(printf '%s\n' "$allowed") || true)"

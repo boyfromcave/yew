@@ -35,21 +35,26 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
+use std::time::Instant;
 
 use rand::rngs::OsRng;
 use thiserror::Error;
-use tonic::transport::Channel;
 use x402_ycash_light::{Options as LightOptions, Wallet as LightWallet, YcashNetwork};
+#[cfg(not(target_arch = "wasm32"))]
+use zcash_client_backend::data_api::wallet::{create_proposed_transactions, SpendingKeys};
 use zcash_client_backend::data_api::wallet::{
-    create_proposed_transactions, decrypt_and_store_transaction,
-    propose_standard_transfer_to_address, ConfirmationsPolicy, SpendingKeys,
+    decrypt_and_store_transaction, propose_standard_transfer_to_address, ConfirmationsPolicy,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use zcash_client_backend::data_api::WalletSummary;
 use zcash_client_backend::data_api::{
-    Account as _, TransactionDataRequest, TransactionStatus, WalletRead, WalletSummary, WalletWrite,
+    Account as _, TransactionDataRequest, TransactionStatus, WalletRead, WalletWrite,
 };
 use zcash_client_backend::fees::StandardFeeRule;
 use zcash_client_backend::proposal::Proposal;
+#[cfg(not(target_arch = "wasm32"))]
 use zcash_client_backend::wallet::OvkPolicy;
 use zcash_client_sqlite::util::SystemClock;
 use zcash_client_sqlite::wallet::init::init_wallet_db;
@@ -58,18 +63,24 @@ use zcash_keys::address::Address;
 use zcash_primitives::transaction::builder::{BuildConfig, Builder};
 use zcash_primitives::transaction::fees::zip317;
 use zcash_primitives::transaction::Transaction as ZTransaction;
+#[cfg(not(target_arch = "wasm32"))]
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::consensus::{BlockHeight, BranchId, NetworkUpgrade, Parameters};
 use zcash_protocol::memo::{Memo, MemoBytes};
 use zcash_protocol::value::Zatoshis;
-use zcash_protocol::{ShieldedProtocol, TxId};
+use zcash_protocol::ShieldedProtocol;
+#[cfg(not(target_arch = "wasm32"))]
+use zcash_protocol::TxId;
 use zcash_transparent::address::TransparentAddress;
+#[cfg(not(target_arch = "wasm32"))]
 use zcash_transparent::builder::TransparentSigningSet;
 use zcash_transparent::bundle::{OutPoint, TxOut};
 
-use crate::net::{CompactClient, NetError};
+use crate::net::{Channel, CompactClient, NetError};
 use crate::params::{Network, TOKEN_VALUE};
-use crate::sapling_params::{self, ParamsError};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::sapling_params;
+use crate::sapling_params::ParamsError;
 use crate::shielded_keys::SaplingAccount;
 
 /// The note store type: `zcash_client_sqlite` over Ycash parameters.
@@ -79,7 +90,8 @@ pub type Db = WalletDb<rusqlite::Connection, YcashNetwork, SystemClock, OsRng>;
 pub const MAX_MEMO_BYTES: usize = 512;
 /// Transaction data requests (memo fetches, status checks) answered per sync.
 const MAX_ENHANCE_PER_SYNC: usize = 500;
-/// How often the progress ticker reads the store during a scan.
+/// How often the progress ticker reads the store during a scan (native; see `sync`).
+#[cfg(not(target_arch = "wasm32"))]
 const PROGRESS_EVERY: Duration = Duration::from_millis(400);
 
 /// Stops the progress ticker when the sync that started it ends, returns early or is dropped
@@ -98,6 +110,9 @@ pub enum ShieldedError {
     /// The note store.
     #[error("private wallet store: {0}")]
     Store(String),
+    /// wasm32: the browser prover is not wired yet (yew/web plan W0.3).
+    #[error("Private sends are not available in the browser yet.")]
+    ProverUnsupported,
     /// The light client (sync, registration).
     #[error("private sync: {0}")]
     Light(x402_ycash_light::wallet::Error),
@@ -318,6 +333,8 @@ pub struct SpendPlan {
     /// The height the transaction is built for (the store's tip + 1); its branch id is the one
     /// every signature commits to.
     pub target_height: u32,
+    /// Read by `build` (native until W0.3).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     proposal: Proposal<StandardFeeRule, ReceivedNoteId>,
 }
 
@@ -397,7 +414,9 @@ pub struct Shielded {
     account: SaplingAccount,
     light: Option<LightWallet>,
     light_lwd: String,
-    /// The loaded prover (parameters verified once, parsed once per session).
+    /// The loaded prover (parameters verified once, parsed once per session). Native only
+    /// until the browser prover lands (yew/web plan W0.3).
+    #[cfg(not(target_arch = "wasm32"))]
     prover: Option<(PathBuf, LocalTxProver)>,
 }
 
@@ -411,6 +430,7 @@ fn policy() -> ConfirmationsPolicy {
     x402_ycash_light::wallet::default_policy()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn percent_of(s: &WalletSummary<AccountUuid>) -> u8 {
     if s.is_synced() {
         return 100;
@@ -449,6 +469,7 @@ impl Shielded {
             account,
             light: None,
             light_lwd: String::new(),
+            #[cfg(not(target_arch = "wasm32"))]
             prover: None,
         };
         s.check_account()?;
@@ -597,6 +618,10 @@ impl Shielded {
 
         let stop = Arc::new(AtomicBool::new(false));
         let stop_guard = StopOnDrop(stop.clone());
+        // The progress ticker reads the store on a second connection from a tokio task; native
+        // only (no tokio runtime in the browser, and OPFS sahpool holds one connection per file,
+        // W0.1 finding 3). The browser gets the final progress calls below.
+        #[cfg(not(target_arch = "wasm32"))]
         let ticker = {
             let stop = stop.clone();
             let path = self.dir.join("wallet.sqlite");
@@ -629,6 +654,7 @@ impl Shielded {
             Err(e) => Err(e),
         };
         drop(stop_guard);
+        #[cfg(not(target_arch = "wasm32"))]
         let _ = ticker.await;
         let r = match r {
             Ok(r) => r,
@@ -932,6 +958,7 @@ impl Shielded {
     /// Prove and sign `plan` with the parameters in `params_dir` (verified against their
     /// SHA-256 pins first). The transaction is recorded in the store (its notes count as spent
     /// until it is mined or expires); the caller runs the gate and broadcasts.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn build(
         &mut self,
         plan: &SpendPlan,
@@ -1056,6 +1083,7 @@ impl Shielded {
     /// `secrets` (one 32-byte key per input, in order; used for this call only). The fee must
     /// be exactly what [`Shielded::shield_fee`] said, or the builder refuses. Nothing is written
     /// to the note store: the output is found by the next scan once mined.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn build_shield(
         &mut self,
         target: u32,
@@ -1112,8 +1140,36 @@ impl Shielded {
         })
     }
 
+    /// The browser (wasm32): proving is not wired yet — the prover over the parameters fetched
+    /// into the Cache API is yew/web plan W0.3; until then [`Shielded::build`] and
+    /// [`Shielded::build_shield`] answer [`ShieldedError::ProverUnsupported`]. Planning
+    /// ([`Shielded::plan`], [`Shielded::shield_fee`]), sync, balances and history work.
+    #[cfg(target_arch = "wasm32")]
+    pub fn build(
+        &mut self,
+        _plan: &SpendPlan,
+        _params_dir: &Path,
+    ) -> Result<SpendBuilt, ShieldedError> {
+        Err(ShieldedError::ProverUnsupported)
+    }
+
+    /// See [`Shielded::build`] (wasm32).
+    #[cfg(target_arch = "wasm32")]
+    pub fn build_shield(
+        &mut self,
+        _target: u32,
+        _inputs: &[ShieldInput],
+        _secrets: &[[u8; 32]],
+        _amount_zat: u64,
+        _change: Option<([u8; 20], u64)>,
+        _params_dir: &Path,
+    ) -> Result<SpendBuilt, ShieldedError> {
+        Err(ShieldedError::ProverUnsupported)
+    }
+
     /// Verify (once) and load the proving parameters from `params_dir`; returns the
     /// milliseconds it took (0 when already loaded from that directory).
+    #[cfg(not(target_arch = "wasm32"))]
     fn load_prover(&mut self, params_dir: &Path) -> Result<u64, ShieldedError> {
         let t0 = Instant::now();
         if matches!(&self.prover, Some((d, _)) if d == params_dir) {

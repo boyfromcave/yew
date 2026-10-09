@@ -17,9 +17,13 @@ fn main() {
     }
     println!("cargo:rerun-if-changed={}", proto_dir.join("PIN").display());
     println!("cargo:rerun-if-env-changed=PROTOC");
+    // No `connect` on the generated clients: it names `tonic::transport::Channel`, which the
+    // wasm32 build (gRPC-web, no tonic transport; yew/web plan W0.4) has no feature for. The
+    // channel is `net::Server::connect`'s on both targets.
     tonic_prost_build::configure()
         .build_server(false)
         .build_client(true)
+        .build_transport(false)
         .compile_protos(&protos, &[proto_dir])
         .expect("protoc failed: install protobuf (brew install protobuf / apt install protobuf-compiler)");
 }
