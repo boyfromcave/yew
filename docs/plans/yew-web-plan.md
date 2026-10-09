@@ -125,7 +125,57 @@ Sapling send in WASM; the slide-to-confirm plus progress sheet carries over.
   x402-ycash `up/web` are pushed, the three root manifests carry LOCAL path patches** (flagged
   in each `Cargo.toml`); the push replaces them with git revs, in the order librustzcash6 →
   x402-ycash → yew.
-- [ ] W0.2 `FsBlockDb` → a `BlockSource` over OPFS (or `MemBlockCache`) for the browser
+- [x] **W0.2 the compact-block cache on OPFS — done 2026-10-09, option 1 (`BlockDb`).**
+  `web/spike-blockdb` (`web/scripts/test-spike-blockdb.sh`) runs two `wasm-bindgen-test`s in
+  headless Chrome, in a dedicated worker, debug and release: (a) three `CompactBlock`s written to
+  `zcash_client_sqlite::BlockDb` on OPFS, read back byte-identical through the `BlockSource` API
+  after the cache is dropped and reopened, the cache-miss semantics checked, then truncated; (b)
+  **`scan_cached_blocks` over that cache against a `WalletDb` on OPFS with a fresh ZIP-32
+  account** (`create_account`, birthday 1), the second of three blocks carrying a real
+  Sapling output to the account's default address — the scan reports one received note, the
+  wallet summary 100 000 zatoshis spendable, fully scanned to 3. Findings:
+  1. **`BlockDb` is enough; no new storage code.** The old SQLite block source (one table,
+     `compactblocks(height, data)`, `chain::init::init_cache_database`) is not feature-gated,
+     reports a cache miss when `from_height` is not cached (as the sync loop expects), and on sahpool it is one more SQLite
+     file beside the wallet's. `MemBlockCache` was not needed. The one adaptation: `BlockDb` owns
+     its connection privately and has no write API, and sahpool allows **one connection per file
+     name at a time** (W0.1 finding 3), so the spike's `BlockCache` holds only the path: writes
+     (`INSERT OR REPLACE`) and truncation (`DELETE`) go through a short-lived
+     `rusqlite::Connection`, and its `BlockSource` impl opens the `BlockDb` per `with_blocks`
+     call and drops it after. Opening on sahpool is cheap (pooled handle, no I/O beyond the
+     header). The debug build keeps the VFS's "DB closed without open" assertion live
+     (`[profile.dev.package.sqlite-wasm-vfs] debug-assertions = true`) so the test proves it.
+  2. **The trap: `scan_cached_blocks` hangs on wasm32 without threads.** `zcash_client_backend`
+     depends on rayon unconditionally and trial-decrypts in batches it `rayon::spawn_fifo`s
+     (`scan.rs:178`), then blocks on a channel for the results (`collect_results`). rayon-core's
+     wasm fallback is a one-worker pool on the current thread whose spawned jobs run only when
+     something yields to it; nothing in the scanner does, so the first block with an output
+     waits forever (seen as a wasm-bindgen-test timeout after "blocks cached"). The fix needs no
+     backend change: the cache's `with_blocks` calls `rayon::yield_now()` until it returns
+     `Idle`, before the first row and after every row, which runs the pending batches on this
+     thread (`run_pending_batches`, `cfg(target_arch = "wasm32")`; native builds have real
+     workers and skip it). `wasm-bindgen-rayon` (W0.3's second step) would replace the fallback
+     with real workers; the drain stays harmless then.
+  3. The standalone spike workspace needed `[profile.dev.package."*"] opt-level = 3` (as the yew
+     root manifest has): at opt-level 0 the debug scan overran wasm-bindgen-test's 20 s default;
+     the script also sets `WASM_BINDGEN_TEST_TIMEOUT=120`. With it both tests finish in 0.3 s.
+  4. Versions: the W0.1 recipe unchanged (rusqlite 0.39, sqlite-wasm-rs 0.5, sqlite-wasm-vfs 0.2,
+     librustzcash6 `up/web` `7cc50e16` by local path); plus `zcash_note_encryption` 0.4,
+     `sapling-crypto` 0.7 (`std`), `zcash_primitives` (`zip212_enforcement`) and `rayon` 1 for
+     the test output builder and the drain. The output builder is
+     `data_api::testing::compact_sapling_output` without its harness (the `test-dependencies`
+     feature is not needed).
+  **What W0.4 changes in x402-ycash/light's `Wallet`:** `cache: FsBlockDb` + `blocks_dir: PathBuf`
+  become one `cache: BlockCache` (this spike's type, moved into light behind `cfg(target_arch =
+  "wasm32")` or used on both targets — it is cross-platform and `BlockDb` works on disk too);
+  `Wallet::open` calls `BlockCache::open(<data_dir>/cache.sqlite)` instead of `create_dir_all` +
+  `FsBlockDb::for_path` + `init_blockmeta_db`; `scan_chunk` keeps the `chain_metadata` fill but
+  replaces `fs::write` + `write_block_metadata` with `cache.insert(&blocks)` (the `BlockMeta`
+  rows go away); `clear_cache` becomes `cache.truncate()`; the `FsBlockDbError` in the three
+  `ChainError<_, FsBlockDbError>` signatures (`scan_chunk`, `bad_cmu`, `wallet.rs:861,868`)
+  becomes `SqliteClientError`; and `scan_cached_blocks(&self.params, &self.cache, ...)` is
+  unchanged. `fs::` in `Wallet::open` (data dir, lock file) and the `std::fs` cache walk are the
+  only other `std::fs` uses on the sync path.
 - [ ] W0.3 `zcash_proofs` local prover in a Web Worker (single-thread first; `wasm-bindgen-rayon` after)
 - [ ] W0.4 `yew-core` `wasm` feature: tonic-web-wasm-client channel, the clock, no tokio runtime
 - [ ] W0 complete
