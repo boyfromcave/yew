@@ -5,6 +5,9 @@
 //! Node-generated vectors (plan W0c, `yellowback-devnet vectors`): the core must reproduce the
 //! node's bytes exactly (D-W-3). Files live in `core/tests/vectors/`:
 //! `transparent.json`, `addresses.json`, `params.json`, `ywallet.json` (`templates.json` is W2/W4).
+//! On `upgrade/vault-in-term` they were taken on an in-term devnet (ycash-dd `upgrade/vault-in-term`,
+//! `params.json.generated`), and `scripts/vectors-in-term.py` adds `templates.json`'s
+//! `earlyRedeem*` and `claim*` records; every transaction in `templates.json` was mined there.
 
 use std::path::PathBuf;
 
@@ -234,8 +237,17 @@ fn template_payload_vectors_round_trip() {
             })
             .unwrap_or_default()
     };
-    for kind in ["mint", "transfer", "redeem"] {
-        let t = &v[kind];
+    // The in-term templates (`scripts/vectors-in-term.py`) are a MINT and a REDEEM / CLAIM each.
+    for (key, kind) in [
+        ("mint", "mint"),
+        ("transfer", "transfer"),
+        ("redeem", "redeem"),
+        ("earlyRedeemMint", "mint"),
+        ("earlyRedeem", "redeem"),
+        ("claimMint", "mint"),
+        ("claim", "redeem"),
+    ] {
+        let t = &v[key];
         let hex = hex_field(t, "payloadHex");
         let d = &t["payloadDecoded"];
         assert_eq!(d["type"].as_str().unwrap(), kind);
@@ -268,17 +280,17 @@ fn template_payload_vectors_round_trip() {
                 assignments: assignments(d),
             },
         };
-        assert_eq!(payload::encode(&expected).unwrap(), hex, "{kind}: encode");
-        assert_eq!(payload::decode(&hex).unwrap(), expected, "{kind}: decode");
+        assert_eq!(payload::encode(&expected).unwrap(), hex, "{key}: encode");
+        assert_eq!(payload::decode(&hex).unwrap(), expected, "{key}: decode");
         assert_eq!(
             expected.assigned_cents() as u64,
             d["assignedCents"].as_u64().unwrap_or(0),
-            "{kind}: assignedCents"
+            "{key}: assignedCents"
         );
         // The payload is found in the node's raw transaction at its OP_RETURN.
         let (tx, txid) = Transaction::parse(&hex_field(t, "hex")).unwrap();
         assert_eq!(txid_hex(&txid), t["txid"].as_str().unwrap());
-        let fp = payload::find_payload(&tx).unwrap_or_else(|| panic!("{kind}: find_payload"));
+        let fp = payload::find_payload(&tx).unwrap_or_else(|| panic!("{key}: find_payload"));
         assert_eq!(fp.payload, expected);
         let info_assigned: Vec<(u64, u64)> = t["txinfo"]["assigned"]
             .as_array()
@@ -298,7 +310,7 @@ fn template_payload_vectors_round_trip() {
         if kind != "mint" {
             assert_eq!(
                 ours, info_assigned,
-                "{kind}: assignments equal yed_gettxinfo.assigned"
+                "{key}: assignments equal yed_gettxinfo.assigned"
             );
         } else {
             // MINT-1: vout[1] carries the minted cents.
@@ -308,130 +320,66 @@ fn template_payload_vectors_round_trip() {
         for (vout, _) in &info_assigned {
             assert_eq!(
                 tx.vout[*vout as usize].value, TOKEN_VALUE,
-                "{kind}: vout {vout}"
+                "{key}: vout {vout}"
             );
         }
     }
 }
 
-/// Plan W4 acceptance: from the node-built armed MINT, its carrier and the REDEEM in
-/// `templates.json`, rebuild the vault script (and its P2SH hash at `vout[0]`), the carrier
-/// script (its P2SH hash at the carrier's `vout[0]`, the bundle hash from the spent scriptSig's
-/// first push), the MINT `vout` order and values, the payload bytes, the carrier scriptSig
-/// push encoding, the owner-path scriptSig shape, `nLockTime` / `nSequence` / `nExpiryHeight`
-/// — byte-for-byte except keys and amounts, which are the node's own here.
-#[test]
-fn w4_templates_reproduce_the_node_scripts_and_payloads() {
-    use yew_core::bundle;
-    use yew_core::params::{CARRIER_VALUE, REF_WINDOW, SEQUENCE_LOCKTIME};
-    use yew_core::payload::{self, Payload};
-    let v = load("templates.json");
-    let network = network_of(&v);
-    let mint = &v["mint"];
-    let (mtx, mtxid) = Transaction::parse(&hex_field(mint, "hex")).unwrap();
-    assert_eq!(txid_hex(&mtxid), mint["txid"].as_str().unwrap());
-    let d = &mint["payloadDecoded"];
-    let mut owner = [0u8; 33];
-    owner.copy_from_slice(&hex_field(d, "ownerPubKey"));
-    let lock_height = d["lockHeight"].as_u64().unwrap() as u32;
-    let ref_height = d["refHeight"].as_u64().unwrap() as u32;
-    let claim_height = mint["result"]["claimHeight"].as_u64().unwrap() as u32;
-    let grace = load("params.json")["params"]["grace"]
-        .as_u64()
-        .map(|g| g as u32);
-    if let Some(g) = grace {
-        assert_eq!(
-            claim_height,
-            lock_height + g,
-            "claimHeight = lockHeight + GRACE"
-        );
+/// The V-template terms of the vectors' devnet (`params.json`: `yed_getinfo.params`).
+fn vault_terms() -> yew_core::build::terms::VaultTerms {
+    let p = &load("params.json")["yed_getinfo"]["params"];
+    let mut set: [u8; 32] = unhex(p["attestorSetId"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    set.reverse(); // display order → the internal bytes the V pushes
+    yew_core::build::terms::VaultTerms {
+        attestor_set_id: set,
+        claim_delay: p["claimDelay"].as_i64().unwrap(),
+        grace: p["grace"].as_u64().unwrap() as u32,
     }
-    // vout[0]: P2SH(vaultScript(lockHeight, owner, claimHeight)).
-    let vault = script::vault_script(lock_height, &owner, claim_height).unwrap();
-    assert_eq!(
-        mtx.vout[0].script_pubkey,
-        script::p2sh_of(&vault),
-        "vault P2SH"
-    );
-    assert_eq!(
-        mtx.vout[0].value,
-        mint["result"]["collateralZat"].as_i64().unwrap()
-    );
-    assert_eq!(
-        script::parse_vault_script(&vault).unwrap(),
-        script::VaultParts {
-            lock_height,
-            owner,
-            claim_height
-        }
-    );
-    // vout[1]: TOKEN_VALUE to P2PKH(owner); vout[2]: the payload; vout[3]/[4]: the fees.
-    assert_eq!(mtx.vout[1].value, TOKEN_VALUE);
-    assert_eq!(
-        mtx.vout[1].script_pubkey,
-        script::p2pkh_script(&keys::hash160(&owner))
-    );
-    let fee_vout = d["feeVout"].as_u64().unwrap() as u8;
-    let attest_fee_vout = d["attestFeeVout"].as_u64().unwrap() as u8;
-    let expected = Payload::Mint {
-        term_class: 0,
-        cents: d["cents"].as_u64().unwrap() as u32,
-        lock_height,
-        ref_height,
-        owner_key: owner,
-        fee_vout,
-        attest_fee_vout,
-    };
-    assert_eq!(
-        mtx.vout[2].script_pubkey,
-        payload::payload_script(&payload::encode(&expected).unwrap()),
-        "payload output"
-    );
-    assert_eq!((fee_vout, attest_fee_vout), (3, 4));
-    let payee = keys::parse_address(network, mint["txinfo"]["payee"].as_str().unwrap()).unwrap();
-    assert_eq!(
-        mtx.vout[3].script_pubkey,
-        script::p2pkh_script(&payee.hash())
-    );
-    assert_eq!(
-        mtx.vout[3].value,
-        mint["txinfo"]["feeZat"].as_i64().unwrap()
-    );
-    let attest_payee =
-        keys::parse_address(network, mint["txinfo"]["attestPayee"].as_str().unwrap()).unwrap();
-    assert_eq!(
-        mtx.vout[4].script_pubkey,
-        script::p2pkh_script(&attest_payee.hash())
-    );
-    assert_eq!(
-        mtx.vout[4].value,
-        mint["txinfo"]["attestFeeZat"].as_i64().unwrap()
-    );
-    assert_eq!(
-        mtx.vout.len(),
-        6,
-        "vault, token, payload, fee, attestor fee, change"
-    );
-    assert_eq!(
-        mtx.expiry_height,
-        ref_height + REF_WINDOW,
-        "nExpiryHeight = R + REF_WINDOW"
-    );
-    assert_eq!(mtx.lock_time, 0);
-    // vin[last]: the carrier, scriptSig <bundle> <sig> <carrierScript>, 71-byte script whose
-    // hash is the carrier's vout[0], committing SHA256(bundle).
-    let carrier_vin = mint["txinfo"]["carrierVin"].as_u64().unwrap() as usize;
-    assert_eq!(carrier_vin, mtx.vin.len() - 1);
-    let spend = script::parse_carrier_script_sig(&mtx.vin[carrier_vin].script_sig)
+}
+
+/// The branch id every vector was signed under (`transparent.json`, the node's next block).
+fn signing_branch_id() -> u32 {
+    u32::from_str_radix(load("transparent.json")["branchId"].as_str().unwrap(), 16).unwrap()
+}
+
+/// A node-built transaction of `templates.json` with its txid checked.
+fn template_tx(t: &Value) -> (Transaction, [u8; 32]) {
+    let (tx, txid) = Transaction::parse(&hex_field(t, "hex")).unwrap();
+    assert_eq!(txid_hex(&txid), t["txid"].as_str().unwrap());
+    (tx, txid)
+}
+
+/// `vin[carrier_vin]` spends `carrier`'s `vout[0]`: scriptSig `<bundle> <sig> <carrierScript>`,
+/// the 71-byte script committing SHA256(bundle), the bundle's seqs as the node reports them, the
+/// pair expiring together, and the signature verifying under the ZIP-243 digest over the redeem
+/// script with amount `CARRIER_VALUE`.
+fn check_carrier(
+    tx: &Transaction,
+    carrier_vin: usize,
+    carrier: &Value,
+    txinfo: &Value,
+    ref_height: u32,
+) {
+    use yew_core::bundle;
+    use yew_core::params::{CARRIER_VALUE, REF_WINDOW};
+    assert_eq!(carrier_vin, tx.vin.len() - 1, "the carrier is vin[last]");
+    let spend = script::parse_carrier_script_sig(&tx.vin[carrier_vin].script_sig)
         .expect("carrier-shaped scriptSig");
     assert_eq!(
         spend.bundle_hash,
         bundle::bundle_hash(&spend.bundle),
         "SHA256(bundle)"
     );
-    let atts = bundle::decode(&spend.bundle).unwrap();
-    let seqs: Vec<i64> = atts.iter().map(|a| a.seq as i64).collect();
-    let node_seqs: Vec<i64> = mint["txinfo"]["bundleSeqs"]
+    let seqs: Vec<i64> = bundle::decode(&spend.bundle)
+        .unwrap()
+        .iter()
+        .map(|a| a.seq as i64)
+        .collect();
+    let node_seqs: Vec<i64> = txinfo["bundleSeqs"]
         .as_array()
         .unwrap()
         .iter()
@@ -447,14 +395,12 @@ fn w4_templates_reproduce_the_node_scripts_and_payloads() {
     );
     assert_eq!(
         script::carrier_script_sig(&spend.bundle, &spend.sig, &spend.carrier_script).unwrap(),
-        mtx.vin[carrier_vin].script_sig,
+        tx.vin[carrier_vin].script_sig,
         "carrier scriptSig push encoding (plan §8.7)"
     );
-    let carrier = &v["carrier"];
-    let (ctx, ctxid) = Transaction::parse(&hex_field(carrier, "hex")).unwrap();
-    assert_eq!(txid_hex(&ctxid), carrier["txid"].as_str().unwrap());
-    assert_eq!(mtx.vin[carrier_vin].prevout.txid, ctxid);
-    assert_eq!(mtx.vin[carrier_vin].prevout.n, 0);
+    let (ctx, ctxid) = template_tx(carrier);
+    assert_eq!(tx.vin[carrier_vin].prevout.txid, ctxid);
+    assert_eq!(tx.vin[carrier_vin].prevout.n, 0);
     assert_eq!(ctx.vout[0].value, CARRIER_VALUE);
     assert_eq!(
         ctx.vout[0].script_pubkey,
@@ -466,101 +412,293 @@ fn w4_templates_reproduce_the_node_scripts_and_payloads() {
         ref_height + REF_WINDOW,
         "the pair expires together"
     );
-    // The carrier signature verifies under the ZIP-243 digest over the redeem script with
-    // amount CARRIER_VALUE (spend_carrier), bound to the vectors' branch id.
-    let branch_id = u32::from_str_radix(
-        load("transparent.json")["transactions"][0]["branchId"]
-            .as_str()
-            .unwrap(),
-        16,
-    )
-    .unwrap();
-    let digest = mtx
+    let digest = tx
         .sighash(
             carrier_vin,
             &spend.carrier_script,
             CARRIER_VALUE,
             1,
-            branch_id,
+            signing_branch_id(),
         )
         .unwrap();
     let sig = secp256k1::ecdsa::Signature::from_der(&spend.sig[..spend.sig.len() - 1]).unwrap();
     let pk = secp256k1::PublicKey::from_slice(&spend.pk).unwrap();
     assert!(secp256k1::ecdsa::verify(&sig, secp256k1::Message::from_digest(digest), &pk).is_ok());
+}
 
-    // The REDEEM: vin[0] = the vault, <ownerSig> OP_1 <vaultScript>, nSequence 0xFFFFFFFE,
-    // nLockTime = lockHeight, nExpiryHeight = R + REF_WINDOW; outputs collateral, fee, payload.
-    let redeem = &v["redeem"];
-    let (rtx, rtxid) = Transaction::parse(&hex_field(redeem, "hex")).unwrap();
-    assert_eq!(txid_hex(&rtxid), redeem["txid"].as_str().unwrap());
-    assert_eq!(rtx.vin[0].prevout.txid, mtxid);
+/// One node-built MINT of `templates.json` (with its carrier).
+struct NodeMint {
+    tx: Transaction,
+    txid: [u8; 32],
+    vault: yew_core::vault::VaultParams,
+    vault_script: Vec<u8>,
+    owner: [u8; 33],
+    lock_height: u32,
+    ref_height: u32,
+    term_class: u8,
+}
+
+/// The MINT at `key` (carrier at `carrier_key`): `vout[0]` is the in-term V (IT-1, D-IT-15:
+/// `ownerHeight = appHeight = refHeight + 1`), rebuilt byte for byte from the payload's owner and
+/// `refHeight`, and not the pre-plan V (`lockHeight`, `lockHeight + GRACE`) that MINT-3 refuses
+/// for a new mint; then the token, payload and fee outputs, `nExpiryHeight` and the carrier.
+fn check_mint(v: &Value, key: &str, carrier_key: &str) -> NodeMint {
+    use yew_core::params::REF_WINDOW;
+    use yew_core::payload::{self, Payload};
+    let network = network_of(v);
+    let vt = vault_terms();
+    let mint = &v[key];
+    let (tx, txid) = template_tx(mint);
+    let d = &mint["payloadDecoded"];
+    let mut owner = [0u8; 33];
+    owner.copy_from_slice(&hex_field(d, "ownerPubKey"));
+    let lock_height = d["lockHeight"].as_u64().unwrap() as u32;
+    let ref_height = d["refHeight"].as_u64().unwrap() as u32;
+    assert_eq!(
+        mint["result"]["refHeight"].as_u64(),
+        Some(ref_height as u64),
+        "{key}"
+    );
+    let claim_height = mint["result"]["claimHeight"].as_u64().unwrap() as u32;
+    assert_eq!(
+        claim_height,
+        lock_height + vt.grace,
+        "{key}: claimHeight = lockHeight + GRACE"
+    );
+    // vout[0]: the bare V template of the YED vault, in its in-term form.
+    let vault_script = vt.mint_vault_script(&owner, ref_height).unwrap();
+    assert_eq!(
+        tx.vout[0].script_pubkey, vault_script,
+        "{key}: the in-term V (IT-1)"
+    );
+    let vault = yew_core::vault::parse_vault(&vault_script).unwrap();
+    assert_eq!(
+        (vault.owner_height, vault.app_height),
+        (ref_height as i64 + 1, ref_height as i64 + 1),
+        "{key}: ownerHeight = appHeight = refHeight + 1 (D-IT-15)"
+    );
+    assert_eq!(vault, vt.mint_vault_params(&owner, ref_height));
+    assert_ne!(
+        Some(tx.vout[0].script_pubkey.clone()),
+        yew_core::vault::build_vault(&yew_core::vault::yed_vault_params(
+            &vt.attestor_set_id,
+            vt.claim_delay,
+            vt.grace,
+            &owner,
+            lock_height
+        )),
+        "{key}: not the pre-plan V"
+    );
+    assert!(yew_core::vault::is_yed_vault(
+        &vault,
+        &vt.attestor_set_id,
+        vt.claim_delay,
+        vt.grace
+    ));
+    assert_eq!(
+        tx.vout[0].value,
+        mint["result"]["collateralZat"].as_i64().unwrap()
+    );
+    // vout[1]: TOKEN_VALUE to P2PKH(owner); vout[2]: the payload; vout[3]/[4]: the fees.
+    assert_eq!(tx.vout[1].value, TOKEN_VALUE);
+    assert_eq!(
+        tx.vout[1].script_pubkey,
+        script::p2pkh_script(&keys::hash160(&owner))
+    );
+    let term_class = match d["termClass"].as_str().unwrap() {
+        "A" => 0,
+        "B" => 1,
+        _ => 2,
+    };
+    let fee_vout = d["feeVout"].as_u64().unwrap() as u8;
+    let attest_fee_vout = d["attestFeeVout"].as_u64().unwrap() as u8;
+    let expected = Payload::Mint {
+        term_class,
+        cents: d["cents"].as_u64().unwrap() as u32,
+        lock_height,
+        ref_height,
+        owner_key: owner,
+        fee_vout,
+        attest_fee_vout,
+    };
+    assert_eq!(
+        tx.vout[2].script_pubkey,
+        payload::payload_script(&payload::encode(&expected).unwrap()),
+        "{key}: payload output"
+    );
+    assert_eq!((fee_vout, attest_fee_vout), (3, 4));
+    let payee = keys::parse_address(network, mint["txinfo"]["payee"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        tx.vout[3].script_pubkey,
+        script::p2pkh_script(&payee.hash())
+    );
+    assert_eq!(tx.vout[3].value, mint["txinfo"]["feeZat"].as_i64().unwrap());
+    let attest_payee =
+        keys::parse_address(network, mint["txinfo"]["attestPayee"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        tx.vout[4].script_pubkey,
+        script::p2pkh_script(&attest_payee.hash())
+    );
+    assert_eq!(
+        tx.vout[4].value,
+        mint["txinfo"]["attestFeeZat"].as_i64().unwrap()
+    );
+    assert_eq!(
+        tx.vout.len(),
+        6,
+        "{key}: vault, token, payload, fee, attestor fee, change"
+    );
+    assert_eq!(
+        tx.expiry_height,
+        ref_height + REF_WINDOW,
+        "nExpiryHeight = R + REF_WINDOW"
+    );
+    assert_eq!(tx.lock_time, 0);
+    let carrier_vin = mint["txinfo"]["carrierVin"].as_u64().unwrap() as usize;
+    check_carrier(
+        &tx,
+        carrier_vin,
+        &v[carrier_key],
+        &mint["txinfo"],
+        ref_height,
+    );
+    NodeMint {
+        tx,
+        txid,
+        vault,
+        vault_script,
+        owner,
+        lock_height,
+        ref_height,
+        term_class,
+    }
+}
+
+/// The owner-path REDEEM at `key` of `m` (IT-9 when `early`): vin[0] = the vault, scriptSig
+/// `<ownerSig> OP_2`, nSequence 0xFFFFFFFE, nLockTime = the V's ownerHeight (refHeight + 1 of
+/// the mint, not lockHeight), nExpiryHeight = R + REF_WINDOW, the owner signature over the V
+/// itself; the plan rebuilt from the node's numbers gives the same outputs and payload, and the
+/// pool-payee output carries FEE-1 plus the early-redeem fee exactly when it was mined before
+/// `lockHeight`.
+fn check_redeem(v: &Value, key: &str, m: &NodeMint, early: bool) {
+    use yew_core::params::{REF_WINDOW, SEQUENCE_LOCKTIME};
+    let network = network_of(v);
+    let redeem = &v[key];
+    let (rtx, _) = template_tx(redeem);
+    assert_eq!(rtx.vin[0].prevout.txid, m.txid);
     assert_eq!(rtx.vin[0].prevout.n, 0);
     assert_eq!(rtx.vin[0].sequence, SEQUENCE_LOCKTIME);
-    assert_eq!(rtx.lock_time, lock_height);
-    let rd = &redeem["payloadDecoded"];
-    let r = rd["refHeight"].as_u64().unwrap() as u32;
-    assert_eq!(rtx.expiry_height, r + REF_WINDOW);
-    let pushes = script::pushes(&rtx.vin[0].script_sig).unwrap();
-    assert_eq!(pushes.len(), 3);
     assert_eq!(
-        pushes[2], vault,
-        "the redeem's last push is the vault script"
+        rtx.lock_time,
+        m.ref_height + 1,
+        "{key}: nLockTime = ownerHeight = refHeight + 1"
+    );
+    let height = redeem["txinfo"]["height"].as_u64().unwrap() as u32;
+    assert_eq!(
+        height < m.lock_height,
+        early,
+        "{key}: mined at {height}, lockHeight {}",
+        m.lock_height
+    );
+    assert_eq!(redeem["txinfo"]["path"].as_str(), Some("owner"));
+    let r = redeem["payloadDecoded"]["refHeight"].as_u64().unwrap() as u32;
+    assert_eq!(rtx.expiry_height, r + REF_WINDOW);
+    let (selector, args) =
+        yew_core::vault::parse_selector(yew_core::vault::Kind::Vault, &rtx.vin[0].script_sig)
+            .unwrap();
+    assert_eq!(
+        (selector, args.len()),
+        (2, 1),
+        "{key}: the V's OWNER branch"
     );
     assert_eq!(
         rtx.vin[0].script_sig,
-        script::owner_script_sig(&pushes[0], &vault),
-        "owner-path scriptSig shape"
+        yew_core::vault::vault_owner_script_sig(&args[0])
     );
-    let owner_digest = rtx
-        .sighash(0, &vault, mtx.vout[0].value, 1, branch_id)
+    let digest = rtx
+        .sighash(
+            0,
+            &m.vault_script,
+            m.tx.vout[0].value,
+            1,
+            signing_branch_id(),
+        )
         .unwrap();
-    let osig = secp256k1::ecdsa::Signature::from_der(&pushes[0][..pushes[0].len() - 1]).unwrap();
-    let opk = secp256k1::PublicKey::from_slice(&owner).unwrap();
-    assert!(
-        secp256k1::ecdsa::verify(&osig, secp256k1::Message::from_digest(owner_digest), &opk)
-            .is_ok()
+    let sig = secp256k1::ecdsa::Signature::from_der(&args[0][..args[0].len() - 1]).unwrap();
+    let pk = secp256k1::PublicKey::from_slice(&m.owner).unwrap();
+    assert!(secp256k1::ecdsa::verify(&sig, secp256k1::Message::from_digest(digest), &pk).is_ok());
+    // IT-9: the early-redeem fee is the class's bps of the collateral, on top of FEE-1, in the
+    // pool payee's output; yed_estimateredeem quoted the same before the redeem was built.
+    let collateral = m.tx.vout[0].value;
+    let early_fee = redeem["result"]["earlyRedeemFeeZat"].as_i64().unwrap();
+    let bps = network.term_classes()[m.term_class as usize].early_redeem_fee_bps;
+    if early {
+        assert!(r + 1 < m.lock_height);
+        assert_eq!(
+            early_fee,
+            yew_core::params::early_redeem_fee_zat(collateral, bps)
+        );
+        assert!(early_fee > 0);
+        let e = &redeem["estimate"];
+        assert_eq!(e["early"].as_bool(), Some(true));
+        assert_eq!(e["earlyRedeemFeeBps"].as_i64(), Some(bps));
+        assert_eq!(e["earlyRedeemFeeZat"].as_i64(), Some(early_fee));
+        assert_eq!(e["feeZat"], redeem["result"]["feeZat"]);
+    } else {
+        assert_eq!(early_fee, 0, "{key}: at or after lockHeight FEE-1 only");
+    }
+    let fee_zat = redeem["txinfo"]["feeZat"].as_i64().unwrap();
+    assert_eq!(fee_zat, redeem["result"]["feeZat"].as_i64().unwrap());
+    let fee_vout = redeem["payloadDecoded"]["feeVout"].as_u64().unwrap() as usize;
+    assert_eq!(
+        rtx.vout[fee_vout].value, fee_zat,
+        "{key}: the pool payee's output"
     );
-    // Rebuilding the plan from the node's numbers gives the same outputs and payload.
-    let vault_value = mtx.vout[0].value;
-    let redeem_fee = redeem["txinfo"]["feeZat"].as_i64().unwrap();
     let rpayee = keys::parse_address(network, redeem["txinfo"]["payee"].as_str().unwrap()).unwrap();
     let shape = yew_core::build::redeem::VaultSpendShape {
         vault_out: rtx.vin[0].prevout,
-        vault_value,
-        lock_height,
-        claim_height,
-        // The vectors were taken on the upgrade line (a pre-plan V: ownerHeight = lockHeight,
-        // appHeight = lockHeight + GRACE), which the in-term node still spends.
-        owner_height: lock_height,
-        app_height: claim_height,
+        vault_value: collateral,
+        lock_height: m.lock_height,
+        claim_height: m.lock_height + vault_terms().grace,
+        owner_height: m.vault.owner_height as u32,
+        app_height: m.vault.app_height as u32,
         owner_path: true,
         with_payload: true,
         ref_height: r,
         yed_inputs: rtx.vin[1..]
             .iter()
-            .map(|i| yew_core::coins::Utxo {
-                outpoint: i.prevout,
+            .enumerate()
+            .map(|(i, x)| yew_core::coins::Utxo {
+                outpoint: x.prevout,
                 address: String::new(),
                 script: Vec::new(),
                 value: TOKEN_VALUE,
                 height: 0,
                 class: yew_core::coins::UtxoClass::Token,
-                cents: redeem["txinfo"]["burned"].as_u64().unwrap(),
+                // The burn's cents sit on the first token; the planner only sums them.
+                cents: if i == 0 {
+                    redeem["txinfo"]["burned"].as_u64().unwrap()
+                } else {
+                    0
+                },
             })
             .collect(),
         change_cents: 0,
         change_script: Vec::new(),
         payee_script: Some(script::p2pkh_script(&rpayee.hash())),
-        fee_zat: redeem_fee,
+        fee_zat,
         attest_script: None,
         attest_fee_zat: 0,
         residual_zat: 0,
-        owner_script: script::p2pkh_script(&keys::hash160(&owner)),
+        owner_script: script::p2pkh_script(&keys::hash160(&m.owner)),
         carrier_value: 0,
         collateral_script: rtx.vout[0].script_pubkey.clone(),
     };
     let plan = yew_core::build::redeem::plan_vault_spend(&shape).unwrap();
-    assert_eq!(plan.vout, rtx.vout, "REDEEM vout order, values and payload");
+    assert_eq!(
+        plan.vout, rtx.vout,
+        "{key}: REDEEM vout order, values and payload"
+    );
     assert_eq!(plan.lock_time, rtx.lock_time);
     assert_eq!(
         plan.vin
@@ -579,6 +717,192 @@ fn w4_templates_reproduce_the_node_scripts_and_payloads() {
     assert_eq!(
         plan.burn_cents,
         redeem["result"]["burnedCents"].as_i64().unwrap()
+    );
+}
+
+/// Plan W4 acceptance on the in-term line (the workspace's
+/// docs/plans/yellowback-in-term-claims-plan.md IT-1, IT-2, IT-9): from the node-built armed
+/// MINTs, their carriers, the REDEEM at `lockHeight`, the early REDEEM and the in-term CLAIM in
+/// `templates.json` (`yellowback-devnet vectors` + `scripts/vectors-in-term.py`), rebuild the V
+/// template at `vout[0]`, the MINT `vout` order and values, the payload bytes, the carrier
+/// scriptSig push encoding, the owner and claim scriptSigs, `nLockTime` / `nSequence` /
+/// `nExpiryHeight` — byte for byte except keys and amounts, which are the node's own here.
+#[test]
+fn w4_templates_reproduce_the_node_scripts_and_payloads() {
+    let v = load("templates.json");
+    assert_eq!(v["armed"].as_bool(), Some(true));
+    let mint = check_mint(&v, "mint", "carrier");
+    check_redeem(&v, "redeem", &mint, false);
+    let early = check_mint(&v, "earlyRedeemMint", "earlyRedeemMintCarrier");
+    check_redeem(&v, "earlyRedeem", &early, true);
+    let target = check_mint(&v, "claimMint", "claimMintCarrier");
+    assert_eq!(target.term_class, 2, "the claim target is class C");
+    check_in_term_claim(&v, &target);
+}
+
+/// The CLAIM of `m` in term (IT-2 (a)): listed claimable by `yed_listclaimable` while in term,
+/// vin[0] = the vault with scriptSig `OP_4` (the V's APP branch), nLockTime = appHeight =
+/// refHeight + 1 (not lockHeight + GRACE), mined before `lockHeight`; `plan_claim` from the
+/// node's numbers gives the same inputs and outputs: the claimant intent of the collateral, the
+/// pool and attestor fees, the payload and the fee inputs' change.
+fn check_in_term_claim(v: &Value, m: &NodeMint) {
+    use yew_core::params::{REF_WINDOW, SEQUENCE_LOCKTIME};
+    let network = network_of(v);
+    let claim = &v["claim"];
+    let (ctx, _) = template_tx(claim);
+    let row = &claim["claimableRow"];
+    assert_eq!(
+        row["vault"].as_str().unwrap(),
+        format!("{}:0", txid_hex(&m.txid))
+    );
+    assert_eq!(row["claimable"].as_bool(), Some(true));
+    assert_eq!(row["claimPath"].as_str(), Some("a"));
+    assert_eq!(row["lockHeight"].as_u64(), Some(m.lock_height as u64));
+    let height = claim["txinfo"]["height"].as_u64().unwrap() as u32;
+    assert!(
+        height < m.lock_height,
+        "in term: mined at {height} < lockHeight {}",
+        m.lock_height
+    );
+    assert_eq!(claim["txinfo"]["path"].as_str(), Some("claim"));
+    assert_eq!(claim["result"]["claimPath"].as_str(), Some("a"));
+    assert_eq!(claim["result"]["earlyRedeemFeeZat"].as_i64(), Some(0));
+    assert_eq!(ctx.vin[0].prevout.txid, m.txid);
+    assert_eq!(ctx.vin[0].prevout.n, 0);
+    assert_eq!(ctx.vin[0].sequence, SEQUENCE_LOCKTIME);
+    assert_eq!(
+        ctx.vin[0].script_sig,
+        yew_core::vault::vault_app_script_sig()
+    );
+    assert_eq!(
+        ctx.lock_time,
+        m.ref_height + 1,
+        "IT-1: nLockTime = appHeight = refHeight + 1"
+    );
+    let r = claim["payloadDecoded"]["refHeight"].as_u64().unwrap() as u32;
+    assert_eq!(ctx.expiry_height, r + REF_WINDOW);
+    let carrier_vin = claim["txinfo"]["carrierVin"].as_u64().unwrap() as usize;
+    check_carrier(&ctx, carrier_vin, &v["claimCarrier"], &claim["txinfo"], r);
+    // The inputs' values, from the transactions they spend (all in templates.json).
+    let known: Vec<Transaction> = [
+        "claimMint",
+        "claimMintCarrier",
+        "claimCarrier",
+        "earlyRedeem",
+        "redeem",
+        "transfer",
+    ]
+    .iter()
+    .filter(|k| !v[**k].is_null())
+    .map(|k| template_tx(&v[*k]).0)
+    .collect();
+    let value_of = |o: &yew_core::tx::OutPoint| -> (i64, Vec<u8>) {
+        let t = known
+            .iter()
+            .find(|t| t.txid().unwrap() == o.txid)
+            .unwrap_or_else(|| {
+                panic!(
+                    "claim input {}:{} is not in templates.json",
+                    txid_hex(&o.txid),
+                    o.n
+                )
+            });
+        let out = &t.vout[o.n as usize];
+        (out.value, out.script_pubkey.clone())
+    };
+    let n_yed = claim["txinfo"]["spentTokens"].as_array().unwrap().len();
+    let yed_inputs: Vec<yew_core::coins::Utxo> = ctx.vin[1..1 + n_yed]
+        .iter()
+        .enumerate()
+        .map(|(i, x)| {
+            let (value, script) = value_of(&x.prevout);
+            assert_eq!(value, TOKEN_VALUE);
+            yew_core::coins::Utxo {
+                outpoint: x.prevout,
+                address: String::new(),
+                script,
+                value,
+                height: 0,
+                class: yew_core::coins::UtxoClass::Token,
+                cents: if i == 0 {
+                    claim["txinfo"]["burned"].as_u64().unwrap()
+                } else {
+                    0
+                },
+            }
+        })
+        .collect();
+    let funding: Vec<yew_core::coins::Utxo> = ctx.vin[1 + n_yed..carrier_vin]
+        .iter()
+        .map(|x| {
+            let (value, script) = value_of(&x.prevout);
+            yew_core::coins::Utxo {
+                outpoint: x.prevout,
+                address: String::new(),
+                script,
+                value,
+                height: 0,
+                class: yew_core::coins::UtxoClass::Yec,
+                cents: 0,
+            }
+        })
+        .collect();
+    let addr = |k: &str| {
+        script::p2pkh_script(
+            &keys::parse_address(network, claim["txinfo"][k].as_str().unwrap())
+                .unwrap()
+                .hash(),
+        )
+    };
+    let to = keys::parse_address(network, claim["result"]["to"].as_str().unwrap()).unwrap();
+    let shape = yew_core::build::claim::ClaimShape {
+        vault_out: ctx.vin[0].prevout,
+        vault: m.vault.clone(),
+        vault_script: m.vault_script.clone(),
+        vault_value: m.tx.vout[0].value,
+        ref_height: r,
+        yed_inputs,
+        change_cents: 0,
+        change_script: Vec::new(),
+        payee_script: Some(addr("payee")),
+        fee_zat: claim["txinfo"]["feeZat"].as_i64().unwrap(),
+        attest_script: Some(addr("attestPayee")),
+        attest_fee_zat: claim["txinfo"]["attestFeeZat"].as_i64().unwrap(),
+        residual_zat: claim["txinfo"]["residualZat"].as_i64().unwrap(),
+        owner_script: script::p2pkh_script(&keys::hash160(&m.owner)),
+        claimant_script: script::p2pkh_script(&to.hash()),
+        funding,
+        funding_change_script: ctx.vout.last().unwrap().script_pubkey.clone(),
+        carrier: ctx.vin[carrier_vin].prevout,
+    };
+    let plan = yew_core::build::claim::plan_claim(&shape).unwrap();
+    assert_eq!(plan.lock_time, ctx.lock_time);
+    assert_eq!(
+        plan.vout, ctx.vout,
+        "CLAIM vout order, values, intent and payload"
+    );
+    assert_eq!(
+        plan.vin
+            .iter()
+            .map(|i| (i.prevout, i.sequence))
+            .collect::<Vec<_>>(),
+        ctx.vin
+            .iter()
+            .map(|i| (i.prevout, i.sequence))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        plan.claimant_value,
+        claim["result"]["collateralOut"].as_i64().unwrap()
+    );
+    assert_eq!(
+        plan.burn_cents,
+        claim["result"]["burnedCents"].as_i64().unwrap()
+    );
+    assert_eq!(
+        yew_core::vault::parse_intent(&ctx.vout[0].script_pubkey).unwrap(),
+        yew_core::vault::intent_for(&m.vault, &m.vault_script, &script::p2pkh_script(&to.hash())),
+        "the claimant intent pays `to` after CLAIM_DELAY"
     );
     let _ = FEE_ZAT;
 }

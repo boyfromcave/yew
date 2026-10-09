@@ -128,7 +128,9 @@ Other things worth knowing before reading code:
   labelled from `GetTxInfo`, never from decoding the payload locally.
 - **The node is the oracle for tests.** `core/tests/vectors/` holds transactions the node
   signed, addresses, mint/transfer/redeem templates and parameters, exported by the workspace's
-  `yellowback-devnet vectors`; the core must reproduce them byte for byte.
+  `yellowback-devnet vectors`; the core must reproduce them byte for byte. On the in-term line
+  they come from an in-term devnet, and `scripts/vectors-in-term.py` adds an early redeem and an
+  in-term claim to `templates.json` (procedure in its header).
 
 - **Shielded YEC lives in the core and on the existing screens.** The same seed
   derives one Ycash Sapling account at ZIP-32 `m/32'/347'/0'` (`shielded_keys.rs`,

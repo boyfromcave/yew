@@ -1,60 +1,57 @@
 {
  "network": "regtest",
  "generated": {
-  "command": "vectors --out /private/tmp/claude-501/-Users-boy-projects-yellowback-workspace/1c1db2e8-7fe8-452d-99bc-71f6602eac3c/scratchpad/vectors --seed 1",
+  "command": "vectors --dir /Users/boy/projects/yellowback-workspace/wt/scratch/yew-vectors/devnet --out /Users/boy/projects/yellowback-workspace/wt/scratch/yew-vectors/out --seed 1",
   "seed": 1,
-  "height": 433,
-  "forkCommit": "6ec66eea0"
+  "height": 248,
+  "forkCommit": "f24a69183"
  },
  "yed_getinfo": {
-  "rpcversion": 3,
+  "rpcversion": 6,
   "enabled": true,
   "network": "regtest",
-  "height": 433,
-  "blockhash": "01a9192bdebddbe799f8866cd69038f008c29886b952093cae6922edd83f576a",
-  "chainHeight": 433,
-  "startHeight": 1,
+  "height": 248,
+  "blockhash": "047366dbbd9213d7e655109826b828b9611bc5ab0b7fe83f8048a84d5a530711",
+  "chainHeight": 248,
+  "startHeight": 103,
   "healthy": true,
   "unhealthyReason": "",
-  "enforcing": true,
-  "valveTripped": false,
-  "sunset": false,
-  "rejectedBlocks": 0,
-  "suppressedBlocks": 0,
-  "templatePolicy": "strict",
-  "abandoned": false,
-  "lockedOutputs": 7,
+  "supplyCapReached": false,
+  "mintRequiresArmed": false,
+  "lockedOutputs": 0,
   "protectedByIndex": true,
   "rebuilt": false,
-  "activation": {
+  "upgrade": {
+   "name": "Vault",
+   "branchId": "6d5b7a31",
    "status": "active",
-   "lockInHeight": 149,
-   "activateHeight": 213,
-   "signalCount": 64,
-   "window": 64
+   "activationHeight": 103,
+   "attestorSetId": "ae832d821e72bc12b0905c516463e5d928e787ace3b0bccce8bd9c0f9932b8f0",
+   "claimDelay": 10,
+   "height": 248
   },
   "attest": {
    "status": "ARMED",
-   "triggerHeight": 242,
-   "armHeight": 250,
+   "triggerHeight": 186,
+   "armHeight": 194,
    "seatedCount": 3,
    "poolSize": 9,
-   "poolFresh": 3,
+   "poolFresh": 0,
    "carrierMode": "scriptsig",
    "required": true,
    "armed": true
   },
   "miner": {
    "payoutAddress": null,
-   "signal": false,
    "quoteKind": "none",
    "quoteAgeSeconds": null,
    "registered": false,
    "eligible": false
   },
   "params": {
-   "startHeight": 1,
-   "enforceUntilHeight": 0,
+   "startHeight": 103,
+   "attestorSetId": "ae832d821e72bc12b0905c516463e5d928e787ace3b0bccce8bd9c0f9932b8f0",
+   "claimDelay": 10,
    "sigmaRefBps": 0,
    "supplyCapBps": 0,
    "refLag": 2,
@@ -65,13 +62,10 @@
    "feeBps": 25,
    "tokenValueZat": 10000,
    "feeZat": 1000,
-   "valveBlocks": 6,
-   "abandonBlocks": 128,
    "windows": {
     "fast": 8,
     "mid": 24,
-    "slow": 64,
-    "signal": 64
+    "slow": 64
    },
    "minFill": {
     "fast": 4,
@@ -83,23 +77,34 @@
      "class": "A",
      "minBlocks": 48,
      "maxBlocks": 96,
-     "baseRatioBps": 50000
+     "baseRatioBps": 30000,
+     "earlyRedeemFeeBps": 500
     },
     {
      "class": "B",
      "minBlocks": 97,
      "maxBlocks": 144,
-     "baseRatioBps": 40000
+     "baseRatioBps": 40000,
+     "earlyRedeemFeeBps": 250
     },
     {
      "class": "C",
      "minBlocks": 145,
      "maxBlocks": 240,
-     "baseRatioBps": 30000
+     "baseRatioBps": 50000,
+     "earlyRedeemFeeBps": 100
     }
+   ],
+   "earlyRedeemFeeBps": [
+    500,
+    250,
+    100
    ],
    "globalRatioHaltBps": 25000,
    "recapRatioBps": 50000,
+   "claimThresholdBps": 12500,
+   "sigmaMultMaxBps": 10000,
+   "inTermClaims": true,
    "policy": {
     "penaltyBlocks": 12,
     "accuracyWindow": 24,
@@ -143,8 +148,8 @@
   }
  },
  "consensus": {
-  "chaintip": "19bd2d2f",
-  "nextblock": "19bd2d2f"
+  "chaintip": "6d5b7a31",
+  "nextblock": "6d5b7a31"
  },
  "upgrades": {
   "5ba81b19": {
@@ -182,9 +187,15 @@
    "activationheight": 1,
    "status": "active",
    "info": "See https://z.cash/upgrade/canopy/ for details."
+  },
+  "6d5b7a31": {
+   "name": "Vault",
+   "activationheight": 103,
+   "status": "active",
+   "info": "Ycash vault primitive (docs/plans/yellowback-upgrade-plan.md)"
   }
  },
- "signingBranchId": "19bd2d2f",
+ "signingBranchId": "6d5b7a31",
  "relayFee": "0.00000100",
  "payTxFee": "0.00000000",
  "txVersion": {
@@ -210,7 +221,7 @@
    "A": [
     48,
     96,
-    50000
+    30000
    ],
    "B": [
     97,
@@ -220,7 +231,7 @@
    "C": [
     145,
     240,
-    30000
+    50000
    ]
   }
  },
