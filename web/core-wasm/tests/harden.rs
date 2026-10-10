@@ -18,7 +18,12 @@
 //!    one history row, and the private scan reports the rewind. **This disturbs the shared
 //!    cluster** (every client sees a two-or-three-block reorg); it runs last.
 //!
-//! Each test needs `YEW_WEB_FUND_URL` (the script's helper); without it the tests skip.
+//! 4. `several_stores_in_one_profile` (W0.6): four wallets (four seeds) open in four store
+//!    directories of one origin and each syncs — the pool `install_storage` reserves holds them
+//!    (the default capacity of 6 files held two); `forget` on the second removes exactly its
+//!    files and a fifth opens; `stores()` lists the directories left. Needs no funding.
+//!
+//! Tests 1–3 need `YEW_WEB_FUND_URL` (the script's helper); without it they skip.
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -422,4 +427,72 @@ async fn reorg_during_private_sync() {
         .expect("preview after the reorg");
     assert_eq!(field_str(&p, "funding"), "shielded");
     yew_web_core::close();
+}
+
+#[wasm_bindgen_test]
+async fn several_stores_in_one_profile() {
+    yew_web_core::install_storage().await.expect("opfs");
+    let p = pool().await;
+    console_log!(
+        "yew-web-core: sahpool after install_storage: capacity {} files, {} in use",
+        p.get_capacity(),
+        p.count()
+    );
+    assert!(p.get_capacity() >= 24, "install_storage reserves headroom");
+    let tip0 = yew_web_core::latest_height(LWD, NETWORK).await.expect("tip");
+    let birthday = tip0.saturating_sub(5).max(1);
+    let base = run_dir("stores");
+    let dir = |i: usize| format!("{base}/{i}");
+    let words: Vec<String> = (0..5)
+        .map(|_| yew_web_core::new_seed_words().expect("seed"))
+        .collect();
+    let under = |d: &str| {
+        let d = d.to_string();
+        move |s: &String| s.starts_with(&format!("{d}/"))
+    };
+    let listed = || async {
+        let v: Vec<String> = serde_wasm_bindgen::from_value(yew_web_core::stores().await.expect("stores")).unwrap();
+        v.into_iter().filter(under(&base)).collect::<Vec<_>>()
+    };
+    for i in 1..=4 {
+        open_in(&words[i - 1], birthday, &dir(i)).await;
+        let r = yew_web_core::sync().await.expect("sync");
+        assert!(field_str(&r, "shielded_message").is_empty(), "store {i} syncs");
+        assert!(field_u64(&r, "tip") >= tip0);
+        yew_web_core::close();
+    }
+    assert_eq!(listed().await, (1..=4).map(dir).collect::<Vec<_>>());
+    let files_before = p.count();
+    assert!(files_before >= 12, "four stores: {files_before} files {:?}", p.list());
+    // Forget the second: its three files go, nothing else does, and the directory is not listed.
+    let n = yew_web_core::forget(&dir(2)).await.expect("forget");
+    assert_eq!(n, 3, "the transparent file and the private store's two");
+    assert_eq!(p.count(), files_before - 3);
+    assert!(!p.list().iter().any(under(&dir(2))), "{:?}", p.list());
+    assert!(p.list().iter().any(under(&dir(1))));
+    assert_eq!(listed().await, [1, 3, 4].map(dir).to_vec());
+    assert_eq!(yew_web_core::forget(&dir(2)).await.expect("forget twice"), 0);
+    // A fifth opens beside the three, and the forgotten directory takes a new seed (no "other seed").
+    open_in(&words[4], birthday, &dir(5)).await;
+    assert!(field_str(&yew_web_core::sync().await.expect("sync"), "shielded_message").is_empty());
+    yew_web_core::close();
+    let o = open_in(&words[1], birthday, &dir(2)).await;
+    assert!(!field_bool(&o, "registered"), "a fresh store");
+    yew_web_core::close();
+    assert_eq!(listed().await, [1, 2, 3, 4, 5].map(dir).to_vec());
+    // The old seed in a store of another seed is still refused (W1b), and forget while open closes.
+    let e = yew_web_core::open_at(&words[0], birthday, LWD, NETWORK, &dir(3))
+        .await
+        .expect_err("another seed");
+    assert!(message(&e).starts_with("store:"), "{}", message(&e));
+    open_in(&words[2], birthday, &dir(3)).await;
+    assert_eq!(yew_web_core::forget(&dir(3)).await.expect("forget open"), 3);
+    assert!(yew_web_core::balances().is_err(), "closed by forget");
+    assert_eq!(listed().await, [1, 2, 4, 5].map(dir).to_vec());
+    console_log!(
+        "yew-web-core: sahpool at the end: capacity {} files, {} in use: {:?}",
+        p.get_capacity(),
+        p.count(),
+        p.list()
+    );
 }

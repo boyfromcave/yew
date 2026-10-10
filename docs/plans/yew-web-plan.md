@@ -781,7 +781,7 @@ Sapling send in WASM; the slide-to-confirm plus progress sheet carries over.
   compile-time env: a cached test binary keeps the old setting.
   **Open after W3** (owner items): tonic-web-wasm-client pinned to PR #113's rev until released;
   sahpool default capacity (6 files = 2 wallet stores) — `install_storage` should reserve headroom
-  and "Forget" delete the three files (x402-ycash light `wasm.rs`); Argon2id export from the core
+  and "Forget" delete the three files (x402-ycash light `wasm.rs`) — **done, W0.6 below**; Argon2id export from the core
   for the keystore; passkey path has no headless test; Safari/Firefox runs; mint/redeem/claim
   screens exercised only on the mock (kind has no mintable class); CI `web` job inert until the
   `up/web` siblings are pushed; restore with a birthday after a public receipt hides it (the
@@ -909,4 +909,48 @@ Sapling send in WASM; the slide-to-confirm plus progress sheet carries over.
      (W1b's web paragraph already states the code-from-the-server limit and the build hash).
   **Open**: the CI `web` job builds nothing until the `up/web` siblings are pushed (W0.1's
   "push replaces them with git revs"); Safari and Firefox runs; the sahpool capacity / forget
-  flow (W0.4, the shell); the CSP as a response header is the ycash-infra image's.
+  flow (W0.4, the shell — done, W0.6); the CSP as a response header is the ycash-infra image's.
+- [x] **W0.6 OPFS store capacity and the Forget flow — done 2026-10-09 (branch `up/web-store` in
+  yew and x402-ycash)**: several wallets per browser profile. The W3 finding (a sahpool of 6 files
+  holds two three-file stores; the third restore failed with `unable to open database file`) is
+  closed at the three layers:
+  1. **x402-ycash `light/src/wasm.rs`** (the owner of the VFS): `install_opfs` now reserves
+     `POOL_CAPACITY = 24` files (`reserve_minimum_capacity`; eight stores plus journals) once, at
+     install; new `ensure_free_files(n)`, `capacity() → (capacity, in use)`, `list_files()` (every
+     pool name, sorted), `delete_file(name) → bool`, `delete_store(dir)` (every file under `dir/`,
+     the count) and `list_stores()` (the light library's own stores: directories holding a
+     `wallet.sqlite`). All take the pool's management handle the W3 tests did (`sahpool::install`
+     on the registered VFS returns it without registering again). A file must be closed before
+     `delete_db`: the pool only unmaps the name and returns the OPFS handle to the free list.
+  2. **yew-core `shielded.rs`** (wasm32 only): `storage_files()` and `delete_storage_files(&[name])`
+     over the light library's calls. **yew-web-core**: `stores() → string[]` (every directory with
+     a `yew-<network>.sqlite`, sorted — the shell's `yew/<network>` and `yew/<network>/<n>`) and
+     `forget(store_dir) → u32` (closes the open wallet, deletes exactly the store's files: the
+     transparent file with its journals and `shielded/…` beside it, never a store nested under
+     it; 0 for no such store; `busy` while a call is in progress). `install_storage` is unchanged
+     (the headroom is the light library's).
+  3. **The shell (W1b's structure kept)**: `Core` gains `stores()` and `forget(storeDir)`
+     (`core.ts`, `CoreClient`, `MockCore` — the mock now holds one seed per store directory and
+     refuses another, as the core does). `WalletMeta.storeDir?` and `storeDirOf(meta, network)`
+     (`keystore.ts`). **Restore**: `OnboardingVm.finish` opens the default store first; when it
+     answers `store: … another seed` on a restore, it takes the first free `yew/<network>/<n>`
+     (`stores()`) with `open_at` and saves `storeDir` in the meta — a seed made here still gets
+     the refusal verbatim. The order is now open → `saveSeed` (a cancelled passkey closes the
+     wallet again), so a store is never left without its seed at rest. Unlock opens `open_at`
+     when the meta names a store. **Forget** (Settings and the unlock screen): close, keystore
+     `forget`, then `core.forget(storeDirOf(meta))` — the seed leaves first, the files after.
+  **Tests.** `web/core-wasm/tests/harden.rs` `several_stores_in_one_profile` (no funding): after
+  `install_storage` the capacity is 24; four seeds open four stores and each syncs (12 files);
+  `forget` on the second removes exactly 3 and `stores()` lists 1, 3, 4; a second `forget` is 0; a
+  fifth opens, the forgotten directory takes a new seed (`registered` false); a store of another
+  seed is still refused; `forget` of the open store closes it. Green on the kind cluster, debug and
+  release (`FUND=0 TESTS=harden PROFILES=… web/scripts/test-core-wasm.sh several_stores_in_one_profile`);
+  the whole harden suite (debug, `YEW_WEB_NO_REORG=1`) green with it. vitest 22/22 (`restores
+  beside an older store`, the Settings forget deleting the store) and `npm run check` green.
+  **Traps.** (1) `web/core-wasm/Cargo.toml` is its own workspace with its own
+  `[patch]` to `../../../x402-web/light`: a sibling worktree of x402 is only seen after that path
+  is pointed at it (left uncommitted here, like the root `Cargo.toml`'s); the merged tree needs
+  x402's `up/web-store` in `x402-web` first. (2) `npm run check` needs `web/src/wasm/` built
+  (`scripts/build-core-wasm.sh`, ~15 s): `tsc` resolves worker.ts's import. (3) The pool
+  counts names, not stores: a reopened store without a sync has two files (the compact-block
+  cache is created at the first sync), so a "3 files per store" assertion holds only after one.

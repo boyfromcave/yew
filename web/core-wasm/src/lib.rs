@@ -586,6 +586,56 @@ pub fn close() {
     BUSY.with(|b| b.set(false));
 }
 
+/// The store directories on this origin, sorted: every directory holding a `yew-<network>.sqlite`
+/// (`yew/<network>` is [`open`]'s; `yew/<network>/<n>` the shell's further wallets). Works
+/// with or without an open wallet.
+#[wasm_bindgen]
+pub async fn stores() -> Result<JsValue, JsValue> {
+    let files = shielded::storage_files().await.map_err(shielded_err)?;
+    let mut dirs: Vec<String> = files
+        .iter()
+        .filter_map(|f| {
+            let (dir, name) = f.rsplit_once('/')?;
+            (name.starts_with("yew-") && name.ends_with(".sqlite")).then(|| dir.to_string())
+        })
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    to_js(&dirs)
+}
+
+/// The files of the store at `store_dir`: the transparent file and its journals and the
+/// private store beside it (`shielded/`), never a store nested under it (`<dir>/<n>/…`).
+fn store_files(files: &[String], store_dir: &str) -> Vec<String> {
+    let dir = store_dir.trim_end_matches('/');
+    files
+        .iter()
+        .filter(|f| {
+            let Some(rest) = f.strip_prefix(dir).and_then(|r| r.strip_prefix('/')) else {
+                return false;
+            };
+            rest.starts_with("shielded/")
+                || (rest.starts_with("yew-") && !rest.contains('/') && rest.contains(".sqlite"))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Forget the store at `store_dir`: closes the open wallet (if any) and deletes the store's
+/// files from the browser's storage (the keys are the shell's keystore, not here). Returns the
+/// number of files removed (0: no such store). Refused while a call is in progress.
+#[wasm_bindgen]
+pub async fn forget(store_dir: &str) -> Result<u32, JsValue> {
+    if BUSY.with(|b| b.get()) {
+        return Err(err("busy", "a call is in progress"));
+    }
+    close();
+    let files = shielded::storage_files().await.map_err(shielded_err)?;
+    shielded::delete_storage_files(&store_files(&files, store_dir))
+        .await
+        .map_err(shielded_err)
+}
+
 /// The network of the open wallet.
 #[wasm_bindgen]
 pub fn network() -> Result<String, JsValue> {

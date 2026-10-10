@@ -4,6 +4,7 @@
 import type { Core } from "../core";
 import { messageOf } from "../core";
 import type { Unlock, WalletMeta } from "../keystore";
+import { storeDirOf } from "../keystore";
 import { Vm } from "./base";
 
 export type Step = "start" | "seed" | "confirm" | "restore" | "server" | "trust" | "unlock" | "done";
@@ -72,12 +73,29 @@ export class OnboardingVm extends Vm<OnboardingState> {
   serverDone() { if (this.state.tip !== null) this.set({ step: "trust", error: "" }); }
   acceptTrust(accepted: boolean) { this.set({ trustAccepted: accepted }); }
   trustDone() { if (this.state.trustAccepted) this.set({ step: "unlock", error: "" }); }
-  /** Encrypt the seed at rest and open the wallet. Seed words never persist in `state` after. */
+  /** Open the wallet in the network's default store; when that store holds another seed (a
+   *  restore beside an older wallet the browser still has), in a fresh `yew/<network>/<n>`
+   *  (W0.6). Returns the store directory, or undefined for the default. */
+  private async openStore(): Promise<string | undefined> {
+    const s = this.state;
+    try { await this.core.open(s.seedWords, s.birthday, s.serverUrl, s.network); return undefined; }
+    catch (e) {
+      if (!s.restoring || !/^store: .*another seed/.test(messageOf(e))) throw e;
+    }
+    const taken = new Set(await this.core.stores());
+    let n = 1; while (taken.has(`${storeDirOf(null, s.network)}/${n}`)) n++;
+    const dir = `${storeDirOf(null, s.network)}/${n}`;
+    await this.core.open_at(s.seedWords, s.birthday, s.serverUrl, s.network, dir);
+    return dir;
+  }
+  /** Open the wallet and encrypt the seed at rest. Seed words never persist in `state` after. */
   finish(unlock: Unlock) {
     return this.run(async () => {
       const s = this.state;
-      await this.keystore.saveSeed(s.seedWords, unlock, { birthday: s.birthday, serverUrl: s.serverUrl, network: s.network, createdAt: Date.now() });
-      await this.core.open(s.seedWords, s.birthday, s.serverUrl, s.network);
+      const storeDir = await this.openStore();
+      try {
+        await this.keystore.saveSeed(s.seedWords, unlock, { birthday: s.birthday, serverUrl: s.serverUrl, network: s.network, createdAt: Date.now(), ...(storeDir ? { storeDir } : {}) });
+      } catch (e) { await this.core.close().catch(() => {}); throw e; }
       this.set({ step: "done", seedWords: "" });
     });
   }

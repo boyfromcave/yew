@@ -43,6 +43,18 @@ describe("onboarding", () => {
     vm.restore(MOCK_SEED, 100); expect(vm.state.step).toBe("server"); expect(vm.state.birthday).toBe(100);
     await vm.checkServer("https://lite.example.org"); expect(vm.state.serverUrl).toBe("https://lite.example.org:443"); expect(vm.state.birthday).toBe(100); // a restore keeps its birthday
   });
+  it("restores beside an older store: the default holds another seed, so a fresh yew/<network>/<n> is opened and remembered (W0.6)", async () => {
+    const core = new MockCore(); await core.open("other " + MOCK_SEED, 0, "http://localhost:8080", "regtest"); await core.close();
+    const ks = new FakeKeystore(); const vm = new OnboardingVm(core, ks, "http://localhost:8080");
+    vm.startRestore(); vm.restore(MOCK_SEED, 100); await vm.checkServer("http://localhost:8080"); vm.serverDone(); vm.acceptTrust(true); vm.trustDone();
+    await vm.finish({ method: "passphrase", passphrase: "correct horse" });
+    expect(vm.state.error).toBe(""); expect(vm.state.step).toBe("done");
+    expect(ks.saved?.meta.storeDir).toBe("yew/regtest/1"); expect(await core.stores()).toEqual(["yew/regtest", "yew/regtest/1"]);
+    // A seed made here never takes another store: the refusal is shown.
+    await core.close(); const vm2 = new OnboardingVm(core, new FakeKeystore(), "http://localhost:8080"); await vm2.create();
+    vm2.set({ seedWords: "third " + MOCK_SEED, step: "unlock", serverUrl: "http://localhost:8080" });
+    await vm2.finish({ method: "passphrase", passphrase: "correct horse" }); expect(vm2.state.error).toContain("another seed");
+  });
   it("shows the core's error text verbatim", async () => {
     const vm = new OnboardingVm(new MockCore({ failNetwork: true }), new FakeKeystore());
     await vm.checkServer("http://localhost:8080"); expect(vm.state.error).toBe("network: the server did not answer");
@@ -109,7 +121,8 @@ describe("receive / history / settings", () => {
     const seen: number[] = []; vm.subscribe(() => { if (vm.state.fetching) seen.push(vm.state.fetching.bytesDone); });
     await vm.fetchParams(); expect(seen.length).toBeGreaterThan(0); expect(vm.state.params?.present).toBe(true); expect(vm.state.fetching).toBeNull();
     await vm.exportWif("nope"); expect(vm.state.error).toContain("invalid"); await vm.exportWif("s1MockTransparentAddress000000000000"); expect(vm.state.wif.startsWith("c")).toBe(true);
-    await vm.forget(); expect(ks.forgotten).toBe(true); expect((await core.status()).server).toBeNull();
+    await vm.forget({ birthday: 1, serverUrl: "", network: "regtest", createdAt: 0 }); expect(ks.forgotten).toBe(true); expect((await core.status()).server).toBeNull();
+    expect(await core.stores()).toEqual([]); // the store's files went with the seed
   });
 });
 

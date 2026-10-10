@@ -94,6 +94,10 @@ export interface Core {
   /** `birthday` 0 = the current tip (a seed made here). Refuses a store holding another seed. */
   open(seedWords: string, birthday: number, serverUrl: string, network: string): Promise<void>;
   open_at(seedWords: string, birthday: number, serverUrl: string, network: string, storeDir: string): Promise<void>;
+  /** The store directories on this origin (`yew/<network>`, `yew/<network>/<n>`), sorted. */
+  stores(): Promise<string[]>;
+  /** Close the wallet if open and delete the store's files (W0.6); the keystore is the shell's. Returns the files removed. */
+  forget(storeDir: string): Promise<number>;
   sync(): Promise<SyncResult>;
   progress(): Promise<Progress>;
   shielded_balance(): Promise<ShieldedBalance>;
@@ -174,6 +178,8 @@ export class CoreClient implements Core {
   async latest_height(serverUrl: string, network: string) { return Number(await this.call<bigint>("latest_height", serverUrl, network)); }
   async open(seedWords: string, birthday: number, serverUrl: string, network: string) { await this.call("open", seedWords, BigInt(birthday), serverUrl, network); }
   async open_at(seedWords: string, birthday: number, serverUrl: string, network: string, storeDir: string) { await this.call("open_at", seedWords, BigInt(birthday), serverUrl, network, storeDir); }
+  stores() { return this.call<string[]>("stores"); }
+  forget(storeDir: string) { return this.call<number>("forget", storeDir); }
   sync() { return this.call<SyncResult>("sync"); }
   progress() { return this.call<Progress>("progress"); }
   shielded_balance() { return this.call<ShieldedBalance>("shielded_balance"); }

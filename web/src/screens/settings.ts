@@ -33,7 +33,7 @@ export function renderSettings(root: HTMLElement, vm: SettingsVm, meta: WalletMe
       h("div", { class: "card" }, h("h3", null, "About"), h("p", { class: "small" }, `yew-web-core ${version}`)),
       h("div", { class: "actions" },
         h("button", { class: "secondary", on: { click: async () => { await vm.lock(); onLocked(); } } }, "Lock"),
-        h("button", { class: "danger", on: { click: async () => { if (confirm("Forget this wallet? The seed is removed from this browser. Without your written recovery phrase the YEC and YED are lost.")) { await vm.forget(); go("home"); location.reload(); } } } }, "Forget this wallet")));
+        h("button", { class: "danger", on: { click: async () => { if (confirm("Forget this wallet? The seed is removed from this browser. Without your written recovery phrase the YEC and YED are lost.")) { await vm.forget(meta); go("home"); location.reload(); } } } }, "Forget this wallet")));
   };
   draw(); vm.loadParams(); return vm.subscribe(draw);
 }

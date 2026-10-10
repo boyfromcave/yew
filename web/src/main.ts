@@ -47,7 +47,7 @@ async function main() {
   let open = false;
 
   const home = new HomeVm(core), receive = new ReceiveVm(core), send = new SendVm(core), move = new SendVm(core, "yec");
-  const history = new HistoryVm(core), settings = new SettingsVm(core, keystore, paramsSource), yb = new YellowbackVm(core);
+  const history = new HistoryVm(core), settings = new SettingsVm(core, keystore, paramsSource, network), yb = new YellowbackVm(core);
   let unsub: (() => void) | undefined;
 
   const shell = (name: string, body: HTMLElement) => {
@@ -62,9 +62,14 @@ async function main() {
     clear(app); const body = h("div"); app.append(body);
     renderUnlock(body, method, async (u) => {
       const { seedWords, meta: m } = await keystore.unlockSeed(u);
-      await core.open(seedWords, m.birthday, m.serverUrl, m.network || network);
+      if (m.storeDir) await core.open_at(seedWords, m.birthday, m.serverUrl, m.network || network, m.storeDir);
+      else await core.open(seedWords, m.birthday, m.serverUrl, m.network || network);
       await opened();
-    }, async () => { await keystore.forget(); location.reload(); });
+    }, async () => {
+      const m = await keystore.walletMeta(); await keystore.forget();
+      await core.forget(keystore.storeDirOf(m, network)).catch(() => {});
+      location.reload();
+    });
   };
   const onboard = () => {
     clear(app); const body = h("div"); app.append(body);

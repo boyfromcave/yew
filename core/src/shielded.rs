@@ -1327,6 +1327,30 @@ pub async fn install_storage() -> Result<(), ShieldedError> {
         .map_err(ShieldedError::Store)
 }
 
+/// Every file name in the browser's storage pool (the path strings the stores were opened
+/// with); the shell's store listing and the forget flow derive from it (yew/web plan W0.6).
+#[cfg(target_arch = "wasm32")]
+pub async fn storage_files() -> Result<Vec<String>, ShieldedError> {
+    x402_ycash_light::wasm::list_files()
+        .await
+        .map_err(ShieldedError::Store)
+}
+
+/// Deletes the named files from the browser's storage pool (their connections closed first);
+/// a name not in the pool is skipped. Returns the number removed.
+#[cfg(target_arch = "wasm32")]
+pub async fn delete_storage_files(names: &[String]) -> Result<u32, ShieldedError> {
+    let mut n = 0;
+    for name in names {
+        // `delete_store` removes every file under a directory; a single file is the same call
+        // on the pool's handle, which the light library owns.
+        n += x402_ycash_light::wasm::delete_file(name)
+            .await
+            .map_err(ShieldedError::Store)? as u32;
+    }
+    Ok(n)
+}
+
 /// Open (creating if needed) the store file under `dir` and run its migrations.
 fn open_db(dir: &Path, params: YcashNetwork) -> Result<Db, ShieldedError> {
     let mut db =

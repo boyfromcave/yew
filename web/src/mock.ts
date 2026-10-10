@@ -38,6 +38,8 @@ export class MockCore implements Core {
     hist("d4", 1100, "received YEC", "", "450000000", "0", "", ""),
   ];
   private mintRows: MintStatus[] = [];
+  /** The seed each store directory holds (a store refuses another seed, as the core does). */
+  private storeSeeds = new Map<string, string>();
   private vaultRows: Vault[] = [vault("c3".repeat(32), YED, "10000", "200000000", 1230, 1290, 1170, 1200)];
   private claimRows: ClaimableItem[] = [{
     vaultTxid: "e5".repeat(32), ownerAddress: "ye1OtherOwner00000000000000000000000", cents: "5000",
@@ -61,10 +63,18 @@ export class MockCore implements Core {
   install_storage() { return this.step(() => {}); }
   new_seed_words() { return this.step(() => MOCK_SEED); }
   latest_height(_s: string, _n: string) { return this.step(() => { this.net(); return this.tip; }); }
-  open(seedWords: string, _b: number, _s: string, _n = "regtest") {
-    return this.step(() => { if (seedWords.trim().split(/\s+/).length < 12) throw new Error("invalid: not a recovery phrase"); this.net(); this.isOpen = true; });
+  open(seedWords: string, b: number, s: string, n = "regtest") { return this.open_at(seedWords, b, s, n, `yew/${n}`); }
+  open_at(seedWords: string, _b: number, _s: string, _n: string, dir: string) {
+    return this.step(() => {
+      if (seedWords.trim().split(/\s+/).length < 12) throw new Error("invalid: not a recovery phrase");
+      this.net();
+      const held = this.storeSeeds.get(dir);
+      if (held !== undefined && held !== seedWords) throw new Error("store: wallet file belongs to another seed (private store)");
+      this.storeSeeds.set(dir, seedWords); this.isOpen = true;
+    });
   }
-  open_at(s: string, b: number, u: string, n: string, _dir: string) { return this.open(s, b, u, n); }
+  stores() { return this.step(() => [...this.storeSeeds.keys()].sort()); }
+  forget(dir: string) { return this.step(() => { this.isOpen = false; return this.storeSeeds.delete(dir) ? 3 : 0; }); }
   sync() {
     return this.step(() => {
       this.need(); this.net();

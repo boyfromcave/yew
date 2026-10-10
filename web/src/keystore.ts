@@ -8,7 +8,13 @@
 const DB = "yew", STORE = "keystore", KEY = "wallet";
 const PBKDF2_ITERS = 600_000;
 
-export interface WalletMeta { birthday: number; serverUrl: string; network: string; createdAt: number }
+export interface WalletMeta {
+  birthday: number; serverUrl: string; network: string; createdAt: number;
+  /** The core's store directory when it is not the network's default (a restore beside an older store; W0.6). */
+  storeDir?: string;
+}
+/** The core's store directory for a wallet: `meta.storeDir`, else the network's default `yew/<network>`. */
+export function storeDirOf(meta: WalletMeta | null, network: string): string { return meta?.storeDir ?? `yew/${meta?.network || network}`; }
 interface Record_ {
   v: 1; method: "prf" | "passphrase"; salt: ArrayBuffer; iv: ArrayBuffer; ct: ArrayBuffer;
   credentialId?: ArrayBuffer; meta: WalletMeta;
