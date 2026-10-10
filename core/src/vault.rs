@@ -372,8 +372,46 @@ pub fn release_height(coin_height: u64, delay: i64) -> u64 {
     coin_height + delay.max(0) as u64
 }
 
-/// `YedVaultParams` (`src/yellowback/script.cpp`, U-23): the V of a mint by `owner` locked
-/// until `lock_height`, under the network's attestor set, `CLAIM_DELAY` and `GRACE`.
+/// `YedVaultParamsAt` (`src/yellowback/script.cpp`, branch `upgrade/vault-in-term`): the YED V of
+/// `owner` with the given branch heights, under the network's attestor set and `CLAIM_DELAY`.
+/// A mint since the in-term plan (IT-1, D-IT-15) has `owner_height = app_height = refHeight + 1`
+/// ([`yed_mint_vault_params`]); a vault minted before it has `lockHeight`, `lockHeight + GRACE`
+/// ([`yed_vault_params`]) and stays spendable.
+pub fn yed_vault_params_at(
+    attestor_set_id: &SetId,
+    claim_delay: i64,
+    owner: &[u8; 33],
+    owner_height: i64,
+    app_height: i64,
+) -> VaultParams {
+    VaultParams {
+        tag: YED_TAG,
+        cancel_set_id: *attestor_set_id,
+        delay: claim_delay,
+        set_id: *attestor_set_id,
+        owner_height,
+        owner_key: *owner,
+        app_height,
+    }
+}
+
+/// `YedVaultParams(P, owner, refHeight)` (in-term plan IT-1, D-IT-15): the V of a new mint at
+/// reference height `ref_height` — both the owner's branch and the claim branch open from the
+/// block after the mint (`refHeight + 1`); RED-4's threshold test decides a claim, and the owner
+/// may redeem at any height (before `lockHeight` with the early-redeem fee, IT-9).
+pub fn yed_mint_vault_params(
+    attestor_set_id: &SetId,
+    claim_delay: i64,
+    owner: &[u8; 33],
+    ref_height: u32,
+) -> VaultParams {
+    let h = ref_height as i64 + 1;
+    yed_vault_params_at(attestor_set_id, claim_delay, owner, h, h)
+}
+
+/// The pre-plan V (upgrade plan U-23, before the in-term plan): a mint by `owner` locked until
+/// `lock_height`, claimable from `lock_height + GRACE`. New mints of this shape are refused
+/// (MINT-3, `bad-mint-vault-script`); existing ones are still YED vaults.
 pub fn yed_vault_params(
     attestor_set_id: &SetId,
     claim_delay: i64,
@@ -404,7 +442,10 @@ pub fn is_yed_vault(
         && p.set_id == *attestor_set_id
         && p.cancel_set_id == *attestor_set_id
         && p.delay == claim_delay
-        && p.app_height == p.owner_height + grace as i64
+        // In-term plan IT-1 (`Module::ValidateCreate`): the APP branch is open (≥ 1) and no later
+        // than the pre-plan `lockHeight + GRACE`; MINT-3 pins a new mint's exact value.
+        && p.app_height >= 1
+        && p.app_height <= p.owner_height + grace as i64
 }
 
 #[cfg(test)]
@@ -604,6 +645,15 @@ mod tests {
         assert!(is_yed_vault(&p, &p.set_id, p.delay, grace));
         assert!(!is_yed_vault(&p, &[0; 32], p.delay, grace));
         assert!(!is_yed_vault(&p, &p.set_id, p.delay + 1, grace));
+        // IT-1: a new mint's V opens both branches at refHeight + 1, and is a YED vault too.
+        let m = yed_mint_vault_params(&p.set_id, p.delay, &p.owner_key, 376);
+        assert_eq!((m.owner_height, m.app_height), (377, 377));
+        assert!(is_yed_vault(&m, &p.set_id, p.delay, grace));
+        let late = VaultParams {
+            app_height: p.owner_height + grace as i64 + 1,
+            ..p.clone()
+        };
+        assert!(!is_yed_vault(&late, &p.set_id, p.delay, grace));
         assert_eq!(
             build_vault(&y).unwrap(),
             unhex(e["script"].as_str().unwrap()).unwrap()

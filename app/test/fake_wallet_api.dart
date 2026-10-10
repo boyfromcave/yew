@@ -122,7 +122,9 @@ class FakeWalletApi implements WalletApi {
     );
   }
 
-  VaultSummary vault({required String txid, String status = 'ACTIVE', int cents = 2500, int lockHeight = 528, int tip = 484, bool underwater = false, String voidReason = '', int grace = 20}) => VaultSummary(
+  // In-term claims (rpcversion 6): the core's semantics — redeemable from the block after the mint,
+  // the early-redeem fee (class A 5 %) before lockHeight, the warning within 25 % above underwaterAt.
+  VaultSummary vault({required String txid, String status = 'ACTIVE', int cents = 2500, int lockHeight = 528, int tip = 484, bool underwater = false, String voidReason = '', int grace = 20, int claimPrice = 520000}) => VaultSummary(
     vaultTxid: txid,
     status: status,
     ownerAddress: fakeYe,
@@ -134,8 +136,16 @@ class FakeWalletApi implements WalletApi {
     mintHeight: 482,
     tip: tip,
     open: status == 'ACTIVE' || status == 'VOID',
-    redeemable: status == 'ACTIVE' && tip >= lockHeight,
-    blocksUntilRedeem: lockHeight > tip ? lockHeight - tip : 0,
+    redeemable: status == 'ACTIVE' && tip >= 483,
+    blocksUntilRedeem: 483 > tip ? 483 - tip : 0,
+    blocksUntilTermEnd: lockHeight > tip ? lockHeight - tip : 0,
+    earlyRedeem: status == 'ACTIVE' && tip + 1 < lockHeight,
+    earlyRedeemFeeZat: status == 'ACTIVE' && tip + 1 < lockHeight ? 47500000 : 0,
+    earlyRedeemFeeBps: 500,
+    inTermClaims: true,
+    claimThresholdBps: 12500,
+    claimPriceMicroUsd: claimPrice,
+    nearThreshold: status == 'ACTIVE' && !underwater && claimPrice * 10000 < 400000 * 12500,
     releasable: status == 'VOID',
     claimable: underwater,
     underwaterAtMicroUsd: 400000,
@@ -148,8 +158,8 @@ class FakeWalletApi implements WalletApi {
     blocksUntilClaim: lockHeight + grace > tip ? lockHeight + grace - tip : 0,
     renewable: status == 'ACTIVE' && tip >= lockHeight,
     renewLockBlocks: 48,
-    claimWarning: status == 'ACTIVE' && tip >= lockHeight + grace - 1,
-    claimOpen: status == 'ACTIVE' && tip >= lockHeight + grace,
+    claimWarning: status == 'ACTIVE' && (underwater || claimPrice * 10000 < 400000 * 12500),
+    claimOpen: status == 'ACTIVE',
     claiming: status == 'CLAIMING',
     reopened: status == 'REOPENED',
   );
@@ -267,6 +277,7 @@ class FakeWalletApi implements WalletApi {
     calls.add('redeemPreview $vaultTxid');
     if (redeemError != null) throw redeemError!;
     final v = vaultsAnswer.firstWhere((x) => x.vaultTxid == vaultTxid);
+    final early = v.releasable ? 0 : v.earlyRedeemFeeZat;
     return RedeemPreview(
       previewId: 'rp-$vaultTxid',
       vaultTxid: vaultTxid,
@@ -275,9 +286,12 @@ class FakeWalletApi implements WalletApi {
       extraBurnCents: 0,
       changeCents: v.releasable ? 0 : balancesAnswer.yedCents - v.cents,
       yedInputs: v.releasable ? 0 : 1,
-      feeZat: v.releasable ? 0 : 50000000,
+      feeZat: v.releasable ? 0 : 50000000 + early,
+      enforcementFeeZat: v.releasable ? 0 : 50000000,
+      earlyRedeemFeeZat: early,
+      lockHeight: v.lockHeight,
       payee: v.releasable ? '' : payee,
-      collateralZat: v.collateralZat - (v.releasable ? 1000 : 50001000),
+      collateralZat: v.collateralZat - (v.releasable ? 1000 : 50001000 + early),
       collateralAddress: fakeS,
       lockTime: v.lockHeight,
       expiryHeight: tip + 40,
@@ -298,9 +312,10 @@ class FakeWalletApi implements WalletApi {
       burnCents: v.releasable ? 0 : v.cents,
       extraBurnCents: 0,
       changeCents: v.releasable ? 0 : balancesAnswer.yedCents - v.cents,
-      feeZat: v.releasable ? 0 : 50000000,
+      feeZat: v.releasable ? 0 : 50000000 + v.earlyRedeemFeeZat,
+      earlyRedeemFeeZat: v.releasable ? 0 : v.earlyRedeemFeeZat,
       payee: v.releasable ? '' : payee,
-      collateralZat: v.collateralZat - (v.releasable ? 1000 : 50001000),
+      collateralZat: v.collateralZat - (v.releasable ? 1000 : 50001000 + v.earlyRedeemFeeZat),
       collateralAddress: fakeS,
       lockTime: v.lockHeight,
       expiryHeight: tip + 40,
@@ -365,7 +380,7 @@ class FakeWalletApi implements WalletApi {
       chainName: 'regtest',
       tip: 484,
       taddrSupport: true,
-      yellowback: YellowbackStatus(present: true, usable: true, rpcversion: 5, enabled: true, active: true, serverVersion: 'lwd', feeZat: 1000),
+      yellowback: YellowbackStatus(present: true, usable: true, rpcversion: 6, enabled: true, active: true, serverVersion: 'lwd', feeZat: 1000),
     );
   }
 
@@ -410,7 +425,7 @@ class FakeWalletApi implements WalletApi {
     birthday: 1,
     syncHeight: 484,
     addresses: 40,
-    yellowback: const YellowbackStatus(present: true, usable: true, rpcversion: 5, enabled: true, active: true, serverVersion: 'lwd', feeZat: 1000),
+    yellowback: const YellowbackStatus(present: true, usable: true, rpcversion: 6, enabled: true, active: true, serverVersion: 'lwd', feeZat: 1000),
     coreVersion: '0.1.0',
   );
 

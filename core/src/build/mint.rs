@@ -813,8 +813,12 @@ pub(crate) fn record_broadcast(
 
 /// The MINT outputs (`MintOutputs`): vault, token, payload, [fee], [attestor fee]. Since the
 /// vault upgrade `vout[0]` is the bare V template of the YED vault (U-23: tag `YED\0`, the
-/// attestor set as both sets, `CLAIM_DELAY`, `ownerHeight = lockHeight`, `appHeight =
-/// lockHeight + GRACE`); the v2 P2SH vault script is refused for new mints (MINT-3).
+/// attestor set as both sets, `CLAIM_DELAY`; since the in-term plan's IT-1 and D-IT-15
+/// `ownerHeight = appHeight = refHeight + 1`, so the owner may redeem and a claim is judged by θ
+/// from the block after the mint — the payload's `lockHeight` is the term, for the class and
+/// the early-redeem fee, no longer a CLTV); the v2 P2SH vault script and the pre-plan V
+/// (`ownerHeight = lockHeight`, `appHeight = lockHeight + GRACE`) are refused for new mints
+/// (MINT-3, `bad-mint-vault-script`).
 pub fn mint_outputs(
     wallet: &Wallet,
     m: &MintRow,
@@ -830,7 +834,7 @@ pub fn mint_outputs(
         }
         .into());
     }
-    let vault = vt.vault_script(owner_pubkey, m.lock_height)?;
+    let vault = vt.mint_vault_script(owner_pubkey, m.ref_height)?;
     let fee_vout = if m.payee.is_empty() { FEE_VOUT_NONE } else { 3 };
     let attest_fee_vout = if m.attest_payee.is_empty() {
         FEE_VOUT_NONE

@@ -1742,6 +1742,10 @@ impl SseDecode for crate::api::ClaimableItem {
         let mut var_residualZat = <i64>::sse_decode(deserializer);
         let mut var_claimantZat = <i64>::sse_decode(deserializer);
         let mut var_payee = <String>::sse_decode(deserializer);
+        let mut var_claimable = <bool>::sse_decode(deserializer);
+        let mut var_underwaterAtMicroUsd = <i64>::sse_decode(deserializer);
+        let mut var_lockHeight = <i64>::sse_decode(deserializer);
+        let mut var_inTerm = <bool>::sse_decode(deserializer);
         return crate::api::ClaimableItem {
             vault_txid: var_vaultTxid,
             owner_address: var_ownerAddress,
@@ -1755,6 +1759,10 @@ impl SseDecode for crate::api::ClaimableItem {
             residual_zat: var_residualZat,
             claimant_zat: var_claimantZat,
             payee: var_payee,
+            claimable: var_claimable,
+            underwater_at_micro_usd: var_underwaterAtMicroUsd,
+            lock_height: var_lockHeight,
+            in_term: var_inTerm,
         };
     }
 }
@@ -2292,6 +2300,9 @@ impl SseDecode for crate::api::RedeemPreview {
         let mut var_changeCents = <i64>::sse_decode(deserializer);
         let mut var_yedInputs = <u32>::sse_decode(deserializer);
         let mut var_feeZat = <i64>::sse_decode(deserializer);
+        let mut var_enforcementFeeZat = <i64>::sse_decode(deserializer);
+        let mut var_earlyRedeemFeeZat = <i64>::sse_decode(deserializer);
+        let mut var_lockHeight = <i64>::sse_decode(deserializer);
         let mut var_payee = <String>::sse_decode(deserializer);
         let mut var_collateralZat = <i64>::sse_decode(deserializer);
         let mut var_collateralAddress = <String>::sse_decode(deserializer);
@@ -2307,6 +2318,9 @@ impl SseDecode for crate::api::RedeemPreview {
             change_cents: var_changeCents,
             yed_inputs: var_yedInputs,
             fee_zat: var_feeZat,
+            enforcement_fee_zat: var_enforcementFeeZat,
+            early_redeem_fee_zat: var_earlyRedeemFeeZat,
+            lock_height: var_lockHeight,
             payee: var_payee,
             collateral_zat: var_collateralZat,
             collateral_address: var_collateralAddress,
@@ -2327,6 +2341,7 @@ impl SseDecode for crate::api::RedeemResult {
         let mut var_extraBurnCents = <i64>::sse_decode(deserializer);
         let mut var_changeCents = <i64>::sse_decode(deserializer);
         let mut var_feeZat = <i64>::sse_decode(deserializer);
+        let mut var_earlyRedeemFeeZat = <i64>::sse_decode(deserializer);
         let mut var_payee = <String>::sse_decode(deserializer);
         let mut var_collateralZat = <i64>::sse_decode(deserializer);
         let mut var_collateralAddress = <String>::sse_decode(deserializer);
@@ -2340,6 +2355,7 @@ impl SseDecode for crate::api::RedeemResult {
             extra_burn_cents: var_extraBurnCents,
             change_cents: var_changeCents,
             fee_zat: var_feeZat,
+            early_redeem_fee_zat: var_earlyRedeemFeeZat,
             payee: var_payee,
             collateral_zat: var_collateralZat,
             collateral_address: var_collateralAddress,
@@ -2527,6 +2543,14 @@ impl SseDecode for crate::api::VaultSummary {
         let mut var_open = <bool>::sse_decode(deserializer);
         let mut var_redeemable = <bool>::sse_decode(deserializer);
         let mut var_blocksUntilRedeem = <i64>::sse_decode(deserializer);
+        let mut var_blocksUntilTermEnd = <i64>::sse_decode(deserializer);
+        let mut var_earlyRedeem = <bool>::sse_decode(deserializer);
+        let mut var_earlyRedeemFeeZat = <i64>::sse_decode(deserializer);
+        let mut var_earlyRedeemFeeBps = <i64>::sse_decode(deserializer);
+        let mut var_inTermClaims = <bool>::sse_decode(deserializer);
+        let mut var_claimThresholdBps = <i64>::sse_decode(deserializer);
+        let mut var_claimPriceMicroUsd = <i64>::sse_decode(deserializer);
+        let mut var_nearThreshold = <bool>::sse_decode(deserializer);
         let mut var_releasable = <bool>::sse_decode(deserializer);
         let mut var_claimable = <bool>::sse_decode(deserializer);
         let mut var_underwaterAtMicroUsd = <i64>::sse_decode(deserializer);
@@ -2557,6 +2581,14 @@ impl SseDecode for crate::api::VaultSummary {
             open: var_open,
             redeemable: var_redeemable,
             blocks_until_redeem: var_blocksUntilRedeem,
+            blocks_until_term_end: var_blocksUntilTermEnd,
+            early_redeem: var_earlyRedeem,
+            early_redeem_fee_zat: var_earlyRedeemFeeZat,
+            early_redeem_fee_bps: var_earlyRedeemFeeBps,
+            in_term_claims: var_inTermClaims,
+            claim_threshold_bps: var_claimThresholdBps,
+            claim_price_micro_usd: var_claimPriceMicroUsd,
+            near_threshold: var_nearThreshold,
             releasable: var_releasable,
             claimable: var_claimable,
             underwater_at_micro_usd: var_underwaterAtMicroUsd,
@@ -2906,6 +2938,10 @@ impl flutter_rust_bridge::IntoDart for crate::api::ClaimableItem {
             self.residual_zat.into_into_dart().into_dart(),
             self.claimant_zat.into_into_dart().into_dart(),
             self.payee.into_into_dart().into_dart(),
+            self.claimable.into_into_dart().into_dart(),
+            self.underwater_at_micro_usd.into_into_dart().into_dart(),
+            self.lock_height.into_into_dart().into_dart(),
+            self.in_term.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -3276,6 +3312,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::RedeemPreview {
             self.change_cents.into_into_dart().into_dart(),
             self.yed_inputs.into_into_dart().into_dart(),
             self.fee_zat.into_into_dart().into_dart(),
+            self.enforcement_fee_zat.into_into_dart().into_dart(),
+            self.early_redeem_fee_zat.into_into_dart().into_dart(),
+            self.lock_height.into_into_dart().into_dart(),
             self.payee.into_into_dart().into_dart(),
             self.collateral_zat.into_into_dart().into_dart(),
             self.collateral_address.into_into_dart().into_dart(),
@@ -3303,6 +3342,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::RedeemResult {
             self.extra_burn_cents.into_into_dart().into_dart(),
             self.change_cents.into_into_dart().into_dart(),
             self.fee_zat.into_into_dart().into_dart(),
+            self.early_redeem_fee_zat.into_into_dart().into_dart(),
             self.payee.into_into_dart().into_dart(),
             self.collateral_zat.into_into_dart().into_dart(),
             self.collateral_address.into_into_dart().into_dart(),
@@ -3479,6 +3519,14 @@ impl flutter_rust_bridge::IntoDart for crate::api::VaultSummary {
             self.open.into_into_dart().into_dart(),
             self.redeemable.into_into_dart().into_dart(),
             self.blocks_until_redeem.into_into_dart().into_dart(),
+            self.blocks_until_term_end.into_into_dart().into_dart(),
+            self.early_redeem.into_into_dart().into_dart(),
+            self.early_redeem_fee_zat.into_into_dart().into_dart(),
+            self.early_redeem_fee_bps.into_into_dart().into_dart(),
+            self.in_term_claims.into_into_dart().into_dart(),
+            self.claim_threshold_bps.into_into_dart().into_dart(),
+            self.claim_price_micro_usd.into_into_dart().into_dart(),
+            self.near_threshold.into_into_dart().into_dart(),
             self.releasable.into_into_dart().into_dart(),
             self.claimable.into_into_dart().into_dart(),
             self.underwater_at_micro_usd.into_into_dart().into_dart(),
@@ -3755,6 +3803,10 @@ impl SseEncode for crate::api::ClaimableItem {
         <i64>::sse_encode(self.residual_zat, serializer);
         <i64>::sse_encode(self.claimant_zat, serializer);
         <String>::sse_encode(self.payee, serializer);
+        <bool>::sse_encode(self.claimable, serializer);
+        <i64>::sse_encode(self.underwater_at_micro_usd, serializer);
+        <i64>::sse_encode(self.lock_height, serializer);
+        <bool>::sse_encode(self.in_term, serializer);
     }
 }
 
@@ -4161,6 +4213,9 @@ impl SseEncode for crate::api::RedeemPreview {
         <i64>::sse_encode(self.change_cents, serializer);
         <u32>::sse_encode(self.yed_inputs, serializer);
         <i64>::sse_encode(self.fee_zat, serializer);
+        <i64>::sse_encode(self.enforcement_fee_zat, serializer);
+        <i64>::sse_encode(self.early_redeem_fee_zat, serializer);
+        <i64>::sse_encode(self.lock_height, serializer);
         <String>::sse_encode(self.payee, serializer);
         <i64>::sse_encode(self.collateral_zat, serializer);
         <String>::sse_encode(self.collateral_address, serializer);
@@ -4180,6 +4235,7 @@ impl SseEncode for crate::api::RedeemResult {
         <i64>::sse_encode(self.extra_burn_cents, serializer);
         <i64>::sse_encode(self.change_cents, serializer);
         <i64>::sse_encode(self.fee_zat, serializer);
+        <i64>::sse_encode(self.early_redeem_fee_zat, serializer);
         <String>::sse_encode(self.payee, serializer);
         <i64>::sse_encode(self.collateral_zat, serializer);
         <String>::sse_encode(self.collateral_address, serializer);
@@ -4319,6 +4375,14 @@ impl SseEncode for crate::api::VaultSummary {
         <bool>::sse_encode(self.open, serializer);
         <bool>::sse_encode(self.redeemable, serializer);
         <i64>::sse_encode(self.blocks_until_redeem, serializer);
+        <i64>::sse_encode(self.blocks_until_term_end, serializer);
+        <bool>::sse_encode(self.early_redeem, serializer);
+        <i64>::sse_encode(self.early_redeem_fee_zat, serializer);
+        <i64>::sse_encode(self.early_redeem_fee_bps, serializer);
+        <bool>::sse_encode(self.in_term_claims, serializer);
+        <i64>::sse_encode(self.claim_threshold_bps, serializer);
+        <i64>::sse_encode(self.claim_price_micro_usd, serializer);
+        <bool>::sse_encode(self.near_threshold, serializer);
         <bool>::sse_encode(self.releasable, serializer);
         <bool>::sse_encode(self.claimable, serializer);
         <i64>::sse_encode(self.underwater_at_micro_usd, serializer);

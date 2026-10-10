@@ -19,8 +19,8 @@ name: ci
 on:
   push:
     # The one branch list: harden/yellowback (P1 hardening), upgrade/vault (the network upgrade),
-    # main (the branch of record, AGENTS.md rule 2).
-    branches: &branches [main, harden/yellowback, upgrade/vault]
+    # upgrade/vault-in-term (in-term claims, rpcversion 6), main (the branch of record, AGENTS.md rule 2).
+    branches: &branches [main, harden/yellowback, upgrade/vault, upgrade/vault-in-term]
   pull_request:
     branches: *branches
   workflow_dispatch:

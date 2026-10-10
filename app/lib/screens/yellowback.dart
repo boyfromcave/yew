@@ -171,24 +171,28 @@ class _VaultTile extends StatelessWidget {
       when = '${v.status.toLowerCase()} at ${v.closeHeight}';
     } else if (v.releasable) {
       when = 'void (${v.voidReason}) · release the collateral';
+    } else if (v.claimable) {
+      when = 'CLAIMABLE NOW: anyone may close it by paying its debt · redeem now to stop it';
+    } else if (v.redeemable && v.earlyRedeem) {
+      when = 'redeemable now (early-redeem fee ${formatBps(v.earlyRedeemFeeBps)} until ${v.lockHeight}, ${formatDate(v.lockTimeSecs)}) · claimable below ${formatUsdPerYec(v.underwaterAtMicroUsd)}';
     } else if (v.redeemable) {
-      when = 'redeemable now (lock height ${v.lockHeight}) · renew or redeem before ${formatDate(v.claimTimeSecs)}';
+      when = 'term ended at ${v.lockHeight} · renew or redeem · claimable below ${formatUsdPerYec(v.underwaterAtMicroUsd)}';
     } else {
-      when = 'redeemable at ${v.lockHeight} · ${v.blocksUntilRedeem} block${v.blocksUntilRedeem == 1 ? '' : 's'} to go (${formatDate(v.lockTimeSecs)})';
+      when = 'redeemable in ${v.blocksUntilRedeem} block${v.blocksUntilRedeem == 1 ? '' : 's'}';
     }
     return Card(
       child: ListTile(
         key: Key('vault-${v.vaultTxid}'),
         leading: Icon(
-          v.underwater ? Icons.warning_amber_rounded : (v.claimWarning ? Icons.schedule_rounded : (v.open ? Icons.lock_rounded : Icons.lock_open_rounded)),
+          v.underwater || v.claimWarning ? Icons.warning_amber_rounded : (v.open ? Icons.lock_rounded : Icons.lock_open_rounded),
           color: v.underwater || v.claimWarning ? c.danger : (v.open ? c.yed : c.pending),
         ),
         title: Text('${formatYed(v.cents)} · ${formatYec(v.collateralZat)} YEC', style: t.titleMedium),
         subtitle: Text(
-          v.underwater ? '$when\nUnderwater: the price is at or below ${formatUsdPerYec(v.underwaterAtMicroUsd)}. A liquidator may claim it.' : when,
-          style: v.underwater ? t.bodyMedium?.copyWith(color: c.danger) : null,
+          v.nearThreshold ? '$when\nWarning: the claim price is within ${formatBps(2500)} of it. Redeem to stop a claim.' : when,
+          style: v.claimWarning || v.underwater ? t.bodyMedium?.copyWith(color: c.danger) : null,
         ),
-        isThreeLine: v.underwater,
+        isThreeLine: v.nearThreshold,
         trailing: const Icon(Icons.chevron_right_rounded),
         onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => VaultScreen(vaultTxid: v.vaultTxid))),
       ),

@@ -19,6 +19,7 @@ import '../format.dart';
 import '../state/app_scope.dart';
 import '../term_classes.dart';
 import '../theme.dart';
+import '../trust_text.dart';
 import '../widgets/move_public_hint.dart';
 import '../widgets/preview_card.dart';
 import 'mint_progress.dart';
@@ -317,6 +318,15 @@ class _MintScreenState extends State<MintScreen> {
                 MovePublicHint(what: 'Minting', privateZat: app.balances.yecShieldedZat, shortfallZat: e.totalZat - e.availableZat),
               const SizedBox(height: 8),
               TextButton(key: const Key('cancel'), onPressed: _reset, child: const Text('Change the amount')),
+              const SizedBox(height: 8),
+              // In-term IT-8: the promise, verbatim from the trust statement, with the mint's terms.
+              Card(
+                key: const Key('promise'),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(inTermPromise, style: t.bodySmall),
+                ),
+              ),
             ],
           ],
         ),
@@ -372,8 +382,10 @@ class MintEstimateCard extends StatelessWidget {
             PreviewRow('You mint', formatYed(e.cents), emphasis: true, color: c.yed),
             PreviewRow('Collateral locked', '${formatYec(e.collateralZat)} YEC', emphasis: true, color: c.yec),
             PreviewRow('Term', 'class ${e.termClass} · ${e.lockBlocks} blocks'),
-            PreviewRow('Redeemable from', 'height ${e.lockHeight}'),
-            PreviewRow('Claimable from', 'height ${e.claimHeight}'),
+            // In-term claims: redeemable at any height (before the term ends with the early-redeem
+            // fee); claimable at any height below θ (the promise below says both in full).
+            PreviewRow('Term ends', 'height ${e.lockHeight}'),
+            const PreviewRow('Claimable', 'below 125 % of the debt'),
             if (e.feeZat > 0) PreviewRow('Enforcement fee', '${formatYec(e.feeZat)} YEC'),
             if (e.payee.isNotEmpty) PreviewRow('Fee paid to', shorten(e.payee, head: 10, tail: 6)),
             if (e.attestFeeZat > 0) PreviewRow('Attestor fee', '${formatYec(e.attestFeeZat)} YEC'),

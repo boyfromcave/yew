@@ -14,7 +14,7 @@ Future<void> openYellowback(WidgetTester tester, Harness h) async {
 }
 
 void main() {
-  testWidgets('Yellowback tab: YED held, locked collateral, vaults with lock height and the underwater warning', (tester) async {
+  testWidgets('Yellowback tab: YED held, locked collateral, vaults with their term, claimable-at price and claimable now', (tester) async {
     final h = Harness(withWallet: true);
     h.api.vaultsAnswer = [
       h.api.vault(txid: 'v1' * 32, lockHeight: 528),
@@ -24,9 +24,9 @@ void main() {
     await openYellowback(tester, h);
     expect(find.text('\$50.00'), findsOneWidget);
     expect(find.text('19.00000000 YEC locked as collateral in 2 vaults'), findsOneWidget);
-    expect(find.textContaining('redeemable at 528 · 44 blocks to go'), findsOneWidget);
-    expect(find.textContaining('redeemable now (lock height 470)'), findsOneWidget);
-    expect(find.textContaining('Underwater: the price is at or below \$0.40 per YEC'), findsOneWidget);
+    expect(find.textContaining('redeemable now (early-redeem fee 5 % until 528'), findsOneWidget);
+    expect(find.textContaining('claimable below \$0.40 per YEC'), findsOneWidget);
+    expect(find.textContaining('CLAIMABLE NOW: anyone may close it by paying its debt'), findsOneWidget);
     expect(find.textContaining('closed at 530'), findsOneWidget);
     expect(find.byKey(const Key('mint')), findsOneWidget);
     expect(find.byKey(const Key('claimable')), findsOneWidget);

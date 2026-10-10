@@ -7,7 +7,7 @@
 // read-only yed_* RPC (or, since rpcversion 5, a read-only set_* / vault_* RPC of the vault
 // primitive YED runs on) on the node this server already talks to; the server adds no rule and
 // holds no Yellowback state. Field names are the JSON names of the node's RPC contract
-// (ycash-dd/doc/yellowback-rpc-contract.json, rpcversion 5) so the contract's example values
+// (ycash-dd/doc/yellowback-rpc-contract.json, rpcversion 6 on upgrade/vault-in-term) so the contract's example values
 // are the test fixtures and the JSON result unmarshals straight into these messages; a message
 // may carry a subset of a result's fields (unknown JSON fields are ignored), never a renamed one.
 // Plan: docs/plans/yellowback-lightwalletd-plan.md section 4.1.
@@ -45,7 +45,10 @@ message YellowbackAttestState {
   int64 armHeight = 1; bool armed = 2; string carrierMode = 3; int64 poolFresh = 4; int64 poolSize = 5;
   bool required = 6; int64 seatedCount = 7; string status = 8; int64 triggerHeight = 9;
 }
-message YellowbackClassParams { int64 baseRatioBps = 1; string class = 2; int64 maxBlocks = 3; int64 minBlocks = 4; }
+message YellowbackClassParams {
+  int64 baseRatioBps = 1; string class = 2; int64 maxBlocks = 3; int64 minBlocks = 4;
+  int64 earlyRedeemFeeBps = 5;                                        // rpcversion 6 (in-term IT-9): of the collateral, a redeem before lockHeight
+}
 message YellowbackAttestParams {
   int64 attestFeeBps = 1; int64 attestMaxAge = 2; int64 bondMaturity = 3; int64 bondMinLock = 4; int64 bondMinZat = 5;
   int64 bundleMax = 6; string carrierMode = 7; int64 carrierValueZat = 8; int64 mSelect = 9; int64 payloadVersion = 10;
@@ -58,6 +61,9 @@ message YellowbackParams {
   int64 refLag = 9; int64 refWindow = 10; int64 startHeight = 11; int64 tokenValueZat = 12; int64 supplyCapBps = 13;
   int64 globalRatioHaltBps = 14; int64 recapRatioBps = 15; int64 sigmaRefBps = 16;
   string attestorSetId = 17; int64 claimDelay = 18;                   // rpcversion 5: the YED attestor set (a vault primitive set id), CLAIM_DELAY
+  // rpcversion 6 (in-term claims, IT-7 / IT-9): the claim threshold theta, the early-redeem fee per class
+  // (A, B, C), the sigma multiplier's cap (10000 = pinned at 1) and whether a claim is valid in term.
+  int64 claimThresholdBps = 19; repeated int64 earlyRedeemFeeBps = 20; int64 sigmaMultMaxBps = 21; bool inTermClaims = 22;
 }
 message YellowbackInfo {
   // rpcversion 5 (the vault upgrade, upgrade plan section 6): activation, enforcement, sunset, valve and abandonment are gone.
@@ -140,6 +146,9 @@ message YedClaimable {
   int64 attestFeeZat = 1; int64 claimHeight = 2; string claimPath = 3; int64 collateralZat = 4; int64 emergencyOpenAt = 5;
   int64 feeZat = 6; int64 mintedCents = 7; int64 noticeHeight = 8; bool noticed = 9; string ownerAddress = 10; int64 pClaim = 11;
   int64 residualZat = 12; int64 underwaterAt = 13; string vault = 14;
+  // rpcversion 6 (in-term claims, IT-7): every ACTIVE vault whose claim branch is open is listed, in term
+  // too; claimable is false while it is above theta, and underwaterAt is then the price at which it becomes so.
+  bool claimable = 15; int64 lockHeight = 16;
 }
 message YedNotice {
   int64 emergencyOpenAt = 1; int64 expiresAt = 2; bool found = 3; int64 height = 4; int64 pEmerg = 5; int64 refHeight = 6;

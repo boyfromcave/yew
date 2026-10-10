@@ -758,17 +758,43 @@ pub struct VaultSummary {
     pub tip: i64,
     /// `ACTIVE` or `VOID`: still spendable by its owner.
     pub open: bool,
-    /// `ACTIVE` and `tip >= lockHeight`: [`redeem`] builds the owner-path REDEEM.
+    /// `ACTIVE` and `tip >= ownerHeight`: [`redeem`] builds the owner-path REDEEM. Since the
+    /// in-term plan's D-IT-15 that is any height after the mint; before `lockHeight` the redeem
+    /// also pays the early-redeem fee ([`VaultSummary::early_redeem`]).
     pub redeemable: bool,
-    /// Blocks until `lockHeight` (0 once reached).
+    /// Blocks until the owner's branch opens (`ownerHeight`; 0 once reached).
     pub blocks_until_redeem: i64,
+    /// Blocks until `lockHeight`, the end of the term (0 once reached): a redeem before it pays
+    /// the early-redeem fee.
+    pub blocks_until_term_end: i64,
+    /// `ACTIVE` and the next block is below `lockHeight`: a redeem now pays the early-redeem fee
+    /// (IT-9).
+    pub early_redeem: bool,
+    /// The early-redeem fee a redeem now would pay, zat: `collateral · earlyRedeemFeeBps[class] /
+    /// 10⁴` while [`VaultSummary::early_redeem`], else 0 (the preview's figure is the one signed:
+    /// it is 0 under FEE-0, which this offline summary cannot know).
+    pub early_redeem_fee_zat: i64,
+    /// The class's early-redeem fee rate, bps of the collateral (500 / 250 / 100).
+    pub early_redeem_fee_bps: i64,
+    /// Claims are judged by the threshold at every height (in-term plan IT-2): always true on this
+    /// build (the server's `inTermClaims` is checked at connect).
+    pub in_term_claims: bool,
+    /// The claim threshold θ, bps (12,500).
+    pub claim_threshold_bps: i64,
+    /// The claim price at the last sync, micro-USD per YEC (0 when unknown).
+    pub claim_price_micro_usd: i64,
+    /// `ACTIVE`, not claimable, and the claim price within 25 % above `underwaterAt`
+    /// (`WARN_MARGIN_BPS`): the warning before the threshold (IT-8: "your wallet will warn you").
+    pub near_threshold: bool,
     /// `VOID`: [`redeem`] releases the collateral without a payload.
     pub releasable: bool,
-    /// `claimable` as the node judged it at its tip (a liquidator may take it).
+    /// `claimable` as the node judged it at its tip: anyone may close it now by paying its debt
+    /// (in term too, IT-2); redeeming stops it.
     pub claimable: bool,
-    /// `underwaterAt`, micro-USD per YEC (0 when undefined).
+    /// `underwaterAt`, micro-USD per YEC (0 when undefined): the claimable-at price — below it the
+    /// vault's collateral is worth less than θ × its debt at the claim price.
     pub underwater_at_micro_usd: i64,
-    /// The last sync's `pMint` is at or below `underwaterAt`: the warning.
+    /// The last sync's claim price (else `pMint`) is at or below `underwaterAt`.
     pub underwater: bool,
     /// `closeHeight`, 0 while open.
     pub close_height: i64,
@@ -790,11 +816,12 @@ pub struct VaultSummary {
     /// The lock to re-mint with on renew: the original mint's `lockBlocks` when this wallet
     /// made it, else `lockHeight − mintHeight` clamped into the class (a restored wallet).
     pub renew_lock_blocks: u32,
-    /// `ACTIVE` and `tip >= claimHeight − 1 day` (the network's day, `Network::day_blocks`):
-    /// the persistent warning that a liquidator may claim the vault once it is underwater
-    /// (H-9.2). No sunset warning (upgrade plan §7: H-9.2 kept, the sunset leg dropped).
+    /// The persistent warning (H-9.2 as the in-term plan's IT-8 reshapes it): `ACTIVE` and either
+    /// claimable now or [`VaultSummary::near_threshold`]. With in-term claims the danger is the
+    /// threshold, not a height. No sunset warning (upgrade plan §7).
     pub claim_warning: bool,
-    /// `ACTIVE` and `tip >= claimHeight`: the claim path is open.
+    /// `ACTIVE` and `tip >= appHeight`: the claim branch is open (from the block after the mint
+    /// since IT-1); RED-4's threshold decides a claim.
     pub claim_open: bool,
     /// `CLAIMING` (the vault upgrade, U-23): a liquidator moved the collateral into a claim
     /// intent; one attestor may still cancel it until it is released after the claim delay.
@@ -930,6 +957,15 @@ pub struct ClaimableItem {
     pub claimant_zat: i64,
     /// The enforcement fee payee (`s…`), empty under FEE-0.
     pub payee: String,
+    /// rpcversion 6 (in-term IT-7): a claim of this vault would be accepted now. A `false` row is
+    /// listed (its claim branch is open) but above θ: [`claim`] refuses it.
+    pub claimable: bool,
+    /// The claimable-at price (`underwaterAt`), micro-USD per YEC.
+    pub underwater_at_micro_usd: i64,
+    /// `lockHeight`.
+    pub lock_height: i64,
+    /// The vault is still in its term (a claim now is a claim in term).
+    pub in_term: bool,
 }
 
 /// The terms of a [`MintEstimate`] the user confirmed, passed back to [`mint_start`] so the
@@ -964,15 +1000,23 @@ pub struct RedeemPreview {
     pub change_cents: i64,
     /// YED inputs spent.
     pub yed_inputs: u32,
-    /// The enforcement fee, zat (FEE-1, checked locally).
+    /// What the fee output pays, zat: the enforcement fee (FEE-1, checked locally) plus the
+    /// early-redeem fee.
     pub fee_zat: i64,
+    /// The enforcement fee alone (FEE-1).
+    pub enforcement_fee_zat: i64,
+    /// The early-redeem fee within `fee_zat` (IT-9): due when the redeem confirms before
+    /// `lockHeight`, 0 otherwise and under FEE-0. Shown before the slider.
+    pub early_redeem_fee_zat: i64,
+    /// The vault's `lockHeight` (the end of the term).
+    pub lock_height: i64,
     /// The enforcement fee payee (`s…`), empty under FEE-0.
     pub payee: String,
     /// The collateral returned, zat.
     pub collateral_zat: i64,
     /// The own address it returns to.
     pub collateral_address: String,
-    /// `nLockTime` (= `lockHeight`).
+    /// `nLockTime` (= the V's `ownerHeight`).
     pub lock_time: i64,
     /// `nExpiryHeight`.
     pub expiry_height: i64,
@@ -997,13 +1041,15 @@ pub struct RedeemResult {
     pub change_cents: i64,
     /// The enforcement fee, zat.
     pub fee_zat: i64,
+    /// The early-redeem fee within `fee_zat` (IT-9).
+    pub early_redeem_fee_zat: i64,
     /// The enforcement fee payee (`s…`), empty under FEE-0.
     pub payee: String,
     /// The collateral returned, zat.
     pub collateral_zat: i64,
     /// The own address it returns to.
     pub collateral_address: String,
-    /// `nLockTime` (= `lockHeight`).
+    /// `nLockTime` (= the V's `ownerHeight`).
     pub lock_time: i64,
     /// `nExpiryHeight`.
     pub expiry_height: i64,
@@ -2407,6 +2453,7 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// `price`: the claim price of the last sync (else its `pMint`), micro-USD per YEC.
 fn vault_summary(
     v: &crate::store::VaultRow,
     tip: u64,
@@ -2417,7 +2464,27 @@ fn vault_summary(
 ) -> VaultSummary {
     let active = v.status == "ACTIVE";
     let void = v.status == "VOID";
-    let claim_warn_from = (v.claim_height as u64).saturating_sub(network.day_blocks() as u64);
+    // In-term IT-1 / D-IT-15: the owner's branch opens at ownerHeight (the block after the mint);
+    // a row not refreshed since the schema-v4 migration (0) is judged by lockHeight until then.
+    let owner_from = if v.owner_height > 0 {
+        v.owner_height
+    } else {
+        v.lock_height
+    } as u64;
+    let app_from = if v.app_height > 0 {
+        v.app_height
+    } else {
+        v.claim_height
+    } as u64;
+    let early = active && tip + 1 < v.lock_height as u64;
+    let fee_bps = network
+        .term_classes()
+        .iter()
+        .find(|c| c.letter == v.term_class)
+        .map(|c| c.early_redeem_fee_bps)
+        .unwrap_or(0);
+    let p_claim = price.unwrap_or(0);
+    let near = active && !v.claimable && crate::params::near_threshold(p_claim, v.underwater_at);
     VaultSummary {
         vault_txid: txid_hex(&v.txid),
         status: v.status.clone(),
@@ -2430,8 +2497,20 @@ fn vault_summary(
         mint_height: v.mint_height as i64,
         tip: tip as i64,
         open: v.is_open(),
-        redeemable: active && tip >= v.lock_height as u64,
-        blocks_until_redeem: (v.lock_height as i64 - tip as i64).max(0),
+        redeemable: active && tip >= owner_from,
+        blocks_until_redeem: (owner_from as i64 - tip as i64).max(0),
+        blocks_until_term_end: (v.lock_height as i64 - tip as i64).max(0),
+        early_redeem: early,
+        early_redeem_fee_zat: if early {
+            crate::params::early_redeem_fee_zat(v.collateral_zat, fee_bps)
+        } else {
+            0
+        },
+        early_redeem_fee_bps: fee_bps,
+        in_term_claims: true,
+        claim_threshold_bps: crate::params::CLAIM_THRESHOLD_BPS,
+        claim_price_micro_usd: p_claim,
+        near_threshold: near,
         releasable: void,
         claimable: v.claimable,
         underwater_at_micro_usd: v.underwater_at,
@@ -2446,8 +2525,8 @@ fn vault_summary(
         blocks_until_claim: (v.claim_height as i64 - tip as i64).max(0),
         renewable: active && tip >= v.lock_height as u64,
         renew_lock_blocks: renew_lock_blocks(v, mints, network),
-        claim_warning: active && tip >= claim_warn_from,
-        claim_open: active && tip >= v.claim_height as u64,
+        claim_warning: active && (v.claimable || near),
+        claim_open: active && tip >= app_from,
         claiming: v.status == "CLAIMING",
         reopened: v.status == "REOPENED",
     }
@@ -2710,13 +2789,17 @@ pub fn vaults() -> Result<Vec<VaultSummary>, YewError> {
     with_open(|o| {
         let tip = synced_tip(o)?;
         let price = o.wallet.balances()?.price_micro_usd;
+        let claim_price = match o.wallet.store.meta_u64("claim_price_micro_usd") {
+            Ok(p) if p > 0 => Some(p as i64),
+            _ => None,
+        };
         let network = o.wallet.network;
         let mints = o.wallet.mints()?;
         let now = now_secs();
         Ok(o.wallet
             .vaults()?
             .iter()
-            .map(|v| vault_summary(v, tip, price, network, &mints, now))
+            .map(|v| vault_summary(v, tip, claim_price.or(price), network, &mints, now))
             .collect())
     })
 }
@@ -2747,6 +2830,9 @@ pub fn redeem_preview(vault_txid: String) -> Result<RedeemPreview, YewError> {
                 change_cents: p.change_cents as i64,
                 yed_inputs: p.yed_inputs.len() as u32,
                 fee_zat: p.fee_zat,
+                enforcement_fee_zat: p.fee_zat - p.early_redeem_fee_zat,
+                early_redeem_fee_zat: p.early_redeem_fee_zat,
+                lock_height: p.lock_height as i64,
                 payee: p.payee.clone(),
                 collateral_zat: p.collateral_out,
                 collateral_address: p.collateral_address.clone(),
@@ -2788,6 +2874,7 @@ pub fn redeem_confirm(preview_id: String) -> Result<RedeemResult, YewError> {
                 extra_burn_cents: p.extra_burn_cents as i64,
                 change_cents: p.change_cents as i64,
                 fee_zat: p.fee_zat,
+                early_redeem_fee_zat: p.early_redeem_fee_zat,
                 payee: p.payee,
                 collateral_zat: p.collateral_out,
                 collateral_address: p.collateral_address,
@@ -2888,6 +2975,10 @@ pub fn claimable() -> Result<Vec<ClaimableItem>, YewError> {
                     residual_zat: c.residual_zat,
                     claimant_zat: c.claimant_zat,
                     payee: c.payee,
+                    claimable: c.claimable,
+                    underwater_at_micro_usd: c.underwater_at,
+                    lock_height: c.lock_height as i64,
+                    in_term: c.in_term,
                 })
                 .collect())
         })
@@ -3234,6 +3325,7 @@ mod tests {
         let s = mint_status_of(&done, 540);
         assert!(!s.in_progress && !s.can_finish && s.main_txid == txid_hex(&[0xcd; 32]));
 
+        // In-term claims (IT-1, D-IT-15): minted at R = 498, so ownerHeight = appHeight = 499.
         let vault = VaultRow {
             txid: [0xef; 32],
             vout: 0,
@@ -3253,19 +3345,45 @@ mod tests {
             closing_txid: String::new(),
             void_reason: String::new(),
             updated_height: 510,
+            owner_height: 499,
+            app_height: 499,
         };
         const NOW: i64 = 1_790_000_000;
         let v = vault_summary(&vault, 510, Some(520_000), Network::Regtest, &[], NOW);
-        assert!(v.open && !v.redeemable && !v.releasable && !v.underwater);
-        assert_eq!(v.blocks_until_redeem, 8);
-        // H-9.2: the deadlines as dates (75 s blocks), no renew before lockHeight, no warning
-        // before claimHeight − 1 day (regtest's day is one block).
+        // The owner redeems at any height after the mint; before lockHeight with the early fee.
+        assert!(v.open && v.redeemable && !v.releasable && !v.underwater);
+        assert_eq!((v.blocks_until_redeem, v.blocks_until_term_end), (0, 8));
+        assert!(v.early_redeem && v.in_term_claims);
+        assert_eq!(
+            (v.early_redeem_fee_bps, v.early_redeem_fee_zat),
+            (500, 47_500_000)
+        );
+        assert_eq!(
+            (v.claim_threshold_bps, v.claim_price_micro_usd),
+            (12_500, 520_000)
+        );
+        // $0.52 is more than 25 % above the claimable-at $0.40: no warning; the branch is open.
+        assert!(!v.near_threshold && !v.claim_warning && v.claim_open);
         assert_eq!(v.lock_time_secs, NOW + 8 * 75);
         assert_eq!(v.claim_time_secs, NOW + 28 * 75);
-        assert_eq!(v.blocks_until_claim, 28);
-        assert!(!v.renewable && !v.claim_warning && !v.claim_open);
+        assert!(!v.renewable);
         // No mints row: the renew lock is lockHeight − mintHeight clamped into class A (48..96).
         assert_eq!(v.renew_lock_blocks, 48);
+        // Within 25 % above it ($0.49 < $0.50): the warning, and the vault is not claimable yet.
+        let v = vault_summary(&vault, 510, Some(490_000), Network::Regtest, &[], NOW);
+        assert!(v.near_threshold && v.claim_warning && !v.claimable && !v.underwater);
+        // Claimable now (the node's judgement): the warning, not the "near" state.
+        let claimable = VaultRow {
+            claimable: true,
+            ..vault.clone()
+        };
+        let v = vault_summary(&claimable, 510, Some(390_000), Network::Regtest, &[], NOW);
+        assert!(v.claimable && v.claim_warning && !v.near_threshold && v.underwater);
+        // The block before lockHeight is the last early one: a redeem then confirms at lockHeight.
+        let v = vault_summary(&vault, 516, Some(520_000), Network::Regtest, &[], NOW);
+        assert!(v.early_redeem && v.early_redeem_fee_zat == 47_500_000);
+        let v = vault_summary(&vault, 517, Some(520_000), Network::Regtest, &[], NOW);
+        assert!(!v.early_redeem && v.early_redeem_fee_zat == 0 && !v.renewable);
         let row_for_vault = MintRow {
             vault_txid: [0xef; 32],
             lock_blocks: 60,
@@ -3273,18 +3391,20 @@ mod tests {
         };
         let v = vault_summary(&vault, 536, None, Network::Regtest, &[row_for_vault], NOW);
         assert!(v.renewable && !v.claim_warning && v.renew_lock_blocks == 60);
-        let v = vault_summary(&vault, 537, None, Network::Regtest, &[], NOW);
-        assert!(v.renewable && v.claim_warning && !v.claim_open);
-        assert_eq!(v.lock_time_secs, NOW - 19 * 75);
-        let v = vault_summary(&vault, 538, None, Network::Regtest, &[], NOW);
-        assert!(v.claim_warning && v.claim_open && v.blocks_until_claim == 0);
+        assert_eq!(v.lock_time_secs, NOW - 18 * 75);
         assert_eq!(v.cents, 25_000);
         assert_eq!(
             v.owner_address,
             keys::encode_yellowback(Network::Regtest, &[2; 20])
         );
-        let v = vault_summary(&vault, 518, Some(390_000), Network::Regtest, &[], NOW);
-        assert!(v.redeemable && v.underwater && v.blocks_until_redeem == 0);
+        // A row migrated from schema v3, not refreshed yet: judged by lockHeight until GetVault.
+        let migrated = VaultRow {
+            owner_height: 0,
+            app_height: 0,
+            ..vault.clone()
+        };
+        let v = vault_summary(&migrated, 510, None, Network::Regtest, &[], NOW);
+        assert!(!v.redeemable && v.blocks_until_redeem == 8 && !v.claim_open);
         let void = VaultRow {
             status: "VOID".into(),
             void_reason: "abandoned".into(),
@@ -3292,7 +3412,7 @@ mod tests {
         };
         let v = vault_summary(&void, 540, None, Network::Regtest, &[], NOW);
         assert!(v.open && v.releasable && !v.redeemable && !v.underwater);
-        assert!(!v.renewable && !v.claim_warning);
+        assert!(!v.renewable && !v.claim_warning && !v.early_redeem);
         let closed = VaultRow {
             status: "CLOSED".into(),
             close_height: 520,
@@ -3301,21 +3421,25 @@ mod tests {
         let v = vault_summary(&closed, 540, Some(100_000), Network::Regtest, &[], NOW);
         assert!(!v.open && !v.redeemable && !v.underwater && v.close_height == 520);
         assert!(!v.renewable && !v.claim_warning && !v.claim_open);
-        // Mainnet: the warning opens 1,152 blocks (one day) before claimHeight.
+        // Mainnet, class B (91–180 d): the early-redeem fee is 2.5 % of the collateral.
         let main = VaultRow {
-            lock_height: 1_000_000,
-            claim_height: 1_034_560,
+            term_class: "B".into(),
+            lock_height: 1_100_000,
+            claim_height: 1_134_560,
             mint_height: 930_000,
+            owner_height: 929_998,
+            app_height: 929_998,
             status: "ACTIVE".into(),
             void_reason: String::new(),
             ..void.clone()
         };
-        let v = vault_summary(&main, 1_033_407, None, Network::Mainnet, &[], NOW);
-        assert!(v.renewable && !v.claim_warning);
-        assert_eq!(v.claim_time_secs, NOW + 1_153 * 75);
-        assert_eq!(v.renew_lock_blocks, 70_000);
-        let v = vault_summary(&main, 1_033_408, None, Network::Mainnet, &[], NOW);
-        assert!(v.claim_warning);
+        let v = vault_summary(&main, 1_000_000, None, Network::Mainnet, &[], NOW);
+        assert!(v.redeemable && v.early_redeem && !v.renewable && !v.claim_warning);
+        assert_eq!(
+            (v.early_redeem_fee_bps, v.early_redeem_fee_zat),
+            (250, 23_750_000)
+        );
+        assert_eq!(v.renew_lock_blocks, 170_000);
     }
 
     #[test]

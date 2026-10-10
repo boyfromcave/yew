@@ -2,7 +2,9 @@
 
 _The trust statement of the client contract (lightwalletd plan §5, rule 7; wallet plan §3.5,
 §4). Shown once at onboarding and from Settings. The app's copy is `app/lib/trust_text.dart`;
-`scripts/check-trust-text.sh` fails when the two differ._
+`scripts/check-trust-text.sh` fails when the two differ, and on this branch (in-term claims) when
+the paragraph opening "Your YEC is locked" is not the in-term promise of the node's generated spec
+(§8.1; the workspace's in-term plan IT-8) verbatim._
 
 YEW holds YEC in two ways. Private YEC sits in a shielded Ycash address (ys1…): the chain
 hides who paid whom, how much, and any message. Public YEC and all YED sit in transparent
@@ -31,11 +33,22 @@ fingerprints built into YEW.
 
 When you mint, redeem or claim, the wallet checks the server's terms against the network's
 rules before you confirm: the lock and claim heights, the collateral the price calls for, the
-enforcement fee, which is always the rule's amount and never more, and on a claim the share
-returned to the vault's owner. It then signs only what you confirmed: if the server's answer
-would lock more collateral, burn more YED or pay you less, nothing is signed. What it cannot
-check is the fee's recipient: the server chooses which eligible miner the fee goes to, or that
-none is due. Use a server you trust for these operations.
+enforcement fee and, on a redeem before the term ends, the early-redeem fee, each always the
+rule's amount and never more, and on a claim the share returned to the vault's owner. It then
+signs only what you confirmed: if the server's answer would lock more collateral, burn more YED
+or pay you less, nothing is signed. What it cannot check is the fee's recipient: the server
+chooses which eligible miner the fee goes to, or that none is due. Use a server you trust for
+these operations.
+
+Your YEC is locked for the term you choose. You can redeem at any time by paying back the YED
+you minted; redeeming before the term ends also costs an early-redeem fee of 5 %, 2.5 % or 1 %
+of your collateral for a short, medium or long term. If your collateral falls below 125 % of
+your debt at the attested price, anyone may close your vault by paying your debt; you then
+receive whatever collateral is worth more than 125 % of the debt — which, at the threshold, is
+usually nothing. Before that happens, your wallet will warn you, and redeeming stops it.
+
+In a year like the last, the calibration expects between 19 % and 50 % of vaults to be claimed
+in term.
 
 Before any YED leaves the wallet, the transaction is checked twice: once here, against the
 wallet's own record of which coins are YED, and once by the server's node, which must answer

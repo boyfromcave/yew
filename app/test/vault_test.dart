@@ -17,19 +17,55 @@ Future<void> openVault(WidgetTester tester, Harness h, String txid) async {
 }
 
 void main() {
-  testWidgets('a vault before its lock height: details shown, the slider disabled', (tester) async {
+  testWidgets('in term (before lockHeight): redeemable now; the early-redeem fee is on screen before the slider', (tester) async {
     final h = Harness(withWallet: true);
     final txid = 'v1' * 32;
     h.api.vaultsAnswer = [h.api.vault(txid: txid, lockHeight: 528)];
     await openVault(tester, h, txid);
     expect(find.text('\$25.00'), findsOneWidget);
     expect(find.text('minted against 9.50000000 YEC'), findsOneWidget);
-    expect(find.text('Locked until height 528: 44 blocks to go (synced to 484)'), findsOneWidget);
-    expect(find.text('Redeem unlocks at height 528.'), findsOneWidget);
-    // No preview before the lock: the button is disabled and no slider exists yet.
-    expect(tester.widget<FilledButton>(find.byKey(const Key('preview'))).onPressed, isNull);
-    expect(find.byKey(const Key('slide-to-confirm')), findsNothing);
-    expect(h.api.calls.where((c) => c.startsWith('redeem')), isEmpty);
+    expect(
+      find.text('Redeemable now, before the term ends at height 528 (44 blocks to go): an early redeem also pays the early-redeem fee of 5 % of the collateral (synced to 484)'),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('locked')), findsNothing);
+    // The claimable-at price and the claim price now (in-term IT-8); no warning at $0.52 over $0.40.
+    expect(find.text('\$0.40 per YEC (under 125 % of the debt)'), findsOneWidget);
+    expect(find.text('\$0.52 per YEC'), findsOneWidget);
+    expect(find.byKey(const Key('claim-warning')), findsNothing);
+    expect(find.text('5 % · about 0.47500000 YEC'), findsOneWidget);
+    // Nothing is sent until the preview is on screen (audit G-2).
+    await tester.tap(find.byKey(const Key('preview')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('redeemPreview $txid'));
+    expect(find.byKey(const Key('early-fee')), findsOneWidget);
+    expect(find.text('0.47500000 YEC (redeeming before the term ends at height 528)'), findsOneWidget);
+    expect(find.text('0.50000000 YEC'), findsOneWidget); // the enforcement fee alone
+    expect(find.text('Slide to redeem: burn \$25.00, pay 0.97500000 YEC in fees, early-redeem fee included'), findsOneWidget);
+    expect(h.api.calls.where((c) => c.startsWith('redeemConfirm')), isEmpty);
+    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('redeemConfirm rp-$txid'));
+    expect(find.text('Vault redeemed'), findsOneWidget);
+    expect(find.text('0.47500000 YEC'), findsOneWidget); // early-redeem fee paid
+  });
+
+  testWidgets('near the threshold: the warning names the claimable-at price; claimable now says so', (tester) async {
+    final h = Harness(withWallet: true);
+    final txid = 'v9' * 32;
+    h.api.vaultsAnswer = [h.api.vault(txid: txid, lockHeight: 528, claimPrice: 490000)];
+    await openVault(tester, h, txid);
+    expect(find.byKey(const Key('claim-warning')), findsOneWidget);
+    expect(find.textContaining('within 25 % above \$0.40 per YEC'), findsOneWidget);
+    expect(find.text('no, but within 25 % of it'), findsOneWidget);
+    h.api.vaultsAnswer = [h.api.vault(txid: txid, lockHeight: 528, claimPrice: 390000, underwater: true)];
+    await h.state.refresh();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('claimable-now')), findsOneWidget);
+    expect(find.textContaining('CLAIMABLE NOW'), findsWidgets);
+    expect(find.text('YES: redeem to stop it'), findsOneWidget);
+    // Redeeming is still offered: it stops the claim.
+    expect(tester.widget<FilledButton>(find.byKey(const Key('preview'))).onPressed, isNotNull);
   });
 
   testWidgets('at the lock height: preview first (fee and payee shown), then the slider confirms the same preview', (tester) async {
@@ -37,7 +73,7 @@ void main() {
     final txid = 'v2' * 32;
     h.api.vaultsAnswer = [h.api.vault(txid: txid, lockHeight: 484, cents: 3000)];
     await openVault(tester, h, txid);
-    expect(find.text('Redeemable: the lock height 484 is reached (synced to 484)'), findsOneWidget);
+    expect(find.text('Redeemable: the term ended at height 484, no early-redeem fee (synced to 484)'), findsOneWidget);
     expect(find.byKey(const Key('locked')), findsNothing);
     // Nothing is sent until the preview is on screen (audit G-2).
     expect(find.byKey(const Key('slide-to-confirm')), findsNothing);
@@ -47,7 +83,8 @@ void main() {
     expect(h.api.calls.where((c) => c.startsWith('redeemConfirm')), isEmpty);
     expect(find.byKey(const Key('redeem-preview')), findsOneWidget);
     expect(find.text('0.50000000 YEC'), findsOneWidget); // the enforcement fee, FEE_MIN
-    expect(find.text('Fee paid to'), findsOneWidget);
+    expect(find.text('Fees paid to'), findsOneWidget);
+    expect(find.byKey(const Key('early-fee')), findsNothing);
     expect(find.text('8.99999000 YEC'), findsOneWidget); // collateral back
     expect(find.text('Slide to redeem: burn \$30.00, pay 0.50000000 YEC fee'), findsOneWidget);
     await tester.longPress(find.byKey(const Key('slide-to-confirm')));

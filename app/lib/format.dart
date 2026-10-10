@@ -67,6 +67,15 @@ String formatUsdPerYec(int microUsd) {
   return '\$$whole.${cents.toString().padLeft(2, '0')} per YEC';
 }
 
+/// `125 %`, `2.5 %`, `5 %` from basis points (the in-term promise's own form).
+String formatBps(int bps) {
+  var s = (bps / 100).toStringAsFixed(2);
+  while (s.contains('.') && (s.endsWith('0') || s.endsWith('.'))) {
+    s = s.substring(0, s.length - 1);
+  }
+  return '$s %';
+}
+
 /// `ab12cd34…ef56` for a txid or an address.
 String shorten(String s, {int head = 10, int tail = 6}) =>
     s.length <= head + tail + 1 ? s : '${s.substring(0, head)}…${s.substring(s.length - tail)}';
