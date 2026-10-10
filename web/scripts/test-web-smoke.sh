@@ -14,6 +14,10 @@
 # smoke.py. Needs Google Chrome and a ChromeDriver of the same major version (cached as
 # test-spike-sqlite.sh does). The wasm module must be built (scripts/build-core-wasm.sh).
 set -euo pipefail
+# A sleeping Mac pauses Docker (the kind cluster) and the browser: keep it awake for the run
+# (macOS only; the default idle sleep here is one minute, and every stall this cost looked like a
+# cluster fault).
+if [ -z "${YEW_WEB_CAFFEINATED:-}" ] && command -v caffeinate >/dev/null; then export YEW_WEB_CAFFEINATED=1; exec caffeinate -i -s "$0" "$@"; fi
 cd "$(dirname "$0")/.."
 KIND=0; PAGE=""
 for a in "$@"; do case "$a" in --kind) KIND=1 ;; *) PAGE=$a ;; esac; done

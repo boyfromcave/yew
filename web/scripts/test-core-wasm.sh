@@ -27,6 +27,10 @@
 # Same toolchain recipe as test-spike-sqlite.sh (Homebrew LLVM clang for wasm32 C, a ChromeDriver
 # matched to the installed Chrome, wasm-pack's wasm-bindgen-test-runner).
 set -euo pipefail
+# A sleeping Mac pauses Docker (the kind cluster) and the browser: keep it awake for the run
+# (macOS only; the default idle sleep here is one minute, and every stall this cost looked like a
+# cluster fault).
+if [ -z "${YEW_WEB_CAFFEINATED:-}" ] && command -v caffeinate >/dev/null; then export YEW_WEB_CAFFEINATED=1; exec caffeinate -i -s "$0" "$@"; fi
 scripts="$(cd "$(dirname "$0")" && pwd)"
 cd "$scripts/../core-wasm"
 LLVM=${LLVM:-/opt/homebrew/opt/llvm/bin}

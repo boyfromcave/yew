@@ -766,7 +766,26 @@ Sapling send in WASM; the slide-to-confirm plus progress sheet carries over.
   path is the one walked. A real Argon2id export from the core for `keystore.ts`. The in-term
   claim intents / release screens (`claim_intents`, `release_preview` exist in the core) are not
   in the shell.
-- [ ] W0 complete
+- [x] **W0 complete** (2026-10-10): W0.1–W0.5 above.
+- [x] **W1 complete** (W1a + W1b merged 2026-10-10), **W2 + K4 complete**, **W3 complete** — all
+  merged into `up/web`; the merged tree re-verified by the coordinator: `npm run check` (21 tests),
+  `npm run build` with SRI, `build-release.sh` byte-identical (bundle hash `71650b66…`),
+  `test-core-wasm.sh` web + harden suites green on kind (release), `test-web-smoke.sh --kind
+  https://localhost/` green (139 s; the 96 s onboarding lap was the gateway's per-peer Yellowback
+  bucket drained by the preceding runs, not the wallet).
+  **Traps of the verification day:** (1) this Mac sleeps after one idle minute and a sleeping Mac
+  pauses Docker and the browser — every multi-minute "stall" of the kind chain was that; the long
+  scripts now re-exec themselves under `caffeinate -i -s`; (2) two browser runs at once contend
+  for the node wallet (`z_sendmany` operations time out) and for the fund-helper's port — run them
+  one at a time (`FUND_PORT` exists for the rare parallel case); (3) `YEW_WEB_NO_REORG` is a
+  compile-time env: a cached test binary keeps the old setting.
+  **Open after W3** (owner items): tonic-web-wasm-client pinned to PR #113's rev until released;
+  sahpool default capacity (6 files = 2 wallet stores) — `install_storage` should reserve headroom
+  and "Forget" delete the three files (x402-ycash light `wasm.rs`); Argon2id export from the core
+  for the keystore; passkey path has no headless test; Safari/Firefox runs; mint/redeem/claim
+  screens exercised only on the mock (kind has no mintable class); CI `web` job inert until the
+  `up/web` siblings are pushed; restore with a birthday after a public receipt hides it (the
+  transparent sync starts at the birthday) — the restore screen should say so.
 - [ ] W1
 - [ ] W2
 - [x] **W3 hardening — 2026-10-09 (branch `up/web-harden`)**: the reproducible build with
