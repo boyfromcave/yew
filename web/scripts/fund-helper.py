@@ -3,12 +3,17 @@
 browser test calls to be paid from the devnet node's wallet.
 
   GET /fund?addr=<yregtestsapling1…>&zat=<n>   -> the txid of a z_sendmany to addr
+                                                  (&memo=<text> carries a memo; W3)
   GET /fund_t?addr=<sm…>&zat=<n>               -> the txid of a sendtoaddress to the transparent addr
                                                   (W1a; z_sendmany from the node's z-address when
                                                   the node refuses to spend coinbase transparently)
   GET /params/<file>                            -> the Sapling parameter file from $PARAMS_DIR
                                                   (default ~/.cache/yew-web/sapling-params; W1a's
                                                   fetch_params source, so the test never downloads)
+  GET /reorg?depth=<d>  or  /reorg?height=<h>   -> a reorg (W3): invalidateblock at tip-d (or at h),
+                                                  then `generate` so the new branch is longer by one;
+                                                  JSON {oldTip, invalidated, newTip}. It disturbs
+                                                  every client of the node: once per run, late.
 
 The node's `ycash-cli` is $YEW_FUND_CLI (shell words; default: `kubectl exec` into the kind
 cluster of ycash-infra; a local devnet: `yellowback-devnet cli --node 0 --`). Coinbase is
@@ -78,13 +83,16 @@ def ensure_private(zaddr, need_yec):
         time.sleep(2)
 
 
-def fund(addr, zat):
+def fund(addr, zat, memo=None):
     yec = zat / 1e8
     zaddr = node_zaddr()
     ensure_private(zaddr, yec + 0.001)
+    out = {"address": addr, "amount": f"{yec:.8f}"}
+    if memo:
+        out["memo"] = memo.encode().hex()
     # fee null = ZIP-317 (6.22 refuses an explicit 0.0001); the node's account may hold the shielded
     # coinbase under several of its own addresses, which the default policy refuses to link.
-    r = cli("z_sendmany", zaddr, json.dumps([{"address": addr, "amount": f"{yec:.8f}"}]), "1", "null", "AllowLinkingAccountAddresses")
+    r = cli("z_sendmany", zaddr, json.dumps([out]), "1", "null", "AllowLinkingAccountAddresses")
     opid = r if isinstance(r, str) else r.get("opid")
     txid = wait_opid(opid)
     print(f"fund-helper: sent {yec} YEC to {addr} in {txid}", flush=True)
@@ -103,6 +111,28 @@ def fund_t(addr, zat):
         txid = wait_opid(r if isinstance(r, str) else r.get("opid"))
     print(f"fund-helper: sent {yec} YEC to transparent {addr} in {txid}", flush=True)
     return txid
+
+
+def reorg(depth=None, height=None):
+    """Invalidate the block at `height` (or tip - depth) and mine until the new branch is one block
+    longer than the old chain (the miner keeps mining on it). The disconnected transactions go
+    back to the mempool, so a funding mined in the old branch is mined again in the new one."""
+    old_tip = int(cli("getblockcount"))
+    h = int(height) if height is not None else old_tip - int(depth)
+    if h < 1 or h > old_tip:
+        raise ValueError(f"height {h} not in 1..{old_tip}")
+    cli("invalidateblock", cli("getblockhash", str(h)))
+    want = old_tip + 1
+    n = want - int(cli("getblockcount"))
+    cli("generate", str(n))
+    t0 = time.time()
+    while int(cli("getblockcount")) < want:
+        if time.time() - t0 > 120:
+            raise RuntimeError("the new branch did not grow")
+        time.sleep(1)
+    new_tip = int(cli("getblockcount"))
+    print(f"fund-helper: reorg: invalidated height {h} (old tip {old_tip}), new tip {new_tip}", flush=True)
+    return json.dumps({"oldTip": old_tip, "invalidated": h, "newTip": new_tip})
 
 
 PARAMS_DIR = os.environ.get("PARAMS_DIR") or os.path.join(
@@ -142,17 +172,23 @@ class H(http.server.BaseHTTPRequestHandler):
                         break
                     self.wfile.write(chunk)
             return None
-        if u.path not in ("/fund", "/fund_t"):
+        if u.path not in ("/fund", "/fund_t", "/reorg"):
             return self._reply(404, "not found")
         q = urllib.parse.parse_qs(u.query)
         try:
+            if u.path == "/reorg":
+                depth = q.get("depth", [None])[0]
+                height = q.get("height", [None])[0]
+                if depth is None and height is None:
+                    return self._reply(400, "depth or height, please")
+                return self._reply(200, reorg(depth=depth, height=height))
             addr = q["addr"][0]
             zat = int(q.get("zat", ["150000000"])[0])
             if u.path == "/fund_t":
                 return self._reply(200, fund_t(addr, zat))
             if not addr.startswith("yregtestsapling1"):
                 return self._reply(400, "a regtest Sapling address, please")
-            self._reply(200, fund(addr, zat))
+            self._reply(200, fund(addr, zat, q.get("memo", [None])[0]))
         except Exception as e:  # noqa: BLE001
             self._reply(500, f"{e}")
 

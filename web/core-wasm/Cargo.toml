@@ -31,6 +31,10 @@ wasm-bindgen-test = "0.3"
 # The test imports a foreign key (W1a); the version yew-core pins.
 secp256k1 = { version = "=0.33.1", default-features = false, features = ["std"] }
 web-sys = { version = "=0.3.105", features = ["WorkerGlobalScope", "Response"] }
+# tests/harden.rs (W3) reaches the sahpool's management handle (capacity, the file list): the
+# versions the light library pins (one copy in the graph).
+sqlite-wasm-rs = { version = "=0.5.5", default-features = false }
+sqlite-wasm-vfs = { version = "=0.2.0", default-features = false }
 
 [profile.release]
 opt-level = "s"

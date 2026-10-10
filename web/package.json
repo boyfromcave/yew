@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node scripts/sri.mjs dist",
     "preview": "vite preview",
     "test": "vitest run",
     "check": "scripts/check-web-imports.sh && tsc --noEmit && vitest run"

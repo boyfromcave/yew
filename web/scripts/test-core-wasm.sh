@@ -9,7 +9,11 @@
 # helper's /fund_t), sends t→t, shields, sends z→z (the proving parameters served by the helper
 # from $PARAMS_DIR, default ~/.cache/yew-web/sapling-params — fetched once by
 # test-spike-prover.sh), and exercises the YED / vault previews. FUND=0 skips the helper (and
-# with it everything that needs money).
+# with it everything that needs money). TESTS (default "web harden") names the test targets:
+# tests/harden.rs is W3's (restore from seed with a birthday, busy under concurrency, a reorg —
+# the reorg test invalidates a block on the shared node through the helper's /reorg, ONCE per
+# profile, so run it alone with TESTS=harden when others use the cluster, or set
+# YEW_WEB_NO_REORG=1 to skip it). PROFILES (default "debug release") picks the cargo profiles.
 #
 # Against a local devnet instead (the kind cluster's regtest activates only the vault upgrade,
 # so it has no Sapling: GetTreeState fails there — see the plan's W0.5 findings):
@@ -47,6 +51,9 @@ RUNNER=$(ls -d ~/Library/Caches/.wasm-pack/wasm-bindgen-cargo-install-*/wasm-bin
 export YEW_WEB_LWD=${YEW_WEB_LWD:-http://localhost:9067}
 if [ "${FUND:-1}" = 1 ]; then
   PORT=${FUND_PORT:-8766}
+  if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "port $PORT is taken (a fund-helper.py from an earlier run? pkill -f fund-helper.py, or set FUND_PORT)"; exit 1
+  fi
   python3 "$scripts/fund-helper.py" "$PORT" &
   HELPER=$!
   trap 'kill $HELPER 2>/dev/null' EXIT
@@ -62,5 +69,9 @@ export CC_wasm32_unknown_unknown="$LLVM/clang" AR_wasm32_unknown_unknown="$LLVM/
 export CHROMEDRIVER="$CACHE/chromedriver" CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER="$RUNNER" WASM_BINDGEN_TEST_ONLY_WEB=1
 # Syncing, funding and waiting for blocks take minutes; the runner's default per-test timeout is 20 s.
 export WASM_BINDGEN_TEST_TIMEOUT=${WASM_BINDGEN_TEST_TIMEOUT:-900}
-cargo test --target wasm32-unknown-unknown --test web "$@" -- --nocapture
-cargo test --release --target wasm32-unknown-unknown --test web "$@" -- --nocapture
+for profile in ${PROFILES:-debug release}; do
+  flag=; [ "$profile" = release ] && flag=--release
+  for t in ${TESTS:-web harden}; do
+    cargo test $flag --target wasm32-unknown-unknown --test "$t" "$@" -- --nocapture
+  done
+done
