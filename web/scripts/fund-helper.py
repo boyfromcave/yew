@@ -9,6 +9,11 @@ browser test calls to be paid from the devnet node's wallet.
                                                   the node refuses to spend coinbase transparently)
   GET /address                                 -> a fresh transparent address of the node's wallet
                                                   (W2: the recipient of the shell's public send)
+  GET /yed_address                             -> a fresh YED address of the node's wallet (the
+                                                  recipient of the shell's YED send; smoke --mint)
+  GET /fund_yed?addr=<yr…>&cents=<n>           -> the txid of a yed_send to addr from the node's YED
+                                                  (what the shell sent it; smoke --mint, so the vault
+                                                  can be redeemed with its whole debt)
   GET /params/<file>                            -> the Sapling parameter file from $PARAMS_DIR
                                                   (default ~/.cache/yew-web/sapling-params; W1a's
                                                   fetch_params source, so the test never downloads)
@@ -174,12 +179,12 @@ class H(http.server.BaseHTTPRequestHandler):
                         break
                     self.wfile.write(chunk)
             return None
-        if u.path == "/address":
+        if u.path in ("/address", "/yed_address"):
             try:
-                return self._reply(200, cli("getnewaddress"))
+                return self._reply(200, cli("getnewaddress" if u.path == "/address" else "yed_getnewaddress"))
             except Exception as e:  # noqa: BLE001
                 return self._reply(500, f"{e}")
-        if u.path not in ("/fund", "/fund_t", "/reorg"):
+        if u.path not in ("/fund", "/fund_t", "/fund_yed", "/reorg"):
             return self._reply(404, "not found")
         q = urllib.parse.parse_qs(u.query)
         try:
@@ -193,6 +198,11 @@ class H(http.server.BaseHTTPRequestHandler):
             zat = int(q.get("zat", ["150000000"])[0])
             if u.path == "/fund_t":
                 return self._reply(200, fund_t(addr, zat))
+            if u.path == "/fund_yed":
+                r = cli("yed_send", addr, str(int(q.get("cents", ["100"])[0])))
+                txid = r if isinstance(r, str) else r.get("txid")
+                print(f"fund-helper: sent {int(q.get('cents', ['100'])[0]) / 100:.2f} YED to {addr} in {txid}", flush=True)
+                return self._reply(200, txid)
             if not addr.startswith("yregtestsapling1"):
                 return self._reply(400, "a regtest Sapling address, please")
             self._reply(200, fund(addr, zat, q.get("memo", [None])[0]))

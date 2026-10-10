@@ -9,15 +9,21 @@ running chromedriver.
       funding (/fund) → history → the proving files from the helper (/params/, the page's
       ?params=) → move 0.4 YEC to private → a private send with a memo to the wallet's own new
       address → reload → unlock → the balances persist (OPFS) → the Yellowback screens (mint
-      halted on kind, no vault, nothing claimable). --server is typed at the server step; without
+      halted on kind, no vault, nothing claimable). With --mint (the cluster armed by ycash-infra's
+      `make kind-personas-up`, K0c): 8 YEC more public funding → Mint $100.00 (the minimum) for 48
+      blocks: estimate → the carrier (step 1, funded by the slider) → "Check the carrier" until the
+      MINT is staged → slide → Minted → the vault row on the Yellowback screen → 1 YED to the node's
+      YED address (the helper's /yed_address) → 1 YED back from the node (/fund_yed) → the redeem
+      (early: the lock has not passed) → no open vault, 1 closed. --server is typed at the server step; without
       it the page's own default (its origin when served over https) is kept. --insecure accepts the
       gateway's self-signed certificate. Timings are printed at the end.
 """
-import json, sys, time, urllib.request
+import json, re, sys, time, urllib.request
 
 args = sys.argv[1:]
 DRV, PAGE = args[0], args[1]
 KIND = "--kind" in args
+MINT = "--mint" in args
 HELPER = args[args.index("--kind") + 1] if KIND else ""
 SERVER = args[args.index("--server") + 1] if "--server" in args else ""
 INSECURE = "--insecure" in args
@@ -59,12 +65,12 @@ def type_into(css, text, idx=0):
             time.sleep(0.3)
     raise SystemExit(f"could not type into {css}[{idx}]; page:\n{body_text()}")
 def text_of(css, timeout=10): return req("GET", S + f"/element/{find(css, timeout=timeout)}/text")
-def wait_text(needle, timeout=10, absent=False):
+def wait_text(needle, timeout=10, absent=False, pred=None):
     end = time.time() + timeout; t = ""
     while time.time() < end:
         try:
             t = body_text()
-            if (needle in t) != absent: return t
+            if pred(t) if pred else (needle in t) != absent: return t
         except Exception as e: t = f"(execute failed: {e})"
         time.sleep(0.2)
     raise SystemExit(f"'{needle}' {'still' if absent else 'not'} found after {timeout}s; page:\n{t}")
@@ -213,13 +219,104 @@ def walk_kind():
     t0 = time.time(); req("POST", S + "/url", {"url": PAGE}); unlock()
     for line in priv: wait_text(line, 60)
     lap("reload → unlock → balances back", t0)
-    # Yellowback: minting halted on kind, no vault, nothing claimable
+    # Yellowback: no vault, nothing claimable; the mint gate as the node reports it
     click("//nav/a[text()='Yellowback']"); wait_text("No open vault"); wait_text("$0.00")
-    click("//button[text()='Mint']"); halted = wait_text("halted", 30)
-    print("  mint: " + next(l for l in halted.splitlines() if "halted" in l), flush=True)
-    click("//nav/a[text()='Yellowback']"); wait_text("No open vault"); click("//button[text()='Claimable']"); wait_text("Nothing is claimable right now.", 30)
-    print(f"smoke ok (kind, {PAGE}): {time.time() - t_all:.0f}s total")
+    click("//button[text()='Mint']"); gate = wait_text("Minting is open" if MINT else "halted", 30)
+    print("  mint: " + next(l for l in gate.splitlines() if ("Minting is open" in l or "halted" in l)), flush=True)
+    click("//nav/a[text()='Yellowback']"); wait_text("No open vault"); click("//button[text()='Claimable']")
+    # a shared cluster may hold other wallets' claimable vaults (an earlier --mint run's, left unredeemed)
+    cl = wait_text("", 30, pred=lambda t: "Nothing is claimable right now." in t or " debt · " in t)
+    print("  claimable: " + ("nothing" if "Nothing is claimable" in cl else f"{cl.count(' debt · ')} vault(s) of other wallets"), flush=True)
+    if MINT: walk_mint(lap, home, sync_until, helper, addr_t)
+    print(f"smoke ok (kind{', mint' if MINT else ''}, {PAGE}): {time.time() - t_all:.0f}s total")
     for what, secs in timings: print(f"  {secs:6.1f}s  {what}")
+
+def walk_mint(lap, home, sync_until, helper, addr_t):
+    """The YED walk on an ARMED cluster (ycash-infra K0c): mint the minimum, show the vault, send
+    1 YED to the node and get it back, redeem. The collateral is public YEC: 6 YEC at the personas'
+    $50 (300 % of $100, class A) plus the 0.5 YEC enforcement fee floor and the network fee."""
+    def rows_of(t, labels):
+        """A preview card's rows: innerText puts a label and its value on consecutive lines."""
+        lines = t.splitlines(); out = []
+        for i, l in enumerate(lines):
+            if l.startswith(labels): out.append(l if ":" in l or i + 1 >= len(lines) else f"{l} {lines[i + 1]}")
+        return " · ".join(out)
+    def public_yec(t):
+        # the home card: the private row, then the public row (innerText may keep the label on the line)
+        amounts = [float(m.group(1)) for m in (re.fullmatch(r"(?:Public|Private)?\s*(\d+\.\d{8}) YEC", l.strip()) for l in t.splitlines()) if m]
+        return amounts[-1] if len(amounts) >= 2 else 0.0
+    t0 = time.time(); txid = helper(f"/fund_t?addr={addr_t}&zat=800000000"); print(f"  funded 8 YEC more public in {txid}", flush=True)
+    home(); sync_until("", 180, pred=lambda t: public_yec(t) >= 8.0 and "pending" not in t); lap("8 YEC public seen (for the collateral)", t0)
+    # the mint: $100.00 (MIN_MINT) for 48 blocks (class A); the estimate, the carrier, the MINT
+    click("//nav/a[text()='Yellowback']"); wait_text("No open vault"); click("//button[text()='Mint']"); wait_text("Minting is open", 30)
+    type_into("input[inputmode=decimal]", "100.00"); type_into("input[type=number]", "48")
+    t0 = time.time(); click("//button[text()='Estimate']"); est = wait_text("Collateral to lock", 60)
+    print("  estimate: " + rows_of(est, ("Collateral to lock", "Term class", "Enforcement fee", "Total from")), flush=True)
+    m = re.search(r"Collateral to lock\n(\d+\.\d{8}) YEC", est); assert m, est
+    collateral = m.group(1)   # the price walks (the personas' ±10 % band): 6 YEC at $50, class A
+    click("//button[starts-with(text(),'Start')]"); wait_text("Step 1 of 2", 60)
+    slide("fund"); wait_text("Step 2 of 2", 120); lap("mint: estimate → carrier funded (step 1 broadcast)", t0)
+    # mint_finish stages the MINT once a sync has seen the carrier confirm: sync from Home, then
+    # "Check the carrier" on the Mint screen (the vm keeps the mint across screens)
+    t0 = time.time(); end = time.time() + 240
+    while True:
+        if time.time() > end: raise SystemExit(f"the MINT never became stageable; page:\n{body_text()}")
+        home(); click("//button[text()='Sync']", 30); wait_text("Syncing…", 60, absent=True)
+        click("//nav/a[text()='Yellowback']"); click("//button[text()='Mint']"); wait_text("Step 2 of 2", 30)
+        if "Slide to mint" in body_text(): break
+        try: click("//button[text()='Check the carrier']", 2)
+        except SystemExit: pass
+        time.sleep(2)
+        if "Slide to mint" in body_text(): break
+    slide("mint"); wait_text("MAIN_SENT", 60); lap("mint: carrier confirmed (after a sync) → MINT broadcast (MAIN_SENT)", t0)
+    # DONE once a sync has seen the MINT confirm; "Check the carrier" re-reads the row
+    t0 = time.time(); end = time.time() + 240
+    while True:
+        if time.time() > end: raise SystemExit(f"the mint never reached DONE; page:\n{body_text()}")
+        home(); click("//button[text()='Sync']", 30); wait_text("Syncing…", 60, absent=True)
+        click("//nav/a[text()='Yellowback']"); click("//button[text()='Mint']"); time.sleep(1)
+        try: click("//button[text()='Check the carrier']", 2)
+        except SystemExit: pass
+        time.sleep(2)
+        if "Minted $100.00" in body_text(): break
+    minted = body_text(); lap("mint: MINT confirmed (after a sync) → Minted", t0)
+    print("  " + next(l for l in minted.splitlines() if l.startswith("Minted")), flush=True)
+    click("//button[text()='Done']")
+    # the vault row
+    row = wait_text(f"$100.00 · {collateral} YEC", 60)
+    vault_lines = [l for l in row.splitlines() if "class A" in l or "$100.00 · " in l]
+    print("  vault: " + " / ".join(vault_lines[:2]), flush=True)
+    home(); sync_until("$100.00", 180, pred=lambda t: "$100.00" in t and "pending" not in t)
+    # 1 YED to the node, 1 YED back (the redeem burns the whole debt)
+    node_ye = helper("/yed_address")
+    click("//nav/a[text()='Send']"); wait_text("Preview"); click("//div[@class='seg']/button[text()='YED']")
+    type_into("input[type=text]", node_ye, 0); click("//h2[text()='Send']"); type_into("input[inputmode=decimal]", "1.00", 0)
+    click("//button[text()='Preview']"); wait_text("Node verdict", 60)
+    t0 = time.time(); slide("send"); wait_text("Copy txid", 120); lap("send 1 YED to the node: confirm → Sent", t0)
+    click("//button[text()='Done']")
+    home(); sync_until("$99.00", 180, pred=lambda t: "$99.00" in t and "pending" not in t)
+    click("//nav/a[text()='Receive']"); click("//div[@class='seg']/button[text()='YED']"); wait_text("YED and the public YEC")
+    for _ in range(50):
+        addr_ye = text_of("code.addr")
+        if addr_ye.startswith("yr"): break
+        time.sleep(0.2)
+    assert addr_ye.startswith("yr"), addr_ye
+    t0 = time.time(); txid = helper(f"/fund_yed?addr={addr_ye}&cents=100"); print(f"  the node sent 1 YED back in {txid}", flush=True)
+    home(); sync_until("$100.00", 180, pred=lambda t: "$100.00" in t and "pending" not in t); lap("1 YED back from the node seen", t0)
+    # the redeem (before the lock: early, with the class fee)
+    click("//nav/a[text()='Yellowback']"); wait_text(f"$100.00 · {collateral} YEC"); click("//ul[@class='list']/li[1]"); wait_text(f"minted against {collateral} YEC")
+    t0 = time.time(); click("//button[text()='Preview the redeem']"); pre = wait_text("YED burned", 60)
+    print("  redeem: " + rows_of(pre, ("Redeem", "YED burned", "Collateral returned", "Enforcement fee", "Before the lock")), flush=True)
+    slide("redeem"); wait_text("Vault redeemed", 120); lap("redeem: preview → confirm → Vault redeemed", t0)
+    click("//button[text()='Done']")
+    # the vault closes once a sync has seen the redeem confirm
+    end = time.time() + 180
+    while "No open vault" not in body_text():
+        if time.time() > end: raise SystemExit(f"the vault never closed; page:\n{body_text()}")
+        home(); click("//button[text()='Sync']", 30); wait_text("Syncing…", 60, absent=True); click("//nav/a[text()='Yellowback']"); time.sleep(1.5)
+    wait_text("1 closed")
+    home(); sync_until("$0.00", 180, pred=lambda t: "$0.00" in t and "pending" not in t)
+    print("  after the redeem: " + " · ".join(l for l in body_text().splitlines() if l.endswith("YEC") or l.startswith("$")), flush=True)
 
 try:
     walk_kind() if KIND else walk_mock()
