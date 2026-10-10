@@ -54,13 +54,37 @@ export class YellowbackVm extends Vm<YellowbackState> {
       await this.stageFinish();
     });
   }
-  /** Stage the MINT (mint_finish) — the core answers "build: …" until the carrier is confirmed. */
+  /** Stage the MINT (mint_finish). The core advances a mint only from a sync, so one runs first; while the
+   *  carrier is unconfirmed the core answers "build: …" — that is a wait, not an error: the row is shown
+   *  with a note and the next sync (automatic) tries again. */
   private async stageFinish() {
     const id = this.state.mintId; if (id === null) return;
-    const step = await this.core.mint_finish(id);
-    this.set({ step, mintStatus: step.row });
+    try { await this.core.sync(); } catch { /* the sync's own error shows on Home */ }
+    try {
+      const step = await this.core.mint_finish(id);
+      this.set({ step, mintStatus: step.row });
+    } catch (e) {
+      if (kindOf(e) !== "build") throw e;
+      const rows = await this.core.mints();
+      const row = rows.find((m) => m.mintId === id) ?? this.state.mintStatus;
+      this.set({ step: null, mintStatus: row ? { ...row, note: row.note || "waiting for the carrier to confirm (checked at every sync)" } : null });
+    }
   }
   mintFinish() { return this.run(() => this.stageFinish()); }
+  /** After a sync (HomeVm.onSynced): a pending mint re-checks its carrier; a broadcast MINT refreshes its
+   *  row (and the vaults) so the screen moves to "Minted" without a click. */
+  onSynced() {
+    if (this.state.busy || this.state.mintId === null) return;
+    const st = this.state.mintStatus;
+    if (st && st.inProgress && !st.canFinish && !this.state.step) { this.run(async () => {
+      const id = this.state.mintId!; try { const step = await this.core.mint_finish(id); this.set({ step, mintStatus: step.row }); }
+      catch (e) { if (kindOf(e) !== "build") throw e; }
+    }); return; }
+    if (st && !this.state.step) this.run(async () => {
+      const rows = await this.core.mints(); const row = rows.find((m) => m.mintId === this.state.mintId);
+      if (row) this.set({ mintStatus: row, vaults: await this.core.vaults() });
+    });
+  }
   /** Confirm the staged MINT (or sweep): the vault opens (or the carrier returns). */
   mintStepConfirm() {
     return this.run(async () => {

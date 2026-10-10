@@ -57,7 +57,8 @@ async function main() {
       h("nav", null, link("home", "Home"), link("send", "Send"), link("receive", "Receive"), link("history", "History"), link("yellowback", "Yellowback")));
   };
 
-  const opened = async () => { open = true; meta = await keystore.walletMeta(); method = await keystore.unlockMethod(); await home.attach(); await home.load(); home.sync(); go("home"); route(); };
+  const opened = async () => { open = true; meta = await keystore.walletMeta(); method = await keystore.unlockMethod(); await home.attach(); await home.load(); home.sync(); home.autoSync(); go("home"); route(); };
+  home.onSynced(() => yb.onSynced());
   const unlockScreen = async (method: "prf" | "passphrase") => {
     clear(app); const body = h("div"); app.append(body);
     renderUnlock(body, method, async (u) => {
@@ -89,7 +90,7 @@ async function main() {
       case "move": unsub = renderMove(body, move); break;
       case "receive": unsub = renderReceive(body, receive); break;
       case "history": unsub = renderHistory(body, history); break;
-      case "settings": unsub = renderSettings(body, settings, meta, version, () => { open = false; route(); }); break;
+      case "settings": unsub = renderSettings(body, settings, meta, version, () => { open = false; home.stopAutoSync(); route(); }); break;
       case "yellowback": unsub = renderYellowback(body, yb, home.state.balances?.yedCents ?? "0"); break;
       case "mint": unsub = renderMint(body, yb); break;
       case "vault": unsub = renderVault(body, yb, r.arg); break;
