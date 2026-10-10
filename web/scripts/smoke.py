@@ -161,7 +161,12 @@ def walk_kind():
     click("//nav/a[text()='Receive']"); wait_text("Private YEC")
     addr_z = text_of("code.addr"); assert addr_z.startswith("yregtestsapling1"), addr_z
     click("//div[@class='seg']/button[text()='Public']"); wait_text("Public YEC")
-    addr_t = text_of("code.addr"); assert addr_t.startswith("sm") or addr_t.startswith("s1") or addr_t.startswith("t"), addr_t
+    # the heading flips before the address re-renders: poll the address itself
+    for _ in range(50):
+        addr_t = text_of("code.addr")
+        if not addr_t.startswith("yregtestsapling1"): break
+        time.sleep(0.2)
+    assert addr_t.startswith("sm") or addr_t.startswith("s1") or addr_t.startswith("t"), addr_t
     print(f"  private {addr_z}\n  public  {addr_t}", flush=True)
     # public funding: 2 YEC
     t0 = time.time(); txid = helper(f"/fund_t?addr={addr_t}&zat=200000000"); print(f"  funded 2 YEC public in {txid}", flush=True)
