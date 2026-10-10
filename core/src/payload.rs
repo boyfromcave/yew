@@ -3,7 +3,13 @@
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
 //! The Yellowback payload codec, version 3: `"YB" ‖ 0x03 ‖ type ‖ body`, the data of a
-//! transaction's only `OP_RETURN` output (spec §3.3; v3 §3.3).
+//! transaction's only `OP_RETURN` output (spec §3.3; v3 §3.3) — with **MINT at version 4** on
+//! the post-quantum line (quantum spec header ruling C-1, §3.1): the MINT's 33-byte owner field
+//! is `ownerScheme u8 ‖ ownerHash 32` at the old `ownerPubKey` offsets (17..50; `feeVout` 50,
+//! `attestFeeVout` 51, 52 bytes in all), and every other type stays version 3 byte for byte. A
+//! MINT at 0x03, or any other type at 0x04, is non-Yellowback (ycash-dd `q/yed`
+//! `payload.cpp` `VersionOf`). So YEW's TRANSFER and REDEEM builders keep writing 0x03: a v4
+//! TRANSFER would not be Yellowback and its YED inputs would burn (client survey C-1).
 //!
 //! Translation source (plan §3.6): `ycash-dd/src/yellowback/payload.{h,cpp}`
 //! (`feature/yellowback-price-attest`). The node's decoder is the parse the spec means, so this
@@ -17,7 +23,7 @@
 //!
 //! | type | body | size |
 //! |---|---|---|
-//! | `0x01` MINT | `termClass u8, cents u32, lockHeight u32, refHeight u32, ownerPubKey 33, feeVout u8, attestFeeVout u8` | 52 |
+//! | `0x01` MINT (v4) | `termClass u8, cents u32, lockHeight u32, refHeight u32, ownerScheme u8, ownerHash 32, feeVout u8, attestFeeVout u8` | 52 |
 //! | `0x02` TRANSFER | `count u8, count × (vout u8, cents u32)` | 5 + 5n, n ≤ 15 |
 //! | `0x03` REDEEM | `refHeight u32, feeVout u8, attestFeeVout u8, count u8, count × (vout u8, cents u32)` | 11 + 5n, n ≤ 13 |
 //! | `0x05` ATTESTOR_REGISTER | `attestorPubKey 33, bondPubKey 33, bondLocktime u32, flags u8` | 75 |
@@ -27,13 +33,25 @@
 
 use std::collections::HashSet;
 
+use crate::pq::PqKeyId;
 use crate::script::{self, op};
 use crate::tx::Transaction;
 
 /// `PAYLOAD_MAGIC_0`, `PAYLOAD_MAGIC_1` (`ycash-dd/src/yellowback/params.h:43-44`): `"YB"`.
 pub const MAGIC: [u8; 2] = [0x59, 0x42];
-/// `PAYLOAD_VERSION` (`params.h:45`).
+/// `PAYLOAD_VERSION` (`params.h:45`): every type but MINT.
 pub const VERSION: u8 = 0x03;
+/// `MINT_PAYLOAD_VERSION` (quantum spec C-1; ycash-dd `q/yed` `params.h:57`): MINT only.
+pub const MINT_VERSION: u8 = 0x04;
+
+/// `VersionOf(type)`: the one version byte each type is Yellowback at.
+pub fn version_of(t: PayloadType) -> u8 {
+    if t == PayloadType::Mint {
+        MINT_VERSION
+    } else {
+        VERSION
+    }
+}
 /// `MIN_PAYLOAD` (`params.h:50`): the four-byte header alone.
 pub const MIN_PAYLOAD: usize = 4;
 /// `MAX_PAYLOAD` (`params.h:49`): the `OP_RETURN` data cap.
@@ -125,8 +143,9 @@ pub enum Payload {
         lock_height: u32,
         /// The reference height.
         ref_height: u32,
-        /// The 33 owner-key bytes verbatim (MINT-3 judges them).
-        owner_key: [u8; 33],
+        /// The post-quantum owner, `scheme ‖ hash` on the wire. Any scheme byte decodes (the
+        /// codec fixes the shape; MINT-3 judges the scheme and the vault script).
+        owner: PqKeyId,
         /// The enforcement-fee output, or `FEE_VOUT_NONE`.
         fee_vout: u8,
         /// The attestor-fee output, or `FEE_VOUT_NONE`.
@@ -282,7 +301,7 @@ fn put_assignments(out: &mut Vec<u8>, assignments: &[Assignment]) {
 pub fn encode(payload: &Payload) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(MAX_PAYLOAD);
     out.extend_from_slice(&MAGIC);
-    out.push(VERSION);
+    out.push(version_of(payload.payload_type()));
     out.push(payload.payload_type() as u8);
     match payload {
         Payload::Mint {
@@ -290,7 +309,7 @@ pub fn encode(payload: &Payload) -> Option<Vec<u8>> {
             cents,
             lock_height,
             ref_height,
-            owner_key,
+            owner,
             fee_vout,
             attest_fee_vout,
         } => {
@@ -298,7 +317,7 @@ pub fn encode(payload: &Payload) -> Option<Vec<u8>> {
             out.extend_from_slice(&cents.to_le_bytes());
             out.extend_from_slice(&lock_height.to_le_bytes());
             out.extend_from_slice(&ref_height.to_le_bytes());
-            out.extend_from_slice(owner_key);
+            out.extend_from_slice(&owner.to_bytes());
             out.push(*fee_vout);
             out.push(*attest_fee_vout);
         }
@@ -373,7 +392,7 @@ fn decode_body_v3(r: &mut Reader<'_>, t: PayloadType, size: usize) -> Option<Pay
                 cents: r.u32()?,
                 lock_height: r.u32()?,
                 ref_height: r.u32()?,
-                owner_key: r.array::<33>()?,
+                owner: PqKeyId::from_bytes(&r.array::<33>()?)?,
                 fee_vout: r.u8()?,
                 attest_fee_vout: r.u8()?,
             }
@@ -466,10 +485,12 @@ pub fn decode(data: &[u8]) -> Option<Payload> {
     let _magic1 = r.u8()?;
     let version = r.u8()?;
     let type_byte = r.u8()?;
-    if version != VERSION {
-        return None; // versions 1, 2 and every later version: non-Yellowback (V23)
-    }
     let t = PayloadType::from_byte(type_byte)?;
+    if version != version_of(t) {
+        // versions 1, 2 and every later version: non-Yellowback (V23); a MINT is version 4 and
+        // every other type version 3 (quantum spec C-1)
+        return None;
+    }
     let p = decode_body_v3(&mut r, t, data.len())?;
     if !r.at_end() {
         return None;
@@ -604,7 +625,10 @@ mod tests {
             cents: 12_345,
             lock_height: 1000,
             ref_height: 900,
-            owner_key: [0x02; 33],
+            owner: PqKeyId {
+                scheme: 1,
+                hash: [0x5a; 32],
+            },
             fee_vout: 3,
             attest_fee_vout: FEE_VOUT_NONE,
         };
@@ -726,5 +750,54 @@ mod tests {
         });
         assert!(find_op_return(&tx).is_none());
         assert!(find_payload(&tx).is_none());
+    }
+    /// Quantum spec C-1 / §3.1: a node-built v4 MINT payload (ycash-dd `q/yed`
+    /// `qa/rpc-tests/test_framework/yellowback_golden.json`, the OP_RETURN of a regtest mint)
+    /// decodes and re-encodes byte for byte; the same body at version 3 is non-Yellowback; a
+    /// TRANSFER is written at version 3 and is non-Yellowback at version 4.
+    #[test]
+    fn mint_is_version_4_and_every_other_type_version_3() {
+        let node = unhex(
+            "594204010010270000b6000000860000000173647389454dfff8c4626da041eb95db07a19cdae5908b1ce1b1200e60d30cc503ff",
+        )
+        .unwrap();
+        let p = decode(&node).expect("the node's v4 MINT");
+        let Payload::Mint {
+            owner,
+            fee_vout,
+            attest_fee_vout,
+            ref_height,
+            ..
+        } = &p
+        else {
+            panic!("not a MINT")
+        };
+        assert_eq!(owner.scheme, 1);
+        assert_eq!(
+            hex(&owner.hash),
+            "73647389454dfff8c4626da041eb95db07a19cdae5908b1ce1b1200e60d30cc5"
+        );
+        assert_eq!((*fee_vout, *attest_fee_vout, *ref_height), (3, 0xff, 134));
+        assert_eq!(encode(&p).unwrap(), node);
+        let mut v3 = node.clone();
+        v3[2] = 0x03;
+        assert!(
+            decode(&v3).is_none(),
+            "a v3 MINT is non-Yellowback on this line"
+        );
+        // any scheme byte decodes (MINT-3 judges it)
+        let mut s9 = node.clone();
+        s9[17] = 0x09;
+        assert!(decode(&s9).is_some());
+        let t = encode(&Payload::Transfer {
+            assignments: vec![Assignment { vout: 0, cents: 1 }],
+        })
+        .unwrap();
+        assert_eq!(t[2], VERSION);
+        let mut t4 = t.clone();
+        t4[2] = MINT_VERSION;
+        assert!(decode(&t4).is_none(), "a v4 TRANSFER would burn its YED");
+        assert_eq!(version_of(PayloadType::Mint), 0x04);
+        assert_eq!(version_of(PayloadType::Redeem), 0x03);
     }
 }

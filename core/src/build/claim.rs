@@ -244,10 +244,8 @@ pub async fn start(
             yv.app_height()
         )));
     }
-    let owner_pubkey: [u8; 33] = unhex(&v.owner_pub_key)
-        .ok()
-        .and_then(|b| b.as_slice().try_into().ok())
-        .ok_or_else(|| MintError::Relay("vault ownerPubKey".into()))?;
+    // The vault's post-quantum owner (quantum spec §1): its residual is paid to PQPKH(owner).
+    let owner_pubkey: [u8; 33] = terms::vault_owner(&v)?.to_bytes();
     // The YED to burn must be there before the carrier is funded, and (U-23: the vault's value
     // goes into intents) the YEC for the carrier and for the claim's fees.
     let (yed, change_cents, _, _) = redeem::select_yed_burn(wallet, entry.minted_cents)?;
@@ -373,7 +371,7 @@ pub struct ClaimShape {
     pub attest_fee_zat: i64,
     /// RED-5's residual (0 = none): an intent paying `P2PKH(owner)`.
     pub residual_zat: i64,
-    /// `P2PKH(ownerPubKey)`, the residual intent's recipient.
+    /// `PQPKH(owner)` (35 bytes, quantum spec F-3), the residual intent's recipient.
     pub owner_script: Vec<u8>,
     /// The claimant intent's recipient (an own fresh P2PKH).
     pub claimant_script: Vec<u8>,
@@ -634,11 +632,11 @@ pub async fn finish(
     m: &MintRow,
     branch_id: u32,
 ) -> Result<Finished, WalletError> {
-    let owner_pubkey: [u8; 33] = m
-        .owner_pubkey
-        .as_slice()
-        .try_into()
-        .map_err(|_| WalletError::Other("owner pubkey length".into()))?;
+    let owner = crate::pq::PqKeyId::from_bytes(&m.owner_pubkey)
+        .filter(|o| o.is_known())
+        .ok_or_else(|| {
+            WalletError::Other("the claim row's vault owner is not post-quantum".into())
+        })?;
     // The V the claim spends, re-read and checked (in-term IT-1: its branch heights come from the
     // vault's own mint, `refHeight + 1`, which the claim row does not hold).
     let (vt, yv) = {
@@ -724,7 +722,9 @@ pub async fn finish(
         },
         attest_fee_zat: m.attest_fee_zat,
         residual_zat: m.residual_zat,
-        owner_script: script::p2pkh_script(&keys::hash160(&owner_pubkey)),
+        owner_script: crate::pq::pqpkh_script(&owner).ok_or_else(|| {
+            WalletError::Other("the vault owner's scheme is not registered".into())
+        })?,
         claimant_script: script::p2pkh_script(&dest.hash160),
         funding: funding.clone(),
         funding_change_script: script::p2pkh_script(&fund_change_row.hash160),
@@ -951,7 +951,11 @@ mod tests {
             attest_script: attest.then(|| script::p2pkh_script(&[7; 20])),
             attest_fee_zat: 12_500_000,
             residual_zat: residual,
-            owner_script: script::p2pkh_script(&[8; 20]),
+            owner_script: crate::pq::pqpkh_script(&crate::pq::PqKeyId {
+                scheme: 1,
+                hash: [8; 32],
+            })
+            .unwrap(),
             claimant_script: recipient,
             funding: if funding > 0 {
                 vec![utxo(3, funding, 0, UtxoClass::Yec)]

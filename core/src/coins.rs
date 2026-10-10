@@ -53,6 +53,12 @@ pub enum UtxoClass {
     /// An own P2PKH output of exactly `TOKEN_VALUE` the server does not list as a token:
     /// unclassifiable, unspendable on every path (module doc).
     Held,
+    /// A `TX_PQPKH` output (`20 <keyHash> OP_1|OP_2 OP_CHECKPQSIG`, quantum spec §2.1) to one of
+    /// the wallet's own post-quantum keys: the YEC residual of an in-term claim pays the vault
+    /// owner's PQPKH (spec F-3, §3.3). YEC, but only an owner-signed (8 KB SLH-DSA) spend of it
+    /// alone can move it; no P2PKH path selects it, and no gate path spends it yet (YEW-b adds
+    /// the residual release).
+    PqOwned,
     /// Not to an own key.
     Foreign,
 }
@@ -69,6 +75,7 @@ impl UtxoClass {
             UtxoClass::Carrier => "CARRIER",
             UtxoClass::UnknownP2sh => "UNKNOWN_P2SH",
             UtxoClass::Held => "HELD",
+            UtxoClass::PqOwned => "PQ_OWNED",
             UtxoClass::Foreign => "FOREIGN",
         }
     }
@@ -84,6 +91,7 @@ impl UtxoClass {
             "CARRIER" => UtxoClass::Carrier,
             "UNKNOWN_P2SH" => UtxoClass::UnknownP2sh,
             "HELD" => UtxoClass::Held,
+            "PQ_OWNED" => UtxoClass::PqOwned,
             "FOREIGN" => UtxoClass::Foreign,
             _ => return None,
         })
@@ -189,6 +197,22 @@ pub fn classify(
         }
         _ => (UtxoClass::Foreign, 0),
     }
+}
+
+/// The class of a `TX_PQPKH` output: [`UtxoClass::PqOwned`] when `is_own_pq` claims its key id,
+/// else `Foreign`; `None` when `script` is not `TX_PQPKH` (use [`classify`]). PQPKH outputs are
+/// not address-indexed by the node (spec §2.2, `DestFromAddressHash`), so `GetAddressUtxos`
+/// never lists one: the wallet finds its own from the intents it tracks.
+pub fn classify_pqpkh(
+    script: &[u8],
+    is_own_pq: impl Fn(&crate::pq::PqKeyId) -> bool,
+) -> Option<UtxoClass> {
+    let id = crate::pq::pqpkh_of(script)?;
+    Some(if is_own_pq(&id) {
+        UtxoClass::PqOwned
+    } else {
+        UtxoClass::Foreign
+    })
 }
 
 /// `PreLock` (`wallet.cpp:410-427`): the outputs of `tx` — a transaction this wallet broadcast
@@ -411,6 +435,25 @@ mod tests {
             classify(&op, &[0x6a, 0x01, 0x00], 0, is_own, &listed),
             (UtxoClass::Foreign, 0)
         );
+        // TX_PQPKH (the claim residual, spec F-3): never YEC to the P2PKH classifier; its own
+        // classifier knows the wallet's PQ keys.
+        let mine_pq = crate::pq::PqKeyId {
+            scheme: 1,
+            hash: [4; 32],
+        };
+        let pqpkh = crate::pq::pqpkh_script(&mine_pq).unwrap();
+        assert_eq!(
+            classify(&op, &pqpkh, 50_000, |_| true, &listed),
+            (UtxoClass::Foreign, 0)
+        );
+        assert_eq!(
+            classify_pqpkh(&pqpkh, |id| *id == mine_pq),
+            Some(UtxoClass::PqOwned)
+        );
+        assert_eq!(classify_pqpkh(&pqpkh, |_| false), Some(UtxoClass::Foreign));
+        assert_eq!(classify_pqpkh(&p2pkh, |_| true), None);
+        assert_eq!(UtxoClass::parse("PQ_OWNED"), Some(UtxoClass::PqOwned));
+        assert!(!UtxoClass::PqOwned.yec_spendable());
         for c in [
             UtxoClass::Yec,
             UtxoClass::Held,
@@ -476,7 +519,10 @@ mod tests {
             cents: 10_000,
             lock_height: 1,
             ref_height: 1,
-            owner_key: [2; 33],
+            owner: crate::pq::PqKeyId {
+                scheme: 1,
+                hash: [2; 32],
+            },
             fee_vout: 0xFF,
             attest_fee_vout: 0xFF,
         };

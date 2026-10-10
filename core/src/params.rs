@@ -98,6 +98,19 @@ impl Network {
         }
     }
 
+    /// Post-quantum Yellowback address version bytes (quantum spec §4, F-4): the 33-byte payload
+    /// `scheme ‖ keyHash` of a `CPQKeyID` renders `ye…` / `yt…` / `yr…` at 53 characters, beside
+    /// the 35-character 20-byte form. `ycash-dd/src/yellowback/params.cpp` `pqAddressVersion`
+    /// (branch `q/yed`): main `{0x56,0xBF}`, test `{0x57,0x1E}`, regtest `{0x57,0x10}` — each the
+    /// lowest version whose whole payload interval keeps the prefix and the length.
+    pub fn pq_yellowback_prefix(self) -> [u8; 2] {
+        match self {
+            Network::Mainnet => [0x56, 0xBF],
+            Network::Testnet => [0x57, 0x1E],
+            Network::Regtest => [0x57, 0x10],
+        }
+    }
+
     /// Bech32 human-readable part of a Sapling payment address (`ys1…` on mainnet).
     /// `ycash-dd/src/chainparams.cpp:164` (main `"ys"`), `:424` (test `"ytestsapling"`),
     /// `:623` (regtest `"yregtestsapling"`). Ywallet renders the same (`zcash-sync`

@@ -256,7 +256,9 @@ pub struct MintRow {
     pub expiry_height: u32,
     /// CLAIM: the vault's txid (zero for a MINT).
     pub vault_txid: [u8; 32],
-    /// CLAIM: the vault's owner key (33 bytes), for the residual output and the vault script.
+    /// The vault's post-quantum owner, `scheme ‖ keyHash` (33 bytes; quantum spec §3.1, §3.4):
+    /// a MINT's own owner, a CLAIM's target vault's owner (for the residual and the V). The
+    /// column keeps its pre-quantum name until the store's next schema version (YEW-b).
     pub owner_pubkey: Vec<u8>,
     /// Why the row failed or lapsed, for the screen.
     pub note: String,
@@ -271,9 +273,10 @@ pub struct VaultRow {
     pub vout: u32,
     /// `ACTIVE`, `VOID`, `CLOSED`, `CLAIMED`.
     pub status: String,
-    /// The owner key hash (an own key).
+    /// The external key hash the vault's owner is paired with (an own key; the mint's token
+    /// holder): the PQ owner is `Wallet::pq_owner_key` of that key's index.
     pub owner_hash160: [u8; 20],
-    /// The owner's compressed public key.
+    /// The post-quantum owner, `scheme ‖ keyHash` (the node's `VaultRecord::ownerPubKey` bytes).
     pub owner_pubkey: [u8; 33],
     /// The term class letter.
     pub term_class: String,

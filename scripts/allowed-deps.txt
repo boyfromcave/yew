@@ -46,3 +46,6 @@ tokio-rustls
 # transparent types; secp256k1 0.29.1 (renamed `secp256k1_zcash` in Cargo.toml, listed above under its
 # package name) is the version that builder signs with. Both were already in Cargo.lock.
 zcash_transparent
+# Quantum plan Q7 (2026-10-10): SLH-DSA-SHA2-128s vault owners (core/src/pq.rs), RustCrypto `slh-dsa` =0.1.0
+# (FIPS 205 final; client survey §1: the version that resolves beside bip32's pre-release pins).
+slh-dsa

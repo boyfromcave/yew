@@ -21,7 +21,16 @@
 //! relay: `EstimateCollateral`, `BuildBundle`, `GetFeePayee`, `ListAttestors`, and the node's
 //! dry run through the gate (D-W-5).
 //!
-//! Differences from the node, recorded: the carrier and owner keys are the next unused
+//! **Post-quantum owner (quantum spec §3.6, C-1).** The vault owner is an SLH-DSA key and the
+//! MINT payload is version 4 (`ownerScheme ‖ ownerHash`); the token (`vout[1]`) goes to the
+//! fresh external P2PKH key — the holder is no longer the owner (an SLH-DSA holder would cost an
+//! 8 KB scriptSig per transfer). The owner is the PQ key paired with that external key's index
+//! ([`crate::wallet::Wallet::pq_owner_key`]), and FEE-W's selector is the payload's 33 owner
+//! bytes, as the node's `BuildMint` (ycash-dd `q/yed` `txbuilder.cpp:1300-1304`). Falcon holders
+//! (`TOK-PQ`, from `pqFalconHeight`) are not built here yet: a mint past that height is refused
+//! by the node's dry run (`bad-yed-holder`).
+//!
+//! Differences from the node, recorded: the carrier and holder keys are the next unused
 //! change / external HD keys (the node draws from its keypool); the YEC side selects from the
 //! wallet's classes (`FEE_RESERVE` first, then `YEC`); the attestor payee is the node's
 //! `DefaultAttestPayee` pick over the block hash the relay serves (AFEE-1 accepts any `seq` of
@@ -194,8 +203,8 @@ pub struct MintEstimate {
     /// The enforcement fee payee for `(R, ownerPubKey)` (`s…`), empty under FEE-0. Checked
     /// against FEE-1 locally; its eligibility cannot be (`docs/trust.md`).
     pub payee: String,
-    /// The owner key the estimate was made for (the next unused external key); `start`
-    /// takes the same key.
+    /// The holder key the estimate was made for (the next unused external key; the vault owner
+    /// is the PQ key paired with it); `start` takes the same key.
     pub owner_hash160: [u8; 20],
     /// `pMint` at `R`, micro-USD per YEC.
     pub p_mint: i64,
@@ -384,15 +393,15 @@ pub async fn estimate(
     }
     let collateral_zat = collateral_for(e.required_zat);
     let owner_row = wallet.receive_address(false)?;
-    let owner_key = wallet
-        .key_for_hash(&owner_row.hash160)?
+    let (_, owner) = wallet
+        .pq_owner_for_hash(&owner_row.hash160)?
         .ok_or_else(|| WalletError::Other("owner key".into()))?;
     let (fee_zat, payee) = fee_payee(
         wallet.network,
         yb,
         e.ref_height as u32,
         collateral_zat,
-        &owner_key.pubkey,
+        &owner.to_bytes(),
     )
     .await?;
     let bundle_seqs: Vec<u16> = e.bundle_seqs.iter().map(|s| *s as u16).collect();
@@ -634,10 +643,10 @@ pub async fn start(
         }
         .into());
     }
-    let owner_key = wallet
-        .key_for_hash(&owner_row.hash160)?
+    let (_, owner) = wallet
+        .pq_owner_for_hash(&owner_row.hash160)?
         .ok_or_else(|| WalletError::Other("owner key".into()))?;
-    // The fee payee for (R, ownerPubKey) is the estimate's (BuildMint:1121).
+    // The fee payee for (R, owner bytes) is the estimate's (BuildMint:1121).
     let (fee_zat, payee) = (est.fee_zat, est.payee.clone());
     let (attest_payee_addr, attest_fee_zat) =
         attest_payee(wallet.network, client, yb, r, &[], &seqs, fee_zat).await?;
@@ -673,7 +682,7 @@ pub async fn start(
         sweep_txid: [0; 32],
         expiry_height: step.expiry_height,
         vault_txid: [0; 32],
-        owner_pubkey: owner_key.pubkey.to_vec(),
+        owner_pubkey: owner.to_bytes().to_vec(),
         note: String::new(),
     };
     Ok(wallet.store.insert_mint(&row)?)
@@ -822,7 +831,7 @@ pub(crate) fn record_broadcast(
 pub fn mint_outputs(
     wallet: &Wallet,
     m: &MintRow,
-    owner_pubkey: &[u8; 33],
+    owner: &crate::pq::PqKeyId,
     vt: &terms::VaultTerms,
 ) -> Result<Vec<TxOut>, WalletError> {
     if m.claim_height != m.lock_height + vt.grace {
@@ -834,7 +843,7 @@ pub fn mint_outputs(
         }
         .into());
     }
-    let vault = vt.mint_vault_script(owner_pubkey, m.ref_height)?;
+    let vault = vt.mint_vault_script(owner, m.ref_height)?;
     let fee_vout = if m.payee.is_empty() { FEE_VOUT_NONE } else { 3 };
     let attest_fee_vout = if m.attest_payee.is_empty() {
         FEE_VOUT_NONE
@@ -854,7 +863,7 @@ pub fn mint_outputs(
         cents: m.cents as u32,
         lock_height: m.lock_height,
         ref_height: m.ref_height,
-        owner_key: *owner_pubkey,
+        owner: *owner,
         fee_vout,
         attest_fee_vout,
     })
@@ -946,8 +955,15 @@ pub async fn finish(
     if m.kind == MintKind::Claim {
         return super::claim::finish(wallet, client, validator, &m, branch_id).await;
     }
-    let owner_key = wallet
-        .key_for_hash(&m.owner_hash160)?
+    let owner = crate::pq::PqKeyId::from_bytes(&m.owner_pubkey)
+        .filter(|o| {
+            wallet
+                .pq_owner_for_hash(&m.owner_hash160)
+                .ok()
+                .flatten()
+                .map(|x| x.1)
+                == Some(*o)
+        })
         .ok_or_else(|| WalletError::Other("owner key missing".into()))?;
     let (carrier_op, redeem, carrier_key) = carrier_of(wallet, &m)?;
     let vt = {
@@ -958,7 +974,7 @@ pub async fn finish(
     };
     let mut tx = Transaction::new_v4();
     tx.expiry_height = m.expiry_height;
-    tx.vout = mint_outputs(wallet, &m, &owner_key.pubkey, &vt)?;
+    tx.vout = mint_outputs(wallet, &m, &owner, &vt)?;
     let outputs: i64 = tx.vout.iter().map(|o| o.value).sum();
     // needed = outputs + fee − CARRIER_VALUE: the carrier input pays CARRIER_VALUE (:1136).
     let needed = outputs + FEE_ZAT - CARRIER_VALUE;

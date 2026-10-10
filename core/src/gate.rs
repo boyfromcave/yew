@@ -461,7 +461,7 @@ mod tests {
     use crate::tx::{TxIn, TxOut};
     use std::collections::HashMap;
 
-    const ALL: [UtxoClass; 9] = [
+    const ALL: [UtxoClass; 10] = [
         UtxoClass::Yec,
         UtxoClass::FeeReserve,
         UtxoClass::Token,
@@ -470,6 +470,7 @@ mod tests {
         UtxoClass::Carrier,
         UtxoClass::UnknownP2sh,
         UtxoClass::Held,
+        UtxoClass::PqOwned,
         UtxoClass::Foreign,
     ];
 
@@ -800,7 +801,10 @@ mod tests {
             cents: 10_000,
             lock_height: 10,
             ref_height: 5,
-            owner_key: [2; 33],
+            owner: crate::pq::PqKeyId {
+                scheme: 1,
+                hash: [2; 32],
+            },
             fee_vout: 0xff,
             attest_fee_vout: 0xff,
         };

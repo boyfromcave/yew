@@ -43,6 +43,10 @@ pub enum KeyError {
     /// The WIF did not decode as a compressed key of this network.
     #[error("bad wif: {0}")]
     Wif(String),
+    /// A post-quantum (53-character) `ye…` address where a payment address was expected: it
+    /// names a vault owner, never a YEC or YED destination (client survey C-10).
+    #[error("{0} is a post-quantum vault-owner address, not a payment address")]
+    PqOwnerAddress(String),
 }
 
 type HmacSha512 = Hmac<Sha512>;
@@ -376,6 +380,31 @@ pub fn encode_yellowback(network: Network, hash: &[u8; 20]) -> String {
     encode_prefixed(network.yellowback_prefix(), hash)
 }
 
+/// The post-quantum `ye…` / `yt…` / `yr…` address of a `CPQKeyID` (quantum spec §4):
+/// `Base58Check(pqVersion ‖ scheme ‖ keyHash)`, 53 characters (`yellowback::EncodeAddress(const
+/// CPQKeyID&)`, ycash-dd `q/yed`). `None` for a scheme outside the registry (the node returns "").
+pub fn encode_pq_yellowback(network: Network, id: &crate::pq::PqKeyId) -> Option<String> {
+    if !id.is_known() {
+        return None;
+    }
+    let mut payload = Vec::with_capacity(35);
+    payload.extend_from_slice(&network.pq_yellowback_prefix());
+    payload.extend_from_slice(&id.to_bytes());
+    Some(base58check_encode(&payload))
+}
+
+/// Decode a post-quantum Yellowback address of `network` (`yellowback::DecodeAddress(…,
+/// CPQKeyID&)`): 35 payload bytes under the PQ version, a registered scheme.
+pub fn parse_pq_address(network: Network, s: &str) -> Result<crate::pq::PqKeyId, KeyError> {
+    let payload = base58check_decode(s)?;
+    if payload.len() != 35 || payload[..2] != network.pq_yellowback_prefix() {
+        return Err(KeyError::WrongNetwork(network, s.to_string()));
+    }
+    crate::pq::PqKeyId::from_bytes(&payload[2..])
+        .filter(|id| id.is_known())
+        .ok_or_else(|| KeyError::WrongNetwork(network, s.to_string()))
+}
+
 /// What an address string names once decoded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AddressKind {
@@ -403,10 +432,15 @@ impl Address {
     }
 }
 
-/// Parse any transparent Ycash address of `network`: `s1…`, `s3…`, `ye…`/`yt…`/`yr…`.
+/// Parse any transparent Ycash address of `network`: `s1…`, `s3…`, `ye…`/`yt…`/`yr…`. A
+/// post-quantum owner address ([`parse_pq_address`]) is refused with
+/// [`KeyError::PqOwnerAddress`]: it is not a payment destination.
 pub fn parse_address(network: Network, s: &str) -> Result<Address, KeyError> {
     let payload = base58check_decode(s)?;
     if payload.len() != 22 {
+        if parse_pq_address(network, s).is_ok() {
+            return Err(KeyError::PqOwnerAddress(s.to_string()));
+        }
         return Err(KeyError::WrongNetwork(network, s.to_string()));
     }
     let prefix = [payload[0], payload[1]];
@@ -603,5 +637,68 @@ mod tests {
         // Different chains and indices give different keys.
         assert_ne!(ring.key(Chain::Change, 0).unwrap().hash160, k.hash160);
         assert_ne!(ring.key(Chain::External, 1).unwrap().hash160, k.hash160);
+    }
+    /// Quantum spec §4 (F-4) and ycash-dd `q/yed` `pq_standard_tests.cpp`
+    /// `pq_yellowback_address`: 53 characters, `ye`/`yt`/`yr`, both schemes, round trip, the
+    /// network and the 20-byte decoder refuse it, an unregistered scheme neither encodes nor
+    /// decodes, and the spec's extreme mainnet encodings (all-zero and all-0xFF payloads).
+    #[test]
+    fn pq_yellowback_addresses() {
+        use crate::pq::PqKeyId;
+        for scheme in [1u8, 2] {
+            for fill in [0x00u8, 0x5a, 0xff] {
+                let id = PqKeyId {
+                    scheme,
+                    hash: [fill; 32],
+                };
+                for (net, p) in [
+                    (Network::Mainnet, "ye"),
+                    (Network::Testnet, "yt"),
+                    (Network::Regtest, "yr"),
+                ] {
+                    let a = encode_pq_yellowback(net, &id).unwrap();
+                    assert_eq!(a.len(), 53);
+                    assert!(a.starts_with(p), "{a}");
+                    assert_eq!(parse_pq_address(net, &a).unwrap(), id);
+                    assert!(matches!(
+                        parse_address(net, &a),
+                        Err(KeyError::PqOwnerAddress(_))
+                    ));
+                }
+                let m = encode_pq_yellowback(Network::Mainnet, &id).unwrap();
+                assert!(parse_pq_address(Network::Testnet, &m).is_err());
+                let r = encode_pq_yellowback(Network::Regtest, &id).unwrap();
+                assert!(parse_pq_address(Network::Mainnet, &r).is_err());
+            }
+        }
+        let bad = PqKeyId {
+            scheme: 3,
+            hash: [1; 32],
+        };
+        assert_eq!(encode_pq_yellowback(Network::Mainnet, &bad), None);
+        let mut raw = Network::Mainnet.pq_yellowback_prefix().to_vec();
+        raw.extend_from_slice(&bad.to_bytes());
+        assert!(parse_pq_address(Network::Mainnet, &base58check_encode(&raw)).is_err());
+        let mut lo = Network::Mainnet.pq_yellowback_prefix().to_vec();
+        lo.extend_from_slice(&[0; 33]);
+        let mut hi = Network::Mainnet.pq_yellowback_prefix().to_vec();
+        hi.extend_from_slice(&[0xff; 33]);
+        assert_eq!(
+            base58check_encode(&lo),
+            "ye3SZot1kepFFNT7S9eGf61sufuSARvXG4VZQ4WqPqJKrosTayohv"
+        );
+        assert_eq!(
+            base58check_encode(&hi),
+            "yeC2CP3NepyAPLy8ChifYtByPvLdpGLnzDwBXcyBVKn5a6CXWeucQ"
+        );
+        // the 20-byte form still parses as before, and a PQ decoder refuses it
+        let h = [0x33u8; 20];
+        let ye = encode_yellowback(Network::Mainnet, &h);
+        assert_eq!(ye.len(), 35);
+        assert_eq!(
+            parse_address(Network::Mainnet, &ye).unwrap().kind,
+            AddressKind::P2pkh(h)
+        );
+        assert!(parse_pq_address(Network::Mainnet, &ye).is_err());
     }
 }

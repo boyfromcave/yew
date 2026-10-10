@@ -18,10 +18,17 @@
 //! `src/test/data/vault_vectors.json` (byte-identical on both node lines) is replayed in the
 //! tests below from `core/tests/vectors/vault_vectors.json`, a byte-identical copy.
 //!
-//! "Compressed" is the node's reading A-2: 33 bytes with prefix `02`/`03`, no curve check (an
-//! off-curve key parses and can never sign).
+//! **Post-quantum owner (quantum spec §1, `upgrade/quantum-vaults`).** The owner slot of V (twice)
+//! and I is `<ownerHash:32> <scheme> OP_CHECKPQSIG` (`20 <32> 51|52 c2`, 35 bytes like the
+//! `<ownerKey:33> OP_CHECKSIG` it replaces), the only owner shape: there is no secp256k1 owner
+//! and no dual parser. V has 45 tokens (owner hash o[22], scheme o[23], second copy o[34]/o[35],
+//! appHeight o[40]); I has 32 (owner o[27]/o[28]). The owner's scriptSigs push the chunked
+//! signature and key ([`crate::pq::pq_sig_pushes`]) before the selector (§1.5). Translation source
+//! for this part: ycash-dd `src/vault/template.{h,cpp}` on branch `q/tmpl`, whose
+//! `src/test/data/vault_vectors.json` is copied byte for byte to `tests/vectors/`.
 
 use crate::keys::sha256;
+use crate::pq::{self, PqKeyId, OP_CHECKPQSIG};
 use crate::script::{self, op, ScriptOp};
 
 /// `OP_2`.
@@ -88,8 +95,8 @@ pub struct VaultParams {
     pub set_id: SetId,
     /// The owner branch's CLTV height (`lockHeight` for YED).
     pub owner_height: i64,
-    /// The owner's key (compressed bytes).
-    pub owner_key: [u8; 33],
+    /// The owner's post-quantum key id (`CPQKeyID`).
+    pub owner: PqKeyId,
     /// The APP branch's CLTV height (`claimHeight = lockHeight + GRACE` for YED); 0 disables it.
     pub app_height: i64,
 }
@@ -110,12 +117,20 @@ pub struct IntentParams {
     /// The V's unlocking set (read by the owner-released branch).
     pub set_id: SetId,
     /// The V's owner.
-    pub owner_key: [u8; 33],
+    pub owner: PqKeyId,
 }
 
-/// 33 bytes with a `02`/`03` header (no curve check; A-2).
+/// 33 bytes with a `02`/`03` header (no curve check; A-2). Bond B and the set acts keep EC
+/// member keys (D-Q-5); no vault owner is one.
 pub fn is_compressed_key_bytes(key: &[u8]) -> bool {
     key.len() == 33 && (key[0] == 0x02 || key[0] == 0x03)
+}
+
+/// Append the owner slot `<ownerHash:32> <scheme> OP_CHECKPQSIG` (the scheme as `OP_1`/`OP_2`).
+fn push_owner(s: &mut Vec<u8>, owner: &PqKeyId) {
+    script::push_data(s, &owner.hash);
+    script::push_int(s, owner.scheme as i64);
+    s.push(OP_CHECKPQSIG);
 }
 
 /// `VaultParamsValid`: the §15.3 field ranges.
@@ -123,12 +138,12 @@ pub fn vault_params_valid(p: &VaultParams) -> bool {
     (MIN_DELAY..=MAX_DELAY).contains(&p.delay)
         && (1..=MAX_TEMPLATE_HEIGHT).contains(&p.owner_height)
         && (0..=MAX_TEMPLATE_HEIGHT).contains(&p.app_height)
-        && is_compressed_key_bytes(&p.owner_key)
+        && p.owner.is_known()
 }
 
 /// `IntentParamsValid`.
 pub fn intent_params_valid(p: &IntentParams) -> bool {
-    (MIN_DELAY..=MAX_DELAY).contains(&p.delay) && is_compressed_key_bytes(&p.owner_key)
+    (MIN_DELAY..=MAX_DELAY).contains(&p.delay) && p.owner.is_known()
 }
 
 /// `BuildVault` (§15.3); `None` when a field is out of range.
@@ -154,8 +169,7 @@ pub fn build_vault(p: &VaultParams) -> Option<Vec<u8>> {
     ]);
     script::push_int(&mut s, p.owner_height);
     s.extend_from_slice(&[op::OP_CHECKLOCKTIMEVERIFY, op::OP_DROP]);
-    script::push_data(&mut s, &p.owner_key);
-    s.push(op::OP_CHECKSIG);
+    push_owner(&mut s, &p.owner);
     s.extend_from_slice(&[
         op::OP_ELSE,
         op::OP_DUP,
@@ -166,8 +180,7 @@ pub fn build_vault(p: &VaultParams) -> Option<Vec<u8>> {
     ]);
     script::push_data(&mut s, &p.set_id);
     s.extend_from_slice(&[OP_CHECKSETDORMANT, OP_VERIFY]);
-    script::push_data(&mut s, &p.owner_key);
-    s.push(op::OP_CHECKSIG);
+    push_owner(&mut s, &p.owner);
     s.extend_from_slice(&[op::OP_ELSE, OP_4, op::OP_EQUALVERIFY]);
     script::push_int(&mut s, p.app_height);
     s.push(op::OP_CHECKLOCKTIMEVERIFY);
@@ -201,8 +214,7 @@ pub fn build_intent(p: &IntentParams) -> Option<Vec<u8>> {
     s.extend_from_slice(&[op::OP_ELSE, OP_3, op::OP_EQUALVERIFY]);
     script::push_data(&mut s, &p.set_id);
     s.extend_from_slice(&[OP_CHECKSETDORMANT, OP_VERIFY]);
-    script::push_data(&mut s, &p.owner_key);
-    s.push(op::OP_CHECKSIG);
+    push_owner(&mut s, &p.owner);
     s.extend_from_slice(&[op::OP_ENDIF, op::OP_ENDIF]);
     Some(s)
 }
@@ -241,10 +253,23 @@ fn data_of<const N: usize>(o: &ScriptOp) -> Option<[u8; N]> {
     o.data.as_slice().try_into().ok()
 }
 
+/// The owner slot's two fields: a 32-byte hash and a registered scheme number (`TokNum` ∈ {1,
+/// 2}). Push minimality is the caller's rebuild-and-compare.
+fn owner_of(hash: &ScriptOp, scheme: &ScriptOp) -> Option<PqKeyId> {
+    let scheme = read_num(scheme)?;
+    if !(1..=2).contains(&scheme) {
+        return None;
+    }
+    Some(PqKeyId {
+        scheme: scheme as u8,
+        hash: data_of::<32>(hash)?,
+    })
+}
+
 /// `ParseVault`: the parameters of an exact, minimal, in-range V; `None` otherwise.
 pub fn parse_vault(spk: &[u8]) -> Option<VaultParams> {
     let o = script::ops(spk).ok()?;
-    if o.len() != 43 {
+    if o.len() != 45 {
         return None;
     }
     let p = VaultParams {
@@ -253,11 +278,11 @@ pub fn parse_vault(spk: &[u8]) -> Option<VaultParams> {
         delay: read_num(&o[2])?,
         set_id: data_of::<32>(&o[10])?,
         owner_height: read_num(&o[19])?,
-        owner_key: data_of::<33>(&o[22])?,
-        app_height: read_num(&o[38])?,
+        owner: owner_of(&o[22], &o[23])?,
+        app_height: read_num(&o[40])?,
     };
     // The setId pushed in the unlock and the owner-released branches must agree, and so must
-    // the owner keys: rebuilding from the first copies and comparing bytes checks every opcode,
+    // the owner hashes and schemes: rebuilding from the first copies and comparing bytes checks every opcode,
     // every push form and both copies at once.
     (build_vault(&p)? == spk).then_some(p)
 }
@@ -265,7 +290,7 @@ pub fn parse_vault(spk: &[u8]) -> Option<VaultParams> {
 /// `ParseIntent`: the parameters of an exact, minimal, in-range I; `None` otherwise.
 pub fn parse_intent(spk: &[u8]) -> Option<IntentParams> {
     let o = script::ops(spk).ok()?;
-    if o.len() != 31 {
+    if o.len() != 32 {
         return None;
     }
     let p = IntentParams {
@@ -275,7 +300,7 @@ pub fn parse_intent(spk: &[u8]) -> Option<IntentParams> {
         delay: read_num(&o[10])?,
         cancel_set_id: data_of::<32>(&o[18])?,
         set_id: data_of::<32>(&o[24])?,
-        owner_key: data_of::<33>(&o[27])?,
+        owner: owner_of(&o[27], &o[28])?,
     };
     (build_intent(&p)? == spk).then_some(p)
 }
@@ -294,7 +319,7 @@ pub fn intent_for(v: &VaultParams, vault_spk: &[u8], recipient: &[u8]) -> Intent
         delay: v.delay,
         cancel_set_id: v.cancel_set_id,
         set_id: v.set_id,
-        owner_key: v.owner_key,
+        owner: v.owner,
     }
 }
 
@@ -328,20 +353,52 @@ pub fn parse_selector(kind: Kind, script_sig: &[u8]) -> Option<(u8, Vec<Vec<u8>>
     ))
 }
 
-/// V OWNER (selector 2): `<ownerSig ‖ hashtype> OP_2`.
-pub fn vault_owner_script_sig(owner_sig: &[u8]) -> Vec<u8> {
-    let mut s = Vec::with_capacity(owner_sig.len() + 2);
-    script::push_data(&mut s, owner_sig);
-    s.push(OP_2);
-    s
+fn owner_script_sig(
+    sig_with_hashtype: &[u8],
+    pk: &[u8],
+    selector: u8,
+) -> Result<Vec<u8>, pq::PqError> {
+    let mut s = pq::pq_sig_pushes(sig_with_hashtype, pk)?;
+    s.push(selector);
+    Ok(s)
 }
 
-/// V OWNER-RELEASED (selector 3): `<ownerSig ‖ hashtype> OP_3`.
-pub fn vault_owner_released_script_sig(owner_sig: &[u8]) -> Vec<u8> {
-    let mut s = Vec::with_capacity(owner_sig.len() + 2);
-    script::push_data(&mut s, owner_sig);
-    s.push(OP_3);
-    s
+/// V OWNER (selector 2): `<sig_1>…<sig_s> <s> <pk_1>…<pk_p> <p> OP_2` (spec §1.5; SLH-DSA 7,939
+/// bytes), the signature carrying its hashtype as the last byte.
+pub fn vault_owner_script_sig(sig_with_hashtype: &[u8], pk: &[u8]) -> Result<Vec<u8>, pq::PqError> {
+    owner_script_sig(sig_with_hashtype, pk, OP_2)
+}
+
+/// V OWNER-RELEASED (selector 3): `… <p> OP_3`.
+pub fn vault_owner_released_script_sig(
+    sig_with_hashtype: &[u8],
+    pk: &[u8],
+) -> Result<Vec<u8>, pq::PqError> {
+    owner_script_sig(sig_with_hashtype, pk, OP_3)
+}
+
+/// I OWNER-RELEASED (selector 3): `… <p> OP_3`, the same bytes as the V's.
+pub fn intent_owner_released_script_sig(
+    sig_with_hashtype: &[u8],
+    pk: &[u8],
+) -> Result<Vec<u8>, pq::PqError> {
+    owner_script_sig(sig_with_hashtype, pk, OP_3)
+}
+
+/// The owner's `(selector, sig_with_hashtype, pk)` of a V selector-2/3 or I selector-3 scriptSig,
+/// `None` for any other selector or a malformed chunking.
+pub fn parse_owner_script_sig(kind: Kind, script_sig: &[u8]) -> Option<(u8, Vec<u8>, Vec<u8>)> {
+    let (sel, _) = parse_selector(kind, script_sig)?;
+    let owner_sel = match kind {
+        Kind::Vault => sel == SEL_OWNER || sel == SEL_RELEASED,
+        Kind::Intent => sel == SEL_RELEASED,
+    };
+    if !owner_sel {
+        return None;
+    }
+    let o = script::ops(script_sig).ok()?;
+    let (sig, pk) = pq::parse_pq_sig_ops(&o[..o.len() - 1])?;
+    Some((sel, sig, pk))
 }
 
 /// V APP (selector 4, the YED claim): `OP_4`.
@@ -380,7 +437,7 @@ pub fn release_height(coin_height: u64, delay: i64) -> u64 {
 pub fn yed_vault_params_at(
     attestor_set_id: &SetId,
     claim_delay: i64,
-    owner: &[u8; 33],
+    owner: &PqKeyId,
     owner_height: i64,
     app_height: i64,
 ) -> VaultParams {
@@ -390,7 +447,7 @@ pub fn yed_vault_params_at(
         delay: claim_delay,
         set_id: *attestor_set_id,
         owner_height,
-        owner_key: *owner,
+        owner: *owner,
         app_height,
     }
 }
@@ -402,7 +459,7 @@ pub fn yed_vault_params_at(
 pub fn yed_mint_vault_params(
     attestor_set_id: &SetId,
     claim_delay: i64,
-    owner: &[u8; 33],
+    owner: &PqKeyId,
     ref_height: u32,
 ) -> VaultParams {
     let h = ref_height as i64 + 1;
@@ -416,7 +473,7 @@ pub fn yed_vault_params(
     attestor_set_id: &SetId,
     claim_delay: i64,
     grace: u32,
-    owner: &[u8; 33],
+    owner: &PqKeyId,
     lock_height: u32,
 ) -> VaultParams {
     VaultParams {
@@ -425,7 +482,7 @@ pub fn yed_vault_params(
         delay: claim_delay,
         set_id: *attestor_set_id,
         owner_height: lock_height as i64,
-        owner_key: *owner,
+        owner: *owner,
         app_height: lock_height as i64 + grace as i64,
     }
 }
@@ -465,6 +522,13 @@ mod tests {
         unhex(v.as_str().unwrap()).unwrap().try_into().unwrap()
     }
 
+    fn owner_json(o: &Value) -> PqKeyId {
+        PqKeyId {
+            scheme: o["scheme"].as_u64().unwrap() as u8,
+            hash: h::<32>(&o["hash"]),
+        }
+    }
+
     fn vault_of(p: &Value) -> VaultParams {
         VaultParams {
             tag: h::<4>(&p["tag"]),
@@ -472,7 +536,7 @@ mod tests {
             delay: p["delay"].as_i64().unwrap(),
             set_id: h::<32>(&p["setId"]),
             owner_height: p["ownerHeight"].as_i64().unwrap(),
-            owner_key: h::<33>(&p["ownerKey"]),
+            owner: owner_json(&p["owner"]),
             app_height: p["appHeight"].as_i64().unwrap(),
         }
     }
@@ -485,7 +549,7 @@ mod tests {
             delay: p["delay"].as_i64().unwrap(),
             cancel_set_id: h::<32>(&p["cancelSetId"]),
             set_id: h::<32>(&p["setId"]),
-            owner_key: h::<33>(&p["ownerKey"]),
+            owner: owner_json(&p["owner"]),
         }
     }
 
@@ -569,19 +633,88 @@ mod tests {
         // The scriptSigs YEW writes are the vector's shapes.
         assert_eq!(vault_app_script_sig(), unhex("54").unwrap());
         assert_eq!(intent_release_script_sig(), unhex("51").unwrap());
-        let sig = unhex("300600000000000001").unwrap();
+        // The owner selectors (V 2, V 3, I 3): the vector's 7,939-byte chunked scriptSigs parse
+        // to a 7,857-byte signature ‖ hashtype and a 32-byte key, and rebuild byte for byte.
+        let mut owner_sels = 0;
+        for e in v["selectors"].as_array().unwrap() {
+            let ss = unhex(e["scriptSig"].as_str().unwrap()).unwrap();
+            let Some((sel, sig, pk)) = parse_owner_script_sig(kind(e), &ss) else {
+                continue;
+            };
+            owner_sels += 1;
+            assert_eq!(ss.len(), 7_939);
+            assert_eq!((sig.len(), pk.len()), (7_857, 32));
+            let rebuilt = match (kind(e), sel) {
+                (Kind::Vault, SEL_OWNER) => vault_owner_script_sig(&sig, &pk),
+                (Kind::Vault, _) => vault_owner_released_script_sig(&sig, &pk),
+                (Kind::Intent, _) => intent_owner_released_script_sig(&sig, &pk),
+            };
+            assert_eq!(rebuilt.unwrap(), ss);
+        }
+        assert_eq!(owner_sels, 3);
         assert_eq!(
-            vault_owner_script_sig(&sig),
-            unhex("0930060000000000000152").unwrap()
+            parse_owner_script_sig(Kind::Vault, &vault_app_script_sig()),
+            None
         );
         assert_eq!(
-            parse_selector(Kind::Vault, &vault_owner_script_sig(&sig)),
-            Some((SEL_OWNER, vec![sig.clone()]))
+            parse_owner_script_sig(Kind::Intent, &unhex("52").unwrap()),
+            None
         );
+    }
+
+    /// `ownerSpends[]`: the node's own V selector-2 spend, signed by the vector's PQ owner
+    /// (`pqOwner`: seed → pk → owner id). YEW computes the same ZIP-243 sighash under the Vault
+    /// branch id over the V, signs it with SLH-DSA (deterministic), and writes the node's
+    /// scriptSig byte for byte; the transaction with that scriptSig re-serializes to the node's.
+    #[test]
+    fn owner_spend_is_signed_byte_for_byte() {
+        let v = vectors();
+        let o = &v["pqOwner"];
+        let key = pq::PqKey::from_seed(1, &unhex(o["seed"].as_str().unwrap()).unwrap()).unwrap();
         assert_eq!(
-            parse_selector(Kind::Vault, &vault_owner_released_script_sig(&sig)),
-            Some((SEL_RELEASED, vec![sig]))
+            key.public_key(),
+            &unhex(o["pk"].as_str().unwrap()).unwrap()[..]
         );
+        assert_eq!(key.id(), owner_json(&o["owner"]));
+        let spends = v["ownerSpends"].as_array().unwrap();
+        assert!(!spends.is_empty());
+        for e in spends {
+            let raw = unhex(e["tx"].as_str().unwrap()).unwrap();
+            let (mut tx, _) = Transaction::parse(&raw).unwrap();
+            assert_eq!(tx.serialize().unwrap(), raw);
+            let n = e["nIn"].as_u64().unwrap() as usize;
+            let code = unhex(e["scriptCode"].as_str().unwrap()).unwrap();
+            let vp = parse_vault(&code).expect("the spent V parses");
+            assert_eq!(vp.owner, key.id());
+            let branch = e["branchId"].as_u64().unwrap() as u32;
+            assert_eq!(branch, crate::params::VAULT_BRANCH_ID);
+            let digest = tx
+                .sighash(
+                    n,
+                    &code,
+                    e["amount"].as_i64().unwrap(),
+                    crate::params::SIGHASH_ALL,
+                    branch,
+                )
+                .unwrap();
+            assert_eq!(digest, h::<32>(&e["sighash"]), "{}", e["name"]);
+            let mut sig = key.sign(&digest);
+            assert!(pq::verify(1, key.public_key(), &sig, &digest));
+            sig.push(crate::params::SIGHASH_ALL as u8);
+            let sel = e["selector"].as_u64().unwrap() as u8;
+            let ss = match sel {
+                SEL_OWNER => vault_owner_script_sig(&sig, key.public_key()).unwrap(),
+                _ => vault_owner_released_script_sig(&sig, key.public_key()).unwrap(),
+            };
+            assert_eq!(
+                crate::keys::hex(&ss),
+                e["scriptSig"].as_str().unwrap(),
+                "{}",
+                e["name"]
+            );
+            tx.vin[n].script_sig = ss;
+            assert_eq!(tx.serialize().unwrap(), raw);
+        }
     }
 
     /// The ZIP-243 sighash under the Vault branch id (`spends[]`): YEW's signer computes the
@@ -634,19 +767,13 @@ mod tests {
         let p = vault_of(&e["params"]);
         assert_eq!(p.tag, YED_TAG);
         let grace = (p.app_height - p.owner_height) as u32;
-        let y = yed_vault_params(
-            &p.set_id,
-            p.delay,
-            grace,
-            &p.owner_key,
-            p.owner_height as u32,
-        );
+        let y = yed_vault_params(&p.set_id, p.delay, grace, &p.owner, p.owner_height as u32);
         assert_eq!(y, p);
         assert!(is_yed_vault(&p, &p.set_id, p.delay, grace));
         assert!(!is_yed_vault(&p, &[0; 32], p.delay, grace));
         assert!(!is_yed_vault(&p, &p.set_id, p.delay + 1, grace));
         // IT-1: a new mint's V opens both branches at refHeight + 1, and is a YED vault too.
-        let m = yed_mint_vault_params(&p.set_id, p.delay, &p.owner_key, 376);
+        let m = yed_mint_vault_params(&p.set_id, p.delay, &p.owner, 376);
         assert_eq!((m.owner_height, m.app_height), (377, 377));
         assert!(is_yed_vault(&m, &p.set_id, p.delay, grace));
         let late = VaultParams {
@@ -678,7 +805,10 @@ mod tests {
             delay: 10,
             set_id: [1; 32],
             owner_height: 500,
-            owner_key: [2; 33],
+            owner: PqKeyId {
+                scheme: 1,
+                hash: [2; 32],
+            },
             app_height: 524,
         };
         assert!(build_vault(&p).is_some());
@@ -687,9 +817,12 @@ mod tests {
         p.delay = 65_536;
         assert!(build_vault(&p).is_none());
         p.delay = 10;
-        p.owner_key[0] = 4;
+        p.owner.scheme = 3;
         assert!(build_vault(&p).is_none());
-        p.owner_key[0] = 3;
+        p.owner.scheme = 0;
+        assert!(build_vault(&p).is_none());
+        p.owner.scheme = 2; // Falcon builds (the template admits it; policy gates it)
+        assert!(build_vault(&p).is_some());
         p.app_height = 500_000_000;
         assert!(build_vault(&p).is_none());
     }

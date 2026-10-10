@@ -251,25 +251,42 @@ fn template_payload_vectors_round_trip() {
         let hex = hex_field(t, "payloadHex");
         let d = &t["payloadDecoded"];
         assert_eq!(d["type"].as_str().unwrap(), kind);
-        assert_eq!(d["version"].as_u64().unwrap(), payload::VERSION as u64);
+        // Quantum spec C-1: a MINT is version 4 (PQ owner), every other type stays version 3.
+        // `templates.json` predates the quantum line (Q6 regenerates it): its v3 MINTs, with a
+        // secp256k1 owner, are non-Yellowback here — and its TRANSFER / REDEEM / CLAIM payloads
+        // must still round-trip byte for byte, which is the C-1 guarantee for old builders.
+        if kind == "mint" && d["version"].as_u64() == Some(3) {
+            assert_eq!(
+                payload::decode(&hex),
+                None,
+                "{key}: a v3 MINT is not Yellowback"
+            );
+            let (tx, _) = Transaction::parse(&hex_field(t, "hex")).unwrap();
+            assert!(payload::find_payload(&tx).is_none(), "{key}");
+            continue;
+        }
+        assert_eq!(
+            d["version"].as_u64().unwrap(),
+            payload::version_of(match kind {
+                "mint" => payload::PayloadType::Mint,
+                "transfer" => payload::PayloadType::Transfer,
+                _ => payload::PayloadType::Redeem,
+            }) as u64
+        );
         let expected = match kind {
-            "mint" => {
-                let mut owner_key = [0u8; 33];
-                owner_key.copy_from_slice(&hex_field(d, "ownerPubKey"));
-                Payload::Mint {
-                    term_class: match d["termClass"].as_str().unwrap() {
-                        "A" => 0,
-                        "B" => 1,
-                        _ => 2,
-                    },
-                    cents: d["cents"].as_u64().unwrap() as u32,
-                    lock_height: d["lockHeight"].as_u64().unwrap() as u32,
-                    ref_height: d["refHeight"].as_u64().unwrap() as u32,
-                    owner_key,
-                    fee_vout: d["feeVout"].as_u64().unwrap() as u8,
-                    attest_fee_vout: d["attestFeeVout"].as_u64().unwrap() as u8,
-                }
-            }
+            "mint" => Payload::Mint {
+                term_class: match d["termClass"].as_str().unwrap() {
+                    "A" => 0,
+                    "B" => 1,
+                    _ => 2,
+                },
+                cents: d["cents"].as_u64().unwrap() as u32,
+                lock_height: d["lockHeight"].as_u64().unwrap() as u32,
+                ref_height: d["refHeight"].as_u64().unwrap() as u32,
+                owner: pq_owner_of(d),
+                fee_vout: d["feeVout"].as_u64().unwrap() as u8,
+                attest_fee_vout: d["attestFeeVout"].as_u64().unwrap() as u8,
+            },
             "transfer" => Payload::Transfer {
                 assignments: assignments(d),
             },
@@ -323,6 +340,19 @@ fn template_payload_vectors_round_trip() {
                 "{key}: vout {vout}"
             );
         }
+    }
+}
+
+/// A decoded MINT payload's or vault's post-quantum owner as rpcversion 7 reports it (quantum
+/// spec §6.2: `ownerScheme`, `ownerHash`; `ownerPubKey` is removed).
+fn pq_owner_of(d: &Value) -> yew_core::pq::PqKeyId {
+    yew_core::pq::PqKeyId {
+        scheme: d["ownerScheme"]
+            .as_u64()
+            .expect("ownerScheme (rpcversion 7)") as u8,
+        hash: hex_field(d, "ownerHash")
+            .try_into()
+            .expect("ownerHash, 32 bytes"),
     }
 }
 
@@ -432,7 +462,7 @@ struct NodeMint {
     txid: [u8; 32],
     vault: yew_core::vault::VaultParams,
     vault_script: Vec<u8>,
-    owner: [u8; 33],
+    owner: yew_core::pq::PqKeyId,
     lock_height: u32,
     ref_height: u32,
     term_class: u8,
@@ -450,8 +480,7 @@ fn check_mint(v: &Value, key: &str, carrier_key: &str) -> NodeMint {
     let mint = &v[key];
     let (tx, txid) = template_tx(mint);
     let d = &mint["payloadDecoded"];
-    let mut owner = [0u8; 33];
-    owner.copy_from_slice(&hex_field(d, "ownerPubKey"));
+    let owner = pq_owner_of(d);
     let lock_height = d["lockHeight"].as_u64().unwrap() as u32;
     let ref_height = d["refHeight"].as_u64().unwrap() as u32;
     assert_eq!(
@@ -499,11 +528,12 @@ fn check_mint(v: &Value, key: &str, carrier_key: &str) -> NodeMint {
         tx.vout[0].value,
         mint["result"]["collateralZat"].as_i64().unwrap()
     );
-    // vout[1]: TOKEN_VALUE to P2PKH(owner); vout[2]: the payload; vout[3]/[4]: the fees.
+    // vout[1]: TOKEN_VALUE to a fresh holder key (spec §3.6: P2PKH before the Falcon height, the
+    // holder is no longer the owner); vout[2]: the payload; vout[3]/[4]: the fees.
     assert_eq!(tx.vout[1].value, TOKEN_VALUE);
-    assert_eq!(
-        tx.vout[1].script_pubkey,
-        script::p2pkh_script(&keys::hash160(&owner))
+    assert!(
+        script::p2pkh_hash(&tx.vout[1].script_pubkey).is_some(),
+        "{key}: the token goes to a P2PKH holder"
     );
     let term_class = match d["termClass"].as_str().unwrap() {
         "A" => 0,
@@ -517,7 +547,7 @@ fn check_mint(v: &Value, key: &str, carrier_key: &str) -> NodeMint {
         cents: d["cents"].as_u64().unwrap() as u32,
         lock_height,
         ref_height,
-        owner_key: owner,
+        owner,
         fee_vout,
         attest_fee_vout,
     };
@@ -603,18 +633,17 @@ fn check_redeem(v: &Value, key: &str, m: &NodeMint, early: bool) {
     assert_eq!(redeem["txinfo"]["path"].as_str(), Some("owner"));
     let r = redeem["payloadDecoded"]["refHeight"].as_u64().unwrap() as u32;
     assert_eq!(rtx.expiry_height, r + REF_WINDOW);
-    let (selector, args) =
-        yew_core::vault::parse_selector(yew_core::vault::Kind::Vault, &rtx.vin[0].script_sig)
-            .unwrap();
-    assert_eq!(
-        (selector, args.len()),
-        (2, 1),
-        "{key}: the V's OWNER branch"
-    );
+    let (selector, sig, pk) = yew_core::vault::parse_owner_script_sig(
+        yew_core::vault::Kind::Vault,
+        &rtx.vin[0].script_sig,
+    )
+    .unwrap();
+    assert_eq!(selector, 2, "{key}: the V's OWNER branch");
     assert_eq!(
         rtx.vin[0].script_sig,
-        yew_core::vault::vault_owner_script_sig(&args[0])
+        yew_core::vault::vault_owner_script_sig(&sig, &pk).unwrap()
     );
+    assert_eq!(yew_core::pq::PqKeyId::of(m.owner.scheme, &pk), m.owner);
     let digest = rtx
         .sighash(
             0,
@@ -624,9 +653,13 @@ fn check_redeem(v: &Value, key: &str, m: &NodeMint, early: bool) {
             signing_branch_id(),
         )
         .unwrap();
-    let sig = secp256k1::ecdsa::Signature::from_der(&args[0][..args[0].len() - 1]).unwrap();
-    let pk = secp256k1::PublicKey::from_slice(&m.owner).unwrap();
-    assert!(secp256k1::ecdsa::verify(&sig, secp256k1::Message::from_digest(digest), &pk).is_ok());
+    assert_eq!(sig.last(), Some(&1u8), "SIGHASH_ALL");
+    assert!(yew_core::pq::verify(
+        m.owner.scheme,
+        &pk,
+        &sig[..sig.len() - 1],
+        &digest
+    ));
     // IT-9: the early-redeem fee is the class's bps of the collateral, on top of FEE-1, in the
     // pool payee's output; yed_estimateredeem quoted the same before the redeem was built.
     let collateral = m.tx.vout[0].value;
@@ -690,7 +723,7 @@ fn check_redeem(v: &Value, key: &str, m: &NodeMint, early: bool) {
         attest_script: None,
         attest_fee_zat: 0,
         residual_zat: 0,
-        owner_script: script::p2pkh_script(&keys::hash160(&m.owner)),
+        owner_script: yew_core::pq::pqpkh_script(&m.owner).unwrap(),
         carrier_value: 0,
         collateral_script: rtx.vout[0].script_pubkey.clone(),
     };
@@ -727,7 +760,13 @@ fn check_redeem(v: &Value, key: &str, m: &NodeMint, early: bool) {
 /// template at `vout[0]`, the MINT `vout` order and values, the payload bytes, the carrier
 /// scriptSig push encoding, the owner and claim scriptSigs, `nLockTime` / `nSequence` /
 /// `nExpiryHeight` — byte for byte except keys and amounts, which are the node's own here.
+///
+/// **Quantum line:** the checks are ported to the post-quantum owner (v4 MINT, PQ V, the
+/// chunked SLH-DSA owner scriptSig verified over the sighash, PQPKH residual, a P2PKH holder),
+/// but `templates.json` is still the pre-quantum devnet's (secp256k1 owners, v3 MINTs). The test
+/// runs again once Q6's quantum devnet regenerates the file with rpcversion 7 fields.
 #[test]
+#[ignore = "templates.json predates the quantum line: regenerate on a quantum devnet (Q6), rpcversion 7"]
 fn w4_templates_reproduce_the_node_scripts_and_payloads() {
     let v = load("templates.json");
     assert_eq!(v["armed"].as_bool(), Some(true));
@@ -869,7 +908,7 @@ fn check_in_term_claim(v: &Value, m: &NodeMint) {
         attest_script: Some(addr("attestPayee")),
         attest_fee_zat: claim["txinfo"]["attestFeeZat"].as_i64().unwrap(),
         residual_zat: claim["txinfo"]["residualZat"].as_i64().unwrap(),
-        owner_script: script::p2pkh_script(&keys::hash160(&m.owner)),
+        owner_script: yew_core::pq::pqpkh_script(&m.owner).unwrap(),
         claimant_script: script::p2pkh_script(&to.hash()),
         funding,
         funding_change_script: ctx.vout.last().unwrap().script_pubkey.clone(),

@@ -353,7 +353,10 @@ pub async fn sync(
         if v.owner_height == 0 || v.app_height == 0 {
             continue;
         }
-        let vs = t.vault_script_at(&v.owner_pubkey, v.owner_height, v.app_height)?;
+        let Some(owner) = crate::pq::PqKeyId::from_bytes(&v.owner_pubkey) else {
+            continue;
+        };
+        let vs = t.vault_script_at(&owner, v.owner_height, v.app_height)?;
         utxos.push(Utxo {
             outpoint: op,
             address: String::new(),
@@ -548,7 +551,9 @@ pub async fn refresh_vaults(
             return Ok((0, None));
         }
     };
-    let own = wallet.own_hashes()?;
+    // Own vaults are recognised by their post-quantum owner (quantum spec §1): the owner paired
+    // with each own external key (`Wallet::pq_owner_key`), mapped to that key's hash.
+    let own = wallet.own_pq_owners()?;
     let mut candidates: HashSet<[u8; 32]> = HashSet::new();
     for m in wallet.store.mints()? {
         if m.kind == crate::store::MintKind::Mint
@@ -588,17 +593,13 @@ pub async fn refresh_vaults(
             }
             Err(e) => return Err(e.into()),
         };
-        let pk: [u8; 33] = match keys::unhex(&v.owner_pub_key)
-            .ok()
-            .and_then(|b| b.as_slice().try_into().ok())
-        {
-            Some(p) => p,
-            None => continue,
-        };
-        let owner_hash160 = keys::hash160(&pk);
-        if !own.contains(&owner_hash160) {
+        let Ok(owner) = terms::vault_owner(&v) else {
             continue;
-        }
+        };
+        let Some(&owner_hash160) = own.get(&owner) else {
+            continue;
+        };
+        let pk = owner.to_bytes();
         // The script terms the wallet would sign against, checked before the vault is shown
         // as redeemable (audit G-1); an inconsistent answer fails the sync with that error.
         terms::check_vault(wallet.network, &v)?;
@@ -628,7 +629,7 @@ pub async fn refresh_vaults(
         })?;
         n += 1;
         if v.status == "CLAIMING" {
-            record_residual_intents(wallet, yb, &v, &pk, &yv, vault_txid).await?;
+            record_residual_intents(wallet, yb, &v, &owner, &yv, vault_txid).await?;
         }
     }
     // U-24: a vault the node no longer knows under its old outpoint was either re-created by an
@@ -690,12 +691,12 @@ pub async fn refresh_vaults(
 
 /// The owner's RED-5 residual intent of an own `CLAIMING` vault (`yed_getvault.intents`, role
 /// `"residual"`): its value and script from `ListVaultOutputs`, the script checked to be the
-/// intent this wallet derives (paying `P2PKH(owner)`), recorded for release.
+/// intent this wallet derives (paying `PQPKH(owner)`, quantum spec F-3), recorded for release.
 async fn record_residual_intents(
     wallet: &Wallet,
     yb: &mut YellowbackClient,
     v: &crate::net::rpc::YedVault,
-    owner: &[u8; 33],
+    owner: &crate::pq::PqKeyId,
     yv: &terms::YedV,
     vault_txid: [u8; 32],
 ) -> Result<(), WalletError> {
@@ -707,13 +708,14 @@ async fn record_residual_intents(
     if residual.is_empty() {
         return Ok(());
     }
-    let recipient = script::p2pkh_script(&keys::hash160(owner));
+    let recipient = crate::pq::pqpkh_script(owner)
+        .ok_or_else(|| WalletError::Other("the vault owner's scheme is not registered".into()))?;
     let want = crate::vault::build_intent(&crate::vault::intent_for(
         &yv.params, &yv.script, &recipient,
     ))
     .ok_or_else(|| WalletError::Other("cannot build the residual intent".into()))?;
     let live = yb
-        .list_vault_outputs("", "", &keys::hex(owner), "intent")
+        .list_vault_outputs("", "", &keys::hex(&owner.to_bytes()), "intent")
         .await?;
     for i in residual {
         let Ok(txid) = txid_from_hex(&i.txid) else {

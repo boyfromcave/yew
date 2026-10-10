@@ -41,6 +41,9 @@ pub enum TxError {
     /// The input index is out of range.
     #[error("input index {0} out of range")]
     InputIndex(usize),
+    /// A post-quantum signature or scriptSig could not be made.
+    #[error("post-quantum signing: {0}")]
+    Pq(#[from] crate::pq::PqError),
 }
 
 /// A reference to an output.
@@ -440,6 +443,42 @@ impl Transaction {
         der.push(SIGHASH_ALL as u8);
         let pubkey = secp256k1::PublicKey::from_secret_key(secret).serialize();
         self.vin[index].script_sig = script::p2pkh_script_sig(&der, &pubkey);
+        Ok(digest)
+    }
+
+    /// The owner's post-quantum signature of input `index` (quantum spec §1.5, §2.1): the
+    /// ZIP-243 sighash over `script_code` (the V, the I or the `TX_PQPKH` being spent — never a
+    /// separator, `OP_CODESEPARATOR` is disabled) and `amount` under `branch_id`, `SIGHASH_ALL`,
+    /// signed by `key` (SLH-DSA, deterministic), with the hashtype byte appended — the element
+    /// [`crate::pq::pq_sig_pushes`] chunks. Returns `(sighash, sig ‖ hashtype)`. The sighash is
+    /// the one the ECDSA path signs; only the signature scheme changes.
+    pub fn pq_signature(
+        &self,
+        index: usize,
+        key: &crate::pq::PqKey,
+        script_code: &[u8],
+        amount: i64,
+        branch_id: u32,
+    ) -> Result<([u8; 32], Vec<u8>), TxError> {
+        let digest = self.sighash(index, script_code, amount, SIGHASH_ALL, branch_id)?;
+        let mut sig = key.sign(&digest);
+        sig.push(SIGHASH_ALL as u8);
+        Ok((digest, sig))
+    }
+
+    /// Sign input `index` as `TX_PQPKH` with `key` (whose id the spent script must pay) and set
+    /// its scriptSig to the chunked `<sig…> <s> <pk…> <p>` (7,938 bytes for SLH-DSA). Returns the
+    /// sighash that was signed.
+    pub fn sign_pqpkh_input(
+        &mut self,
+        index: usize,
+        key: &crate::pq::PqKey,
+        script_pubkey: &[u8],
+        amount: i64,
+        branch_id: u32,
+    ) -> Result<[u8; 32], TxError> {
+        let (digest, sig) = self.pq_signature(index, key, script_pubkey, amount, branch_id)?;
+        self.vin[index].script_sig = crate::pq::pqpkh_script_sig(&sig, key.public_key())?;
         Ok(digest)
     }
 

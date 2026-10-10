@@ -13,7 +13,7 @@
 //! light client. The two sides never share an input: every transparent builder and the gate's
 //! transparent paths see only the UTXO table, the shielded path only notes.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
 
@@ -108,6 +108,11 @@ pub struct Wallet {
     keyring: KeyRing,
     /// Wrapping key for imported secrets: `HMAC-SHA256("yew-wrap", seed)`.
     wrap_secret: WrapSecret,
+    /// The post-quantum seed root (`HKDF-Extract("", BIP39 seed)`, quantum spec A-12): every
+    /// vault owner key is expanded from it ([`Wallet::pq_owner_key`]).
+    pq_root: crate::pq::PqSeedRoot,
+    /// Owner ids already derived, by external index (SLH-DSA key generation is not free).
+    pq_ids: std::sync::Mutex<HashMap<u32, crate::pq::PqKeyId>>,
     /// The Sapling side (`None` for a wallet over an in-memory store, as the unit tests use).
     pub shielded: Option<Shielded>,
 }
@@ -236,6 +241,8 @@ impl Wallet {
             store,
             keyring,
             wrap_secret,
+            pq_root: crate::pq::PqSeedRoot::from_seed(seed),
+            pq_ids: std::sync::Mutex::new(HashMap::new()),
             shielded: None,
         };
         w.ensure_gap()?;
@@ -359,6 +366,69 @@ impl Wallet {
             ));
         }
         Ok(Some(k))
+    }
+
+    /// The SLH-DSA vault-owner key paired with the external (receive) key at `index`
+    /// (quantum plan Q7; spec A-12 derivation): `DerivePQSeed(BIP39 seed, scheme 1, index)`.
+    ///
+    /// **Pairing rule (YEW).** A mint's token goes to a fresh external P2PKH key (spec §3.6: the
+    /// holder is no longer the owner), and its vault owner is the PQ key of the *same index*. So
+    /// the owner chain needs no index of its own, no store record, and no separate gap scan: a
+    /// restore that finds the external keys finds the owners. The key is re-derived on every use
+    /// (it is never stored); [`Wallet::pq_owner_id`] caches the public id.
+    pub fn pq_owner_key(&self, index: u32) -> crate::pq::PqKey {
+        self.pq_root.slh_key(index)
+    }
+
+    /// The owner id of [`Wallet::pq_owner_key`]`(index)`, cached.
+    pub fn pq_owner_id(&self, index: u32) -> crate::pq::PqKeyId {
+        let mut cache = self.pq_ids.lock().unwrap_or_else(|e| e.into_inner());
+        *cache
+            .entry(index)
+            .or_insert_with(|| self.pq_root.slh_key(index).id())
+    }
+
+    /// The PQ owner paired with an own external HD key hash (`None` for a change or imported
+    /// key, or a hash that is not ours).
+    pub fn pq_owner_for_hash(
+        &self,
+        hash160: &[u8; 20],
+    ) -> Result<Option<(u32, crate::pq::PqKeyId)>, WalletError> {
+        Ok(self
+            .store
+            .addresses()?
+            .into_iter()
+            .find(|r| r.hash160 == *hash160 && r.hd_chain() == Some(Chain::External))
+            .map(|r| (r.index, self.pq_owner_id(r.index))))
+    }
+
+    /// Every PQ owner this wallet can sign for, with the external key hash it is paired with:
+    /// the owner of each derived external address (the gap-scanned set, so a restore sees the
+    /// vaults of every used receive key).
+    pub fn own_pq_owners(&self) -> Result<HashMap<crate::pq::PqKeyId, [u8; 20]>, WalletError> {
+        Ok(self
+            .store
+            .addresses()?
+            .into_iter()
+            .filter(|r| r.hd_chain() == Some(Chain::External))
+            .map(|r| (self.pq_owner_id(r.index), r.hash160))
+            .collect())
+    }
+
+    /// The signing key of an own PQ owner, found through its paired external key (and checked
+    /// against the id).
+    pub fn pq_key_for_owner(
+        &self,
+        owner: &crate::pq::PqKeyId,
+        paired_hash160: &[u8; 20],
+    ) -> Result<Option<crate::pq::PqKey>, WalletError> {
+        let Some((index, id)) = self.pq_owner_for_hash(paired_hash160)? else {
+            return Ok(None);
+        };
+        if id != *owner {
+            return Ok(None);
+        }
+        Ok(Some(self.pq_owner_key(index)))
     }
 
     /// Export the WIF of an own address (D-W-11).
@@ -680,6 +750,39 @@ mod tests {
         assert_eq!(dollars(5), "$0.05");
         assert_eq!(dollars(12_345), "$123.45");
         assert_eq!(dollars(-250), "-$2.50");
+    }
+
+    /// The PQ owner chain (A-12 over the BIP39 seed, paired with the external index): the same
+    /// mnemonic gives the same owners (restore), the key matches its cached id, and a change or
+    /// foreign key has no owner.
+    #[test]
+    fn pq_owners_are_deterministic_and_paired_with_external_keys() {
+        let w = wallet();
+        let first = w.receive_address(false).unwrap();
+        let (i, id) = w.pq_owner_for_hash(&first.hash160).unwrap().unwrap();
+        assert_eq!(i, 0);
+        // the seed is the 64-byte BIP39 seed: HKDF over it directly
+        let seed = keys::seed_from_mnemonic(PHRASE, "").unwrap();
+        let direct = crate::pq::PqSeedRoot::from_seed(&seed).slh_key(0);
+        assert_eq!(direct.id(), id);
+        let k = w.pq_key_for_owner(&id, &first.hash160).unwrap().unwrap();
+        assert_eq!(k.id(), id);
+        assert_eq!(w.pq_owner_id(1), w.pq_owner_key(1).id());
+        assert_ne!(w.pq_owner_id(1), id);
+        assert_eq!(
+            wallet().pq_owner_id(0),
+            id,
+            "restore derives the same owner"
+        );
+        let change = w.change_address().unwrap();
+        assert_eq!(w.pq_owner_for_hash(&change.hash160).unwrap(), None);
+        assert!(w
+            .pq_key_for_owner(&w.pq_owner_id(1), &first.hash160)
+            .unwrap()
+            .is_none());
+        let owners = w.own_pq_owners().unwrap();
+        assert_eq!(owners.get(&id), Some(&first.hash160));
+        assert_eq!(owners.len(), GAP_LIMIT as usize);
     }
 
     #[test]

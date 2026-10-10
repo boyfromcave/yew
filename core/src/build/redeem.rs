@@ -23,7 +23,7 @@
 use crate::coins::{self, Utxo, UtxoClass};
 use crate::coinselect::{self, SelectStage};
 use crate::gate::{self, Validator};
-use crate::keys::{self, AddressKey};
+use crate::keys;
 use crate::net::{CompactClient, Validation, YellowbackClient};
 use crate::params::{
     CARRIER_VALUE, FEE_ZAT, MAX_INPUTS, MIN_OUTPUT_CENTS, REF_WINDOW, SEQUENCE_LOCKTIME,
@@ -77,7 +77,7 @@ pub struct VaultSpendShape {
     pub attest_fee_zat: i64,
     /// RED-5's residual to the owner (0 = none).
     pub residual_zat: i64,
-    /// `P2PKH(ownerPubKey)` for the residual.
+    /// `PQPKH(owner)` for the residual (quantum spec F-3, §3.3).
     pub owner_script: Vec<u8>,
     /// `CARRIER_VALUE` when a carrier input is spent, else 0.
     pub carrier_value: i64,
@@ -293,28 +293,31 @@ pub fn select_yed_burn(
     Ok((sel, s.change as u64, s.extra_burn as u64, s.stage))
 }
 
-/// `SignVaultSpend`'s owner signature (`txbuilder.cpp`, branch `upgrade/vault`): ZIP-243 over
-/// the bare V script (it is the scriptCode) with the vault's `nValue` and the next block's
-/// branch id (the Vault id after activation), then `<sig> OP_2` at `vin[0]` (the V's OWNER
-/// selector, U-23).
+/// `SignVaultSpend`'s owner signature (`txbuilder.cpp`, branch `q/yed`; quantum spec §1.5,
+/// §3.6): ZIP-243 over the bare V script (it is the scriptCode) with the vault's `nValue` and
+/// the next block's branch id (the Vault id after activation), signed by the vault's SLH-DSA
+/// owner, then `<sig_1>…<sig_16> OP_16 <pk> OP_1 OP_2` at `vin[0]` (the V's OWNER selector, U-23;
+/// 7,939 bytes). The wallet checks its own signature before it leaves (the node judges).
 pub fn sign_owner_input(
     tx: &mut Transaction,
-    owner: &AddressKey,
+    owner: &crate::pq::PqKey,
     vault_script: &[u8],
     vault_value: i64,
     branch_id: u32,
 ) -> Result<(), WalletError> {
-    let digest = tx.sighash(
-        0,
-        vault_script,
-        vault_value,
-        crate::params::SIGHASH_ALL,
-        branch_id,
-    )?;
-    let sig = secp256k1::ecdsa::sign(secp256k1::Message::from_digest(digest), &owner.secret);
-    let mut der = sig.serialize_der().to_vec();
-    der.push(crate::params::SIGHASH_ALL as u8);
-    tx.vin[0].script_sig = crate::vault::vault_owner_script_sig(&der);
+    let (digest, sig) = tx.pq_signature(0, owner, vault_script, vault_value, branch_id)?;
+    if !crate::pq::verify(
+        owner.scheme(),
+        owner.public_key(),
+        &sig[..sig.len() - 1],
+        &digest,
+    ) {
+        return Err(WalletError::Other(
+            "the owner's post-quantum signature does not verify".into(),
+        ));
+    }
+    tx.vin[0].script_sig = crate::vault::vault_owner_script_sig(&sig, owner.public_key())
+        .map_err(crate::tx::TxError::from)?;
     Ok(())
 }
 
@@ -385,7 +388,12 @@ pub fn vault_script_of(
         }
         .into());
     }
-    Ok(vt.vault_script_at(&v.owner_pubkey, v.owner_height, v.app_height)?)
+    let owner = crate::pq::PqKeyId::from_bytes(&v.owner_pubkey)
+        .filter(|o| o.is_known())
+        .ok_or_else(|| {
+            WalletError::Other("vault-not-owned: the vault's owner is not post-quantum".into())
+        })?;
+    Ok(vt.vault_script_at(&owner, v.owner_height, v.app_height)?)
 }
 
 /// IT-9's early-redeem fee of an owner redeem of `v` built at index height `r` (`EarlyRedeemFeeAt`
@@ -452,8 +460,9 @@ pub async fn build_redeem(
             "expiring-too-soon: the index is too far behind the chain".into(),
         ));
     }
-    let owner = wallet
-        .key_for_hash(&v.owner_hash160)?
+    let owner = crate::pq::PqKeyId::from_bytes(&v.owner_pubkey)
+        .and_then(|id| wallet.pq_key_for_owner(&id, &v.owner_hash160).transpose())
+        .transpose()?
         .ok_or_else(|| WalletError::Other("vault-not-owned: owner key missing".into()))?;
     let vt = mint::vault_terms_now(wallet, yb).await?;
     let vault_script = vault_script_of(&v, &vt)?;
@@ -510,7 +519,9 @@ pub async fn build_redeem(
         attest_script: None,
         attest_fee_zat: 0,
         residual_zat: 0,
-        owner_script: script::p2pkh_script(&v.owner_hash160),
+        owner_script: crate::pq::pqpkh_script(&owner.id()).ok_or_else(|| {
+            WalletError::Other("the vault owner's scheme is not registered".into())
+        })?,
         carrier_value: 0,
         collateral_script: script::p2pkh_script(&dest.hash160),
     };
@@ -693,7 +704,11 @@ mod tests {
             attest_script: attest.then(|| script::p2pkh_script(&[7; 20])),
             attest_fee_zat: 12_500_000,
             residual_zat: residual,
-            owner_script: script::p2pkh_script(&[8; 20]),
+            owner_script: crate::pq::pqpkh_script(&crate::pq::PqKeyId {
+                scheme: 1,
+                hash: [8; 32],
+            })
+            .unwrap(),
             carrier_value: 0,
             collateral_script: script::p2pkh_script(&[4; 20]),
         }

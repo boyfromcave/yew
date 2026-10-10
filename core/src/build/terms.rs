@@ -222,7 +222,7 @@ impl VaultTerms {
     /// R)`, in-term plan IT-1, D-IT-15): `ownerHeight = appHeight = R + 1`.
     pub fn mint_vault_params(
         &self,
-        owner: &[u8; 33],
+        owner: &crate::pq::PqKeyId,
         ref_height: u32,
     ) -> crate::vault::VaultParams {
         crate::vault::yed_mint_vault_params(
@@ -236,7 +236,7 @@ impl VaultTerms {
     /// The V scriptPubKey of a new mint by `owner` at reference height `ref_height`.
     pub fn mint_vault_script(
         &self,
-        owner: &[u8; 33],
+        owner: &crate::pq::PqKeyId,
         ref_height: u32,
     ) -> Result<Vec<u8>, MintError> {
         build_or_refuse(&self.mint_vault_params(owner, ref_height))
@@ -245,7 +245,7 @@ impl VaultTerms {
     /// The V of an existing vault with the given branch heights (`YedVaultScriptAt`).
     pub fn vault_params_at(
         &self,
-        owner: &[u8; 33],
+        owner: &crate::pq::PqKeyId,
         owner_height: u32,
         app_height: u32,
     ) -> crate::vault::VaultParams {
@@ -261,7 +261,7 @@ impl VaultTerms {
     /// The V scriptPubKey of an existing vault with the given branch heights.
     pub fn vault_script_at(
         &self,
-        owner: &[u8; 33],
+        owner: &crate::pq::PqKeyId,
         owner_height: u32,
         app_height: u32,
     ) -> Result<Vec<u8>, MintError> {
@@ -272,7 +272,7 @@ impl VaultTerms {
     /// `appHeight = lockHeight + GRACE`): minted before the in-term rule, still spendable.
     pub fn pre_plan_vault_params(
         &self,
-        owner: &[u8; 33],
+        owner: &crate::pq::PqKeyId,
         lock_height: u32,
     ) -> crate::vault::VaultParams {
         crate::vault::yed_vault_params(
@@ -381,6 +381,20 @@ pub fn vault_terms(network: Network, info: &rpc::YellowbackInfo) -> Result<Vault
     })
 }
 
+/// A `GetVault` record's post-quantum owner (quantum spec §1, §3.4): `scheme ‖ keyHash`, a
+/// registered scheme. **The one place the record's owner field is read.** rpcversion 7 (spec
+/// §6.2) replaces `ownerPubKey` with `ownerScheme` + `ownerHash`; until YEW re-pins the
+/// lightwalletd proto (YEW-b), this reads the same 33 bytes from the `ownerPubKey` field, which
+/// on the quantum line's vault record holds exactly `scheme ‖ hash` (`VaultRecord::ownerPubKey`,
+/// spec §3.4).
+pub fn vault_owner(v: &rpc::YedVault) -> Result<crate::pq::PqKeyId, MintError> {
+    crate::keys::unhex(&v.owner_pub_key)
+        .ok()
+        .and_then(|b| crate::pq::PqKeyId::from_bytes(&b))
+        .filter(|o| o.is_known())
+        .ok_or_else(|| inconsistent(format!("vault {}: owner", v.txid)))
+}
+
 /// A `GetVault` record's V script (rpcversion 5, U-23; rpcversion 6, in-term IT-1): the node's
 /// `scriptPubKey` must be the YED vault this wallet rebuilds from the owner key and the
 /// [`VaultTerms`] — the in-term mint's V (`ownerHeight = appHeight = refHeight + 1`) or, for a
@@ -388,10 +402,7 @@ pub fn vault_terms(network: Network, info: &rpc::YellowbackInfo) -> Result<Vault
 /// will sign against (owner) or name in its claim intents (claimant). Returns it with its
 /// branch heights.
 pub fn check_vault_script(t: &VaultTerms, v: &rpc::YedVault) -> Result<YedV, MintError> {
-    let owner: [u8; 33] = crate::keys::unhex(&v.owner_pub_key)
-        .ok()
-        .and_then(|b| b.as_slice().try_into().ok())
-        .ok_or_else(|| inconsistent(format!("vault {}: ownerPubKey", v.txid)))?;
+    let owner = vault_owner(v)?;
     let theirs = v.script_pub_key.to_ascii_lowercase();
     let mut candidates = Vec::new();
     if let Ok(r) = u32::try_from(v.ref_height) {
@@ -1388,17 +1399,17 @@ mod tests {
         // The vault script a server reports must be the one rebuilt from owner and refHeight
         // (in-term IT-1: ownerHeight = appHeight = R + 1) — or, for a vault minted before the
         // rule, from owner and lockHeight (ownerHeight = L, appHeight = L + GRACE).
-        let owner = secp256k1::PublicKey::from_secret_key(
-            &secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap(),
-        )
-        .serialize();
+        let owner = crate::pq::PqKeyId {
+            scheme: 1,
+            hash: [7; 32],
+        };
         let spk = t.mint_vault_script(&owner, 329).unwrap();
         let p = crate::vault::parse_vault(&spk).unwrap();
         assert_eq!(p.tag, crate::vault::YED_TAG);
         assert_eq!((p.owner_height, p.app_height, p.delay), (330, 330, 10));
         let mut v = rpc::YedVault {
             txid: "ab".repeat(32),
-            owner_pub_key: crate::keys::hex(&owner),
+            owner_pub_key: crate::keys::hex(&owner.to_bytes()),
             ref_height: 329,
             lock_height: 377,
             claim_height: 401,
@@ -1413,8 +1424,18 @@ mod tests {
         v.ref_height = 330;
         assert!(check_vault_script(&t, &v).is_err());
         v.ref_height = 329;
-        v.script_pub_key = crate::keys::hex(&t.mint_vault_script(&[2; 33], 329).unwrap());
+        let other = crate::pq::PqKeyId {
+            hash: [2; 32],
+            ..owner
+        };
+        v.script_pub_key = crate::keys::hex(&t.mint_vault_script(&other, 329).unwrap());
         assert!(check_vault_script(&t, &v).is_err());
+        // an unregistered scheme or a short owner field is not a vault owner
+        let mut w = v.clone();
+        w.owner_pub_key = crate::keys::hex(&crate::pq::PqKeyId { scheme: 3, ..owner }.to_bytes());
+        assert!(vault_owner(&w).is_err());
+        w.owner_pub_key = "01".repeat(32);
+        assert!(vault_owner(&w).is_err());
         // A pre-plan vault (the upgrade line's V) is still recognised, with its own heights.
         let old = crate::vault::build_vault(&t.pre_plan_vault_params(&owner, 377)).unwrap();
         v.script_pub_key = crate::keys::hex(&old);

@@ -88,6 +88,17 @@ secp256k1_zcash = { package = "secp256k1", version = "=0.29.1", default-features
 zcash_proofs = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["local-prover"] }
 zcash_protocol = { version = "=0.9.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["std"] }
 rand = { version = "=0.8.8", default-features = false, features = ["std", "std_rng", "getrandom"] }
+# Post-quantum vault owners (workspace docs/plans/yellowback-quantum-plan.md Q7, quantum spec §1-§4,
+# client survey yellowback-quantum-clients.md §1): SLH-DSA-SHA2-128s (FIPS 205 final, pure mode,
+# empty context, deterministic opt_rand = PK.seed), RustCrypto's pure-Rust implementation. 0.1.0 is
+# the version that resolves beside bip32's RustCrypto pre-release pins (0.2.0-rc.5 needs hmac
+# ^0.13 final); `core/src/pq.rs` proves it byte-identical to the node's golden vectors
+# (`tests/vectors/pq_vectors.json`, `vault_vectors.json` ownerSpends). Its sha2 0.10 / hmac 0.12 sit
+# beside YEW's pre-releases (different major), unused by YEW directly.
+# Cargo.lock holds its `signature` at 2.3.0-pre.4: slh-dsa 0.1.0 does not compile against the
+# 2.3.0-pre.7 a fresh resolve picks (rand_core 0.9's `CryptoRngCore` is gone); a `cargo update`
+# must keep `cargo update -p signature --precise 2.3.0-pre.4`.
+slh-dsa = { version = "=0.1.0", default-features = false, features = ["alloc"] }
 # The Sapling proving parameters are downloaded over HTTPS on first shielded send (S0-2,
 # `core/src/sapling_params.rs`): rustls through `tokio-rustls` (the version tonic's TLS already
 # links) with the Mozilla roots above; the SHA-256 pins, not the transport, are the integrity check.
