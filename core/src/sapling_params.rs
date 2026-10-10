@@ -29,7 +29,8 @@
 //!
 //! wasm32 (the browser wallet, yew/web plan W0.3/W0.5): the pins, [`verify_bytes`], [`status`],
 //! [`ensure_verified`] and [`ParamsSource`] compile; the download ([`download`] and the HTTP/TLS
-//! client below it, tokio + rustls) is native only. The browser has no files: [`fetch`] looks in
+//! client below it, tokio + rustls) is native only. The browser has no files: [`fetch`] (and
+//! [`fetch_with`], with progress; [`cached`] reads the cache alone) looks in
 //! the Cache API (`caches.open(CACHE_NAME)`), else fetches each file from the sources in order
 //! with the browser's `fetch`, keeps bytes only if they verify against the same pins, and hands
 //! them to `Shielded::set_prover_bytes`. A cache entry that no longer verifies is deleted.
@@ -755,14 +756,43 @@ async fn http_get(target: &ParamsSource, sink: &mut Sink<'_>) -> Result<Fetched,
 /// Runs in the worker the core lives in (the Cache API is available there).
 #[cfg(target_arch = "wasm32")]
 pub async fn fetch(sources: &[&str]) -> Result<(Vec<u8>, Vec<u8>), ParamsError> {
+    fetch_with(sources, |_, _, _| {}).await
+}
+
+/// [`fetch`] reporting progress (W1a): `progress(name, done, total)` before and after each
+/// file, `done` counting the bytes of the files complete so far and `total` = [`TOTAL_BYTES`]
+/// (the browser's `fetch` hands a file over whole, so there is no finer grain to report).
+#[cfg(target_arch = "wasm32")]
+pub async fn fetch_with(
+    sources: &[&str],
+    mut progress: impl FnMut(&'static str, u64, u64),
+) -> Result<(Vec<u8>, Vec<u8>), ParamsError> {
     let sources = if sources.is_empty() {
         DEFAULT_SOURCES
     } else {
         sources
     };
+    progress(SPEND.name, 0, TOTAL_BYTES);
     let spend = web::fetch_param(&SPEND, sources).await?;
+    progress(OUTPUT.name, SPEND.bytes, TOTAL_BYTES);
     let output = web::fetch_param(&OUTPUT, sources).await?;
+    progress(OUTPUT.name, TOTAL_BYTES, TOTAL_BYTES);
     Ok((spend, output))
+}
+
+/// The verified copies the Cache API holds, both files or `None` (no network; W1a's
+/// `params_status` and the confirm path's reload after a page reload). An entry that no longer
+/// verifies is deleted, as in [`fetch`].
+#[cfg(target_arch = "wasm32")]
+pub async fn cached() -> Result<Option<(Vec<u8>, Vec<u8>)>, ParamsError> {
+    let cache = web::open_cache(SPEND.name).await?;
+    let Some(spend) = web::cached_param(&cache, &SPEND).await? else {
+        return Ok(None);
+    };
+    let Some(output) = web::cached_param(&cache, &OUTPUT).await? else {
+        return Ok(None);
+    };
+    Ok(Some((spend, output)))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -789,24 +819,43 @@ mod web {
         Ok(js_sys::Uint8Array::new(&buf).to_vec())
     }
 
-    pub async fn fetch_param(f: &ParamFile, sources: &[&str]) -> Result<Vec<u8>, ParamsError> {
-        let name = f.name;
+    /// The Cache API cache holding the verified files.
+    pub async fn open_cache(name: &'static str) -> Result<web_sys::Cache, ParamsError> {
         let caches = scope().caches().map_err(|e| transfer(name, e))?;
-        let cache: web_sys::Cache = JsFuture::from(caches.open(CACHE_NAME))
+        Ok(JsFuture::from(caches.open(CACHE_NAME))
             .await
             .map_err(|e| transfer(name, e))?
-            .unchecked_into();
+            .unchecked_into())
+    }
+
+    /// The cache's copy of `f` when it verifies against the pin; an entry that no longer
+    /// matches is dropped, not used.
+    pub async fn cached_param(
+        cache: &web_sys::Cache,
+        f: &ParamFile,
+    ) -> Result<Option<Vec<u8>>, ParamsError> {
+        let name = f.name;
         let key = format!("/{name}");
         let hit = JsFuture::from(cache.match_with_str(&key))
             .await
             .map_err(|e| transfer(name, e))?;
-        if !hit.is_undefined() {
-            let data = response_bytes(name, &hit.unchecked_into()).await?;
-            if super::verify_bytes(f, &data).is_ok() {
-                return Ok(data);
-            }
-            // A cache entry that no longer matches the pin is dropped, not used.
-            let _ = JsFuture::from(cache.delete_with_str(&key)).await;
+        if hit.is_undefined() {
+            return Ok(None);
+        }
+        let data = response_bytes(name, &hit.unchecked_into()).await?;
+        if super::verify_bytes(f, &data).is_ok() {
+            return Ok(Some(data));
+        }
+        let _ = JsFuture::from(cache.delete_with_str(&key)).await;
+        Ok(None)
+    }
+
+    pub async fn fetch_param(f: &ParamFile, sources: &[&str]) -> Result<Vec<u8>, ParamsError> {
+        let name = f.name;
+        let cache = open_cache(name).await?;
+        let key = format!("/{name}");
+        if let Some(data) = cached_param(&cache, f).await? {
+            return Ok(data);
         }
         let mut last = ParamsError::Transfer(name.into(), "no source".into());
         for base in sources {

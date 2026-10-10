@@ -5,7 +5,11 @@
 # cluster's plain gRPC-web listener; it must allow this origin: ycash-infra values-kind.yaml
 # `gateway.plaintextGrpcCors`), then is paid from the node's wallet by the funding helper
 # (web/scripts/fund-helper.py; its node CLI is $YEW_FUND_CLI, default kubectl into the kind
-# cluster) and syncs until the note lands. FUND=0 skips the helper.
+# cluster) and syncs until the note lands; W1a's test then pays the transparent address (the
+# helper's /fund_t), sends t→t, shields, sends z→z (the proving parameters served by the helper
+# from $PARAMS_DIR, default ~/.cache/yew-web/sapling-params — fetched once by
+# test-spike-prover.sh), and exercises the YED / vault previews. FUND=0 skips the helper (and
+# with it everything that needs money).
 #
 # Against a local devnet instead (the kind cluster's regtest activates only the vault upgrade,
 # so it has no Sapling: GetTreeState fails there — see the plan's W0.5 findings):
@@ -47,6 +51,11 @@ if [ "${FUND:-1}" = 1 ]; then
   HELPER=$!
   trap 'kill $HELPER 2>/dev/null' EXIT
   export YEW_WEB_FUND_URL="http://127.0.0.1:$PORT"
+  export YEW_WEB_PARAMS_URL="http://127.0.0.1:$PORT/params/"
+  PARAMS_DIR=${PARAMS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/yew-web/sapling-params}
+  for f in sapling-spend.params sapling-output.params; do
+    [ -s "$PARAMS_DIR/$f" ] || { echo "$PARAMS_DIR/$f missing: run web/scripts/test-spike-prover.sh once"; exit 1; }
+  done
 fi
 
 export CC_wasm32_unknown_unknown="$LLVM/clang" AR_wasm32_unknown_unknown="$LLVM/llvm-ar"

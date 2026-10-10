@@ -3,6 +3,12 @@
 browser test calls to be paid from the devnet node's wallet.
 
   GET /fund?addr=<yregtestsapling1…>&zat=<n>   -> the txid of a z_sendmany to addr
+  GET /fund_t?addr=<sm…>&zat=<n>               -> the txid of a sendtoaddress to the transparent addr
+                                                  (W1a; z_sendmany from the node's z-address when
+                                                  the node refuses to spend coinbase transparently)
+  GET /params/<file>                            -> the Sapling parameter file from $PARAMS_DIR
+                                                  (default ~/.cache/yew-web/sapling-params; W1a's
+                                                  fetch_params source, so the test never downloads)
 
 The node's `ycash-cli` is $YEW_FUND_CLI (shell words; default: `kubectl exec` into the kind
 cluster of ycash-infra; a local devnet: `yellowback-devnet cli --node 0 --`). Coinbase is
@@ -85,6 +91,25 @@ def fund(addr, zat):
     return txid
 
 
+def fund_t(addr, zat):
+    yec = zat / 1e8
+    try:
+        txid = cli("sendtoaddress", addr, f"{yec:.8f}")
+    except subprocess.CalledProcessError as e:
+        print(f"fund-helper: sendtoaddress refused ({e.stderr.strip()}); z_sendmany instead", flush=True)
+        zaddr = node_zaddr()
+        ensure_private(zaddr, yec + 0.001)
+        r = cli("z_sendmany", zaddr, json.dumps([{"address": addr, "amount": f"{yec:.8f}"}]), "1", "null", "NoPrivacy")
+        txid = wait_opid(r if isinstance(r, str) else r.get("opid"))
+    print(f"fund-helper: sent {yec} YEC to transparent {addr} in {txid}", flush=True)
+    return txid
+
+
+PARAMS_DIR = os.environ.get("PARAMS_DIR") or os.path.join(
+    os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "yew-web", "sapling-params")
+PARAM_FILES = ("sapling-spend.params", "sapling-output.params")
+
+
 class H(http.server.BaseHTTPRequestHandler):
     def _reply(self, code, text):
         body = text.encode()
@@ -97,12 +122,34 @@ class H(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
-        if u.path != "/fund":
+        if u.path.startswith("/params/"):
+            name = u.path[len("/params/"):]
+            if name not in PARAM_FILES:
+                return self._reply(404, "not found")
+            path = os.path.join(PARAMS_DIR, name)
+            if not os.path.isfile(path):
+                return self._reply(404, f"{path} missing (web/scripts/test-spike-prover.sh fetches it)")
+            size = os.path.getsize(path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(1 << 20)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            return None
+        if u.path not in ("/fund", "/fund_t"):
             return self._reply(404, "not found")
         q = urllib.parse.parse_qs(u.query)
         try:
             addr = q["addr"][0]
             zat = int(q.get("zat", ["150000000"])[0])
+            if u.path == "/fund_t":
+                return self._reply(200, fund_t(addr, zat))
             if not addr.startswith("yregtestsapling1"):
                 return self._reply(400, "a regtest Sapling address, please")
             self._reply(200, fund(addr, zat))
@@ -116,4 +163,4 @@ class H(http.server.BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8766
     print(f"fund-helper: listening on 127.0.0.1:{port} (node: {' '.join(CLI)})", flush=True)
-    http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()
+    http.server.ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
