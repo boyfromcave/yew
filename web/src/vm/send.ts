@@ -9,7 +9,7 @@ import { Vm } from "./base";
 export type Asset = "yed" | "yec";
 export interface SendState {
   asset: Asset; to: string; amount: string; memo: string; toKind: string; busy: boolean; error: string; errorKind: string;
-  yec: YecPreview | null; yed: YedPreview | null; move: { previewId: string; fee: string } | null; txid: string;
+  yec: YecPreview | null; yed: YedPreview | null; move: YecPreview | null; txid: string;
 }
 
 export class SendVm extends Vm<SendState> {

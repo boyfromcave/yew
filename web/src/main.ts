@@ -23,7 +23,15 @@ import { SettingsVm } from "./vm/settings";
 import { YellowbackVm } from "./vm/yellowback";
 
 const app = document.getElementById("app")!;
-const useMock = new URLSearchParams(location.search).get("mock") === "1" || import.meta.env.VITE_MOCK === "1";
+const query = new URLSearchParams(location.search);
+const useMock = query.get("mock") === "1" || import.meta.env.VITE_MOCK === "1";
+/** The network the wallet is for (W2: regtest on the kind cluster; `VITE_NETWORK` for a build). */
+const network = import.meta.env.VITE_NETWORK || "regtest";
+/** Served by the gateway (https), the API is on this origin: the server field defaults to it.
+ *  The dev loop (vite over http) keeps an explicit URL (the plain :9067 listener). */
+const defaultServer = useMock ? "http://localhost:8080" : location.protocol === "https:" ? `https://${location.hostname}:${location.port || "443"}` : "";
+/** `?params=<base URL>`: a mirror for the proving files (the test helper); the Settings field. */
+const paramsSource = query.get("params") ?? "";
 
 async function makeCore(): Promise<Core> {
   if (useMock) { const { MockCore } = await import("./mock"); return new MockCore({ delayMs: 50 }); }
@@ -39,7 +47,7 @@ async function main() {
   let open = false;
 
   const home = new HomeVm(core), receive = new ReceiveVm(core), send = new SendVm(core), move = new SendVm(core, "yec");
-  const history = new HistoryVm(core), settings = new SettingsVm(core, keystore), yb = new YellowbackVm(core);
+  const history = new HistoryVm(core), settings = new SettingsVm(core, keystore, paramsSource), yb = new YellowbackVm(core);
   let unsub: (() => void) | undefined;
 
   const shell = (name: string, body: HTMLElement) => {
@@ -54,13 +62,13 @@ async function main() {
     clear(app); const body = h("div"); app.append(body);
     renderUnlock(body, method, async (u) => {
       const { seedWords, meta: m } = await keystore.unlockSeed(u);
-      await core.open(seedWords, m.birthday, m.serverUrl);
+      await core.open(seedWords, m.birthday, m.serverUrl, m.network || network);
       await opened();
     }, async () => { await keystore.forget(); location.reload(); });
   };
   const onboard = () => {
     clear(app); const body = h("div"); app.append(body);
-    const vm = new OnboardingVm(core, keystore, useMock ? "http://localhost:8080" : "");
+    const vm = new OnboardingVm(core, keystore, defaultServer, network);
     renderOnboarding(body, vm);
     let done = false;
     vm.subscribe(() => { if (vm.state.step === "done" && !done) { done = true; opened(); } });

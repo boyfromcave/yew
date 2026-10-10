@@ -27,7 +27,7 @@ self.onmessage = async (ev: MessageEvent) => {
       const on = args[0] as boolean;
       value = await c.set_progress_callback(on ? (e: unknown) => self.postMessage({ event: "progress", value: e }) : null);
     } else if (method === "fetch_params") {
-      value = await c.fetch_params((p: unknown) => self.postMessage({ event: "params", value: p }));
+      value = await c.fetch_params((p: unknown) => self.postMessage({ event: "params", value: p }), args[0] ?? []);
     } else {
       const fn = c[method];
       if (!fn) throw new Error(`unsupported: no such core method ${method}`);

@@ -19,7 +19,7 @@ export function renderHome(root: HTMLElement, vm: HomeVm) {
         h("div", { class: "row" }, h("span", null, "Public"), h("span", { class: "yec" }, b ? `${formatYec(b.yecZat)} YEC` : "—")),
         b && BigInt(b.yecPendingZat) !== 0n ? h("div", { class: "small pending" }, `${formatYec(b.yecPendingZat)} YEC pending`) : null,
         h("div", { class: "actions" }, h("button", { class: "secondary", on: { click: () => go("move") } }, "Move…"))),
-      h("p", { class: "small" }, b ? formatPriceLine(b.priceCents) : "", s.network ? ` · ${s.network}` : ""),
+      h("p", { class: "small" }, b ? formatPriceLine(b.priceCents ?? "0") : "", s.network ? ` · ${s.network}` : ""),
       p && (s.syncing || p.pct < 100) ? progressBar(p.pct, `${p.phase} · ${p.height} / ${p.tip}`) : null,
       errorCard(s.error),
       h("div", { class: "actions" },

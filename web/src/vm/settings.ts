@@ -3,10 +3,14 @@
 import type { Core, ParamsProgress, ParamsStatus } from "../core";
 import { messageOf } from "../core";
 import { Vm } from "./base";
-export interface SettingsState { params: ParamsStatus | null; fetching: ParamsProgress | null; wif: string; error: string; status: string }
+export interface SettingsState {
+  params: ParamsStatus | null; fetching: ParamsProgress | null; wif: string; error: string; status: string;
+  /** Base URL (ending in `/`) the proving files are fetched from; "" = the standard source. */
+  paramsSource: string;
+}
 export interface Forgettable { forget(): Promise<void> }
 export class SettingsVm extends Vm<SettingsState> {
-  constructor(private core: Core, private keystore: Forgettable) { super({ params: null, fetching: null, wif: "", error: "", status: "" }); }
+  constructor(private core: Core, private keystore: Forgettable, paramsSource = "") { super({ params: null, fetching: null, wif: "", error: "", status: "", paramsSource }); }
   private async run(f: () => Promise<void>) {
     this.set({ error: "", status: "" });
     try { await f(); } catch (e) { this.set({ error: messageOf(e) }); }
@@ -14,7 +18,8 @@ export class SettingsVm extends Vm<SettingsState> {
   loadParams() { return this.run(async () => this.set({ params: await this.core.params_status() })); }
   fetchParams() {
     return this.run(async () => {
-      try { await this.core.fetch_params((p) => this.set({ fetching: p })); } finally { this.set({ fetching: null }); }
+      const src = this.state.paramsSource.trim();
+      try { await this.core.fetch_params((p) => this.set({ fetching: p }), src ? [src.endsWith("/") ? src : `${src}/`] : []); } finally { this.set({ fetching: null }); }
       this.set({ params: await this.core.params_status(), status: "Private sending files ready." });
     });
   }

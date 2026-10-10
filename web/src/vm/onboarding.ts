@@ -9,13 +9,24 @@ import { Vm } from "./base";
 export type Step = "start" | "seed" | "confirm" | "restore" | "server" | "trust" | "unlock" | "done";
 export interface OnboardingState {
   step: Step; restoring: boolean; seedWords: string; confirmIndexes: number[]; birthday: number;
-  serverUrl: string; tip: number | null; trustAccepted: boolean; busy: boolean; error: string;
+  serverUrl: string; tip: number | null; trustAccepted: boolean; busy: boolean; error: string; network: string;
 }
 export interface Keystore { saveSeed(seed: string, unlock: Unlock, meta: WalletMeta): Promise<void> }
 
+/** A new seed's birthday: the tip less a margin, so a payment made while the phrase is being
+ *  written down is still scanned (W2). */
+export const BIRTHDAY_MARGIN = 20;
+
+/** `http(s)://host[:port]` → `http(s)://host:port` (the core wants a port; 443 / 80 implied). */
+export function normalizeServer(url: string): string {
+  const m = /^(https?):\/\/([^\s/:]+|\[[0-9a-fA-F:]+\])(?::(\d+))?\/?$/.exec(url.trim());
+  if (!m) return url.trim();
+  return `${m[1]}://${m[2]}:${m[3] ?? (m[1] === "https" ? "443" : "80")}`;
+}
+
 export class OnboardingVm extends Vm<OnboardingState> {
-  constructor(private core: Core, private keystore: Keystore, private defaultServer = "") {
-    super({ step: "start", restoring: false, seedWords: "", confirmIndexes: [], birthday: 0, serverUrl: defaultServer, tip: null, trustAccepted: false, busy: false, error: "" });
+  constructor(private core: Core, private keystore: Keystore, private defaultServer = "", network = "regtest") {
+    super({ step: "start", restoring: false, seedWords: "", confirmIndexes: [], birthday: 0, serverUrl: defaultServer, tip: null, trustAccepted: false, busy: false, error: "", network });
   }
   private async run(f: () => Promise<void>) {
     this.set({ busy: true, error: "" });
@@ -28,8 +39,8 @@ export class OnboardingVm extends Vm<OnboardingState> {
       const n = seedWords.split(" ").length;
       const picks = new Set<number>();
       while (picks.size < 3) picks.add(Math.floor(Math.random() * n));
-      const birthday = await this.core.latest_height(this.state.serverUrl).catch(() => 0);
-      this.set({ seedWords, restoring: false, confirmIndexes: [...picks].sort((a, b) => a - b), birthday, step: "seed" });
+      // The birthday is set at the server step (checkServer), when the tip is known.
+      this.set({ seedWords, restoring: false, confirmIndexes: [...picks].sort((a, b) => a - b), birthday: 0, step: "seed" });
     });
   }
   written() { this.set({ step: "confirm", error: "" }); }
@@ -49,22 +60,24 @@ export class OnboardingVm extends Vm<OnboardingState> {
   }
   checkServer(serverUrl: string) {
     return this.run(async () => {
-      const url = serverUrl.trim();
-      if (!/^https?:\/\/[^\s/]+(:\d+)?\/?$/.test(url)) throw new Error("invalid: a server is http(s)://host:port");
+      const url = normalizeServer(serverUrl);
+      if (!/^https?:\/\/[^\s/]+:\d+$/.test(url)) throw new Error("invalid: a server is http(s)://host:port");
       if (url.startsWith("http://") && !/localhost|127\.0\.0\.1|\.local/.test(url) && !import.meta.env?.DEV) throw new Error("invalid: a plain connection is for a local devnet only");
-      const tip = await this.core.latest_height(url);
-      this.set({ serverUrl: url, tip });
+      const tip = await this.core.latest_height(url, this.state.network);
+      // A seed made here starts BIRTHDAY_MARGIN blocks below the tip; a restore keeps its own.
+      const birthday = this.state.restoring ? this.state.birthday : Math.max(1, tip - BIRTHDAY_MARGIN);
+      this.set({ serverUrl: url, tip, birthday });
     });
   }
   serverDone() { if (this.state.tip !== null) this.set({ step: "trust", error: "" }); }
   acceptTrust(accepted: boolean) { this.set({ trustAccepted: accepted }); }
   trustDone() { if (this.state.trustAccepted) this.set({ step: "unlock", error: "" }); }
   /** Encrypt the seed at rest and open the wallet. Seed words never persist in `state` after. */
-  finish(unlock: Unlock, network = "regtest") {
+  finish(unlock: Unlock) {
     return this.run(async () => {
       const s = this.state;
-      await this.keystore.saveSeed(s.seedWords, unlock, { birthday: s.birthday, serverUrl: s.serverUrl, network, createdAt: Date.now() });
-      await this.core.open(s.seedWords, s.birthday, s.serverUrl);
+      await this.keystore.saveSeed(s.seedWords, unlock, { birthday: s.birthday, serverUrl: s.serverUrl, network: s.network, createdAt: Date.now() });
+      await this.core.open(s.seedWords, s.birthday, s.serverUrl, s.network);
       this.set({ step: "done", seedWords: "" });
     });
   }
