@@ -10,8 +10,8 @@ import { errorCard, feeLine, previewCard, resultCard, slideToConfirm } from "../
 function redeemLabel(v: Vault): string {
   if (!v.open) return "closed";
   if (!v.redeemable) return `redeem opens at height ${v.mintHeight + v.blocksUntilRedeem} (${v.blocksUntilRedeem} blocks)`;
-  if (v.earlyRedeem) return `redeemable early · fee ${formatYec(v.earlyRedeemFeeZat)} YEC until the term ends at height ${v.lockHeight} (${v.blocksUntilTermEnd} blocks), free after`;
-  return "redeemable, no early fee (term ended)";
+  if (v.earlyRedeem) return `redeemable · early-redemption fee ${formatYec(v.earlyRedeemFeeZat)} YEC until the term ends at height ${v.lockHeight} (${v.blocksUntilTermEnd} blocks)`;
+  return "redeemable";
 }
 
 /** The claim risk, from the core's verdict — never from the height alone. A claim is valid only while the
