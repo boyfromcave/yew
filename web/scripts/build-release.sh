@@ -32,10 +32,23 @@ if [ "${WASM:-1}" = 1 ]; then
   if [ -z "${CC_wasm32_unknown_unknown:-}" ] && [ -x /opt/homebrew/opt/llvm/bin/clang ]; then
     export CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang AR_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/llvm-ar
   fi
+  # Paths are the one thing rustc embeds that differs by machine: panic locations and the
+  # prost-generated file's `OUT_DIR` path (two strings) name the target directory, and ~500
+  # source paths name the checkout and ~/.cargo. Remapped to fixed names, so the module is the
+  # same from any checkout location, cargo home or target directory. This target-specific
+  # variable REPLACES .cargo/config.toml's `target.wasm32-unknown-unknown.rustflags`, so the
+  # getrandom cfg from there is repeated here (keep the two in step).
+  REPO=$(cd .. && pwd); SIB=$(cd ../.. && pwd)
+  # The target directory cargo will use (CARGO_TARGET_DIR, or a config.toml `build.target-dir`).
+  TARGET1=$(cd core-wasm && cargo metadata --format-version 1 --no-deps 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+  export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="--cfg getrandom_backend=\"wasm_js\" --remap-path-prefix=$REPO=/src/yew --remap-path-prefix=$SIB/librustzcash6-web=/src/librustzcash6-web --remap-path-prefix=$SIB/x402-web=/src/x402-web --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=$(rustc --print sysroot)=/rustc --remap-path-prefix=$TARGET1=/target"
   # The second build compiles from scratch in its own target directory (a cached artifact would
   # prove nothing); CLEAN=0 skips that and reuses the cache (fast, a weaker check).
   for i in 1 2; do
-    if [ "$i" = 2 ] && [ "${CLEAN:-1}" = 1 ]; then export CARGO_TARGET_DIR="$TMP/target"; fi
+    if [ "$i" = 2 ] && [ "${CLEAN:-1}" = 1 ]; then
+      export CARGO_TARGET_DIR="$TMP/target"
+      export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="${CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS% --remap-path-prefix=*} --remap-path-prefix=$CARGO_TARGET_DIR=/target"
+    fi
     wasm-pack build core-wasm --target web --release --no-opt --out-dir "$TMP/wasm$i" --out-name yew_web_core >/dev/null 2>&1 \
       || wasm-pack build core-wasm --target web --release --no-opt --out-dir "$TMP/wasm$i" --out-name yew_web_core
     rm -f "$TMP/wasm$i/.gitignore" "$TMP/wasm$i/package.json" "$TMP/wasm$i/README.md"

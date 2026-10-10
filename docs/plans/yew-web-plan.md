@@ -662,4 +662,125 @@ Sapling send in WASM; the slide-to-confirm plus progress sheet carries over.
 - [ ] W0 complete
 - [ ] W1
 - [ ] W2
-- [ ] W3
+- [x] **W3 hardening — 2026-10-09 (branch `up/web-harden`)**: the reproducible build with
+  SRI, the hardening browser tests, the other-browser record, a low-end timing, the security
+  review's web section. In the briefing's order:
+  1. **Reproducible build + SRI.** `npm run build` = `tsc --noEmit && vite build && node
+     scripts/sri.mjs dist`. `web/scripts/build-release.sh` builds the wasm module twice (the
+     second in a fresh `CARGO_TARGET_DIR`, a clean compile; `CLEAN=0` reuses the cache) and the
+     Vite bundle twice into clean temporary directories, compares every file by SHA-256, fails on
+     a difference, installs the second copies as `src/wasm` and `dist/`, and writes
+     `dist/BUNDLE-SHA256SUMS` (sorted, relative). Proof on this laptop (rustc 1.92.0, node
+     23.3.0, wasm-pack 0.15.0): the module identical across the cached and the clean build, the
+     bundle identical across two builds; bundle hash (sha256 of the sums file)
+     `71650b662ef3c848178092e25c09fff2c8f88f0a99620857c47a998af40ab7b6`, wasm
+     `8a24a8110ed5b1a2fd0d7c5ffcf68a1b8f81094de425c176f9ee4948f70a2ee9` (11.47 MB). **What had
+     to change for that**: the first clean rebuild differed by 192 bytes — rustc embeds the
+     target directory in two strings (the prost-generated `cash.z.wallet.sdk.rpc.rs` path, in
+     panic locations) and the checkout and `~/.cargo` in ~500 source paths, so the module was
+     a function of where it was built. `build-release.sh` sets
+     `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS` with `--remap-path-prefix` for the repo
+     (`/src/yew`), the two siblings, cargo home, the sysroot and the target directory (read
+     from `cargo metadata`, so a config.toml `target-dir` is honoured) — that variable replaces
+     the config's target rustflags, so the getrandom cfg is repeated there — after which no
+     `/Users/…` string remains and the clean rebuild in a fresh target directory matches. The
+     dev build (`build-core-wasm.sh`) is not remapped and so differs from the release one. The
+     choice: **`--no-opt`** — wasm-pack's `wasm-opt` is a binaryen it downloads unverified
+     (version_117 for 0.15), one more input outside `Cargo.lock`; measured, it takes the module
+     from 11.47 MB to 8.84 MB raw but only 4.69 MB to 4.29 MB gzipped (9 % on the wire), so the
+     module is now a function of `rust-toolchain.toml`, `Cargo.lock` and wasm-bindgen only. To
+     take the 9 % back later: a binaryen pinned by checksum, run by build-release.sh itself.
+     Vite needed nothing: Rollup names chunks by content hash and writes no timestamps;
+     `reportCompressedSize` is off so the build reads nothing outside the tree. **SRI**:
+     `scripts/sri.mjs` is a post-step, not a Vite plugin — a `transformIndexHtml` hook sees the
+     entry chunk before `vite:build-import-analysis` rewrites its preload list in
+     `generateBundle`, so its sha384 was of the wrong bytes (found: the attribute did not match
+     the written file); hashing the files on disk is right by construction. It pins the two tags
+     index.html has (the main chunk and the stylesheet); the worker (`new Worker(url)`), the wasm
+     (fetched by the glue) and the `mock` dynamic chunk take no `integrity` — they are bound by
+     the content-hashed names the pinned chunk references and by the sums file.
+     `scripts/verify-bundle.sh <origin>` fetches `BUNDLE-SHA256SUMS` (checked against
+     `RELEASE_BUNDLE_HASH` when given — without it a self-served sums file proves only
+     self-consistency, and the script says so), every listed file, recomputes the SRI attributes
+     of the served index.html and prints COOP/COEP/CSP. **Verified on a served origin** (`vite
+     preview`): 7 files match, 2 SRI attributes verified, COOP `same-origin`, COEP
+     `require-corp`, CSP not in headers (it is the meta tag; the ycash-infra nginx adds the
+     header); a one-byte change to the served index.html fails the run (exit 1, the file named).
+     **CI**: `ci.yml` job `web`: `npm run check`, then — only when `up/web` exists upstream in
+     both `boyfromcave/librustzcash6` and `boyfromcave/x402-ycash`, which the core-wasm
+     `[patch]` paths need as siblings; today they are local-only (W0.1), so the job clones them
+     when present and otherwise warns and skips — `build-release.sh` (apt clang for the wasm32
+     C, wasm-pack 0.15.0 cached) and `verify-bundle.sh` against `python3 -m http.server` on
+     the built dist; the sums file is uploaded as an artifact.
+  2. **Browser tests** `web/core-wasm/tests/harden.rs`, run by `test-core-wasm.sh` (now
+     `TESTS="web harden"` × `PROFILES="debug release"`; `FUND_PORT` for a second helper beside
+     another run's — W2's smoke test holds 8766 at the same time; `YEW_WEB_NO_REORG=1` skips the
+     disturbance). Against the kind cluster, debug profile, headless Chrome 154:
+     - (a) `restore_from_seed_with_birthday`: a wallet paid 1.1 YEC public and 1.2 YEC private
+       with a memo (`/fund&memo=`, new), both mined at 1312 (seen 4.3 s after funding); closed;
+       opened from the seed in a **new store directory** with birthday 1310 (= funding − 2):
+       **both balances and the memo back 353 ms after open** (one sync, `GetTreeState` at the
+       birthday, 3 blocks scanned), one history row each at the same heights. Opened a third
+       time with birthday 1313 (after the funding): the private note absent, **and the public
+       receipt too** — the transparent sync asks the server from the birthday as well
+       (`sync.rs` `address_utxos(…, birthday)`), so a wrong birthday hides money on both sides
+       until a restore with an earlier one (the restore screen must say so). Expected and
+       documented; the test asserts it.
+     - (b) `reorg_during_private_sync`: a private receipt mined at 1377 (the tip);
+       `/reorg?height=1377` (new helper route: `invalidateblock`, then `generate` until the new
+       branch is one longer; the funding returns to the mempool and is mined again) answered
+       `{oldTip 1377, invalidated 1377, newTip 1378}` in 466 ms; the wallet re-synced past it in
+       2.2 s: `reorgs 1` reported by the light library, the balance exactly 1.2 YEC (counted
+       once, spendable), one history row, a full-balance preview plans against one note.
+       **The one disturbance of the shared cluster: 2026-10-09 18:19 PDT**, a one-block reorg
+       (the funding sat at the tip, so `height = tip`; `depth=2` is the other form).
+     - (c) `busy_under_concurrency`: with a `sync()` parked at its first await and again mid-flight,
+       `sync`, `balances`, `history` and `shielded_balance` answer `busy: a call is in
+       progress` and `open_at` `invalid: a wallet is already open`; three rounds (2 busy answers
+       caught mid-sync each); then close, reopen the same directory (`registered` true), sync,
+       the balance unchanged — no sahpool assertion, no "DB closed without open".
+     **The finding the tests forced**: the sahpool's **default capacity is 6 files**
+     (`OpfsSAHPoolCfg::default()`, sqlite-wasm-vfs 0.2); one wallet holds three
+     (`yew-regtest.sqlite`, `shielded/yew-regtest/wallet.sqlite`, `…/cache.sqlite`; journals are
+     transient), so the second store directory opened fine and the third failed with `store:
+     sqlite: unable to open database file` / `block cache: unable to open database file`. The
+     tests reserve capacity through the pool's management handle (`sahpool::install` on the
+     registered VFS returns it without re-registering; `reserve_minimum_capacity`) and log the
+     pool. **For W0.4 / the shell**: `install_storage` should reserve what the wallet needs
+     with headroom (a restore beside an old store, the import/export paths), and "Forget" must
+     `delete_db` the three files, or the next restore cannot open. Not changed here (x402-web
+     `light::wasm::install_opfs` owns the config).
+     The release profile ran (a) and (c) green as well; (b) ran once, in debug, by the rule.
+  3. **Other browsers.** Firefox: not installed (`/Applications`, no `firefox`, no
+     `geckodriver`); to run: `brew install --cask firefox && brew install geckodriver`, then
+     `GECKODRIVER=$(which geckodriver)` in place of `CHROMEDRIVER` for `test-core-wasm.sh`'s
+     `cargo test` lines (the runner picks the driver from the variable); expect OPFS sync access
+     handles in a dedicated worker (Firefox 111+) and COOP/COEP from the runner's server
+     (`WASM_BINDGEN_TEST_NO_ORIGIN_ISOLATION` unset). Safari 26.0: installed, `safaridriver`
+     is enabled (`/status` answers ready) but a session could not be created from this
+     non-interactive session ("timed out … launching a compatible local Safari"): run
+     `SAFARIDRIVER=/usr/bin/safaridriver cargo test --target wasm32-unknown-unknown --test
+     harden` from a logged-in Terminal with Safari's Develop → Allow Remote Automation on (not
+     headless: Safari opens a window). Expected from the platform: OPFS `createSyncAccessHandle`
+     in workers since Safari 17, WebAuthn PRF since 18, cross-origin isolation honoured;
+     unverified here. Chrome 154 is the one browser covered. Memory: the prover's 115 MiB
+     peak (W0.3) is recorded as the requirement in the security review's web section.
+  4. **Low-end timing — an approximation, not a low-end machine.** The W0.3 prover spike
+     (`test-spike-prover.sh`, one spend + two outputs, single worker), on the owner's 10-core
+     M-series laptop: idle, 21.1 s debug / **18.1 s release**; the whole runner chain under
+     `nice -n 19` with ten `yes > /dev/null` burners (one per core): 22.0 s debug / **19.8 s
+     release** (+9 %), memory 115 MiB in all four. Honest reading: on macOS a nice'd process
+     with as many burners as cores still gets most of a core, so this measures contention, not
+     a slow CPU; a true low-end figure needs a real machine or CDP's CPU throttling (not
+     reachable from WebDriver). Extrapolating by single-core performance, a 2017-class laptop
+     (≈ 3× slower per core) is in the 50–60 s range per private send; the Send screen's
+     progress sheet and the slide-to-confirm already assume tens of seconds.
+  5. **`docs/security-review.md`, "The web shell"**: the threat table (altered code from the
+     origin, XSS, extensions, other origins, the seed at rest, the server), what the CSP / SRI /
+     COOP+COEP / keystore give and do not, the `tonic-web-wasm-client` PR-rev pin as the one
+     out-of-tree git dependency, the parameter pins and the Cache API path, the sahpool rule
+     with the capacity finding, the memory requirement. `docs/trust.md` / `trust.ts`: unchanged
+     (W1b's web paragraph already states the code-from-the-server limit and the build hash).
+  **Open**: the CI `web` job builds nothing until the `up/web` siblings are pushed (W0.1's
+  "push replaces them with git revs"); Safari and Firefox runs; the sahpool capacity / forget
+  flow (W0.4, the shell); the CSP as a response header is the ycash-infra image's.
