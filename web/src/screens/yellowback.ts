@@ -1,8 +1,18 @@
 import { mount } from "../dom";
 import { clear, go, h } from "../dom";
 import { formatYec, formatYed, shorten } from "../format";
+import type { Vault } from "../core";
 import { YellowbackVm } from "../vm/yellowback";
 import { errorCard, feeLine, previewCard, resultCard, slideToConfirm } from "../widgets";
+
+/** The owner's redeem: open at any height after the mint (in-term claims, D-IT-15); before the term ends it
+ *  pays the early-redeem fee, so the label says which of the two a redeem now would be. */
+function redeemLabel(v: Vault): string {
+  if (!v.open) return "closed";
+  if (!v.redeemable) return `redeem opens at height ${v.mintHeight + v.blocksUntilRedeem} (${v.blocksUntilRedeem} blocks)`;
+  if (v.earlyRedeem) return `redeemable early · fee ${formatYec(v.earlyRedeemFeeZat)} YEC until the term ends at height ${v.lockHeight} (${v.blocksUntilTermEnd} blocks), free after`;
+  return "redeemable, no early fee (term ended)";
+}
 
 export function renderYellowback(root: HTMLElement, vm: YellowbackVm, yedCents: string) {
   const draw = () => {
@@ -15,7 +25,7 @@ export function renderYellowback(root: HTMLElement, vm: YellowbackVm, yedCents: 
       errorCard(s.error, s.errorKind),
       h("h3", null, "Your vaults"), vaults.length === 0 ? h("p", { class: "small" }, "No open vault. Mint YED to open one.") : null,
       h("ul", { class: "list" }, vaults.map((v) => h("li", { on: { click: () => go("vault", v.vaultTxid) } },
-        h("span", null, h("div", null, `${formatYed(v.cents)} · ${formatYec(v.collateralZat)} YEC`), h("div", { class: "small" }, `class ${v.termClass} · ${v.status} · ${v.redeemable ? "redeemable now" : `redeem at height ${v.lockHeight} (${v.blocksUntilRedeem} blocks)`}`)),
+        h("span", null, h("div", null, `${formatYed(v.cents)} · ${formatYec(v.collateralZat)} YEC`), h("div", { class: "small" }, `class ${v.termClass} · ${v.status} · ${redeemLabel(v)}`)),
         h("span", { class: "small" }, shorten(v.vaultTxid, 6, 4))))),
       s.vaults.length > vaults.length ? h("p", { class: "small" }, `${s.vaults.length - vaults.length} closed`) : null);
   };
@@ -54,10 +64,10 @@ export function renderVault(root: HTMLElement, vm: YellowbackVm, vaultTxid: stri
     if (s.txid) { mount(root, resultCard("Vault redeemed", s.txid, () => { vm.reset(); go("yellowback"); })); return; }
     if (!v) { mount(root, h("h2", null, "Vault"), h("p", null, s.vaults.length ? "No such vault." : "Loading…")); return; }
     mount(root, h("h2", null, "Vault"), h("div", { class: "big yed" }, formatYed(v.cents)), h("p", { class: "yec" }, `minted against ${formatYec(v.collateralZat)} YEC`),
-      h("p", { class: "small" }, `${v.status} · class ${v.termClass} · minted at ${v.mintHeight} · redeem from ${v.lockHeight} · claimable from ${v.claimHeight} · tip ${v.tip}`),
+      h("p", { class: "small" }, `${v.status} · class ${v.termClass} · minted at ${v.mintHeight} · term ends at ${v.lockHeight} · claimable from ${v.claimHeight} · tip ${v.tip}`),
       v.tip >= v.claimHeight && v.open ? h("p", { class: "warn" }, "Past the claim height: a liquidator may claim this vault. Redeem it now.") : null,
       errorCard(s.error, s.errorKind),
-      !s.redeem ? h("div", { class: "actions" }, h("button", { disabled: s.busy || !v.open, on: { click: () => vm.redeemPreview(v.vaultTxid) } }, s.busy ? "Preparing…" : "Preview the redeem"), !v.redeemable && v.open ? h("span", { class: "small pending" }, `Redeem unlocks at height ${v.lockHeight}.`) : null) : null,
+      !s.redeem ? h("div", { class: "actions" }, h("button", { disabled: s.busy || !v.open, on: { click: () => vm.redeemPreview(v.vaultTxid) } }, s.busy ? "Preparing…" : "Preview the redeem"), v.open ? h("span", { class: "small pending" }, redeemLabel(v)) : null) : null,
       s.redeem ? [previewCard(s.redeem.kind === "early" ? "Redeem early" : "Redeem", [["YED burned", formatYed(s.redeem.burnCents)], ["Collateral returned", `${formatYec(s.redeem.collateralZat)} YEC`], ["Enforcement fee", feeLine(s.redeem.feeZat)], ["Fee payee", s.redeem.payee || "none"]],
           BigInt(s.redeem.earlyRedeemFeeZat || 0) > 0n ? `Before the lock: an early-redeem fee of ${formatYec(s.redeem.earlyRedeemFeeZat)} YEC is taken from the collateral.` : undefined),
         slideToConfirm("Slide to redeem", () => vm.confirm(), s.busy), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Cancel")] : null);
