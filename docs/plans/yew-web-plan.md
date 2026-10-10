@@ -659,6 +659,113 @@ Sapling send in WASM; the slide-to-confirm plus progress sheet carries over.
   forget + restore here), the renew flow (redeem then mint again) and claim intents/release
   (the vault upgrade's second step), mint availability (`mintAvailability`, H-1/H-5) — none are
   in the W1a contract yet; a Playwright suite (the WebDriver smoke covers the acceptance path).
+- [x] **W2 the shell on the real core, against the kind cluster, served by the gateway — done
+  2026-10-10** (yew branch `up/web-kind`; ycash-infra `upgrade/vault`, K4). No core change:
+  every mismatch between W1b's contract and W1a's DTOs was fixed in the shell. The walk below
+  passed on both origins the same afternoon.
+  **Reconciled in `web/src` (core.ts is now the W1a surface, DTOs camelCase as `dto.rs`):**
+  `open(words, birthday, url, network)` and `latest_height(url, network)` take the network
+  (`main.ts`: `VITE_NETWORK`, default `regtest`; the keystore's `meta.network` on unlock);
+  **wasm-bindgen crosses a bare `u64`/`i64` as a BigInt** (`latest_height` answers one, `open`'s
+  birthday, `mint_finish`/`mint_sweep`'s id and `import_wif`'s birthday want one — the first run
+  died on "Cannot mix BigInt and other types"), so `CoreClient` converts at the boundary and the
+  view-models stay on numbers (the DTOs' fields come through serde as numbers); `history(page)` is
+  the array, rows carry `label` (the text shown: "received YEC", "sent private YEC", …), `kind`,
+  `shielded`, `hasPayload`; `Balances` carries the reserve, pending, held and height fields,
+  `priceCents` nullable; `YecPreview` is one DTO for send and move (`funding` is `transparent` |
+  `shielded` — the shell had compared against `private` —, `paramsNeeded`, `txid` for a signed
+  public preview); `YedPreview` carries the `dryRun`; `mint_start` answers `{previewId, cents,
+  lockBlocks}` and **the mintId arrives from `confirm`**, after which `mint_finish(mintId)` /
+  `mint_sweep` are *staged steps* (`{previewId, mintId, row}`) that `confirm` broadcasts — the
+  Mint screen is now estimate → Start → slide (the carrier) → "Check the carrier" / slide to mint
+  → the vault; `mint_availability()` is read on the Mint screen (the node's reason shown, Estimate
+  disabled when halted; `mints()` refreshes the row after the step); `Vault` is `vault_summary`
+  with the in-term fields (`blocksUntilRedeem` replaces `blocksToLock`); `RedeemPreview` has
+  `collateralZat` (not `returnedZat`), `kind` and the early-redeem fee (shown as a warning);
+  `ClaimPreview` is `{previewId, item, maxBurnCents, minOutZat}` (the bounds the confirm holds
+  the server to are what the card shows); `Confirmed` carries `verdict` and `mintId`;
+  `import_wif` answers an `AddressPair`; `validate_address` kinds are `sapling` / `p2pkh` / `p2sh`
+  with `yellowbackForm` (the shell only needs `sapling`); `Status` has no `open` (`server` is
+  null when none is). `fetch_params(fn, sources)`: Settings has a source field (advanced; the
+  fingerprints are checked either way) prefilled from `?params=<base URL>`, which the kind smoke
+  points at the helper. **The server defaults to the page's origin when served over https**
+  (`https://host:443` — the core's `Server::parse` wants a port, so `normalizeServer` adds 443/80
+  to a bare origin, also for a typed `https://host`); the dev loop over http keeps the explicit
+  URL. **A new seed's birthday is tip − 20** (`BIRTHDAY_MARGIN`, set at the server step when the
+  tip is known; a restore keeps its own). `MockCore` follows the real DTOs (the vitest tests
+  are the same 21, the mint one now covering carrier → mintId → staged finish → confirm).
+  `build-core-wasm.sh` exports the LLVM clang itself. `index.html`'s CSP `connect-src` adds
+  `https://download.z.cash` (the proving files' standard source; mirrored by nginx below).
+  **The acceptance** (`web/scripts/test-web-smoke.sh --kind [page-url]`, walk in `smoke.py`;
+  headless Chrome 154, the W0 ChromeDriver cache; `fund-helper.py` gained `GET /address`, a
+  fresh t-address of the node's wallet): the built bundle WITHOUT the mock — onboarding (new
+  seed, birthday tip − 20) → home shows $0.00 / 0 YEC → the addresses from Receive → `/fund_t`
+  2 YEC → Sync until the public balance shows → **a public send of 0.5 YEC** to the node's
+  address (slide to confirm; `Paid from: your public balance`) → `/fund` 1.5 YEC private →
+  Sync until the private balance shows → History (3 rows: received YEC, sent YEC, received
+  private YEC) → Settings → Fetch (52 MB from the helper's `/params/`) → "Ready" → Move 0.4 YEC
+  to private → slide → Moved → Receive → New private address → **a private send of 0.3 YEC z→z
+  with the memo "hello from the web"** → slide → Sent → the memo on the pending history row →
+  Sync until nothing is pending and the self-send is credited → reload → Unlock (passphrase) →
+  the same two balance lines (OPFS) → Yellowback: $0.00, "No open vault", Mint shows the core's
+  **"Minting is halted (NO_PRICE): no term class is mintable now."**, Claimable: "Nothing is
+  claimable right now." The public send comes before the private funding on purpose: with
+  private notes that cover the amount the core funds a public recipient privately
+  (`revealsShielded`, W1a), which would need the proving files first.
+  **Timings (2026-10-10, release bundle, the shared kind cluster's 5 s blocks, M-series laptop):**
+
+  | step | vite preview + `http://localhost:9067` | gateway `https://localhost/` (K4) |
+  |---|---|---|
+  | onboarding: new seed → open → first sync → home | 1.4 s | 1.2 s |
+  | 2 YEC public: helper answered → balance on Home | 4.7 s | 3.2 s |
+  | public send 0.5 YEC: slide → Sent | 0.2 s | 0.2 s |
+  | 1.5 YEC private: helper answered → balance | 5.9 s | 7.5 s |
+  | fetch params (52 MB, loopback, verified, loaded) | 1.1 s | 1.0 s |
+  | move 0.4 YEC to private: slide → proved, broadcast → Moved | 5.1 s | 5.2 s |
+  | private send 0.3 YEC z→z + memo: slide → proved, broadcast → Sent | 19.8 s | 21.7 s |
+  | everything mined and the self-send credited | 4.8 s | 4.8 s |
+  | reload → unlock → balances back | 0.5 s | 0.5 s |
+  | whole walk | 49 s | 51 s |
+
+  The proof times are W0.3's (one core; the UI thread stays free — the worker proves). Final
+  balances both runs: private 1.8999 YEC (1.5 + 0.4 − 0.0001), public 1.09984 YEC
+  (2 − 0.5 − 0.00001 − 0.4 − 0.00015). The mock walk (`test-web-smoke.sh` without `--kind`)
+  stays green; `test-core-wasm.sh` unchanged and green (the helper's addition is additive).
+  **K4 (ycash-infra `upgrade/vault`, applied to the live cluster with one `helm upgrade`, which
+  rolled the web Deployment, its Service and the HTTPRoute and nothing else — the render of the
+  chart head equalled the live manifest beforehand):** `images/web/Dockerfile` takes the bundle
+  as a named build context (`make image-web YEW=<tree>`: `docker buildx build --build-context
+  dist=$(YEW)/web/dist`; the old `docker build` with `yew/web` as the context could not see
+  `nginx.conf`), `nginx.conf` is an envsubst template whose CSP `connect-src` is `'self'
+  https://download.z.cash $CSP_CONNECT_SRC_EXTRA` (chart `web.env`; `values-kind.yaml` sets
+  `http://127.0.0.1:8766` so the kind smoke's helper may serve the proving files to the
+  https page; production leaves it empty), the `.wasm` location's second `add_header` is gone
+  (nginx drops the inherited headers when a location adds its own: the wasm response had lost
+  COOP/COEP/CSP) in favour of `expires` on `/assets/`. `curl -I https://localhost/` shows
+  `cross-origin-opener-policy: same-origin`, `cross-origin-embedder-policy: require-corp`, the
+  CSP, `x-content-type-options`, `referrer-policy`; the hashed assets `max-age=31536000`.
+  `web.enabled: true, replicas: 1` on kind. The plain `:9067` listener stays for the dev loop.
+  **Traps.** (1) The BigInt boundary above. (2) A dedicated worker's CSP is its own script's
+  response headers, not the document's `<meta>`: on vite preview the worker has no CSP at all
+  (so the loopback helper and `:9067` just work), behind nginx it has the server's — which is why
+  the `.wasm`/asset headers and the `connect-src` extra matter there. (3) The Receive screen
+  keeps the last tab and re-renders on `show()`: a WebDriver click can go stale between find and
+  click (`smoke.py` re-finds). (4) A self-send's memo is on the row only while pending (W1a
+  finding 5): the smoke reads it before waiting for the block, and the private total is lower by
+  the sent amount until the next sync credits it, so "no pending line" is not the steady state —
+  the smoke waits for the expected total. (5) The fund helper binds its port a moment after the
+  script starts it; a stale helper from an aborted run answers 404 for new routes (`/address`) —
+  the script arms its trap before launching anything. (6) `serde_wasm_bindgen` keeps `u64`
+  fields as numbers; only bare wasm-bindgen signatures use BigInt.
+  **Open for W3.** The mint/claim/redeem screens ran only on the mock (no mintable class on
+  kind: attestors unarmed, no price); a devnet with an armed set is the place to walk them on
+  the real core. SRI/reproducible build of the bundle (W1b's note) and `integrity` on the
+  emitted tags. Mainnet: `VITE_NETWORK=mainnet` and the https-only server rule are in place but
+  untested; the network picker in onboarding is not built (one network per bundle). The
+  passkey (PRF) path has no headless test (WebDriver has no authenticator here); the passphrase
+  path is the one walked. A real Argon2id export from the core for `keystore.ts`. The in-term
+  claim intents / release screens (`claim_intents`, `release_preview` exist in the core) are not
+  in the shell.
 - [ ] W0 complete
 - [ ] W1
 - [ ] W2
