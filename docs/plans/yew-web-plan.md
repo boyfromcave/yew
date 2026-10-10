@@ -567,6 +567,98 @@ Sapling send in WASM; the slide-to-confirm plus progress sheet carries over.
   argument is the private address (W0.5). `fetch_params` holds the session (a sync meanwhile
   is `busy`). Amount arguments are accepted as strings, safe integers or BigInts. Run
   `fetch_params` once per browser profile; after that `confirm` finds the cache itself.
+- [x] **W1b the browser shell on the yew-web-core contract — done 2026-10-09 (branch
+  `up/web-shell`), against `MockCore`; waits for W1a for the real core.** `web/src` is plain
+  TypeScript with a tiny `h()` DOM helper and a hash router (`dom.ts`): no framework, because
+  six screens that re-render from a view-model's state fit in a few hundred lines, every
+  dependency is one more thing the CSP and the import rule have to vouch for, and nothing here
+  needs components to be shared. One runtime dependency: `qrcode-generator` (the receive QR, an
+  SVG with no inline style). Shape:
+  - `core.ts`: the whole W1a contract as the `Core` interface (DTOs with the Dart field names;
+    amounts as strings), `CoreClient` (the worker RPC; the sync-progress and params-fetch
+    callbacks arrive as `{event}` messages, `worker.ts` installs the worker-side functions and
+    otherwise dispatches by name), `messageOf`/`kindOf` (the "<kind>: <detail>" errors), and
+    `serialized(core)` — the shell talks to the core through a one-at-a-time queue, because the
+    core rejects a concurrent call with "busy" and two screens race for it (a recipient check on
+    blur against Preview on click; the smoke hit it).
+  - `mock.ts`: `MockCore`, the contract with canned data (balances, four history rows, one vault,
+    one claimable vault, the params fetch, previews as opaque ids, `confirm` the only path that
+    records a broadcast); `?mock=1` or `VITE_MOCK=1` selects it in `main.ts`.
+  - `vm/*.ts`: the view-models, one per screen (onboarding, home, send + move, receive,
+    history, settings, yellowback), DOM-free, with `subscribe` for re-render; the flows of
+    `app/lib/screens/*.dart` translated (the four-part check per screen is in each file's
+    header). `screens/*.ts` render them; `widgets.ts` holds the preview card, slide-to-confirm
+    (a range input dragged to the end, or End/Enter from the keyboard, fires `confirm()` once),
+    the result card, the error card with the kind's hint, the progress bar and the QR.
+  - `format.ts` = `app/lib/format.dart` on BigInt; `trust.ts` = `docs/trust.md` with the
+    browser-specific substitutions and one web paragraph (plan §3 "stated limits").
+  **The seven screens delivered:** onboarding (create → the phrase shown once as a numbered
+  grid → confirm three random words → server (`http(s)://host:port`, a tip check; plain only
+  for localhost outside dev) → the trust statement with a checkbox → unlock (passkey or
+  passphrase) → opened; restore with 12/24 words + birthday), the returning-user unlock, home
+  (YED, YEC private/public with pending lines, the price line, the sync progress bar from the
+  callback, Receive / Send / Sync / Move…), receive (Private / Public / YED, QR, copy, new
+  private address), send (YED/YEC toggle, address with the core's `validate_address`, amount,
+  a memo field that appears for `ys1…`, the preview card with fee / change / "paid from" / the
+  reveal warning / the YED dry-run verdict, slide to confirm → `confirm`, result with the txid),
+  move (shield/unshield preview + slide), history (list with memo marks and pending rows, the
+  detail with the verdict and the message), settings (server, params status + fetch with
+  progress, the trust text, export WIF, import WIF, about, Lock, Forget), yellowback (YED held,
+  the open vaults, Mint → estimate card → Start → slide to fund the carrier → Finish; Vault →
+  redeem preview → slide; Claimable → list → claim preview → slide).
+  **Seed at rest (`keystore.ts`, plan §3):** the phrase is AES-256-GCM-encrypted in IndexedDB
+  (`yew`/`keystore`), never localStorage, never a cookie, never sent. Two wrapping-key paths:
+  **WebAuthn PRF** — a resident passkey created with the `prf` extension, its 32-byte output for
+  a random salt HKDF-SHA-256'd (info `yew-web seed v1`) to the AES key; the credential id and
+  the salt are stored beside the ciphertext, and unlock is one `navigator.credentials.get` with
+  the same salt — or **a passphrase through PBKDF2-SHA-256 at 600 000 iterations** (Web
+  Crypto). **Argon2id is not used:** there is no Web Crypto Argon2, `@noble/hashes` is on the
+  forbidden list of `check-web-imports.sh`, and any other implementation is a crypto package
+  under `web/src`; the right home for Argon2id is the wasm module (W1a can export
+  `argon2id(passphrase, salt)` from the Rust side, and `keystore.ts` swaps the derivation in one
+  place). The plaintext goes straight to `core.open()` and is dropped; the onboarding view-model
+  clears it from its state after `finish`. Metadata that is not secret (server, birthday,
+  network) sits in the same record in clear.
+  **CSP/SRI:** `index.html`'s policy is unchanged (`script-src 'self' 'wasm-unsafe-eval'`,
+  `style-src 'self'`, …): no inline script or style anywhere (the two dynamic widths go through
+  the CSSOM, which the policy allows; the QR is an SVG without style attributes). SRI stays with
+  the build: Vite emits hashed asset names; `integrity` attributes on the emitted tags and the
+  published bundle hash are W3's reproducible-build item (a `vite-plugin-sri`-style step or the
+  ycash-infra image's nginx), not done here.
+  **Tests:** `npm run check` = the import rule + `tsc --noEmit` + **vitest** (21 tests:
+  `tests/format.test.ts`, `tests/screens.test.ts` — every view-model against `MockCore`,
+  including: the seed does not linger after onboarding, YED to `ys1…` refused before the core is
+  asked, a memo only for `ys1…`, the reveal warning, a gate refusal shown with its kind, shield
+  needs the params, mint estimate → start → confirm → finish opens a vault, redeem closes it,
+  claim, "busy" from the mock and the queue hiding it). `scripts/test-web-smoke.sh` builds and
+  walks the real bundle in headless Chrome 154 (ChromeDriver from the W0 cache, WebDriver over
+  stdlib HTTP in `scripts/smoke.py`) with `?mock=1`: create → phrase → confirm → server → trust
+  → passphrase → home shows `$125.00` / `1.50000000 YEC` / the price line → Send → preview with
+  the node verdict → slide → "Sent" → reload → the unlock screen → home again. Green.
+  **What had to change outside `src`:** (1) `vite-plugin-top-level-await` is removed from
+  `vite.config.ts` and `package.json`: with the wasm module present, `vite build` failed inside
+  its swc pass ("missing field `type`") on the worker and then the main bundle; the build target
+  is es2022, where top-level await is native, so the plugin was never needed (the W0 scaffold's
+  build had not been run with a resolvable worker). (2) `tsconfig.json` includes `tests/` and the
+  two configs. (3) `package.json`: `test` and `check` run vitest; `qrcode-generator` added;
+  `package-lock.json` committed. (4) `worker.ts` is typed loosely over the glue; the build needs
+  `scripts/build-core-wasm.sh` run first (`src/wasm/` is gitignored).
+  **What waits for W1a:** everything past `status()` on the real core — the shell is coded to
+  the contract and has only run on the mock. Specifically: `balances()`, `history(page)`,
+  `validate_address`, `receive_address(kind)` with three kinds, `new_shielded_address`, the
+  progress callback (`set_progress_callback(true|false)` from the worker: the worker installs a
+  function that posts `{event:"progress"}`), `fetch_params(fn)` likewise (`{event:"params"}`),
+  the six previews + `confirm`, mint start/finish/sweep, vaults/redeem, claimable/claim,
+  export/import WIF, and `status().open`. Questions for W1a: `balances().priceCents` is read as
+  cents per YEC (the Dart side has micro-USD; `format.ts` adapts in one function); the mint
+  flow assumes `mint_start` returns the carrier's preview and `mint_finish` may answer "build:
+  the carrier is not confirmed yet" until it is (the Mint screen keeps a Finish button for that);
+  a `MintStatus` needs `inProgress`, `canSweep`, `state`, `vaultTxid` as the Dart row has;
+  `Vault` needs `open`, `redeemable`, `blocksToLock`, `tip`. W1a's "unsupported: …" texts show
+  as-is. Not done: the Flutter app's server screen (changing the server after onboarding means
+  forget + restore here), the renew flow (redeem then mint again) and claim intents/release
+  (the vault upgrade's second step), mint availability (`mintAvailability`, H-1/H-5) — none are
+  in the W1a contract yet; a Playwright suite (the WebDriver smoke covers the acceptance path).
 - [ ] W0 complete
 - [ ] W1
 - [ ] W2
