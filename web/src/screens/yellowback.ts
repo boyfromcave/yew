@@ -14,6 +14,19 @@ function redeemLabel(v: Vault): string {
   return "redeemable, no early fee (term ended)";
 }
 
+/** The claim risk, from the core's verdict — never from the height alone. A claim is valid only while the
+ *  collateral is worth less than the threshold (125 %) × debt at the attested claim price (IT-2); past the
+ *  term and grace the node's own judgement applies, which the core reports in the same flags. */
+function claimNotice(v: Vault): HTMLElement | null {
+  if (!v.open) return null;
+  const pct = (v.claimThresholdBps / 100).toFixed(0);
+  const price = (micro: string) => `$${(Number(micro) / 1e6).toFixed(4)}`;
+  if (v.claimable || v.underwater) return h("p", { class: "warn" }, `Anyone may claim this vault now: at the attested claim price ${price(v.claimPriceMicroUsd)} its collateral is worth less than ${pct} % of the debt. Redeem it to keep what is left.`);
+  if (v.nearThreshold) return h("p", { class: "warn" }, `Close to the claim threshold: a claim becomes valid if YEC falls to ${price(v.underwaterAtMicroUsd)} (${pct} % of the debt at the attested price, now ${price(v.claimPriceMicroUsd)}). Add nothing here — redeem, or watch the price.`);
+  if (v.tip >= v.claimHeight) return h("p", { class: "small" }, `Past the term and its grace (height ${v.claimHeight}). No claim is valid against it now: the collateral covers more than ${pct} % of the debt at the attested price ${price(v.claimPriceMicroUsd)}; a claim would only become valid if YEC fell to ${price(v.underwaterAtMicroUsd)}.`);
+  return null;
+}
+
 export function renderYellowback(root: HTMLElement, vm: YellowbackVm, yedCents: string) {
   const draw = () => {
     clear(root);
@@ -65,7 +78,7 @@ export function renderVault(root: HTMLElement, vm: YellowbackVm, vaultTxid: stri
     if (!v) { mount(root, h("h2", null, "Vault"), h("p", null, s.vaults.length ? "No such vault." : "Loading…")); return; }
     mount(root, h("h2", null, "Vault"), h("div", { class: "big yed" }, formatYed(v.cents)), h("p", { class: "yec" }, `minted against ${formatYec(v.collateralZat)} YEC`),
       h("p", { class: "small" }, `${v.status} · class ${v.termClass} · minted at ${v.mintHeight} · term ends at ${v.lockHeight} · claimable from ${v.claimHeight} · tip ${v.tip}`),
-      v.tip >= v.claimHeight && v.open ? h("p", { class: "warn" }, "Past the claim height: a liquidator may claim this vault. Redeem it now.") : null,
+      claimNotice(v),
       errorCard(s.error, s.errorKind),
       !s.redeem ? h("div", { class: "actions" }, h("button", { disabled: s.busy || !v.open, on: { click: () => vm.redeemPreview(v.vaultTxid) } }, s.busy ? "Preparing…" : "Preview the redeem"), v.open ? h("span", { class: "small pending" }, redeemLabel(v)) : null) : null,
       s.redeem ? [previewCard(s.redeem.kind === "early" ? "Redeem early" : "Redeem", [["YED burned", formatYed(s.redeem.burnCents)], ["Collateral returned", `${formatYec(s.redeem.collateralZat)} YEC`], ["Enforcement fee", feeLine(s.redeem.feeZat)], ["Fee payee", s.redeem.payee || "none"]],
