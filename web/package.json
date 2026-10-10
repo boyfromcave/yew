@@ -7,12 +7,17 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "check": "scripts/check-web-imports.sh && tsc --noEmit"
+    "test": "vitest run",
+    "check": "scripts/check-web-imports.sh && tsc --noEmit && vitest run"
   },
   "devDependencies": {
+    "jsdom": "^25.0.1",
     "typescript": "~5.6.3",
     "vite": "^6.0.11",
     "vite-plugin-wasm": "^3.4.1",
-    "vite-plugin-top-level-await": "^1.5.0"
+    "vitest": "^2.1.9"
+  },
+  "dependencies": {
+    "qrcode-generator": "^1.4.4"
   }
 }
