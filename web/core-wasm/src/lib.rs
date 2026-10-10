@@ -636,12 +636,15 @@ pub async fn sync() -> Result<JsValue, JsValue> {
             emit("shielded", 10, 0, r.tip);
             let progress: shielded::ProgressFn = Arc::new(|p: ShieldedProgress| {
                 PROGRESS.with(|c| *c.borrow_mut() = p);
+                // 10..94 while scanning, 97 while reading memos, 99 at the final tick, 100 done.
                 if p.enhancing {
                     emit("memos", 97, p.scanned_height, p.tip_height);
+                } else if p.percent >= 100 {
+                    emit("shielded", 99, p.scanned_height, p.tip_height);
                 } else {
                     emit(
                         "shielded",
-                        10 + (p.percent * 85) / 100,
+                        (10 + (p.percent as u32 * 85) / 100) as u8,
                         p.scanned_height,
                         p.tip_height,
                     );
@@ -1267,6 +1270,11 @@ pub fn vaults() -> Result<JsValue, JsValue> {
     with_session_sync(|s| {
         let tip = s.synced_tip()?;
         let price = s.wallet.balances().map_err(wallet_err)?.price_micro_usd;
+        let claim_price = match s.wallet.store.meta_u64("claim_price_micro_usd") {
+            Ok(p) if p > 0 => Some(p as i64),
+            _ => None,
+        };
+        let price = claim_price.or(price);
         let mints = s.wallet.mints().map_err(wallet_err)?;
         let now = now_secs();
         let rows: Vec<dto::VaultSummary> = s

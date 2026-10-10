@@ -29,6 +29,13 @@ overflow-checks = false
 # LOCAL PATHS until librustzcash6 and x402-ycash up/web are pushed; then the same by git rev.
 [patch.crates-io]
 schemerz-rusqlite = { path = "../librustzcash6-web/components/schemerz-rusqlite" }
+# tonic-web-wasm-client 0.9.2 answers "malformed response" to a Trailers-Only gRPC-web reply
+# (grpc-status in the HTTP headers, empty body) — what Envoy Gateway sends for an empty server
+# stream (the kind cluster's yindex `GetTaddressTxids` for an address with no history) — so the
+# transparent sync never completed in the browser (yew/web plan W1a). Upstream issue #99; the fix
+# is PR #113 ("end the body when the stream ends between frames"), open, pinned here at its head
+# until it is released. Same rev in web/core-wasm/Cargo.toml.
+tonic-web-wasm-client = { git = "https://github.com/QuantumExplorer/tonic-web-wasm-client.git", rev = "cf9abc3952405cd61d7deacf906ff9e1dd8515ea" }
 
 [patch."https://github.com/boyfromcave/librustzcash6.git"]
 zcash_protocol = { path = "../librustzcash6-web/components/zcash_protocol" }

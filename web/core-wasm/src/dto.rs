@@ -511,6 +511,14 @@ pub struct VaultSummary {
     pub open: bool,
     pub redeemable: bool,
     pub blocks_until_redeem: i64,
+    pub blocks_until_term_end: i64,
+    pub early_redeem: bool,
+    pub early_redeem_fee_zat: String,
+    pub early_redeem_fee_bps: i64,
+    pub in_term_claims: bool,
+    pub claim_threshold_bps: i64,
+    pub claim_price_micro_usd: String,
+    pub near_threshold: bool,
     pub releasable: bool,
     pub claimable: bool,
     pub underwater_at_micro_usd: String,
@@ -561,7 +569,27 @@ pub fn vault_summary(
 ) -> VaultSummary {
     let active = v.status == "ACTIVE";
     let void = v.status == "VOID";
-    let claim_warn_from = (v.claim_height as u64).saturating_sub(network.day_blocks() as u64);
+    // In-term IT-1 / D-IT-15: the owner's branch opens at ownerHeight (the block after the
+    // mint); a row not refreshed since the schema-v4 migration (0) is judged by lockHeight.
+    let owner_from = if v.owner_height > 0 {
+        v.owner_height
+    } else {
+        v.lock_height
+    } as u64;
+    let app_from = if v.app_height > 0 {
+        v.app_height
+    } else {
+        v.claim_height
+    } as u64;
+    let early = active && tip + 1 < v.lock_height as u64;
+    let fee_bps = network
+        .term_classes()
+        .iter()
+        .find(|c| c.letter == v.term_class)
+        .map(|c| c.early_redeem_fee_bps)
+        .unwrap_or(0);
+    let p_claim = price.unwrap_or(0);
+    let near = active && !v.claimable && params::near_threshold(p_claim, v.underwater_at);
     VaultSummary {
         vault_txid: txid_hex(&v.txid),
         status: v.status.clone(),
@@ -574,8 +602,20 @@ pub fn vault_summary(
         mint_height: v.mint_height,
         tip,
         open: v.is_open(),
-        redeemable: active && tip >= v.lock_height as u64,
-        blocks_until_redeem: (v.lock_height as i64 - tip as i64).max(0),
+        redeemable: active && tip >= owner_from,
+        blocks_until_redeem: (owner_from as i64 - tip as i64).max(0),
+        blocks_until_term_end: (v.lock_height as i64 - tip as i64).max(0),
+        early_redeem: early,
+        early_redeem_fee_zat: amt(if early {
+            params::early_redeem_fee_zat(v.collateral_zat, fee_bps)
+        } else {
+            0
+        }),
+        early_redeem_fee_bps: fee_bps,
+        in_term_claims: true,
+        claim_threshold_bps: params::CLAIM_THRESHOLD_BPS,
+        claim_price_micro_usd: amt(p_claim),
+        near_threshold: near,
         releasable: void,
         claimable: v.claimable,
         underwater_at_micro_usd: amt(v.underwater_at),
@@ -590,8 +630,8 @@ pub fn vault_summary(
         blocks_until_claim: (v.claim_height as i64 - tip as i64).max(0),
         renewable: active && tip >= v.lock_height as u64,
         renew_lock_blocks: renew_lock_blocks(v, mints, network),
-        claim_warning: active && tip >= claim_warn_from,
-        claim_open: active && tip >= v.claim_height as u64,
+        claim_warning: active && (v.claimable || near),
+        claim_open: active && tip >= app_from,
         claiming: v.status == "CLAIMING",
         reopened: v.status == "REOPENED",
     }
@@ -659,6 +699,10 @@ pub struct ClaimableItem {
     pub residual_zat: String,
     pub claimant_zat: String,
     pub payee: String,
+    pub claimable: bool,
+    pub underwater_at_micro_usd: String,
+    pub lock_height: u64,
+    pub in_term: bool,
 }
 
 pub fn claimable_item(c: &Claimable) -> ClaimableItem {
@@ -675,6 +719,10 @@ pub fn claimable_item(c: &Claimable) -> ClaimableItem {
         residual_zat: amt(c.residual_zat),
         claimant_zat: amt(c.claimant_zat),
         payee: c.payee.clone(),
+        claimable: c.claimable,
+        underwater_at_micro_usd: amt(c.underwater_at),
+        lock_height: c.lock_height as u64,
+        in_term: c.in_term,
     }
 }
 
@@ -701,6 +749,9 @@ pub struct RedeemPreview {
     pub change_cents: String,
     pub yed_inputs: u32,
     pub fee_zat: String,
+    pub enforcement_fee_zat: String,
+    pub early_redeem_fee_zat: String,
+    pub lock_height: u64,
     pub payee: String,
     pub collateral_zat: String,
     pub collateral_address: String,
@@ -719,6 +770,9 @@ pub fn redeem_preview(id: String, p: &RedeemBuild) -> RedeemPreview {
         change_cents: amt(p.change_cents as i64),
         yed_inputs: p.yed_inputs.len() as u32,
         fee_zat: amt(p.fee_zat),
+        enforcement_fee_zat: amt(p.fee_zat - p.early_redeem_fee_zat),
+        early_redeem_fee_zat: amt(p.early_redeem_fee_zat),
+        lock_height: p.lock_height as u64,
         payee: p.payee.clone(),
         collateral_zat: amt(p.collateral_out),
         collateral_address: p.collateral_address.clone(),

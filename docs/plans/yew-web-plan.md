@@ -422,6 +422,151 @@ Sapling send in WASM; the slide-to-confirm plus progress sheet carries over.
   the helper answered** (one block), restore from height 1: 212 blocks / 6 outputs in 178 ms
   (~1 200 blocks/s); debug the same within 10 %. `YEW_WEB_LWD=http://localhost:9067
   web/scripts/test-core-wasm.sh` is now the kind acceptance for W2.
+- [x] **W1a the `yew-web-core` API completed to the contract — done 2026-10-10** (branch
+  `up/web-api`; `upgrade/vault` `6eb6712` merged in first, because the kind cluster now runs
+  rpcversion 6 and the core refuses an rpcversion it does not know — contract rule 1).
+  **The exported surface** (`web/core-wasm/src/lib.rs`, DTOs in `src/dto.rs`; every call a
+  Promise, every error a JS `Error` whose message is `<kind>: <detail>` with the kinds `busy`,
+  `unsupported`, `network`, `store`, `gate`, `build`, `params`, `invalid`; amounts as decimal
+  strings, heights and counts as numbers, field names camelCase on the W1a DTOs, the W0.5
+  ones unchanged). Nothing is reimplemented: each function is the same internal call its
+  `core/src/api.rs` namesake makes, and `dto.rs` carries the presentation mappings of `api.rs`
+  (`history_item`/`merge_shielded`, `vault_summary`, `mint_status_of`, `claim_intent_of`,
+  `validate_address`) translated line for line — `api.rs` itself cannot compile for wasm32
+  (flutter_rust_bridge, tokio), and moving its mappings out would mean regenerating the Dart
+  bridge. The session now holds a whole `Wallet` (`Wallet::open` at `yew/<network>/yew-<network>.sqlite`
+  on OPFS: the transparent store, with the private store beside it in `shielded/yew-<network>/`,
+  exactly the native layout) plus the lazily built connection (`api::Conn`: `CompactClient`,
+  `Validator::detect`, the tip, the branch id) and the preview table.
+  - As W0.5: `install_storage()`, `new_seed_words()`, `latest_height(url, network)`,
+    `open(words, birthday, url, network)` / `open_at(…, dir)` → `{network, address, addressYe,
+    addressS, birthday, vault_activation, registered}`, `sync()`, `progress()`,
+    `shielded_balance()`, `network()`, `close()`, `status()` (now also `network`, `tip`,
+    `yellowbackUsable`, `branchId`).
+  - `set_progress_callback(fn | null)`: `fn({phase, pct, height, tip})` from `sync` — phases
+    `connecting` 0, `scanning` 5, `shielded` 10..94 (by blocks), `memos` 97, `shielded` 99 at
+    the final tick, `done` 100 — the `api::sync_now` percentages. `sync()` is now the combined
+    sync of `sync_now`: the transparent §3.2 loop (addresses, YED, vaults, intents, the price)
+    then the private scan; a failed private sync does not fail the call (`shielded_message`).
+    The result keeps the W0.5 fields and adds `branch_id`, `transactions`, `utxos`, `tokens`,
+    `yellowback`.
+  - `balances()` → `{yecZat, yecReservedZat, yecPendingZat, yedCents, yedPendingCents,
+    priceCents, priceMicroUsd, heldCount, syncHeight, yedSendMinZat, shieldedZat,
+    shieldedSpendableZat, shieldedPendingZat, shieldedScannedHeight, shieldedSendable}`.
+  - `receive_address(kind?)` → string (`shielded` — the default, as W0.5 —, `transparent`,
+    `yed`); `receive_address_info(kind?)` → the `AddressPair` `{ye, s, path, coveredBySeed,
+    address, kind}`; `new_shielded_address()` → string (remembered, as the app);
+    `addresses()` → `AddressPair[]`.
+  - `history(page)` → `[{txid, height, pending, yecDelta, yedDelta, label, verdict, kind,
+    hasPayload, shielded, memo}]`, 50 a page, pending first then newest first, the private
+    rows merged in.
+  - `params_status()` → `{present, bytes, needed, loaded}` (the Cache API's verified copy, or
+    the prover loaded in this session); `fetch_params(fn?, sources?)` → `fn({bytesDone,
+    bytesTotal, name})` before and after each file (`sapling_params::fetch_with`, new; the
+    browser's `fetch` hands a file over whole, so there is no finer grain), the default source
+    `download.z.cash` when `sources` is empty, the bytes verified against the pins and loaded
+    into the prover (`set_prover_bytes`). `confirm` reloads the prover from the Cache API on
+    its own after a page reload (`sapling_params::cached`, new) and answers `params: …` only
+    when the cache is empty.
+  - Previews: `send_yec_preview(to, zat, memo?)` → `{previewId, to, amountZat, amountBumped,
+    fee, change, inputs, usesReserve, keepsReservedZat, expiryHeight, txid, funding
+    ("transparent" | "shielded"), revealsShielded, memo, paramsNeeded}` (privacy-first funding,
+    `build::yec_private`); `move_preview("to_private" | "to_public", zat | null)` → the same;
+    `send_yed_preview(to, cents)` → `{previewId, to, cents, stage, inputs, changeCents,
+    yecInputs, feeZat, yecChangeZat, expiryHeight, txid, verdict, dryRun}`;
+    `mint_availability()`; `mint_estimate(cents, lockBlocks)`; `mint_start(cents, lockBlocks,
+    terms | null)` → `{previewId, cents, lockBlocks}`; `mint_finish(mintId)` / `mint_sweep(mintId)`
+    → `{previewId, mintId, row}`; `mints()`; `vaults()`; `redeem_preview(vaultTxid)`;
+    `claim_intents()`; `release_preview("txid:n")`; `claimable()`; `claim_preview(vaultTxid)`
+    → `{previewId, item, maxBurnCents, minOutZat}` (the bounds the confirm holds the server
+    to, H-9.3, from the row the node lists now). The in-term fields of the merge
+    (`earlyRedeem`, `earlyRedeemFeeZat`, `nearThreshold`, `claimThresholdBps`, …) are carried.
+  - `confirm(previewId)` → `{txid, verdict, mintId}`: **the only path that signs and
+    broadcasts**, through both gate layers in the core (`confirm_yec_send`,
+    `yed_transfer::broadcast`, `redeem_confirm`, `release_confirm`, and — a difference from
+    the Dart surface, where `mint_start`/`mint_finish`/`mint_sweep`/`claim` broadcast
+    themselves — the mint and claim steps, staged by their previews above, so that the
+    contract's rule holds for every broadcast). A private send or shield is proved here.
+    A consumed preview is gone; a `params: …` refusal keeps it.
+  - `export_wif(address)` → string; `import_wif(wif, birthday?)` → `AddressPair`;
+    `validate_address(s, network?)` → `{valid, kind, yellowbackForm, message}` (the open
+    wallet's network, or the named one).
+  **Nothing is `unsupported`.** Every internal the contract needs compiled for wasm32 already
+  (W0.4/W0.5); the two yew-core additions are wasm32-only and additive (`sapling_params::fetch_with`,
+  `cached`, with `web::open_cache`/`cached_param` factored out of `fetch_param`).
+  **The browser test** (`web/core-wasm/tests/web.rs`, `web/scripts/test-core-wasm.sh`; the helper
+  gained `GET /fund_t` — `sendtoaddress`, with a `z_sendmany … NoPrivacy` fallback — and
+  `GET /params/<file>` serving `~/.cache/yew-web/sapling-params`, so the test never
+  downloads), headless Chrome 154, dedicated worker, debug and release, against the kind
+  cluster (`http://localhost:9067`): a fresh wallet opens (OPFS stores + `GetChainInfo`) and
+  syncs with the progress events checked monotone; `busy` is answered to a call during a sync;
+  **2 YEC paid to the public address** is spendable and in history as `received YEC`; a **t→t
+  send** of 0.5 YEC to a foreign address: preview (fee 1 000 zat, 1 input) → confirm (`ok`, 15 ms)
+  → pending in history → mined; **1.5 YEC paid to the private address** spendable; `params_status`
+  empty → a shield preview whose confirm answers `params: …` → `fetch_params` from the helper in
+  **≈0.7 s** (3 events) and from the cache in ≈0.5 s → `params_status` present+loaded → the
+  **shield** (0.4 YEC to private) proved and broadcast in **4.2–4.4 s** → mined, both balances
+  right; a **z→z send** of 0.3 YEC with a memo to a new diversified address of the same account:
+  preview (`funding: shielded`, no txid yet) → confirm proved and broadcast in **17.1–17.6 s**
+  → mined; a memo to a public address refused (`invalid: …`); a public recipient the notes cover
+  is funded privately (`revealsShielded`); `send_yed_preview` without YED → `build:
+  insufficient-yed: need 100 cents, have 0 confirmed and spendable`; `mint_availability` →
+  `allowed false, "Minting is halted (NO_PRICE): no term class is mintable now."`, attest
+  `UNARMED` (the kind devnet's attestors are unarmed, so no mint is possible there, as the
+  briefing anticipated); `mint_estimate(100, 48)` → `invalid: bad-amount: 100 cents is outside
+  the mint range [10000, 1000000] cents`; `claimable()` 0 rows; `claim_preview` of an unknown
+  vault, `redeem_preview` of a foreign one (`build: vault-not-owned`), `mint_finish(7)`
+  (`invalid: no mint with id 7`) refused with the right kinds; `export_wif`/`import_wif` round
+  trip of a foreign key; 5 history rows at the end. Timings (release; debug within 10 %): open
+  250–360 ms, first sync 21 blocks 130–200 ms, a receipt spendable one block after the helper
+  answered (2–6 s on the shared cluster's 5 s blocks).
+  **What had to change, and the traps.**
+  1. **`tonic-web-wasm-client` 0.9.2 cannot read a Trailers-Only gRPC-web reply** (grpc-status
+     in the HTTP headers, empty body): "malformed response". Envoy Gateway sends exactly that for
+     an empty server stream — the kind cluster's yindex `GetTaddressTxids` for an address with
+     no history, i.e. every address of a fresh wallet — so the transparent sync never completed
+     in the browser (the W0.5 private sync never met one: `GetBlockRange` is never empty).
+     Upstream issue #99; the fix is the open PR #113 ("end the body when the stream ends between
+     frames"), **pinned by `[patch.crates-io]` at its head `cf9abc39`** in the root `Cargo.toml`
+     and `web/core-wasm/Cargo.toml` (the spike crates keep the release; `spike-net` never
+     hit an empty stream). Replace with the release that carries it. Verified by the curl
+     probes in the W1a log: `GetAddressUtxos` answers a trailer frame, `GetTaddressTxids`
+     headers only.
+  2. The kind cluster moved to **rpcversion 6** (the in-term claims line) under this task:
+     `upgrade/vault` was merged into `up/web-api` (clean), and the in-term fields of
+     `vault_summary`, `RedeemPreview` and `ClaimableItem` were carried into `dto.rs`.
+  3. A u8 percent arithmetic overflow (`percent * 85`) in the first progress mapping, and the
+     final tick of the private sync reporting `percent 100` after the `memos` tick (99 is
+     emitted for it so the events stay monotone).
+  4. **Timing on a shared cluster.** The balance comes from `GetAddressUtxos` (yindex) and the
+     history row from `GetTaddressTxids`: one sync can see the first and not yet the second,
+     so the test waits for both. The transparent sync runs before the private scan: a block
+     arriving in between leaves a shield's public change pending for one more sync. The
+     private scan reaches the compact-block cache's tip, which can trail the node's by a block.
+  5. **One finding for the core, not the binding** (the Dart app has it too): a z→z send to
+     one of the wallet's **own diversified addresses** is two things to the store in turn.
+     While the row rests on the sent outputs the builder recorded, history shows the memo and
+     the full amount as sent and the private total is lower by it; once the scan has
+     decrypted the output as received (in the same sync when the block is already there, a
+     later one otherwise) the amount is credited, the row's delta is the fee alone — and the
+     memo is gone, because `v_tx_outputs` marks a note received from the account's own
+     transaction `is_change`, which `shielded::history_rows`' memo query excludes. So a
+     self-send's memo is never shown once scanned (yew-core `shielded.rs`, the memo query's
+     `is_change = 0`: to be looked at with the owner; the test accepts an empty memo and logs
+     the row, and waits for the credit — 0–3 s).
+  **For W1b.** The DTO field names above are the contract's where it names them (`yecZat`,
+  `yedCents`, `priceCents`, `previewId`, `fee`, `change`, `revealsShielded`, `funding`,
+  `yecDelta`, `yedDelta`, `bytesDone`/`bytesTotal`/`name`) and the Dart names camelCased
+  elsewhere; the differences from the contract: `balances()` also carries the reserve,
+  pending, held and height fields; `send_yed_preview` takes one recipient (`to, cents`), its
+  `inputs` are the YED inputs and `verdict` is the dry run's; `mint_start` answers
+  `{previewId, cents, lockBlocks}` (no `mintId` until `confirm`, which returns it);
+  `mint_finish`/`mint_sweep` answer `{previewId, mintId, row}`; `confirm` carries `mintId`;
+  `history(page)` is the array itself (no `total`); `params_status` adds `loaded`;
+  `open` still takes `network` as its fourth argument (W0.5) and `receive_address` without an
+  argument is the private address (W0.5). `fetch_params` holds the session (a sync meanwhile
+  is `busy`). Amount arguments are accepted as strings, safe integers or BigInts. Run
+  `fetch_params` once per browser profile; after that `confirm` finds the cache itself.
 - [ ] W0 complete
 - [ ] W1
 - [ ] W2
