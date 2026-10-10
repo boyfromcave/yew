@@ -3,3 +3,4 @@ dist/
 src/wasm/
 core-wasm/target/
 core-wasm/pkg/
+scripts/__pycache__/
