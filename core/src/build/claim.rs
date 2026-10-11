@@ -245,7 +245,7 @@ pub async fn start(
         )));
     }
     // The vault's post-quantum owner (quantum spec §1): its residual is paid to PQPKH(owner).
-    let owner_pubkey: [u8; 33] = terms::vault_owner(&v)?.to_bytes();
+    let owner = terms::vault_owner(&v)?;
     // The YED to burn must be there before the carrier is funded, and (U-23: the vault's value
     // goes into intents) the YEC for the carrier and for the claim's fees.
     let (yed, change_cents, _, _) = redeem::select_yed_burn(wallet, entry.minted_cents)?;
@@ -322,14 +322,14 @@ pub async fn start(
             .collect::<Vec<_>>()
             .join(","),
         carrier_hash160: step.carrier_hash160,
-        owner_hash160: keys::hash160(&owner_pubkey),
+        owner_hash160: keys::hash160(&owner.to_bytes()),
         carrier_txid: step.txid,
         carrier_vout: 0,
         main_txid: [0; 32],
         sweep_txid: [0; 32],
         expiry_height: step.expiry_height,
         vault_txid: *vault_txid,
-        owner_pubkey: owner_pubkey.to_vec(),
+        owner: Some(owner),
         note: format!("clause {}", entry.claim_path),
     };
     let id = wallet.store.insert_mint(&row)?;
@@ -632,11 +632,9 @@ pub async fn finish(
     m: &MintRow,
     branch_id: u32,
 ) -> Result<Finished, WalletError> {
-    let owner = crate::pq::PqKeyId::from_bytes(&m.owner_pubkey)
-        .filter(|o| o.is_known())
-        .ok_or_else(|| {
-            WalletError::Other("the claim row's vault owner is not post-quantum".into())
-        })?;
+    let owner = m.owner.filter(|o| o.is_known()).ok_or_else(|| {
+        WalletError::Other("the claim row's vault owner is not post-quantum".into())
+    })?;
     // The V the claim spends, re-read and checked (in-term IT-1: its branch heights come from the
     // vault's own mint, `refHeight + 1`, which the claim row does not hold).
     let (vt, yv) = {
@@ -645,10 +643,10 @@ pub async fn finish(
             .ok_or(gate::GateError::YellowbackAbsent)?;
         let vt = mint::vault_terms_now(wallet, yb).await?;
         let v = yb.vault(&txid_hex(&m.vault_txid)).await?;
-        if keys::unhex(&v.owner_pub_key).ok().as_deref() != Some(&m.owner_pubkey[..]) {
+        if terms::vault_owner(&v).ok() != Some(owner) {
             return Err(MintError::Inconsistent {
                 what: format!(
-                    "GetVault {}: ownerPubKey changed since the claim started",
+                    "GetVault {}: the owner changed since the claim started",
                     v.txid
                 ),
             }

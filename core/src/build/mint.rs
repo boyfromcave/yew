@@ -682,7 +682,7 @@ pub async fn start(
         sweep_txid: [0; 32],
         expiry_height: step.expiry_height,
         vault_txid: [0; 32],
-        owner_pubkey: owner.to_bytes().to_vec(),
+        owner: Some(owner),
         note: String::new(),
     };
     Ok(wallet.store.insert_mint(&row)?)
@@ -955,7 +955,8 @@ pub async fn finish(
     if m.kind == MintKind::Claim {
         return super::claim::finish(wallet, client, validator, &m, branch_id).await;
     }
-    let owner = crate::pq::PqKeyId::from_bytes(&m.owner_pubkey)
+    let owner = m
+        .owner
         .filter(|o| {
             wallet
                 .pq_owner_for_hash(&m.owner_hash160)

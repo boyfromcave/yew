@@ -388,11 +388,9 @@ pub fn vault_script_of(
         }
         .into());
     }
-    let owner = crate::pq::PqKeyId::from_bytes(&v.owner_pubkey)
-        .filter(|o| o.is_known())
-        .ok_or_else(|| {
-            WalletError::Other("vault-not-owned: the vault's owner is not post-quantum".into())
-        })?;
+    let owner = Some(v.owner).filter(|o| o.is_known()).ok_or_else(|| {
+        WalletError::Other("vault-not-owned: the vault's owner is not post-quantum".into())
+    })?;
     Ok(vt.vault_script_at(&owner, v.owner_height, v.app_height)?)
 }
 
@@ -460,9 +458,8 @@ pub async fn build_redeem(
             "expiring-too-soon: the index is too far behind the chain".into(),
         ));
     }
-    let owner = crate::pq::PqKeyId::from_bytes(&v.owner_pubkey)
-        .and_then(|id| wallet.pq_key_for_owner(&id, &v.owner_hash160).transpose())
-        .transpose()?
+    let owner = wallet
+        .pq_key_for_owner(&v.owner, &v.owner_hash160)?
         .ok_or_else(|| WalletError::Other("vault-not-owned: owner key missing".into()))?;
     let vt = mint::vault_terms_now(wallet, yb).await?;
     let vault_script = vault_script_of(&v, &vt)?;
@@ -801,7 +798,10 @@ mod tests {
             vout: 0,
             status: "ACTIVE".into(),
             owner_hash160: [2; 20],
-            owner_pubkey: [2; 33],
+            owner: crate::pq::PqKeyId {
+                scheme: 1,
+                hash: [2; 32],
+            },
             term_class: "B".into(),
             lock_height: 600,
             claim_height: 624,

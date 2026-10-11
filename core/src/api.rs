@@ -3294,7 +3294,7 @@ mod tests {
             sweep_txid: [0; 32],
             expiry_height: 538,
             vault_txid: [0; 32],
-            owner_pubkey: vec![],
+            owner: None,
             note: String::new(),
         };
         // Window open at tip 500: 500 + 1 + 3 <= 538, 34 blocks left; finish allowed.
@@ -3331,7 +3331,10 @@ mod tests {
             vout: 0,
             status: "ACTIVE".into(),
             owner_hash160: [2; 20],
-            owner_pubkey: [3; 33],
+            owner: crate::pq::PqKeyId {
+                scheme: 1,
+                hash: [3; 32],
+            },
             term_class: "A".into(),
             lock_height: 518,
             claim_height: 538,

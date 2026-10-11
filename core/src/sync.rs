@@ -353,10 +353,7 @@ pub async fn sync(
         if v.owner_height == 0 || v.app_height == 0 {
             continue;
         }
-        let Some(owner) = crate::pq::PqKeyId::from_bytes(&v.owner_pubkey) else {
-            continue;
-        };
-        let vs = t.vault_script_at(&owner, v.owner_height, v.app_height)?;
+        let vs = t.vault_script_at(&v.owner, v.owner_height, v.app_height)?;
         utxos.push(Utxo {
             outpoint: op,
             address: String::new(),
@@ -599,7 +596,6 @@ pub async fn refresh_vaults(
         let Some(&owner_hash160) = own.get(&owner) else {
             continue;
         };
-        let pk = owner.to_bytes();
         // The script terms the wallet would sign against, checked before the vault is shown
         // as redeemable (audit G-1); an inconsistent answer fails the sync with that error.
         terms::check_vault(wallet.network, &v)?;
@@ -610,7 +606,7 @@ pub async fn refresh_vaults(
             vout: v.vout,
             status: v.status.clone(),
             owner_hash160,
-            owner_pubkey: pk,
+            owner,
             term_class: v.term_class.clone(),
             lock_height: v.lock_height as u32,
             claim_height: v.claim_height as u32,
@@ -638,7 +634,7 @@ pub async fn refresh_vaults(
     for row in lost {
         let mut found = None;
         for o in yb
-            .list_vault_outputs("", "", &keys::hex(&row.owner_pubkey), "vault")
+            .list_vault_outputs("", "", &keys::hex(&row.owner.to_bytes()), "vault")
             .await?
         {
             let Ok(t) = txid_from_hex(&o.txid) else {
@@ -1190,7 +1186,7 @@ mod tests {
             sweep_txid: [0; 32],
             expiry_height: 518,
             vault_txid: [0; 32],
-            owner_pubkey: vec![],
+            owner: None,
             note: String::new(),
         };
         let id = w.store.insert_mint(&row).unwrap();

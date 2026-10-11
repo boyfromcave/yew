@@ -381,18 +381,19 @@ pub fn vault_terms(network: Network, info: &rpc::YellowbackInfo) -> Result<Vault
     })
 }
 
-/// A `GetVault` record's post-quantum owner (quantum spec §1, §3.4): `scheme ‖ keyHash`, a
-/// registered scheme. **The one place the record's owner field is read.** rpcversion 7 (spec
-/// §6.2) replaces `ownerPubKey` with `ownerScheme` + `ownerHash`; until YEW re-pins the
-/// lightwalletd proto (YEW-b), this reads the same 33 bytes from the `ownerPubKey` field, which
-/// on the quantum line's vault record holds exactly `scheme ‖ hash` (`VaultRecord::ownerPubKey`,
-/// spec §3.4).
+/// A `GetVault` record's post-quantum owner (quantum spec §1, §3.4, §6.2): `ownerScheme` (a
+/// registered scheme) and `ownerHash` (32 bytes, hex). **The one place the record's owner field
+/// is read.** rpcversion 7 removed `ownerPubKey`/`ownerKeyId`: no public key is on chain.
 pub fn vault_owner(v: &rpc::YedVault) -> Result<crate::pq::PqKeyId, MintError> {
-    crate::keys::unhex(&v.owner_pub_key)
+    let bad = || inconsistent(format!("vault {}: owner", v.txid));
+    let scheme = u8::try_from(v.owner_scheme).map_err(|_| bad())?;
+    let hash: [u8; 32] = crate::keys::unhex(&v.owner_hash)
         .ok()
-        .and_then(|b| crate::pq::PqKeyId::from_bytes(&b))
+        .and_then(|b| b.try_into().ok())
+        .ok_or_else(bad)?;
+    Some(crate::pq::PqKeyId { scheme, hash })
         .filter(|o| o.is_known())
-        .ok_or_else(|| inconsistent(format!("vault {}: owner", v.txid)))
+        .ok_or_else(bad)
 }
 
 /// A `GetVault` record's V script (rpcversion 5, U-23; rpcversion 6, in-term IT-1): the node's
@@ -1409,7 +1410,8 @@ mod tests {
         assert_eq!((p.owner_height, p.app_height, p.delay), (330, 330, 10));
         let mut v = rpc::YedVault {
             txid: "ab".repeat(32),
-            owner_pub_key: crate::keys::hex(&owner.to_bytes()),
+            owner_scheme: owner.scheme.into(),
+            owner_hash: crate::keys::hex(&owner.hash),
             ref_height: 329,
             lock_height: 377,
             claim_height: 401,
@@ -1432,9 +1434,13 @@ mod tests {
         assert!(check_vault_script(&t, &v).is_err());
         // an unregistered scheme or a short owner field is not a vault owner
         let mut w = v.clone();
-        w.owner_pub_key = crate::keys::hex(&crate::pq::PqKeyId { scheme: 3, ..owner }.to_bytes());
+        w.owner_scheme = 3;
         assert!(vault_owner(&w).is_err());
-        w.owner_pub_key = "01".repeat(32);
+        w.owner_scheme = 256 + 1;
+        assert!(vault_owner(&w).is_err());
+        w.owner_scheme = 1;
+        assert!(vault_owner(&w).is_ok());
+        w.owner_hash = "01".repeat(31);
         assert!(vault_owner(&w).is_err());
         // A pre-plan vault (the upgrade line's V) is still recognised, with its own heights.
         let old = crate::vault::build_vault(&t.pre_plan_vault_params(&owner, 377)).unwrap();

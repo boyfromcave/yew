@@ -34,7 +34,13 @@ use crate::tx::{txid_from_hex, OutPoint};
 /// ACTIVE vault whose claim branch is open, in term too, with `claimable` true or false; the
 /// params carry `inTermClaims`, `claimThresholdBps` and `earlyRedeemFeeBps`. The match stays
 /// exact: an rpcversion-5 node's rows would read as `claimable: false`, which is not what it meant.
-pub const KNOWN_RPCVERSION: i64 = 6;
+/// `7` is the post-quantum line this build implements (branch `upgrade/quantum-vaults`, the
+/// workspace's `docs/plans/yellowback-quantum-spec.md` §6.2): every vault owner is a post-quantum
+/// key (`ownerScheme` + `ownerHash`, the 53-character `ownerAddress`; no public key on chain), a
+/// MINT's payload is version 4 (`attest.mintPayloadVersion`), and `params.pq` carries the owner
+/// schemes, the Falcon activation and the size-priced fee rate. Exact again: an rpcversion-6
+/// node would hand back secp256k1 owners this build can neither sign for nor check.
+pub const KNOWN_RPCVERSION: i64 = 7;
 
 /// The upgrade status string that means "active" (`YellowbackActivation.status`, rpcversion 5:
 /// `"pending"` | `"active"`).

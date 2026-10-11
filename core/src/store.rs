@@ -9,8 +9,14 @@
 //! `own_tokens`; schema v3 (W4) adds the `mints` and `vaults` tables (plan §5.3: `Estimated →
 //! CarrierSent → CarrierConfirmed → MainSent → Done | Lapsed → Swept`, persisted so a killed
 //! app resumes); schema v4 (in-term claims, IT-1) adds the V's branch heights to `vaults`
-//! (`owner_height`, `app_height`). Every migration is additive (`ALTER TABLE` / `CREATE TABLE IF
-//! NOT EXISTS`).
+//! (`owner_height`, `app_height`); schema v5 (the post-quantum line, rpcversion 7) replaces the
+//! 33-byte `owner_pubkey` of `mints` and `vaults` with the post-quantum owner's `owner_scheme` and
+//! `owner_hash` (quantum spec §1, §3.4) and adds `pq_owners`, the cached public ids of the
+//! wallet's SLH-DSA owner keys. Every migration but v4 → v5's column drop is additive (`ALTER
+//! TABLE` / `CREATE TABLE IF NOT EXISTS`); v4 → v5 keeps an owner only where the old column
+//! already held a scheme-1 `scheme ‖ hash` (a secp256k1 owner, `02`/`03`, is no vault owner on the
+//! quantum line: those vault rows are dropped and found again by the next sync from the mint
+//! rows and history; a mint row keeps its carrier and loses only the owner).
 //!
 //! The database is a cache: deleting it and restoring from seed plus birthday rebuilds it.
 //! The seed is never here. Imported keys (D-W-11, "outside the HD tree") have to live
@@ -37,7 +43,7 @@ pub enum StoreError {
 }
 
 /// The schema version this build writes and reads.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// The `chain` column value of an imported key (D-W-11): outside the HD tree.
 pub const CHAIN_IMPORTED: u32 = 2;
@@ -256,10 +262,11 @@ pub struct MintRow {
     pub expiry_height: u32,
     /// CLAIM: the vault's txid (zero for a MINT).
     pub vault_txid: [u8; 32],
-    /// The vault's post-quantum owner, `scheme ‖ keyHash` (33 bytes; quantum spec §3.1, §3.4):
-    /// a MINT's own owner, a CLAIM's target vault's owner (for the residual and the V). The
-    /// column keeps its pre-quantum name until the store's next schema version (YEW-b).
-    pub owner_pubkey: Vec<u8>,
+    /// The vault's post-quantum owner (quantum spec §3.1, §3.4; columns `owner_scheme`,
+    /// `owner_hash`): a MINT's own owner, a CLAIM's target vault's owner (for the residual and
+    /// the V). `None` for a row written before the owner is known, or migrated from a
+    /// pre-quantum store.
+    pub owner: Option<crate::pq::PqKeyId>,
     /// Why the row failed or lapsed, for the screen.
     pub note: String,
 }
@@ -276,8 +283,8 @@ pub struct VaultRow {
     /// The external key hash the vault's owner is paired with (an own key; the mint's token
     /// holder): the PQ owner is `Wallet::pq_owner_key` of that key's index.
     pub owner_hash160: [u8; 20],
-    /// The post-quantum owner, `scheme ‖ keyHash` (the node's `VaultRecord::ownerPubKey` bytes).
-    pub owner_pubkey: [u8; 33],
+    /// The post-quantum owner (`GetVault` `ownerScheme` + `ownerHash`).
+    pub owner: crate::pq::PqKeyId,
     /// The term class letter.
     pub term_class: String,
     /// `lockHeight`.
@@ -443,16 +450,19 @@ CREATE TABLE IF NOT EXISTS mints (
   residual_zat INTEGER NOT NULL, bundle BLOB NOT NULL, bundle_seqs TEXT NOT NULL,
   carrier_hash160 BLOB NOT NULL, owner_hash160 BLOB NOT NULL, carrier_txid BLOB NOT NULL,
   carrier_vout INTEGER NOT NULL, main_txid BLOB NOT NULL, sweep_txid BLOB NOT NULL,
-  expiry_height INTEGER NOT NULL, vault_txid BLOB NOT NULL, owner_pubkey BLOB NOT NULL,
-  note TEXT NOT NULL DEFAULT '');
+  expiry_height INTEGER NOT NULL, vault_txid BLOB NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  owner_scheme INTEGER NOT NULL DEFAULT 0, owner_hash BLOB NOT NULL DEFAULT x'');
 CREATE TABLE IF NOT EXISTS vaults (
   txid BLOB PRIMARY KEY, vout INTEGER NOT NULL, status TEXT NOT NULL, owner_hash160 BLOB NOT NULL,
-  owner_pubkey BLOB NOT NULL, term_class TEXT NOT NULL, lock_height INTEGER NOT NULL,
+  term_class TEXT NOT NULL, lock_height INTEGER NOT NULL,
   claim_height INTEGER NOT NULL, collateral_zat INTEGER NOT NULL, minted_cents INTEGER NOT NULL,
   mint_height INTEGER NOT NULL, claimable INTEGER NOT NULL, underwater_at INTEGER NOT NULL,
   sweep_before INTEGER NOT NULL, close_height INTEGER NOT NULL, closing_txid TEXT NOT NULL,
   void_reason TEXT NOT NULL, updated_height INTEGER NOT NULL,
-  owner_height INTEGER NOT NULL DEFAULT 0, app_height INTEGER NOT NULL DEFAULT 0);
+  owner_height INTEGER NOT NULL DEFAULT 0, app_height INTEGER NOT NULL DEFAULT 0,
+  owner_scheme INTEGER NOT NULL DEFAULT 0, owner_hash BLOB NOT NULL DEFAULT x'');
+CREATE TABLE IF NOT EXISTS pq_owners (idx INTEGER PRIMARY KEY, scheme INTEGER NOT NULL, hash BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS claim_bounds (
   mint_id INTEGER PRIMARY KEY, max_burn_cents INTEGER NOT NULL, min_out_zat INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS claim_intents (
@@ -477,6 +487,44 @@ const MIGRATE_3_TO_4: &str = "
 ALTER TABLE vaults ADD COLUMN owner_height INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE vaults ADD COLUMN app_height INTEGER NOT NULL DEFAULT 0;
 ";
+
+/// The v4 → v5 migration (the post-quantum line): the owner moves from the 33-byte
+/// `owner_pubkey` to `owner_scheme` + `owner_hash`. Only a `01 ‖ hash` value is a post-quantum
+/// owner (a compressed secp256k1 key starts `02`/`03`, and `02` would read as a Falcon owner);
+/// every other owner becomes "none" (scheme 0). A vault row without an owner is a cache entry for
+/// a vault this line cannot have: it is dropped (the next sync finds every own vault again from
+/// the mint rows and history).
+const MIGRATE_4_TO_5: &str = "
+ALTER TABLE mints ADD COLUMN owner_scheme INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE mints ADD COLUMN owner_hash BLOB NOT NULL DEFAULT x'';
+ALTER TABLE vaults ADD COLUMN owner_scheme INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE vaults ADD COLUMN owner_hash BLOB NOT NULL DEFAULT x'';
+UPDATE mints SET owner_scheme = 1, owner_hash = substr(owner_pubkey, 2, 32)
+  WHERE length(owner_pubkey) = 33 AND hex(substr(owner_pubkey, 1, 1)) = '01';
+UPDATE vaults SET owner_scheme = 1, owner_hash = substr(owner_pubkey, 2, 32)
+  WHERE length(owner_pubkey) = 33 AND hex(substr(owner_pubkey, 1, 1)) = '01';
+DELETE FROM vaults WHERE owner_scheme = 0;
+ALTER TABLE mints DROP COLUMN owner_pubkey;
+ALTER TABLE vaults DROP COLUMN owner_pubkey;
+";
+
+/// The owner columns of a row: `(scheme, hash)`, `(0, x'')` for none.
+fn owner_cols(o: Option<&crate::pq::PqKeyId>) -> (i64, Vec<u8>) {
+    o.map(|o| (o.scheme as i64, o.hash.to_vec()))
+        .unwrap_or((0, Vec::new()))
+}
+
+/// The owner a row's columns hold: scheme 0 is none; anything else must be 32 bytes of hash.
+fn owner_of(scheme: i64, hash: &[u8]) -> Result<Option<crate::pq::PqKeyId>, StoreError> {
+    if scheme == 0 {
+        return Ok(None);
+    }
+    let scheme = u8::try_from(scheme).map_err(|_| StoreError::Corrupt("owner scheme".into()))?;
+    Ok(Some(crate::pq::PqKeyId {
+        scheme,
+        hash: arr32(hash)?,
+    }))
+}
 
 impl Store {
     /// Open (or create) the database at `path` and ensure the schema. On Unix the file is made
@@ -528,11 +576,19 @@ impl Store {
         if existing.as_deref() == Some("3") {
             conn.execute_batch(MIGRATE_3_TO_4)?;
         }
+        // v4 → v5 (and a v3 store after its v4 columns): the post-quantum owner columns.
+        if matches!(existing.as_deref(), Some("3") | Some("4")) {
+            conn.execute_batch(MIGRATE_4_TO_5)?;
+        }
         conn.execute_batch(SCHEMA)?;
-        // v2 → v3 (W4) is the two new tables SCHEMA just created; v3 → v4 the columns above.
-        if matches!(existing.as_deref(), Some("1") | Some("2") | Some("3")) {
+        // v2 → v3 (W4) is the two new tables SCHEMA just created; v3 → v4 and v4 → v5 the
+        // columns above; v5's `pq_owners` comes from SCHEMA.
+        if matches!(
+            existing.as_deref(),
+            Some("1") | Some("2") | Some("3") | Some("4")
+        ) {
             conn.execute(
-                "UPDATE meta SET value = '4' WHERE key = 'schema_version'",
+                "UPDATE meta SET value = '5' WHERE key = 'schema_version'",
                 [],
             )?;
         }
@@ -1099,17 +1155,19 @@ impl Store {
 
     /// Insert a new row (state `CarrierSent`); returns its id.
     pub fn insert_mint(&self, m: &MintRow) -> Result<i64, StoreError> {
+        let (owner_scheme, owner_hash) = owner_cols(m.owner.as_ref());
         self.conn.execute(
             "INSERT INTO mints (kind, state, created_height, cents, lock_blocks, term_class, ref_height, lock_height, claim_height,
                collateral_zat, fee_zat, payee, attest_fee_zat, attest_payee, residual_zat, bundle, bundle_seqs, carrier_hash160,
-               owner_hash160, carrier_txid, carrier_vout, main_txid, sweep_txid, expiry_height, vault_txid, owner_pubkey, note)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+               owner_hash160, carrier_txid, carrier_vout, main_txid, sweep_txid, expiry_height, vault_txid, owner_scheme,
+               owner_hash, note)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
             params![
                 m.kind.as_str(), m.state.as_str(), m.created_height as i64, m.cents as i64, m.lock_blocks, m.term_class,
                 m.ref_height, m.lock_height, m.claim_height, m.collateral_zat, m.fee_zat, m.payee, m.attest_fee_zat,
                 m.attest_payee, m.residual_zat, m.bundle, m.bundle_seqs, m.carrier_hash160.as_slice(),
                 m.owner_hash160.as_slice(), m.carrier_txid.as_slice(), m.carrier_vout, m.main_txid.as_slice(),
-                m.sweep_txid.as_slice(), m.expiry_height, m.vault_txid.as_slice(), m.owner_pubkey, m.note
+                m.sweep_txid.as_slice(), m.expiry_height, m.vault_txid.as_slice(), owner_scheme, owner_hash, m.note
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -1174,7 +1232,8 @@ impl Store {
         let mut st = self.conn.prepare(
             "SELECT id, kind, state, created_height, cents, lock_blocks, term_class, ref_height, lock_height, claim_height,
                collateral_zat, fee_zat, payee, attest_fee_zat, attest_payee, residual_zat, bundle, bundle_seqs, carrier_hash160,
-               owner_hash160, carrier_txid, carrier_vout, main_txid, sweep_txid, expiry_height, vault_txid, owner_pubkey, note
+               owner_hash160, carrier_txid, carrier_vout, main_txid, sweep_txid, expiry_height, vault_txid, owner_scheme,
+               owner_hash, note
              FROM mints ORDER BY id",
         )?;
         let rows = st.query_map([], |r| {
@@ -1205,8 +1264,9 @@ impl Store {
                 sweep_txid: r.get(23)?,
                 expiry_height: r.get(24)?,
                 vault_txid: r.get(25)?,
-                owner_pubkey: r.get(26)?,
-                note: r.get(27)?,
+                owner_scheme: r.get(26)?,
+                owner_hash: r.get(27)?,
+                note: r.get(28)?,
             })
         })?;
         let mut out = Vec::new();
@@ -1244,11 +1304,39 @@ impl Store {
                 sweep_txid: arr32(&r.sweep_txid)?,
                 expiry_height: r.expiry_height,
                 vault_txid: arr32(&r.vault_txid)?,
-                owner_pubkey: r.owner_pubkey,
+                owner: owner_of(r.owner_scheme, &r.owner_hash)?,
                 note: r.note,
             });
         }
         Ok(out)
+    }
+
+    // ---- post-quantum owner ids (schema v5)
+
+    /// The cached public id of the SLH-DSA owner key paired with external index `idx`
+    /// (`Wallet::pq_owner_id`). Public data: a key hash, never a key.
+    pub fn pq_owner(&self, idx: u32) -> Result<Option<crate::pq::PqKeyId>, StoreError> {
+        let row: Option<(i64, Vec<u8>)> = self
+            .conn
+            .query_row(
+                "SELECT scheme, hash FROM pq_owners WHERE idx = ?1",
+                params![idx],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        match row {
+            None => Ok(None),
+            Some((scheme, hash)) => owner_of(scheme, &hash),
+        }
+    }
+
+    /// Cache the owner id of external index `idx`.
+    pub fn set_pq_owner(&self, idx: u32, id: &crate::pq::PqKeyId) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO pq_owners (idx, scheme, hash) VALUES (?1, ?2, ?3)",
+            params![idx, id.scheme as i64, id.hash.as_slice()],
+        )?;
+        Ok(())
     }
 
     // ---- claim intents (the vault upgrade, U-23; additive table)
@@ -1322,15 +1410,16 @@ impl Store {
     /// Insert or replace a vault row.
     pub fn upsert_vault(&self, v: &VaultRow) -> Result<(), StoreError> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO vaults (txid, vout, status, owner_hash160, owner_pubkey, term_class, lock_height, claim_height,
-               collateral_zat, minted_cents, mint_height, claimable, underwater_at, sweep_before, close_height, closing_txid,
-               void_reason, updated_height, owner_height, app_height)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            "INSERT OR REPLACE INTO vaults (txid, vout, status, owner_hash160, owner_scheme, owner_hash, term_class, lock_height,
+               claim_height, collateral_zat, minted_cents, mint_height, claimable, underwater_at, sweep_before, close_height,
+               closing_txid, void_reason, updated_height, owner_height, app_height)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
             params![
-                v.txid.as_slice(), v.vout, v.status, v.owner_hash160.as_slice(), v.owner_pubkey.as_slice(), v.term_class,
-                v.lock_height, v.claim_height, v.collateral_zat, v.minted_cents as i64, v.mint_height as i64,
-                v.claimable as i64, v.underwater_at, v.sweep_before as i64, v.close_height as i64, v.closing_txid,
-                v.void_reason, v.updated_height as i64, v.owner_height, v.app_height
+                v.txid.as_slice(), v.vout, v.status, v.owner_hash160.as_slice(), v.owner.scheme as i64,
+                v.owner.hash.as_slice(), v.term_class, v.lock_height, v.claim_height, v.collateral_zat,
+                v.minted_cents as i64, v.mint_height as i64, v.claimable as i64, v.underwater_at,
+                v.sweep_before as i64, v.close_height as i64, v.closing_txid, v.void_reason,
+                v.updated_height as i64, v.owner_height, v.app_height
             ],
         )?;
         Ok(())
@@ -1344,9 +1433,9 @@ impl Store {
     /// Every vault, by mint height.
     pub fn vaults(&self) -> Result<Vec<VaultRow>, StoreError> {
         let mut st = self.conn.prepare(
-            "SELECT txid, vout, status, owner_hash160, owner_pubkey, term_class, lock_height, claim_height, collateral_zat,
+            "SELECT txid, vout, status, owner_hash160, owner_hash, term_class, lock_height, claim_height, collateral_zat,
                minted_cents, mint_height, claimable, underwater_at, sweep_before, close_height, closing_txid, void_reason,
-               updated_height, owner_height, app_height FROM vaults ORDER BY mint_height, txid",
+               updated_height, owner_height, app_height, owner_scheme FROM vaults ORDER BY mint_height, txid",
         )?;
         let rows = st.query_map([], |r| {
             Ok((
@@ -1370,6 +1459,7 @@ impl Store {
                 r.get::<_, i64>(17)?,
                 r.get::<_, u32>(18)?,
                 r.get::<_, u32>(19)?,
+                r.get::<_, i64>(20)?,
             ))
         })?;
         let mut out = Vec::new();
@@ -1395,17 +1485,16 @@ impl Store {
                 updated,
                 owner_height,
                 app_height,
+                owner_scheme,
             ) = row?;
-            let owner_pubkey: [u8; 33] = opk
-                .as_slice()
-                .try_into()
-                .map_err(|_| StoreError::Corrupt("owner pubkey length".into()))?;
+            let owner = owner_of(owner_scheme, &opk)?
+                .ok_or_else(|| StoreError::Corrupt("vault without an owner".into()))?;
             out.push(VaultRow {
                 txid: arr32(&txid)?,
                 vout,
                 status,
                 owner_hash160: arr20(&oh)?,
-                owner_pubkey,
+                owner,
                 term_class,
                 lock_height,
                 claim_height,
@@ -1455,7 +1544,8 @@ struct MintRowRaw {
     sweep_txid: Vec<u8>,
     expiry_height: u32,
     vault_txid: Vec<u8>,
-    owner_pubkey: Vec<u8>,
+    owner_scheme: i64,
+    owner_hash: Vec<u8>,
     note: String,
 }
 
@@ -1524,7 +1614,7 @@ mod tests {
     #[test]
     fn schema_meta_addresses_utxos_locks_history() {
         let mut s = Store::open_in_memory().unwrap();
-        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("4"));
+        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("5"));
         s.set_meta("network", "regtest").unwrap();
         s.set_meta("network", "regtest").unwrap();
         assert_eq!(s.meta("network").unwrap().as_deref(), Some("regtest"));
@@ -1652,7 +1742,7 @@ mod tests {
         )
         .unwrap();
         let s = Store::init(conn).unwrap();
-        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("4"));
+        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("5"));
         assert!(s.mints().unwrap().is_empty() && s.vaults().unwrap().is_empty());
         assert!(s.utxos().unwrap().is_empty());
         let h = s.history().unwrap();
@@ -1677,7 +1767,18 @@ mod tests {
         let s = Store::open_in_memory().unwrap();
         s.conn
             .execute_batch(
-                "DROP TABLE vaults;
+                "DROP TABLE vaults; DROP TABLE mints; DROP TABLE pq_owners;
+                 CREATE TABLE mints (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, state TEXT NOT NULL,
+                   created_height INTEGER NOT NULL, cents INTEGER NOT NULL, lock_blocks INTEGER NOT NULL,
+                   term_class TEXT NOT NULL, ref_height INTEGER NOT NULL, lock_height INTEGER NOT NULL,
+                   claim_height INTEGER NOT NULL, collateral_zat INTEGER NOT NULL, fee_zat INTEGER NOT NULL,
+                   payee TEXT NOT NULL, attest_fee_zat INTEGER NOT NULL, attest_payee TEXT NOT NULL,
+                   residual_zat INTEGER NOT NULL, bundle BLOB NOT NULL, bundle_seqs TEXT NOT NULL,
+                   carrier_hash160 BLOB NOT NULL, owner_hash160 BLOB NOT NULL, carrier_txid BLOB NOT NULL,
+                   carrier_vout INTEGER NOT NULL, main_txid BLOB NOT NULL, sweep_txid BLOB NOT NULL,
+                   expiry_height INTEGER NOT NULL, vault_txid BLOB NOT NULL, owner_pubkey BLOB NOT NULL,
+                   note TEXT NOT NULL DEFAULT '');
                  CREATE TABLE vaults (
                    txid BLOB PRIMARY KEY, vout INTEGER NOT NULL, status TEXT NOT NULL, owner_hash160 BLOB NOT NULL,
                    owner_pubkey BLOB NOT NULL, term_class TEXT NOT NULL, lock_height INTEGER NOT NULL,
@@ -1686,15 +1787,91 @@ mod tests {
                    sweep_before INTEGER NOT NULL, close_height INTEGER NOT NULL, closing_txid TEXT NOT NULL,
                    void_reason TEXT NOT NULL, updated_height INTEGER NOT NULL);
                  INSERT INTO vaults VALUES (x'0606060606060606060606060606060606060606060606060606060606060606', 0, 'ACTIVE',
-                   x'0202020202020202020202020202020202020202', x'020202020202020202020202020202020202020202020202020202020202020202',
+                   x'0202020202020202020202020202020202020202', x'010202020202020202020202020202020202020202020202020202020202020202',
                    'A', 526, 550, 1000000000, 10000, 481, 0, 0, 0, 0, '', '', 490);
                  UPDATE meta SET value = '3' WHERE key = 'schema_version';",
             )
             .unwrap();
         let s = Store::init(s.conn).unwrap();
-        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("4"));
+        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("5"));
         let v = s.vault(&[6; 32]).unwrap().unwrap();
         assert_eq!((v.lock_height, v.owner_height, v.app_height), (526, 0, 0));
+        assert_eq!((v.owner.scheme, v.owner.hash), (1, [2; 32]));
+    }
+
+    #[test]
+    fn v4_file_moves_the_owner_to_scheme_and_hash() {
+        // A schema-v4 store: a scheme-1 `scheme ‖ hash` owner (a YEW-a build on the quantum line)
+        // survives as owner_scheme/owner_hash; a secp256k1 owner (02/03, the upgrade line) is no
+        // vault owner here: its vault row is dropped (found again by sync), its mint row keeps
+        // everything but the owner.
+        let s = Store::open_in_memory().unwrap();
+        s.conn
+            .execute_batch(
+                "DROP TABLE vaults; DROP TABLE mints; DROP TABLE pq_owners;
+                 CREATE TABLE mints (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, state TEXT NOT NULL,
+                   created_height INTEGER NOT NULL, cents INTEGER NOT NULL, lock_blocks INTEGER NOT NULL,
+                   term_class TEXT NOT NULL, ref_height INTEGER NOT NULL, lock_height INTEGER NOT NULL,
+                   claim_height INTEGER NOT NULL, collateral_zat INTEGER NOT NULL, fee_zat INTEGER NOT NULL,
+                   payee TEXT NOT NULL, attest_fee_zat INTEGER NOT NULL, attest_payee TEXT NOT NULL,
+                   residual_zat INTEGER NOT NULL, bundle BLOB NOT NULL, bundle_seqs TEXT NOT NULL,
+                   carrier_hash160 BLOB NOT NULL, owner_hash160 BLOB NOT NULL, carrier_txid BLOB NOT NULL,
+                   carrier_vout INTEGER NOT NULL, main_txid BLOB NOT NULL, sweep_txid BLOB NOT NULL,
+                   expiry_height INTEGER NOT NULL, vault_txid BLOB NOT NULL, owner_pubkey BLOB NOT NULL,
+                   note TEXT NOT NULL DEFAULT '');
+                 CREATE TABLE vaults (
+                   txid BLOB PRIMARY KEY, vout INTEGER NOT NULL, status TEXT NOT NULL, owner_hash160 BLOB NOT NULL,
+                   owner_pubkey BLOB NOT NULL, term_class TEXT NOT NULL, lock_height INTEGER NOT NULL,
+                   claim_height INTEGER NOT NULL, collateral_zat INTEGER NOT NULL, minted_cents INTEGER NOT NULL,
+                   mint_height INTEGER NOT NULL, claimable INTEGER NOT NULL, underwater_at INTEGER NOT NULL,
+                   sweep_before INTEGER NOT NULL, close_height INTEGER NOT NULL, closing_txid TEXT NOT NULL,
+                   void_reason TEXT NOT NULL, updated_height INTEGER NOT NULL,
+                   owner_height INTEGER NOT NULL DEFAULT 0, app_height INTEGER NOT NULL DEFAULT 0);
+                 INSERT INTO vaults VALUES (x'0606060606060606060606060606060606060606060606060606060606060606', 0, 'ACTIVE',
+                   x'0202020202020202020202020202020202020202', x'01AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+                   'A', 526, 550, 1000000000, 10000, 481, 0, 0, 0, 0, '', '', 490, 479, 479);
+                 INSERT INTO vaults VALUES (x'0707070707070707070707070707070707070707070707070707070707070707', 0, 'ACTIVE',
+                   x'0202020202020202020202020202020202020202', x'02BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+                   'A', 526, 550, 1000000000, 10000, 482, 0, 0, 0, 0, '', '', 490, 479, 479);
+                 INSERT INTO mints (kind, state, created_height, cents, lock_blocks, term_class, ref_height, lock_height,
+                   claim_height, collateral_zat, fee_zat, payee, attest_fee_zat, attest_payee, residual_zat, bundle,
+                   bundle_seqs, carrier_hash160, owner_hash160, carrier_txid, carrier_vout, main_txid, sweep_txid,
+                   expiry_height, vault_txid, owner_pubkey, note)
+                 VALUES ('mint', 'CARRIER_SENT', 480, 10000, 48, 'A', 478, 526, 550, 1, 2, 'p', 3, 'q', 0, x'', '',
+                   zeroblob(20), zeroblob(20), zeroblob(32), 0, zeroblob(32), zeroblob(32), 518, zeroblob(32),
+                   x'03CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC', ''),
+                        ('claim', 'CARRIER_SENT', 480, 10000, 48, 'A', 478, 526, 550, 1, 2, 'p', 3, 'q', 0, x'', '',
+                   zeroblob(20), zeroblob(20), zeroblob(32), 0, zeroblob(32), zeroblob(32), 518, zeroblob(32),
+                   x'01DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD', '');
+                 UPDATE meta SET value = '4' WHERE key = 'schema_version';",
+            )
+            .unwrap();
+        let s = Store::init(s.conn).unwrap();
+        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("5"));
+        let vs = s.vaults().unwrap();
+        assert_eq!(vs.len(), 1, "the secp256k1-owned row is dropped");
+        assert_eq!(vs[0].txid, [6; 32]);
+        assert_eq!((vs[0].owner.scheme, vs[0].owner.hash), (1, [0xAA; 32]));
+        assert_eq!((vs[0].owner_height, vs[0].app_height), (479, 479));
+        let ms = s.mints().unwrap();
+        assert_eq!(ms.len(), 2);
+        assert_eq!((ms[0].owner, ms[0].lock_height), (None, 526));
+        assert_eq!(
+            ms[1].owner,
+            Some(crate::pq::PqKeyId {
+                scheme: 1,
+                hash: [0xDD; 32]
+            })
+        );
+        // pq_owners exists and round-trips
+        let id = crate::pq::PqKeyId {
+            scheme: 1,
+            hash: [9; 32],
+        };
+        assert_eq!(s.pq_owner(3).unwrap(), None);
+        s.set_pq_owner(3, &id).unwrap();
+        assert_eq!(s.pq_owner(3).unwrap(), Some(id));
     }
 
     #[test]
@@ -1706,7 +1883,7 @@ mod tests {
         )
         .unwrap();
         let s = Store::init(conn).unwrap();
-        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("4"));
+        assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some("5"));
         let m = MintRow {
             id: 0,
             kind: MintKind::Mint,
@@ -1734,7 +1911,7 @@ mod tests {
             sweep_txid: [0; 32],
             expiry_height: 518,
             vault_txid: [0; 32],
-            owner_pubkey: Vec::new(),
+            owner: None,
             note: String::new(),
         };
         let id = s.insert_mint(&m).unwrap();
@@ -1765,7 +1942,10 @@ mod tests {
             vout: 0,
             status: "ACTIVE".into(),
             owner_hash160: [2; 20],
-            owner_pubkey: [2; 33],
+            owner: crate::pq::PqKeyId {
+                scheme: 1,
+                hash: [2; 32],
+            },
             term_class: "A".into(),
             lock_height: 526,
             claim_height: 550,

@@ -380,12 +380,27 @@ impl Wallet {
         self.pq_root.slh_key(index)
     }
 
-    /// The owner id of [`Wallet::pq_owner_key`]`(index)`, cached.
+    /// The owner id of [`Wallet::pq_owner_key`]`(index)`, cached in memory and in the store's
+    /// `pq_owners` table (schema v5): an SLH-DSA key generation costs ~68 ms in a dev build, so a
+    /// gap-limit set is ~1.4 s the first time and free on every later open. The id is public; a
+    /// signing path re-derives the key and checks its id ([`Wallet::pq_key_for_owner`]), so a
+    /// stale cache entry can never sign for the wrong owner.
     pub fn pq_owner_id(&self, index: u32) -> crate::pq::PqKeyId {
         let mut cache = self.pq_ids.lock().unwrap_or_else(|e| e.into_inner());
-        *cache
-            .entry(index)
-            .or_insert_with(|| self.pq_root.slh_key(index).id())
+        if let Some(id) = cache.get(&index) {
+            return *id;
+        }
+        let id = match self.store.pq_owner(index) {
+            Ok(Some(id)) => id,
+            _ => {
+                let id = self.pq_root.slh_key(index).id();
+                // A failed cache write only costs the derivation again next time.
+                let _ = self.store.set_pq_owner(index, &id);
+                id
+            }
+        };
+        cache.insert(index, id);
+        id
     }
 
     /// The PQ owner paired with an own external HD key hash (`None` for a change or imported
@@ -428,7 +443,13 @@ impl Wallet {
         if id != *owner {
             return Ok(None);
         }
-        Ok(Some(self.pq_owner_key(index)))
+        let key = self.pq_owner_key(index);
+        if key.id() != *owner {
+            return Err(WalletError::Other(format!(
+                "the cached post-quantum owner of key {index} does not match its key; delete the wallet cache and resync"
+            )));
+        }
+        Ok(Some(key))
     }
 
     /// Export the WIF of an own address (D-W-11).

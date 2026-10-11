@@ -7,7 +7,7 @@
 // read-only yed_* RPC (or, since rpcversion 5, a read-only set_* / vault_* RPC of the vault
 // primitive YED runs on) on the node this server already talks to; the server adds no rule and
 // holds no Yellowback state. Field names are the JSON names of the node's RPC contract
-// (ycash-dd/doc/yellowback-rpc-contract.json, rpcversion 6 on upgrade/vault-in-term) so the contract's example values
+// (ycash-dd/doc/yellowback-rpc-contract.json, rpcversion 7 on upgrade/quantum-vaults) so the contract's example values
 // are the test fixtures and the JSON result unmarshals straight into these messages; a message
 // may carry a subset of a result's fields (unknown JSON fields are ignored), never a renamed one.
 // Plan: docs/plans/yellowback-lightwalletd-plan.md section 4.1.
@@ -27,7 +27,9 @@ message YedMintQuery { uint64 cents = 1; uint32 lockBlocks = 2; uint64 priceMicr
 message YedFeeQuery { int64 collateralZat = 1; }
 message YedPayeeQuery { uint32 refHeight = 1; int64 collateralZat = 2; string selectorHex = 3; }
 message YedBundleQuery { uint32 refHeight = 1; string selectorHex = 2; }
-message YedAddressList { repeated string addresses = 1; uint32 minHeight = 2; }   // YED (ye/yt/yr) or transparent forms; 1..100
+// YED addresses (P2PKH or, rpcversion 7, the 53-character post-quantum form; mainnet yb, testnet yt, regtest yr) or
+// transparent forms; 1..100
+message YedAddressList { repeated string addresses = 1; uint32 minHeight = 2; }
 
 // ---- shared -------------------------------------------------------------------------------
 
@@ -53,6 +55,13 @@ message YellowbackAttestParams {
   int64 attestFeeBps = 1; int64 attestMaxAge = 2; int64 bondMaturity = 3; int64 bondMinLock = 4; int64 bondMinZat = 5;
   int64 bundleMax = 6; string carrierMode = 7; int64 carrierValueZat = 8; int64 mSelect = 9; int64 payloadVersion = 10;
   bool required = 11; int64 residualMinZat = 12; int64 emergencyRatioBps = 13;
+  int64 mintPayloadVersion = 14;                                      // rpcversion 7: a MINT's payload version (4); payloadVersion (3) is every other type's
+}
+// rpcversion 7 (post-quantum vault owners, quantum spec section 6.2): the signature schemes a vault owner
+// may use at the next block (1 SLH-DSA-SHA2-128s; 2 FN-DSA-512 once Falcon is active), the Falcon
+// activation height (-1 = none) and the node's size-priced fee rate (-pqfeerate, zatoshi per 1000 bytes).
+message YellowbackPQParams {
+  repeated int64 schemes = 1; bool falconActive = 2; int64 falconHeight = 3; int64 feeRateZatPerKB = 4;
 }
 message YellowbackParams {
   reserved 1, 4; reserved "abandonBlocks", "enforceUntilHeight";      // rpcversion 5: retired (upgrade plan section 6)
@@ -64,6 +73,7 @@ message YellowbackParams {
   // rpcversion 6 (in-term claims, IT-7 / IT-9): the claim threshold theta, the early-redeem fee per class
   // (A, B, C), the sigma multiplier's cap (10000 = pinned at 1) and whether a claim is valid in term.
   int64 claimThresholdBps = 19; repeated int64 earlyRedeemFeeBps = 20; int64 sigmaMultMaxBps = 21; bool inTermClaims = 22;
+  YellowbackPQParams pq = 23;                                         // rpcversion 7
 }
 message YellowbackInfo {
   // rpcversion 5 (the vault upgrade, upgrade plan section 6): activation, enforcement, sunset, valve and abandonment are gone.
@@ -125,8 +135,10 @@ message YedValidation {
   int64 yedIn = 12; int64 yedOut = 13;
 }
 message YedPayload {
-  int64 attestFeeVout = 1; int64 cents = 2; int64 feeVout = 3; int64 lockHeight = 4; string ownerPubKey = 5; string reason = 6;
-  int64 refHeight = 7; string termClass = 8; string type = 9; bool valid = 10; int64 version = 11;
+  reserved 5; reserved "ownerPubKey";                                 // rpcversion 7: no public key is on chain
+  int64 attestFeeVout = 1; int64 cents = 2; int64 feeVout = 3; int64 lockHeight = 4; string reason = 6;
+  int64 refHeight = 7; string termClass = 8; string type = 9; bool valid = 10; int64 version = 11;   // version: 4 for a MINT, 3 otherwise
+  int64 ownerScheme = 12; string ownerHash = 13;                      // rpcversion 7 (MINT): the owner's scheme and 32-byte key hash (hex)
 }
 
 // ---- vaults --------------------------------------------------------------------------------
@@ -135,12 +147,15 @@ message YedPayload {
 message YedVaultIntent { string txid = 1; uint32 vout = 2; string role = 3; int64 height = 4; int64 releaseHeight = 5; }
 message YedVault {
   reserved 19; reserved "sweepBefore";                                // rpcversion 5: yed_sweep is gone
+  reserved 15, 16; reserved "ownerKeyId", "ownerPubKey";              // rpcversion 7: no public key is on chain
   int64 burnedCents = 1; int64 claimHeight = 2; bool claimable = 3; int64 closeHeight = 4; string closingTxid = 5;
   int64 collateralZat = 6; int64 emergencyOpenAt = 7; int64 feePaidZat = 8; int64 lockHeight = 9; int64 mintHeight = 10;
-  int64 mintedCents = 11; int64 noticeHeight = 12; bool noticed = 13; string ownerAddress = 14; string ownerKeyId = 15;
-  string ownerPubKey = 16; int64 refHeight = 17; string status = 18; string termClass = 20;
+  int64 mintedCents = 11; int64 noticeHeight = 12; bool noticed = 13;
+  string ownerAddress = 14;                                           // rpcversion 7: the owner's post-quantum address (53 characters)
+  int64 refHeight = 17; string status = 18; string termClass = 20;
   string txid = 21; bool unbacked = 22; int64 underwaterAt = 23; string voidReason = 24; uint32 vout = 25;
   string scriptPubKey = 26; repeated YedVaultIntent intents = 27;     // rpcversion 5: the V template (hex); intents while CLAIMING
+  int64 ownerScheme = 28; string ownerHash = 29;                      // rpcversion 7: the post-quantum owner (scheme; 32-byte key hash, hex)
 }
 message YedClaimable {
   int64 attestFeeZat = 1; int64 claimHeight = 2; string claimPath = 3; int64 collateralZat = 4; int64 emergencyOpenAt = 5;
@@ -214,7 +229,8 @@ message YedChainInfo {
 // node's decimal YEC numbers (hence double), `valuezat` is zatoshi. The node's `wallet` fields
 // (whether ITS wallet holds a key) are never carried: they describe the server's node, not the client.
 message VaultSetQuery { string setid = 1; uint32 height = 2; }     // height 0 = the next block
-message VaultOutputFilter { string tag = 1; string setid = 2; string owner = 3; string kind = 4; }   // "" = any; kind vault|intent
+// "" = any; kind vault|intent; owner (rpcversion 7) a pqkeyid: 66 hex digits, the scheme byte 01|02 then the key hash
+message VaultOutputFilter { string tag = 1; string setid = 2; string owner = 3; string kind = 4; }
 message VaultDbTip { string hash = 1; int64 height = 2; }
 message VaultInfo {
   string branchid = 1; int64 activationheight = 2; bool active = 3; int64 height = 4; VaultDbTip dbtip = 5;
@@ -234,12 +250,14 @@ message VaultSet {
   repeated VaultSetMember memberlist = 27;                           // GetSet only (set_list omits it)
 }
 message VaultOutput {
+  reserved 14; reserved "ownerkey";                                   // rpcversion 7: the owner is a post-quantum key id
   string txid = 1; uint32 vout = 2; string outpoint = 3; string kind = 4; double value = 5; int64 valuezat = 6;
   int64 height = 7; string script = 8; string tag = 9; string tagtext = 10; string setid = 11; string cancelsetid = 12;
-  int64 delay = 13; string ownerkey = 14;
+  int64 delay = 13;
   int64 ownerheight = 15; int64 appheight = 16;                      // kind vault
   string recipienthash = 17; string vaulthash = 18; int64 matureheight = 19; bool mature = 20; bool cancellable = 21;
   string origin = 22;                                                // kind intent
+  string owner = 23; int64 ownerscheme = 24;                         // rpcversion 7: the owner's pqkeyid (scheme || key hash) and scheme
 }
 
 // ---- the service ---------------------------------------------------------------------------
