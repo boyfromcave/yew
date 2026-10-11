@@ -462,14 +462,67 @@ apart through lightwalletd, so YEW pays the ycash-dd formula on both. A node ope
 ZIP-317 relay (`-txunpaidactionlimit=0`) would refuse an 8 KB owner spend at this fee (~55 logical
 actions): not priced, recorded here.
 
-**TOK-PQ (after Falcon).** YEW has no Falcon signer yet. When `falconActive`, or the next block
-reaches `falconHeight`, it refuses with `falcon-holder-required` every build that would hand YED
-to a non-Falcon output: a transfer to a P2PKH or SLH-DSA address, any transfer with YED change, a
-redeem or claim with YED change; the mint gate blocks new mints. An exact-amount transfer to a
-Falcon (`yb…`/`yt…`/`yr…` 53-character, scheme 2) address still builds (a `TX_PQPKH` token
-output). Before Falcon a YED destination is P2PKH only: an SLH-DSA address is a vault owner (C-10)
-and a Falcon address is non-standard until activation. Falcon holder keys are a later task
-(client survey C-7: PQClean `falcon-padded-512` or `fn-dsa =0.3.0`).
+**TOK-PQ: Falcon YED holders.** Owner decision 2026-10-10: Falcon goes live with the vault
+upgrade, `pqFalconHeight = 0` on mainnet and testnet, so every YED holder there is a Falcon key
+from the first block. `Wallet::pq_terms` enforces that off regtest whatever a server says;
+regtest follows the server's `-pqfalconheight`, so the P2PKH holder paths stay testable before
+Falcon. From the Falcon height (judged for the block the transaction can first be mined in) YEW:
+
+- *receives* on the 53-character Falcon holder address (`yb…`/`yt…`/`yr…`, scheme 2) paired with
+  its receive key (`receive_address(Yed)`, `yew-cli address`). YED only: YEC sent to a `TX_PQPKH`
+  is a coin no index lists. The server's `params.pq` is remembered in the store so an offline
+  open shows the right address;
+- *holds*: one Falcon key per HD key, `DerivePQSeed(BIP39 seed, 2, index)` with external `i` →
+  `i` and change `i` → `2³¹ + i`, so the address gap scan is also the holder gap scan. The ids
+  are cached in the additive `pq_holders` table (no schema bump); signing re-derives the key and
+  checks its id. Sync asks `GetAddressTokens` for the Falcon addresses of every derived key (PQ
+  outputs are not address-indexed: `GetTaddressTxids`/`GetAddressUtxos` never list them); a
+  listed token marks its pair used (the gap rule), its transaction is fetched once
+  (`GetTransaction`) to check the output is the own `TX_PQPKH` — a `TX_PQCHANNEL` client output
+  is listed under the same address but is no wallet coin — and is recorded in history; the coin
+  is a `TOKEN` row. PreLock and the history delta count own Falcon outputs;
+- *sends*: TRANSFER, REDEEM and CLAIM sign a Falcon input with the node's own Falcon C (below),
+  chunked `<sig 520> <sig 147> OP_2 <pk 520> <pk 377> OP_2`, 1,577 bytes; YED change goes to the
+  change key's Falcon holder; a MINT's token goes to the Falcon pair of its holder key. A
+  P2PKH or SLH-DSA *recipient* is still refused (`falcon-holder-required`), as the node's
+  `bad-yed-holder`. Before Falcon a YED destination is P2PKH only (an SLH-DSA address is a vault
+  owner, C-10; a Falcon address is non-standard until activation: `falcon-not-active`);
+- *prices*: a transaction with a Falcon input pays `max(FEE_ZAT, pqfeerate × size)` like an
+  owner spend (transfer: re-selected until the YEC inputs cover it; redeem: per-input scriptSig
+  bounds; claim: signed, measured, re-priced). At the default 1× a Falcon transfer (~1.9 kB)
+  still pays 1,000 zat.
+
+**Falcon implementation.** `core/pq-c/falcon` is a byte copy of the node's
+`src/crypto/pq/falcon` (ycash-dd = ycash6: PQClean `falcon-padded-512/clean` at `0586a824`, the
+inline-SHAKE patch P1, the Ycash entry points), pinned by `SHA256SUMS` and compiled by
+`build.rs` with `cc` (C99, `-O2`, no target-feature flags; the `clean` code emulates floating
+point with integers, so the bytes are target-independent; `fips202.c`'s generic public symbols
+are renamed `yew_pq_*` by `-D` defines). A pure-Rust Falcon was rejected: `fn-dsa` 0.4 hashes a
+different message representative and keygen (client survey C-7), and no crate reproduces
+PQClean's seeded keygen. Proof: the node's golden vectors (3 Falcon keys: keygen from the 48-byte
+seed, signing with the recorded 88-byte entropy, verify) and the node's Falcon KATs (NIST round 3
+counts 0–4 and PQClean's padded count 0, replayed through the NIST AES-256 CTR DRBG) reproduce
+byte for byte (`pq::tests`); on the devnet the node accepts YEW's Falcon spends. Signing draws
+the 88 bytes from the OS RNG and verifies the signature before returning it. Mobile: the C
+compiles for `aarch64-apple-ios[-sim]` and `aarch64`/`x86_64-linux-android` with the toolchains
+the build scripts already use (rusqlite's bundled SQLite takes the same path);
+`build-core-ios.sh` now exports `IPHONEOS_DEPLOYMENT_TARGET` (default 15.0, the app's), since
+Falcon's large stack frames reference `___chkstk_darwin`, which rustc's default iOS 10.0 link
+cannot resolve.
+
+**Devnet (2026-10-10, ycash-dd `aa0fd3812`, lightwalletd-dd `ef70570`, portseed 2200, F = 260).**
+`scripts/devnet-falcon.sh up|test` (the devnet tool run through a wrapper that adds
+`-pqfalconheight` to every node): `q_falcon_holders_receive_send_mint_and_restore` — P2PKH YED
+before F, the Falcon receive address from F (node 0 refuses a P2PKH YED address with
+`bad-yed-holder`), a transfer spending a P2PKH and a Falcon token with Falcon change (gate `ok`,
+mined), a YEW mint after F with its token on a Falcon holder, and a restore from the seed that
+finds both Falcon tokens (280 s).
+
+**Gaps.** A Falcon holder used and then emptied leaves no trace a restore can see (spent tokens
+are not listed and PQ outputs are not address-indexed); its P2PKH pair usually carries the YEC
+change of the same transaction, so the gap scan normally still sees it, but a run of more than
+`GAP_LIMIT` such keys would stop a restore early. A Falcon key is not seed-portable to other
+implementations (plan §4.6): only this code (and the node's) re-derives it.
 
 **The residual (spec F-3).** A claimed vault's RED-5 residual intent pays `PQPKH(owner)`. YEW
 releases it like a claimant intent (recipient shown as the 53-character owner address), and once

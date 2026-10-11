@@ -26,9 +26,11 @@
 //! fresh external P2PKH key — the holder is no longer the owner (an SLH-DSA holder would cost an
 //! 8 KB scriptSig per transfer). The owner is the PQ key paired with that external key's index
 //! ([`crate::wallet::Wallet::pq_owner_key`]), and FEE-W's selector is the payload's 33 owner
-//! bytes, as the node's `BuildMint` (ycash-dd `q/yed` `txbuilder.cpp:1300-1304`). Falcon holders
-//! (`TOK-PQ`, from `pqFalconHeight`) are not built here yet: a mint past that height is refused
-//! by the node's dry run (`bad-yed-holder`).
+//! bytes, as the node's `BuildMint` (ycash-dd `q/yed` `txbuilder.cpp:1300-1304`). From
+//! `pqFalconHeight` (`TOK-PQ`; mainnet and testnet from the vault upgrade's first block) the
+//! token goes to the Falcon holder paired with that same external key
+//! ([`crate::wallet::Wallet::yed_holder_script`]): a `TX_PQPKH` scheme 2, judged for the block
+//! after `refHeight` (the earliest the MINT can confirm).
 //!
 //! Differences from the node, recorded: the carrier and holder keys are the next unused
 //! change / external HD keys (the node draws from its keypool); the YEC side selects from the
@@ -765,7 +767,9 @@ pub fn sign_carrier_input(
     Ok(())
 }
 
-/// Sign `inputs` (P2PKH, own keys) at `vin[first..]`.
+/// Sign `inputs` (own keys) at `vin[first..]`: a P2PKH input with its secp256k1 key, a Falcon
+/// `TX_PQPKH` YED holder input (TOK-PQ) with its Falcon key and the chunked scriptSig
+/// (`<sig_1> <sig_2> OP_2 <pk_1> <pk_2> OP_2`, 1,577 bytes).
 pub(crate) fn sign_p2pkh_inputs(
     wallet: &Wallet,
     tx: &mut Transaction,
@@ -774,6 +778,16 @@ pub(crate) fn sign_p2pkh_inputs(
     branch_id: u32,
 ) -> Result<(), WalletError> {
     for (i, u) in inputs.iter().enumerate() {
+        if let Some(id) = crate::pq::pqpkh_of(&u.script) {
+            let key = wallet.falcon_key_for_id(&id)?.ok_or_else(|| {
+                WalletError::Other(format!(
+                    "no post-quantum key for input {}",
+                    u.outpoint.display()
+                ))
+            })?;
+            tx.sign_pqpkh_input(first + i, &key, &u.script, u.value, branch_id)?;
+            continue;
+        }
         let h = script::p2pkh_hash(&u.script).ok_or_else(|| {
             WalletError::Other(format!("input {} is not P2PKH", u.outpoint.display()))
         })?;
@@ -829,6 +843,22 @@ pub(crate) fn record_broadcast(
 /// the early-redeem fee, no longer a CLTV); the v2 P2SH vault script and the pre-plan V
 /// (`ownerHeight = lockHeight`, `appHeight = lockHeight + GRACE`) are refused for new mints
 /// (MINT-3, `bad-mint-vault-script`).
+/// The MINT token's holder (`vout[1]`): the fresh external key of the row (`owner_hash160`), as
+/// a P2PKH before the Falcon height and as its paired Falcon `TX_PQPKH` from it (TOK-PQ, judged at
+/// `refHeight + 1`).
+pub fn mint_token_script(wallet: &Wallet, m: &MintRow) -> Result<Vec<u8>, WalletError> {
+    let falcon = wallet.pq_terms().falcon_at(m.ref_height as u64 + 1);
+    if !falcon {
+        return Ok(script::p2pkh_script(&m.owner_hash160));
+    }
+    let row = wallet
+        .addresses()?
+        .into_iter()
+        .find(|r| r.hash160 == m.owner_hash160)
+        .ok_or_else(|| WalletError::Other("the mint's holder key is not in this wallet".into()))?;
+    wallet.yed_holder_script(&row, true)
+}
+
 pub fn mint_outputs(
     wallet: &Wallet,
     m: &MintRow,
@@ -876,7 +906,7 @@ pub fn mint_outputs(
         },
         TxOut {
             value: TOKEN_VALUE,
-            script_pubkey: script::p2pkh_script(&m.owner_hash160),
+            script_pubkey: mint_token_script(wallet, m)?,
         },
         TxOut {
             value: 0,
@@ -1034,10 +1064,11 @@ pub async fn finish(
     });
     record_broadcast(wallet, &txid, &raw, m.expiry_height, &locked)?;
     // PreLock: vout[1] is the minted cents, pending until the server lists it.
+    let token_script = mint_token_script(wallet, &m)?;
     wallet.store.upsert_utxo(&Utxo {
         outpoint: OutPoint { txid, n: 1 },
-        address: keys::encode_p2pkh(wallet.network, &m.owner_hash160),
-        script: script::p2pkh_script(&m.owner_hash160),
+        address: super::yed_transfer::holder_address(wallet.network, &token_script),
+        script: token_script,
         value: TOKEN_VALUE,
         height: 0,
         class: UtxoClass::PendingToken,

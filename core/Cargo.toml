@@ -108,6 +108,14 @@ tokio-rustls = { version = "=0.26.5", default-features = false, features = ["rin
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
 
+# Tests only: the NIST PQC KAT generator's AES-256 CTR DRBG, to replay the Falcon round-3 KAT
+# (`pq.rs` `falcon_reproduces_the_nist_kats`); `aes` 0.8.4 is already in Cargo.lock.
+[dev-dependencies]
+aes = "=0.8.4"
+
 [build-dependencies]
+# The vendored Falcon C (`pq-c/falcon`, build.rs): the `cc` already in Cargo.lock (rusqlite's
+# bundled SQLite, ring and secp256k1-sys build with it).
+cc = "=1.4.7"
 tonic-prost-build = "=0.14.6"
 prost-build = "=0.14.4"

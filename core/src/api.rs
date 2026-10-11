@@ -352,10 +352,12 @@ pub enum ReceiveKind {
 }
 
 /// A receive address: `address` is the one of `kind`; for the transparent kinds `ye` and `s`
-/// are the two forms of the same key, for a shielded address both are empty.
+/// are the two forms of the same key (once Falcon is active, `receive_address`'s `ye` is the
+/// 53-character Falcon holder address paired with that key), for a shielded address both are
+/// empty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AddressPair {
-    /// The Yellowback form (`yb…` / `yt…` / `yr…`).
+    /// The Yellowback form (`yb…` / `yt…` / `yr…`; 53 characters for a Falcon holder).
     pub ye: String,
     /// The transparent form (`s1…` / `sm…`).
     pub s: String,
@@ -1675,16 +1677,29 @@ pub fn receive_address(kind: ReceiveKind, fresh: bool) -> Result<AddressPair, Ye
         }
         _ => {
             let row = o.wallet.receive_address(fresh)?;
+            // TOK-PQ (mainnet and testnet from the first block; regtest from its Falcon height):
+            // YED is received by the Falcon holder paired with this key, so the YED form is its
+            // 53-character post-quantum address (YED only: YEC goes to the `s…` form).
+            let falcon = if o.wallet.falcon_now() {
+                o.wallet.falcon_holder_address(&row)
+            } else {
+                None
+            };
+            let ye = falcon.clone().unwrap_or_else(|| row.address_ye.clone());
             Ok(AddressPair {
                 address: if kind == ReceiveKind::Yed {
-                    row.address_ye.clone()
+                    ye.clone()
                 } else {
                     row.address_s.clone()
                 },
                 kind,
-                ye: row.address_ye,
+                ye,
                 s: row.address_s,
-                path: format!("m/44'/347'/0'/{}/{}", row.chain, row.index),
+                path: if falcon.is_some() {
+                    format!("m/44'/347'/0'/{}/{} (Falcon holder)", row.chain, row.index)
+                } else {
+                    format!("m/44'/347'/0'/{}/{}", row.chain, row.index)
+                },
                 covered_by_seed: true,
             })
         }

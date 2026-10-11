@@ -3473,9 +3473,11 @@ dependencies = [
 name = "yew-core"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "bip39",
  "blake2b_simd",
  "bs58",
+ "cc",
  "flutter_rust_bridge",
  "hmac 0.13.0-pre.4",
  "prost",

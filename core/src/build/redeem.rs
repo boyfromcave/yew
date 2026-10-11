@@ -23,7 +23,7 @@
 use crate::coins::{self, Utxo, UtxoClass};
 use crate::coinselect::{self, SelectStage};
 use crate::gate::{self, Validator};
-use crate::keys;
+
 use crate::net::{CompactClient, Validation, YellowbackClient};
 use crate::params::{
     CARRIER_VALUE, FEE_ZAT, MAX_INPUTS, MIN_OUTPUT_CENTS, REF_WINDOW, SEQUENCE_LOCKTIME,
@@ -381,6 +381,26 @@ pub fn owner_spend_size_bound(tx: &Transaction, owner_scheme: u8) -> Result<usiz
     Ok(tx.size_with_script_sigs(&sizes)?)
 }
 
+/// [`owner_spend_size_bound`] with the YED inputs at `vin[1..]` sized by their scripts: a Falcon
+/// holder input's scriptSig is exact (1,577 bytes), a P2PKH one bounded.
+pub fn owner_spend_size_bound_with(
+    tx: &Transaction,
+    owner_scheme: u8,
+    inputs_from_1: &[Utxo],
+) -> Result<usize, WalletError> {
+    let owner = crate::pq::pq_sig_pushes_size(owner_scheme)
+        .ok_or_else(|| WalletError::Other("the vault owner's scheme is not registered".into()))?
+        + 1;
+    let mut sizes = vec![crate::tx::MAX_P2PKH_SCRIPT_SIG; tx.vin.len()];
+    sizes[0] = owner;
+    for (i, u) in inputs_from_1.iter().enumerate() {
+        if let Some(s) = sizes.get_mut(1 + i) {
+            *s = crate::tx::script_sig_size_bound(&u.script);
+        }
+    }
+    Ok(tx.size_with_script_sigs(&sizes)?)
+}
+
 /// The V script of a stored vault under the vault upgrade's terms (U-23), with its own branch
 /// heights (in-term IT-1: `refHeight + 1` for a mint since the rule, `lockHeight` / `lockHeight +
 /// GRACE` before it), as the last refresh checked them against `GetVault.scriptPubKey`.
@@ -499,14 +519,8 @@ pub async fn build_redeem(
     // IT-9 locally: the early-redeem fee rides on the FEE-1 payee's output (RED-3 checks that
     // output against FEE-1 + the early fee; AFEE-1 gives the owner path no attestor share).
     let early_redeem_fee_zat = early_redeem_fee_for(wallet.network, &v, r, !payee.is_empty());
-    // TOK-PQ (quantum spec F-7, after the Falcon height): YED change must go to a Falcon holder,
-    // and YEW has no Falcon key yet. A redeem that burns exactly the debt (no change) is fine.
-    if active && change_cents > 0 && wallet.pq_terms().falcon_at(r as u64 + 1) {
-        return Err(WalletError::Other(format!(
-            "falcon-holder-required: Falcon is active, so the {} of YED change must go to a Falcon (post-quantum) key, which this version of YEW cannot hold yet; redeem with YED that covers the debt exactly",
-            dollars(change_cents as i64)
-        )));
-    }
+    // TOK-PQ (quantum spec F-7, after the Falcon height): YED change goes to a Falcon holder.
+    let falcon = wallet.pq_terms().falcon_at(r as u64 + 1);
     let change_row = if change_cents > 0 {
         Some(mint::fresh_external(wallet)?)
     } else {
@@ -524,10 +538,10 @@ pub async fn build_redeem(
         ref_height: r,
         yed_inputs: yed_inputs.clone(),
         change_cents,
-        change_script: change_row
-            .as_ref()
-            .map(|c| script::p2pkh_script(&c.hash160))
-            .unwrap_or_default(),
+        change_script: match change_row.as_ref() {
+            Some(c) => wallet.yed_holder_script(c, falcon)?,
+            None => Vec::new(),
+        },
         payee_script: if payee.is_empty() {
             None
         } else {
@@ -560,9 +574,11 @@ pub async fn build_redeem(
         Ok((plan, tx))
     };
     let (_, draft) = unsigned(&shape)?;
-    shape.network_fee = wallet
-        .pq_terms()
-        .fee(owner_spend_size_bound(&draft, owner.scheme())?);
+    shape.network_fee = wallet.pq_terms().fee(owner_spend_size_bound_with(
+        &draft,
+        owner.scheme(),
+        &yed_inputs,
+    )?);
     let (plan, mut tx) = unsigned(&shape)?;
     sign_owner_input(&mut tx, &owner, &vault_script, v.collateral_zat, branch_id)?;
     mint::sign_p2pkh_inputs(wallet, &mut tx, &yed_inputs, 1, branch_id)?;
@@ -643,13 +659,14 @@ pub async fn broadcast(
             .insert_spent_token(&p.txid, &u.outpoint, u.cents)?;
     }
     let own = wallet.own_hashes()?;
-    for (n, cents) in coins::pre_lock(&tx, |h| own.contains(h)) {
+    let own_falcon = wallet.own_falcon_holders_for(&tx)?;
+    for (n, cents) in
+        coins::pre_lock_scripts(&tx, |s| Wallet::is_own_holder_script(s, &own, &own_falcon))
+    {
         let script_pubkey = tx.vout[n as usize].script_pubkey.clone();
         wallet.store.upsert_utxo(&Utxo {
             outpoint: OutPoint { txid: p.txid, n },
-            address: script::p2pkh_hash(&script_pubkey)
-                .map(|h| keys::encode_p2pkh(wallet.network, &h))
-                .unwrap_or_default(),
+            address: super::yed_transfer::holder_address(wallet.network, &script_pubkey),
             script: script_pubkey,
             value: TOKEN_VALUE,
             height: 0,

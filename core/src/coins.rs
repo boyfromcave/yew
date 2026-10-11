@@ -220,11 +220,22 @@ pub fn classify_pqpkh(
 /// TRANSFER / REDEEM ⇒ every assigned vout paid to an own key. Returns `(vout, cents)`.
 /// Without a payload the transaction creates no YED and the list is empty.
 pub fn pre_lock(tx: &Transaction, is_own_key: impl Fn(&[u8; 20]) -> bool) -> Vec<(u32, u64)> {
+    pre_lock_scripts(tx, |s| {
+        script::p2pkh_hash(s).is_some_and(|h| is_own_key(&h))
+    })
+}
+
+/// [`pre_lock`] over any holder shape: `is_own_script` judges an output's scriptPubKey (a P2PKH
+/// to an own key, or a `TX_PQPKH` to an own Falcon holder once TOK-PQ is in force;
+/// `Wallet::is_own_holder_script`).
+pub fn pre_lock_scripts(
+    tx: &Transaction,
+    is_own_script: impl Fn(&[u8]) -> bool,
+) -> Vec<(u32, u64)> {
     let own = |n: usize| -> bool {
         tx.vout
             .get(n)
-            .and_then(|o| script::p2pkh_hash(&o.script_pubkey))
-            .map(|h| is_own_key(&h))
+            .map(|o| is_own_script(&o.script_pubkey))
             .unwrap_or(false)
     };
     let fp = match payload::find_payload(tx) {

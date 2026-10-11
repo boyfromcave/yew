@@ -929,6 +929,7 @@ fn check_in_term_claim(v: &Value, m: &NodeMint) {
         funding,
         funding_change_script: ctx.vout.last().unwrap().script_pubkey.clone(),
         carrier: ctx.vin[carrier_vin].prevout,
+        network_fee: yew_core::params::FEE_ZAT,
     };
     let plan = yew_core::build::claim::plan_claim(&shape).unwrap();
     assert_eq!(plan.lock_time, ctx.lock_time);

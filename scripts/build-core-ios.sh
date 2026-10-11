@@ -18,6 +18,11 @@ targets=(aarch64-apple-ios aarch64-apple-ios-sim)
 for t in "${targets[@]}"; do
   rustup target list --installed | grep -qx "$t" || rustup target add "$t"
 done
+# One deployment target for rustc's link and every C object the build scripts compile (cc reads
+# the same variable): the app's (Runner.xcodeproj IPHONEOS_DEPLOYMENT_TARGET). Without it rustc
+# links for iOS 10.0 while cc compiles for the SDK's version, and the vendored Falcon C (large
+# stack frames) references ___chkstk_darwin, which an iOS 10.0 link cannot resolve.
+export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-15.0}"
 profile="${PROFILE:-release}"
 flag=(); [[ "$profile" == "release" ]] && flag=(--release)
 for t in "${targets[@]}"; do

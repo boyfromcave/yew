@@ -471,7 +471,8 @@ pub fn check_vault(network: Network, v: &rpc::YedVault) -> Result<(), MintError>
 pub struct PqTerms {
     /// `pq.feeRateZatPerKB`, at least the relay floor.
     pub fee_rate_zat_per_kb: i64,
-    /// `pq.falconHeight` (`None` = no activation height: mainnet and testnet today).
+    /// `pq.falconHeight` (`None` = no activation height; mainnet and testnet are `0` by the owner's
+    /// decision of 2026-10-10, which `Wallet::pq_terms` enforces).
     pub falcon_height: Option<u64>,
     /// `pq.falconActive` as the node judged it (at its next block).
     pub falcon_active: bool,
@@ -701,17 +702,10 @@ pub fn mint_gate(
         .upgrade
         .as_ref()
         .is_some_and(|a| a.status == crate::net::yellowback::STATUS_ACTIVE);
-    // TOK-PQ (quantum spec §3.6, F-7): from the Falcon height a MINT's token must go to a Falcon
-    // holder, and YEW holds no Falcon key yet.
-    let falcon = info
-        .params
-        .as_ref()
-        .and_then(|p| pq_terms(p).ok())
-        .is_some_and(|t| t.falcon_at(info.height.max(0) as u64 + 1));
+    // TOK-PQ (quantum spec §3.6, F-7): from the Falcon height a MINT's token goes to the
+    // wallet's Falcon holder key (`build::mint::mint_token_script`); nothing blocks here.
     let blocked = if !info.enabled || !active {
         Some("Yellowback is not active on this server's node: nothing can be minted.".to_string())
-    } else if falcon {
-        Some("Falcon is active on this network: a new mint's YED must go to a Falcon (post-quantum) key, which this version of YEW cannot hold yet. Redeeming your vaults is not affected.".to_string())
     } else if requires_armed && !price.armed {
         Some(format!(
             "Minting is paused: the price feed is not armed (attestation {}). The node refuses every mint until enough attestors arm it. Redeeming and claiming are not affected.",
@@ -1455,7 +1449,7 @@ mod tests {
         i.upgrade.as_mut().unwrap().status = "pending".into();
         let g = mint_gate(r, &i, &price(true), &stats(&["A"], &[])).unwrap();
         assert!(g.blocked.as_deref().unwrap().contains("not active"));
-        // TOK-PQ: from the Falcon height YEW cannot hold a new mint's token (no Falcon key).
+        // TOK-PQ: from the Falcon height the token goes to a Falcon holder; the gate stays open.
         let mut i = info(false);
         i.height = 299;
         let mut p = server_params(Network::Regtest);
@@ -1465,7 +1459,7 @@ mod tests {
         assert!(g.blocked.is_none(), "the next block (300) is before Falcon");
         i.height = 300;
         let g = mint_gate(r, &i, &price(true), &stats(&["A"], &[])).unwrap();
-        assert!(g.blocked.as_deref().unwrap().contains("Falcon is active"));
+        assert!(g.blocked.is_none(), "Falcon holders are built, not refused");
     }
 
     /// RED-5 recomputed from `pClaim`, and the claim bounds (H-9.3).

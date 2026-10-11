@@ -359,9 +359,11 @@ class AddressCheck {
 }
 
 /// A receive address: `address` is the one of `kind`; for the transparent kinds `ye` and `s`
-/// are the two forms of the same key, for a shielded address both are empty.
+/// are the two forms of the same key (once Falcon is active, `receive_address`'s `ye` is the
+/// 53-character Falcon holder address paired with that key), for a shielded address both are
+/// empty.
 class AddressPair {
-  /// The Yellowback form (`yb…` / `yt…` / `yr…`).
+  /// The Yellowback form (`yb…` / `yt…` / `yr…`; 53 characters for a Falcon holder).
   final String ye;
 
   /// The transparent form (`s1…` / `sm…`).

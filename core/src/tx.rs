@@ -55,6 +55,15 @@ pub enum TxError {
 /// ECDSA input (a re-sign can change the DER length by a byte or two).
 pub const MAX_P2PKH_SCRIPT_SIG: usize = 108;
 
+/// The scriptSig size a wallet input spending `script_pubkey` will have once signed, at most:
+/// exact for a `TX_PQPKH` ([`crate::pq::pq_sig_pushes_size`]: Falcon 1,577, SLH-DSA 7,938),
+/// [`MAX_P2PKH_SCRIPT_SIG`] for anything else the wallet signs (P2PKH).
+pub fn script_sig_size_bound(script_pubkey: &[u8]) -> usize {
+    crate::pq::pqpkh_of(script_pubkey)
+        .and_then(|id| crate::pq::pq_sig_pushes_size(id.scheme))
+        .unwrap_or(MAX_P2PKH_SCRIPT_SIG)
+}
+
 /// `MAX_STANDARD_SCRIPTSIG_SIZE`: the relay limit on a non-post-quantum scriptSig
 /// (`ycash-dd/src/policy/policy.cpp:94`, `> 1650`).
 pub const MAX_STANDARD_SCRIPT_SIG: usize = 1_650;
