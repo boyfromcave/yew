@@ -363,6 +363,11 @@ Everything below needs a device, an account, a public server or a decision:
    binary; sync time, proving time and battery on real phones; `lite.ycash.xyz` upgraded to
    lightwalletd-dd with `GetChainInfo`. (Restore with a birthday, reorgs and interrupted sync
    run on both node lines in `s5_`; the private screens ran on the iOS simulator against both.)
+7. **Post-quantum line (rpcversion 7)**: Falcon holder keys (after `pqFalconHeight` YED may only
+   go to Falcon `TX_PQPKH` holders; until YEW has a Falcon signer it refuses those sends and
+   mints with `falcon-holder-required`); sending YEC to `sq…` addresses once the node decodes
+   them; a residual released by another party is a PQ coin YEW cannot find
+   (`docs/design-notes.md` "Q7").
 
 ## Further reading
 

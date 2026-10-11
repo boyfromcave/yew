@@ -428,3 +428,67 @@ scripts/devnet-w1.sh down [--wipe]
 0.5 YEC back (the node holds exactly the bytes the core built, `getreceivedbyaddress` agrees),
 locks release on confirmation, and a restore from the same seed into a fresh database reproduces
 the balance and UTXO set. Not part of CI (nightly on the owner's machine, plan §6.4).
+
+## Q7 — post-quantum vault owners (branch `upgrade/quantum-vaults`, rpcversion 7)
+
+The workspace's `docs/plans/yellowback-quantum-spec.md` is normative; `yellowback-quantum-clients.md`
+§3 is the YEW inventory. YEW-a (`core: post-quantum vault owners`) brought the PQ crypto, the
+templates, the addresses and the v4 MINT; YEW-b the rest below.
+
+**Owner keys.** Every vault owner is an SLH-DSA-SHA2-128s key, `HKDF-SHA256(BIP39 seed, "Ycash PQ
+key" ‖ scheme ‖ index)` (spec A-12), paired with the external receive key of the same index (the
+MINT's token holder). No owner index of its own: a restore that finds the external keys finds the
+owners. The public ids are cached in the store's `pq_owners` table (schema v5): a keygen is ~68 ms
+in a dev build, so a gap-limit set costs ~1.4 s once per wallet instead of once per open; the
+signing path re-derives the key and checks its id. YEW exports no PQ key: there is no WIF, xpub or
+watch-only form, and no node RPC imports one (the devnet suites now assert that node 5, given the
+paired holder's WIF, quotes a redeem with `canRedeem: false` / `vault-not-owned`).
+
+**Store v5.** `mints`/`vaults` hold `owner_scheme` + `owner_hash` (the 33-byte `owner_pubkey` is
+dropped; v4 → v5 keeps only a `01 ‖ hash` value, a secp256k1 owner being no vault owner on this
+line); `pq_owners`; `claim_intents.pq_spend_txid`; intent state `SWEPT`.
+
+**Fees.** A transaction with a post-quantum input pays `max(FEE_ZAT, rate × size)` with
+`CFeeRate::GetFee`'s rounding, `rate` = the server's `params.pq.feeRateZatPerKB` (at least the
+100 zat/kB relay floor, refused above 100×). The size is priced before signing: the SLH-DSA
+scriptSig is exact (7,938 bytes, 7,939 with a V selector), each ECDSA input is bounded at 108
+bytes. Every scriptSig is checked against the relay limits (9,000 PQ, 1,650 other) before a
+broadcast. At the default 1× rate an owner spend still pays 1,000 zat (client survey C-5).
+*Per node line:* ycash-dd's wallet charges `max(DEFAULT_FEE, pqfeerate × size)`; ycash6's adds
+its ZIP-317 conventional fee as a third `max` argument. That term is ycash6's own wallet funding
+policy (`zip317.h`: `FeePolicy` is node-local; the ZIP-317 unpaid-action relay limits are
+`SIZE_MAX` by default), not something either line's relay demands, and YEW cannot tell the lines
+apart through lightwalletd, so YEW pays the ycash-dd formula on both. A node operator who enables
+ZIP-317 relay (`-txunpaidactionlimit=0`) would refuse an 8 KB owner spend at this fee (~55 logical
+actions): not priced, recorded here.
+
+**TOK-PQ (after Falcon).** YEW has no Falcon signer yet. When `falconActive`, or the next block
+reaches `falconHeight`, it refuses with `falcon-holder-required` every build that would hand YED
+to a non-Falcon output: a transfer to a P2PKH or SLH-DSA address, any transfer with YED change, a
+redeem or claim with YED change; the mint gate blocks new mints. An exact-amount transfer to a
+Falcon (`yb…`/`yt…`/`yr…` 53-character, scheme 2) address still builds (a `TX_PQPKH` token
+output). Before Falcon a YED destination is P2PKH only: an SLH-DSA address is a vault owner (C-10)
+and a Falcon address is non-standard until activation. Falcon holder keys are a later task
+(client survey C-7: PQClean `falcon-padded-512` or `fn-dsa =0.3.0`).
+
+**The residual (spec F-3).** A claimed vault's RED-5 residual intent pays `PQPKH(owner)`. YEW
+releases it like a claimant intent (recipient shown as the 53-character owner address), and once
+that release confirms the same intent row offers the move of the coin (`release txid:0`) into a
+fresh P2PKH change key: one SLH-DSA spend, its size-priced fee out of the coin, gated by name
+(`Path::PqSweep`). Discovery stays intent-driven. **Gap:** a residual released by another party
+(a release needs no signature) creates a PQPKH coin in a transaction YEW never sees — PQ outputs
+are not address-indexed (spec §2.2) and lightwalletd's taddr RPCs refuse PQ addresses — so YEW
+cannot find it to move it. The funds stay the owner key's (the seed restores it in any wallet that
+can scan for it).
+
+**Addresses.** Mainnet YED is `yb…` on this line (D-Q-21: 0x1FDD, PQ 0x56AB); testnet `yt…`,
+regtest `yr…` unchanged. Plain-YEC PQ addresses `sq…`/`tq…`/`rq…` (D-Q-20: 0x4DD9 / 0x4F61 /
+0x4C51) are recognised (`validate_address` kind `pq_yec`) and refused as destinations until the
+node's chain-wide decoder (plan §8.1 "SQ") exists. The node at `aa0fd3812` still renders mainnet
+`ye…` until its Y-B sweep; the regenerated vectors are regtest and already final.
+
+**Vectors and devnet (2026-10-10, ycash-dd `aa0fd3812`, lightwalletd-dd `ef70570`, portseed
+1860).** `transparent/addresses/params/templates.json` regenerated with `yellowback-devnet vectors
+--seed 1` + `scripts/vectors-in-term.py`; `w4_templates_reproduce_the_node_scripts_and_payloads`
+runs again (v4 MINTs, PQ V, the node's SLH-DSA owner scriptSigs). `it_early_redeem_and_in_term_claim`
+passed against that devnet (344 s).
