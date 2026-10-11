@@ -41,8 +41,9 @@ fingerprints built into YEW.
 
 When you mint, redeem or claim, the wallet checks the server's terms against the network's
 rules before you confirm: the lock and claim heights, the collateral the price calls for, the
-enforcement fee and, on a redeem before the term ends, the early-redeem fee, each always the
-rule's amount and never more, and on a claim the share returned to the vault's owner. It then
+protocol fee (a share of your debt in dollars, converted at the vault's mint price) and, on a
+redeem before the term ends, the early-redeem fee, each always the rule's amount and never more,
+and on a claim the share returned to the vault's owner. It then
 signs only what you confirmed: if the server's answer would lock more collateral, burn more YED
 or pay you less, nothing is signed. What it cannot check is the fee's recipient: the server
 chooses which eligible miner the fee goes to, or that none is due. Use a server you trust for

@@ -24,7 +24,7 @@ void main() {
     await tester.tap(find.byKey(const Key('preview')));
     await tester.pumpAndSettle();
     expect(h.api.calls, contains('yedPreview yr1recipient:1234'));
-    expect(find.text('0.00001000 YEC (1 YEC input)'), findsOneWidget);
+    expect(find.text('0.00001000 YEC (about \$0.01) (1 YEC input)'), findsOneWidget); // rpcversion 8: dollars per KB
     expect(find.text('verdict ok'), findsOneWidget);
     expect(find.text('\$37.66'), findsOneWidget); // YED change
     // Nothing was sent by previewing.

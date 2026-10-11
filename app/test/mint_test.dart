@@ -38,11 +38,18 @@ void main() {
     // In-term claims: the term's end, not a lock; claimable at the threshold at any height.
     expect(find.text('height 528'), findsOneWidget);
     expect(find.text('below 125 % of the debt'), findsOneWidget);
-    expect(find.text('0.00001000 YEC'), findsOneWidget); // enforcement fee
+    // the protocol fee in dollars and YEC, charged again at the redeem (rpcversion 8); maxMint $100,000
+    expect(find.text('\$1.00 · 0.00001000 YEC'), findsOneWidget);
+    expect(find.text('Amount to mint (up to \$100000.00)'), findsOneWidget);
     expect(find.text('0.95023000 YEC'), findsOneWidget); // total
     expect(find.text('480 · window closes at 520'), findsOneWidget);
     expect(find.text('0, 1, 2'), findsOneWidget);
     expect(h.api.calls.where((c) => c.startsWith('mintStart')), isEmpty);
+    // the fees in dollars below the promise: the redeem pays the protocol fee again (rpcversion 8)
+    await tester.scrollUntilVisible(find.byKey(const Key('fee-note')), 200, scrollable: find.byType(Scrollable).first);
+    expect(find.textContaining('Redeeming the vault pays the same \$1.00 again at that price'), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('start')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('start')));
     await tester.pumpAndSettle();
     expect(h.api.calls, contains('mintStart 2500 48'));

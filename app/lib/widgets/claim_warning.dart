@@ -20,7 +20,7 @@ import '../theme.dart';
 String claimDeadlineText(VaultSummary v) {
   final at = v.underwaterAtMicroUsd > 0 ? formatUsdPerYec(v.underwaterAtMicroUsd) : 'an undefined price';
   final now = v.claimPriceMicroUsd > 0 ? ' (now ${formatUsdPerYec(v.claimPriceMicroUsd)})' : '';
-  final fee = v.earlyRedeem && v.earlyRedeemFeeBps > 0 ? ' Redeeming before the term ends costs the early-redeem fee of ${formatBps(v.earlyRedeemFeeBps)} of the collateral.' : '';
+  final fee = v.earlyRedeem && v.earlyRedeemFeeBps > 0 ? ' Redeeming before the term ends costs the early-redeem fee of ${formatBps(v.earlyRedeemFeeBps)} of the debt.' : '';
   if (v.claimable) {
     return 'CLAIMABLE NOW: its collateral is worth less than ${formatBps(v.claimThresholdBps)} of its debt at the claim price$now. Anyone may close it by paying its debt, and you would usually receive nothing back. Redeem now to stop it.$fee';
   }

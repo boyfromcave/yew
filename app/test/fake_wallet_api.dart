@@ -142,9 +142,13 @@ class FakeWalletApi implements WalletApi {
     blocksUntilRedeem: 483 > tip ? 483 - tip : 0,
     blocksUntilTermEnd: lockHeight > tip ? lockHeight - tip : 0,
     earlyRedeem: status == 'ACTIVE' && tip + 1 < lockHeight,
+    // rpcversion 8 (IT-9′): 5 % of the debt, in dollars exactly, in YEC at the vault's pMint
     earlyRedeemFeeZat: status == 'ACTIVE' && tip + 1 < lockHeight ? 47500000 : 0,
-    earlyRedeemFeeUsdCents: status == 'ACTIVE' && tip + 1 < lockHeight ? 24 : 0,
+    earlyRedeemFeeUsdCents: status == 'ACTIVE' && tip + 1 < lockHeight ? cents * 500 ~/ 10000 : 0,
     earlyRedeemFeeBps: 500,
+    pMintMicroUsd: 520000,
+    protocolFeeCents: status == 'ACTIVE' ? 100 : 0,
+    protocolFeeZat: status == 'ACTIVE' ? 50000000 : 0,
     inTermClaims: true,
     claimThresholdBps: 12500,
     claimPriceMicroUsd: claimPrice,
@@ -223,11 +227,13 @@ class FakeWalletApi implements WalletApi {
       requiredZat: collateral - 500,
       collateralZat: collateral,
       feeZat: 1000,
+      protocolFeeCents: 100,
       attestFeeZat: 0,
       payee: payee,
       carrierZat: 10000,
       tokenZat: 10000,
       networkFeeZat: 2000,
+      maxMintCents: 10000000,
       totalZat: total,
       availableZat: available,
       affordable: available >= total,
@@ -291,12 +297,15 @@ class FakeWalletApi implements WalletApi {
       changeCents: v.releasable ? 0 : balancesAnswer.yedCents - v.cents,
       yedInputs: v.releasable ? 0 : 1,
       feeZat: v.releasable ? 0 : 50000000 + early,
-      enforcementFeeZat: v.releasable ? 0 : 50000000,
+      protocolFeeZat: v.releasable ? 0 : 50000000,
+      protocolFeeCents: v.releasable ? 0 : 100,
+      pMintMicroUsd: v.releasable ? 0 : 520000,
       earlyRedeemFeeZat: early,
-      earlyRedeemFeeUsdCents: early > 0 ? 24 : 0,
+      earlyRedeemFeeUsdCents: early > 0 ? v.earlyRedeemFeeUsdCents : 0,
       lockHeight: v.lockHeight,
       payee: v.releasable ? '' : payee,
       networkFeeZat: 1000,
+      networkFeeUsdCents: 0,
       collateralZat: v.collateralZat - (v.releasable ? 1000 : 50001000 + early),
       collateralAddress: fakeS,
       lockTime: v.lockHeight,
@@ -514,7 +523,7 @@ class FakeWalletApi implements WalletApi {
     calls.add('yedPreview ${recipients.map((r) => '${r.address}:${r.cents}').join(',')}');
     if (yedPreviewError != null) throw yedPreviewError!;
     final total = recipients.fold<int>(0, (a, r) => a + r.cents);
-    return YedPreview(previewId: 'p2', recipients: recipients, totalCents: total, stage: 'single', yedInputs: 1, changeCents: 5000 - total, yecInputs: 1, feeZat: 1000, yecChangeZat: 84000, expiryHeight: 524, txid: 'bb' * 32, dryRun: dryRun);
+    return YedPreview(previewId: 'p2', recipients: recipients, totalCents: total, stage: 'single', yedInputs: 1, changeCents: 5000 - total, yecInputs: 1, feeZat: 1000, feeUsdCents: 1, yecChangeZat: 84000, expiryHeight: 524, txid: 'bb' * 32, dryRun: dryRun);
   }
 
   @override
