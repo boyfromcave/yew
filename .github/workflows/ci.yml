@@ -19,8 +19,10 @@ name: ci
 on:
   push:
     # The one branch list: harden/yellowback (P1 hardening), upgrade/vault (the network upgrade),
-    # upgrade/vault-in-term (in-term claims, rpcversion 6), main (the branch of record, AGENTS.md rule 2).
-    branches: &branches [main, harden/yellowback, upgrade/vault, upgrade/vault-in-term]
+    # upgrade/vault-in-term (in-term claims, rpcversion 6), upgrade/quantum-vaults (post-quantum owners,
+    # rpcversion 7; proto/PIN names lightwalletd-dd's upgrade/quantum-vaults commit, so lightwalletd-dd
+    # is pushed first), main (the branch of record, AGENTS.md rule 2).
+    branches: &branches [main, harden/yellowback, upgrade/vault, upgrade/vault-in-term, upgrade/quantum-vaults]
   pull_request:
     branches: *branches
   workflow_dispatch:
@@ -126,6 +128,7 @@ jobs:
       - name: versions (Flutter from README.md, the bridge codegen from core/Cargo.toml)
         id: v
         run: |
+          # shellcheck disable=SC2016 # the backticks are literal Markdown in the sed pattern
           echo "flutter=$(sed -n 's/^| Flutter *| `\([0-9.]*\)`.*/\1/p' README.md | head -1)" >> "$GITHUB_OUTPUT"
           echo "frb=$(sed -n 's/^flutter_rust_bridge = "=\(.*\)"/\1/p' core/Cargo.toml)" >> "$GITHUB_OUTPUT"
       # The SDK and the pub cache, keyed by the action on OS, channel, version, arch and pubspec.lock.
