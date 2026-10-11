@@ -1,17 +1,17 @@
 {
  "network": "regtest",
  "generated": {
-  "command": "vectors --dir /Users/boy/projects/yellowback-workspace/wt/scratch/yew-vectors/devnet --out /Users/boy/projects/yellowback-workspace/wt/scratch/yew-vectors/out --seed 1",
+  "command": "vectors --out /Users/boy/projects/yellowback-workspace/wt/scratch/q-yewb/vec --seed 1",
   "seed": 1,
   "height": 248,
-  "forkCommit": "f24a69183"
+  "forkCommit": "aa0fd3812"
  },
  "yed_getinfo": {
-  "rpcversion": 6,
+  "rpcversion": 7,
   "enabled": true,
   "network": "regtest",
   "height": 248,
-  "blockhash": "047366dbbd9213d7e655109826b828b9611bc5ab0b7fe83f8048a84d5a530711",
+  "blockhash": "00c228f1d529315ce0b0720b86bd1ce94d1b42a04b51ec091a031849a72d4327",
   "chainHeight": 248,
   "startHeight": 103,
   "healthy": true,
@@ -26,7 +26,7 @@
    "branchId": "6d5b7a31",
    "status": "active",
    "activationHeight": 103,
-   "attestorSetId": "ae832d821e72bc12b0905c516463e5d928e787ace3b0bccce8bd9c0f9932b8f0",
+   "attestorSetId": "dd79f061fb80bf3e14b1af8d73df2a3c81e5d06ea2e2f657e0bdb935056bf4e4",
    "claimDelay": 10,
    "height": 248
   },
@@ -36,7 +36,7 @@
    "armHeight": 194,
    "seatedCount": 3,
    "poolSize": 9,
-   "poolFresh": 0,
+   "poolFresh": 3,
    "carrierMode": "scriptsig",
    "required": true,
    "armed": true
@@ -50,7 +50,7 @@
   },
   "params": {
    "startHeight": 103,
-   "attestorSetId": "ae832d821e72bc12b0905c516463e5d928e787ace3b0bccce8bd9c0f9932b8f0",
+   "attestorSetId": "dd79f061fb80bf3e14b1af8d73df2a3c81e5d06ea2e2f657e0bdb935056bf4e4",
    "claimDelay": 10,
    "sigmaRefBps": 0,
    "supplyCapBps": 0,
@@ -105,6 +105,14 @@
    "claimThresholdBps": 12500,
    "sigmaMultMaxBps": 10000,
    "inTermClaims": true,
+   "pq": {
+    "schemes": [
+     1
+    ],
+    "falconActive": false,
+    "falconHeight": -1,
+    "feeRateZatPerKB": 100
+   },
    "policy": {
     "penaltyBlocks": 12,
     "accuracyWindow": 24,
@@ -114,6 +122,7 @@
    },
    "attest": {
     "payloadVersion": 3,
+    "mintPayloadVersion": 4,
     "armMin": 3,
     "armDelay": 8,
     "required": true,

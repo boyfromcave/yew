@@ -144,6 +144,20 @@ fn address_vectors() {
 #[test]
 fn params_vector() {
     let v = load("params.json");
+    // rpcversion 7's post-quantum block, as YEW reads it (terms::pq_terms).
+    let pq = &v["yed_getinfo"]["params"]["pq"];
+    assert_eq!(v["yed_getinfo"]["rpcversion"].as_i64(), Some(7));
+    assert_eq!(pq["schemes"], serde_json::json!([1]));
+    assert_eq!(pq["falconActive"].as_bool(), Some(false));
+    assert_eq!(pq["falconHeight"].as_i64(), Some(-1));
+    assert_eq!(
+        pq["feeRateZatPerKB"].as_i64(),
+        Some(yew_core::params::RELAY_FLOOR_ZAT_PER_KB)
+    );
+    assert_eq!(
+        v["yed_getinfo"]["params"]["attest"]["mintPayloadVersion"].as_u64(),
+        Some(yew_core::payload::MINT_VERSION as u64)
+    );
     let c = &v["constants"];
     assert_eq!(c["TOKEN_VALUE"].as_i64(), Some(TOKEN_VALUE));
     assert_eq!(
@@ -251,19 +265,15 @@ fn template_payload_vectors_round_trip() {
         let hex = hex_field(t, "payloadHex");
         let d = &t["payloadDecoded"];
         assert_eq!(d["type"].as_str().unwrap(), kind);
-        // Quantum spec C-1: a MINT is version 4 (PQ owner), every other type stays version 3.
-        // `templates.json` predates the quantum line (Q6 regenerates it): its v3 MINTs, with a
-        // secp256k1 owner, are non-Yellowback here — and its TRANSFER / REDEEM / CLAIM payloads
-        // must still round-trip byte for byte, which is the C-1 guarantee for old builders.
-        if kind == "mint" && d["version"].as_u64() == Some(3) {
-            assert_eq!(
-                payload::decode(&hex),
-                None,
-                "{key}: a v3 MINT is not Yellowback"
+        // Quantum spec C-1: a MINT is version 4 (PQ owner), every other type stays version 3
+        // (`templates.json` regenerated on a quantum devnet, rpcversion 7; a v3 MINT is
+        // non-Yellowback, `payload.rs` unit tests).
+        if kind == "mint" {
+            assert_eq!(d["version"].as_u64(), Some(4), "{key}: a quantum-line MINT");
+            assert!(
+                d.get("ownerPubKey").is_none(),
+                "{key}: rpcversion 7 has no owner key"
             );
-            let (tx, _) = Transaction::parse(&hex_field(t, "hex")).unwrap();
-            assert!(payload::find_payload(&tx).is_none(), "{key}");
-            continue;
         }
         assert_eq!(
             d["version"].as_u64().unwrap(),
@@ -763,11 +773,10 @@ fn check_redeem(v: &Value, key: &str, m: &NodeMint, early: bool) {
 /// `nExpiryHeight` — byte for byte except keys and amounts, which are the node's own here.
 ///
 /// **Quantum line:** the checks are ported to the post-quantum owner (v4 MINT, PQ V, the
-/// chunked SLH-DSA owner scriptSig verified over the sighash, PQPKH residual, a P2PKH holder),
-/// but `templates.json` is still the pre-quantum devnet's (secp256k1 owners, v3 MINTs). The test
-/// runs again once Q6's quantum devnet regenerates the file with rpcversion 7 fields.
+/// chunked SLH-DSA owner scriptSig verified over the sighash, PQPKH residual, a P2PKH holder).
+/// `templates.json` was regenerated on a quantum regtest devnet (ycash-dd `upgrade/quantum-vaults`
+/// `aa0fd3812`, rpcversion 7; `yellowback-devnet vectors --seed 1` + `scripts/vectors-in-term.py`).
 #[test]
-#[ignore = "templates.json predates the quantum line: regenerate on a quantum devnet (Q6), rpcversion 7"]
 fn w4_templates_reproduce_the_node_scripts_and_payloads() {
     let v = load("templates.json");
     assert_eq!(v["armed"].as_bool(), Some(true));
@@ -797,6 +806,12 @@ fn check_in_term_claim(v: &Value, m: &NodeMint) {
     );
     assert_eq!(row["claimable"].as_bool(), Some(true));
     assert_eq!(row["claimPath"].as_str(), Some("a"));
+    // The node's 53-character post-quantum owner address (rpcversion 7 `ownerAddress`) is the
+    // one YEW renders for the payload's owner (quantum spec §4; regtest `yr…` is final).
+    assert_eq!(
+        row["ownerAddress"].as_str().unwrap(),
+        keys::encode_pq_yellowback(network, &m.owner).unwrap()
+    );
     assert_eq!(row["lockHeight"].as_u64(), Some(m.lock_height as u64));
     let height = claim["txinfo"]["height"].as_u64().unwrap() as u32;
     assert!(
