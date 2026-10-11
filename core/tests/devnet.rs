@@ -1147,10 +1147,15 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
         .expect("vault 2");
     println!("mint 2 (resumed) done: {} lock {}", f2.txid, v2.lock_height);
 
-    // 3. Plan §8.6 / open question 6: the owner key of vault 2 into node 5 with rescan.
-    let owner2_addr = keys::encode_yellowback(Network::Regtest, &v2.owner_hash160);
-    let wif2 = a.export_wif(&owner2_addr).unwrap();
-    dn.node(5, &["importprivkey", &wif2, "yew-vault-owner", "true"]);
+    // 3. Plan §8.6 / open question 6: the key of vault 2 into node 5 with rescan. On the quantum
+    //    line (rpcversion 7) the owner is a post-quantum key the node cannot import (there is no
+    //    PQ import RPC, and no owner public key is on chain): the WIF YEW exports is the token
+    //    holder's (the external key the PQ owner is paired with), so node 5 gets the YED, not the
+    //    vault.
+    let owner2_addr = keys::encode_pq_yellowback(Network::Regtest, &v2.owner).unwrap();
+    let holder2_addr = keys::encode_yellowback(Network::Regtest, &v2.owner_hash160);
+    let wif2 = a.export_wif(&holder2_addr).unwrap();
+    dn.node(5, &["importprivkey", &wif2, "yew-vault-holder", "true"]);
     let listed5 = dn.node_json(5, &["yed_listvaults"]);
     let seen5 = listed5
         .as_array()
@@ -1164,7 +1169,14 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     // would close vault 2 here with the imported key and the YED at its address; the probe asks
     // for the quote only (yed_estimateredeem), and the redeem stays in 5b.
     let early = dn.node_try(5, &["yed_estimateredeem", &f2.txid]);
-    assert!(early.contains("\"early\": true"), "{early}");
+    assert!(
+        !seen5,
+        "the holder key does not carry the post-quantum vault"
+    );
+    assert!(
+        early.contains("vault-not-owned") && early.contains("\"early\": true"),
+        "{early}"
+    );
     println!(
         "Q6: node 5 after importprivkey: yed_listvaults lists vault 2 = {seen5} yed_getbalance {node5_yed} cents; yed_estimateredeem before lockHeight -> {early}"
     );
@@ -1847,7 +1859,11 @@ async fn it_early_redeem_and_in_term_claim() {
     assert!(availability.usable(), "{availability:?}");
     let ref_lag = match &availability {
         Availability::Present { info, .. } => {
-            assert_eq!(info.rpcversion, 6, "the in-term line");
+            assert_eq!(
+                info.rpcversion,
+                yew_core::net::yellowback::KNOWN_RPCVERSION,
+                "the in-term rules on the quantum line (rpcversion 7)"
+            );
             let p = info.params.as_ref().unwrap();
             assert!(p.in_term_claims, "params.inTermClaims");
             assert_eq!(p.claim_threshold_bps, CLAIM_THRESHOLD_BPS);
@@ -1950,19 +1966,26 @@ async fn it_early_redeem_and_in_term_claim() {
         fee1 + early,
         "the early fee rides on the FEE-1 output"
     );
-    // The node's own quote for the same vault (its owner key imported into node 5): the same fee.
+    // The node's own quote for the same vault: on the quantum line the owner is YEW's SLH-DSA
+    // key, which no node RPC imports, so node 5 (holding only the paired holder key) quotes the
+    // fees with `canRedeem: false` and "vault-not-owned"; the fees must still be YEW's.
     let owner_addr = keys::encode_yellowback(Network::Regtest, &v1.owner_hash160);
     let wif = a.export_wif(&owner_addr).unwrap();
-    dn.node(5, &["importprivkey", &wif, "yew-it-owner", "true"]);
+    dn.node(5, &["importprivkey", &wif, "yew-it-holder", "true"]);
     let quote = dn.node_try(5, &["yed_estimateredeem", &txid_hex(&v1.txid)]);
     println!("node 5 yed_estimateredeem: {quote}");
-    if let Ok(q) = serde_json::from_str::<Value>(&quote) {
-        assert_eq!(q["earlyRedeemFeeZat"].as_i64(), Some(early), "{q}");
-        assert_eq!(q["feeZat"].as_i64(), Some(fee1 + early), "{q}");
-        assert_eq!(q["early"].as_bool(), Some(true), "{q}");
-    } else {
-        panic!("yed_estimateredeem did not answer a quote: {quote}");
-    }
+    let q: Value = serde_json::from_str(&quote).expect("yed_estimateredeem answers a quote");
+    assert_eq!(q["earlyRedeemFeeZat"].as_i64(), Some(early), "{q}");
+    assert_eq!(q["feeZat"].as_i64(), Some(fee1 + early), "{q}");
+    assert_eq!(q["early"].as_bool(), Some(true), "{q}");
+    assert_eq!(q["canRedeem"].as_bool(), Some(false), "{q}");
+    assert!(
+        q["error"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("vault-not-owned"),
+        "{q}"
+    );
     let (sent, val) = a.redeem_confirm(&mut c, &mut v, &p).await.unwrap();
     assert_eq!(
         (val.verdict.as_str(), val.path.as_str(), val.burned),
