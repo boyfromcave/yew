@@ -249,14 +249,6 @@ pub async fn start(
     // The YED to burn must be there before the carrier is funded, and (U-23: the vault's value
     // goes into intents) the YEC for the carrier and for the claim's fees.
     let (yed, change_cents, _, _) = redeem::select_yed_burn(wallet, entry.minted_cents)?;
-    // TOK-PQ (quantum spec F-7): from the Falcon height the claim's YED change would need a
-    // Falcon holder key, which YEW does not have yet.
-    if change_cents > 0 && wallet.pq_terms().falcon_at(r as u64 + 1) {
-        return Err(WalletError::Other(format!(
-            "falcon-holder-required: Falcon is active, so the {} of YED change must go to a Falcon (post-quantum) key, which this version of YEW cannot hold yet; claim with YED that covers the debt exactly",
-            crate::wallet::dollars(change_cents as i64)
-        )));
-    }
     let yed_value: i64 = yed.iter().map(|u| u.value).sum();
     let fees_needed = claim_funding_needed(
         if entry.payee.is_empty() {
@@ -389,6 +381,9 @@ pub struct ClaimShape {
     pub funding_change_script: Vec<u8>,
     /// The carrier outpoint (`vin[last]`), whose `CARRIER_VALUE` joins the inputs.
     pub carrier: OutPoint,
+    /// The network fee: `FEE_ZAT`, or `max(FEE_ZAT, pqfeerate × size)` when a Falcon holder YED
+    /// input makes the claim a post-quantum spend (quantum plan §4.5).
+    pub network_fee: i64,
 }
 
 /// The planned CLAIM.
@@ -496,7 +491,7 @@ pub fn plan_claim(s: &ClaimShape) -> Result<ClaimPlan, WalletError> {
         ));
     }
     let spare = CARRIER_VALUE + yed_value + fund_value
-        - FEE_ZAT
+        - s.network_fee
         - if fee { s.fee_zat } else { 0 }
         - if attest { s.attest_fee_zat } else { 0 }
         - if change { TOKEN_VALUE } else { 0 };
@@ -680,98 +675,122 @@ pub async fn finish(
     let (carrier_op, redeem_script, carrier_key) = mint::carrier_of(wallet, m)?;
     let (yed_inputs, change_cents, extra_burn, _stage) = redeem::select_yed_burn(wallet, m.cents)?;
     let yed_value: i64 = yed_inputs.iter().map(|u| u.value).sum();
-    let needed = claim_funding_needed(
-        if m.payee.is_empty() { 0 } else { m.fee_zat },
-        if m.attest_payee.is_empty() {
-            0
-        } else {
-            m.attest_fee_zat
-        },
-        change_cents > 0,
-        yed_value,
-    );
-    let funding = if needed > 0 {
-        coins::select_yec(&wallet.spendable_utxos()?, needed, true)?
-    } else {
-        Vec::new()
-    };
+    // TOK-PQ (quantum spec F-7): from the Falcon height the YED change goes to a Falcon holder.
+    let falcon = wallet.pq_terms().falcon_at(m.ref_height as u64 + 1);
+    let pq_input = yed_inputs
+        .iter()
+        .any(|u| crate::pq::pqpkh_of(&u.script).is_some());
     let dest = mint::fresh_external(wallet)?;
     let change_row = if change_cents > 0 {
         Some(mint::fresh_external(wallet)?)
     } else {
         None
     };
+    let change_script = match &change_row {
+        Some(c) => wallet.yed_holder_script(c, falcon)?,
+        None => Vec::new(),
+    };
     // Peeked, not taken: the key is marked used only if the plan returns change to it.
     let fund_change_row = wallet.change_address()?;
-    let shape = ClaimShape {
-        vault_out,
-        vault: vault.clone(),
-        vault_script: vault_script.clone(),
-        vault_value: m.collateral_zat,
-        ref_height: m.ref_height,
-        yed_inputs: yed_inputs.clone(),
-        change_cents,
-        change_script: change_row
-            .as_ref()
-            .map(|c| script::p2pkh_script(&c.hash160))
-            .unwrap_or_default(),
-        payee_script: if m.payee.is_empty() {
-            None
-        } else {
-            Some(mint::p2pkh_of_address(wallet, &m.payee)?)
-        },
-        fee_zat: m.fee_zat,
-        attest_script: if m.attest_payee.is_empty() {
-            None
-        } else {
-            Some(mint::p2pkh_of_address(wallet, &m.attest_payee)?)
-        },
-        attest_fee_zat: m.attest_fee_zat,
-        residual_zat: m.residual_zat,
-        owner_script: crate::pq::pqpkh_script(&owner).ok_or_else(|| {
-            WalletError::Other("the vault owner's scheme is not registered".into())
-        })?,
-        claimant_script: script::p2pkh_script(&dest.hash160),
-        funding: funding.clone(),
-        funding_change_script: script::p2pkh_script(&fund_change_row.hash160),
-        carrier: carrier_op,
-    };
-    let plan = plan_claim(&shape)?;
-    // H-9.3: refuse to sign a CLAIM whose debt or take moved past what the user confirmed
-    // (the row holds the checked figures; the burn's own remainder is the wallet's, not the
-    // server's, and is not bounded here).
-    if let Some((max_burn_cents, min_out_zat)) = wallet.store.claim_bounds(m.id)? {
-        let debt = (plan.burn_cents.max(0) as u64).saturating_sub(extra_burn);
-        terms::check_claim_bounds(
-            &terms::ClaimBounds {
-                max_burn_cents,
-                min_out_zat,
+    // The network fee: FEE_ZAT, re-priced by size when a Falcon holder input makes this a
+    // post-quantum spend (sign, measure, re-price; the Falcon scriptSigs are exact, the ECDSA and
+    // carrier ones vary by a byte or two, covered by a small margin).
+    let mut network_fee = FEE_ZAT;
+    let (plan, tx, funding) = loop {
+        let needed = claim_funding_needed(
+            if m.payee.is_empty() { 0 } else { m.fee_zat },
+            if m.attest_payee.is_empty() {
+                0
+            } else {
+                m.attest_fee_zat
             },
-            debt,
-            terms::claimant_take(
-                m.collateral_zat,
-                m.fee_zat,
-                m.attest_fee_zat,
-                m.residual_zat,
-            ),
+            change_cents > 0,
+            yed_value,
+        ) + (network_fee - FEE_ZAT);
+        let funding = if needed > 0 {
+            coins::select_yec(&wallet.spendable_utxos()?, needed, true)?
+        } else {
+            Vec::new()
+        };
+        let shape = ClaimShape {
+            vault_out,
+            vault: vault.clone(),
+            vault_script: vault_script.clone(),
+            vault_value: m.collateral_zat,
+            ref_height: m.ref_height,
+            yed_inputs: yed_inputs.clone(),
+            change_cents,
+            change_script: change_script.clone(),
+            payee_script: if m.payee.is_empty() {
+                None
+            } else {
+                Some(mint::p2pkh_of_address(wallet, &m.payee)?)
+            },
+            fee_zat: m.fee_zat,
+            attest_script: if m.attest_payee.is_empty() {
+                None
+            } else {
+                Some(mint::p2pkh_of_address(wallet, &m.attest_payee)?)
+            },
+            attest_fee_zat: m.attest_fee_zat,
+            residual_zat: m.residual_zat,
+            owner_script: crate::pq::pqpkh_script(&owner).ok_or_else(|| {
+                WalletError::Other("the vault owner's scheme is not registered".into())
+            })?,
+            claimant_script: script::p2pkh_script(&dest.hash160),
+            funding: funding.clone(),
+            funding_change_script: script::p2pkh_script(&fund_change_row.hash160),
+            carrier: carrier_op,
+            network_fee,
+        };
+        let plan = plan_claim(&shape)?;
+        // H-9.3: refuse to sign a CLAIM whose debt or take moved past what the user confirmed
+        // (the row holds the checked figures; the burn's own remainder is the wallet's, not the
+        // server's, and is not bounded here).
+        if let Some((max_burn_cents, min_out_zat)) = wallet.store.claim_bounds(m.id)? {
+            let debt = (plan.burn_cents.max(0) as u64).saturating_sub(extra_burn);
+            terms::check_claim_bounds(
+                &terms::ClaimBounds {
+                    max_burn_cents,
+                    min_out_zat,
+                },
+                debt,
+                terms::claimant_take(
+                    m.collateral_zat,
+                    m.fee_zat,
+                    m.attest_fee_zat,
+                    m.residual_zat,
+                ),
+            )?;
+        }
+        let mut tx = Transaction::new_v4();
+        tx.lock_time = plan.lock_time;
+        tx.expiry_height = m.expiry_height;
+        tx.vin = plan.vin.clone();
+        tx.vout = plan.vout.clone();
+        let carrier_vin = tx.vin.len() - 1;
+        mint::sign_p2pkh_inputs(wallet, &mut tx, &yed_inputs, 1, branch_id)?;
+        mint::sign_p2pkh_inputs(wallet, &mut tx, &funding, 1 + yed_inputs.len(), branch_id)?;
+        mint::sign_carrier_input(
+            &mut tx,
+            carrier_vin,
+            &carrier_key,
+            &redeem_script,
+            &m.bundle,
+            branch_id,
         )?;
-    }
-    let mut tx = Transaction::new_v4();
-    tx.lock_time = plan.lock_time;
-    tx.expiry_height = m.expiry_height;
-    tx.vin = plan.vin.clone();
-    tx.vout = plan.vout.clone();
-    let carrier_vin = tx.vin.len() - 1;
-    mint::sign_p2pkh_inputs(wallet, &mut tx, &yed_inputs, 1, branch_id)?;
-    mint::sign_p2pkh_inputs(wallet, &mut tx, &funding, 1 + yed_inputs.len(), branch_id)?;
-    mint::sign_carrier_input(
-        &mut tx,
-        carrier_vin,
-        &carrier_key,
-        &redeem_script,
-        &m.bundle,
-        branch_id,
-    )?;
+        if pq_input {
+            let priced = wallet
+                .pq_terms()
+                .fee(tx.serialize()?.len() + 4 * tx.vin.len());
+            if priced > network_fee {
+                network_fee = priced;
+                continue;
+            }
+            tx.check_script_sig_sizes()?;
+        }
+        break (plan, tx, funding);
+    };
     let raw = tx.serialize()?;
     let txid = tx.txid()?;
     let (_, validation) = gate::confirm_burning(
@@ -805,8 +824,8 @@ pub async fn finish(
         let n = plan.change_vout as u32;
         wallet.store.upsert_utxo(&Utxo {
             outpoint: OutPoint { txid, n },
-            address: row.address_s.clone(),
-            script: script::p2pkh_script(&row.hash160),
+            address: super::yed_transfer::holder_address(wallet.network, &change_script),
+            script: change_script.clone(),
             value: TOKEN_VALUE,
             height: 0,
             class: UtxoClass::PendingToken,
@@ -834,7 +853,7 @@ pub async fn finish(
         vault_txid: m.vault_txid,
         role: ROLE_CLAIMANT.into(),
         value: plan.claimant_value,
-        recipient_script: shape.claimant_script.clone(),
+        recipient_script: script::p2pkh_script(&dest.hash160),
         intent_script: plan.claimant_intent.clone(),
         delay: vault.delay,
         height: 0,
@@ -974,6 +993,7 @@ mod tests {
                 txid: [0xca; 32],
                 n: 0,
             },
+            network_fee: FEE_ZAT,
         }
     }
 

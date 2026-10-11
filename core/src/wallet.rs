@@ -113,11 +113,28 @@ pub struct Wallet {
     pq_root: crate::pq::PqSeedRoot,
     /// Owner ids already derived, by external index (SLH-DSA key generation is not free).
     pq_ids: std::sync::Mutex<HashMap<u32, crate::pq::PqKeyId>>,
+    /// Falcon holder ids already derived, by holder index ([`falcon_holder_index`]).
+    falcon_ids: std::sync::Mutex<HashMap<u32, crate::pq::PqKeyId>>,
     /// The server's post-quantum terms as last read (`params.pq`, rpcversion 7): the size fee
     /// rate and the Falcon activation ([`Wallet::pq_terms`]).
     pq_terms: std::sync::Mutex<crate::build::terms::PqTerms>,
     /// The Sapling side (`None` for a wallet over an in-memory store, as the unit tests use).
     pub shielded: Option<Shielded>,
+}
+
+/// The Falcon holder index of an HD key (YEW's own index space; the derivation is the node's
+/// `DerivePQSeed(seed, 2, index)`): external key `i` → `i`, change key `i` → `2³¹ + i`. One Falcon
+/// holder per HD address, so the gap scan of the address chains is also the gap scan of the
+/// holders and a restore that finds the address finds its Falcon YED. `None` past `2³¹`.
+pub fn falcon_holder_index(chain: Chain, index: u32) -> Option<u32> {
+    const CHANGE: u32 = 0x8000_0000;
+    if index >= CHANGE {
+        return None;
+    }
+    Some(match chain {
+        Chain::External => index,
+        Chain::Change => CHANGE | index,
+    })
 }
 
 /// The wrapping key, wiped on drop (`Wallet` itself stays `Drop`-free so a test can move its
@@ -239,6 +256,7 @@ impl Wallet {
             m.update(seed);
             WrapSecret(m.finalize().into_bytes().into())
         };
+        let stored_terms = Wallet::stored_pq_terms(&store).unwrap_or_default();
         let w = Wallet {
             network,
             store,
@@ -246,7 +264,8 @@ impl Wallet {
             wrap_secret,
             pq_root: crate::pq::PqSeedRoot::from_seed(seed),
             pq_ids: std::sync::Mutex::new(HashMap::new()),
-            pq_terms: std::sync::Mutex::new(Default::default()),
+            falcon_ids: std::sync::Mutex::new(HashMap::new()),
+            pq_terms: std::sync::Mutex::new(stored_terms),
             shielded: None,
         };
         w.ensure_gap()?;
@@ -456,10 +475,142 @@ impl Wallet {
         Ok(Some(key))
     }
 
+    // ---- Falcon YED holders (TOK-PQ)
+
+    /// The Falcon (scheme 2) YED holder id paired with the HD address `row` (`None` for an
+    /// imported key, which has no seed-derived pair), cached in memory and in the store's
+    /// `pq_holders` table (a Falcon key generation is ~10 ms; the gap-limit set is derived once
+    /// per wallet). The id is public; [`Wallet::falcon_key_for_id`] re-derives and checks it.
+    pub fn falcon_holder_id(&self, row: &AddressRow) -> Option<crate::pq::PqKeyId> {
+        let idx = falcon_holder_index(row.hd_chain()?, row.index)?;
+        let mut cache = self.falcon_ids.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(id) = cache.get(&idx) {
+            return Some(*id);
+        }
+        let id = match self.store.pq_holder(idx) {
+            Ok(Some(id)) if id.scheme == crate::pq::SCHEME_FN_DSA_512 => id,
+            _ => {
+                let id = self.pq_root.falcon_key(idx).id();
+                // A failed cache write only costs the derivation again next time.
+                let _ = self.store.set_pq_holder(idx, &id);
+                id
+            }
+        };
+        cache.insert(idx, id);
+        Some(id)
+    }
+
+    /// The Falcon holder address (53 characters, `yb…`/`yt…`/`yr…`) paired with `row`.
+    pub fn falcon_holder_address(&self, row: &AddressRow) -> Option<String> {
+        keys::encode_pq_yellowback(self.network, &self.falcon_holder_id(row)?)
+    }
+
+    /// Every own Falcon holder id with the HD address row it is paired with (the gap-scanned
+    /// set of both chains, so a restore finds the YED of every derived key).
+    pub fn own_falcon_holders(
+        &self,
+    ) -> Result<HashMap<crate::pq::PqKeyId, AddressRow>, WalletError> {
+        Ok(self
+            .store
+            .addresses()?
+            .into_iter()
+            .filter_map(|r| Some((self.falcon_holder_id(&r)?, r)))
+            .collect())
+    }
+
+    /// [`Wallet::own_falcon_holders`] when `tx` pays any `TX_PQPKH` (else empty: no Falcon key
+    /// is derived for a transaction that cannot pay one).
+    pub fn own_falcon_holders_for(
+        &self,
+        tx: &crate::tx::Transaction,
+    ) -> Result<HashMap<crate::pq::PqKeyId, AddressRow>, WalletError> {
+        if tx
+            .vout
+            .iter()
+            .any(|o| crate::pq::pqpkh_of(&o.script_pubkey).is_some())
+        {
+            self.own_falcon_holders()
+        } else {
+            Ok(HashMap::new())
+        }
+    }
+
+    /// The signing key of an own Falcon holder id: found through its paired address row,
+    /// re-derived, and checked against the id (`None` when the id is not this wallet's).
+    pub fn falcon_key_for_id(
+        &self,
+        id: &crate::pq::PqKeyId,
+    ) -> Result<Option<crate::pq::PqKey>, WalletError> {
+        if id.scheme != crate::pq::SCHEME_FN_DSA_512 {
+            return Ok(None);
+        }
+        let Some(row) = self.own_falcon_holders()?.remove(id) else {
+            return Ok(None);
+        };
+        let idx = falcon_holder_index(row.hd_chain().expect("HD row"), row.index)
+            .expect("an HD row with a holder id has a holder index");
+        let key = self.pq_root.falcon_key(idx);
+        if key.id() != *id {
+            return Err(WalletError::Other(format!(
+                "the cached Falcon holder of key {idx} does not match its key; delete the wallet cache and resync"
+            )));
+        }
+        Ok(Some(key))
+    }
+
+    /// The YED holder output for an own fresh key `row` under the holder rule of the block the
+    /// transaction will be mined in (`falcon`: TOK-PQ in force): the Falcon `TX_PQPKH` paired
+    /// with `row` once Falcon is active (the default holder from day one on mainnet), a P2PKH
+    /// to `row` before it (regtest/devnet pre-Falcon only).
+    pub fn yed_holder_script(
+        &self,
+        row: &AddressRow,
+        falcon: bool,
+    ) -> Result<Vec<u8>, WalletError> {
+        if !falcon {
+            return Ok(crate::script::p2pkh_script(&row.hash160));
+        }
+        let id = self.falcon_holder_id(row).ok_or_else(|| {
+            WalletError::Other("an imported key has no Falcon holder pair".into())
+        })?;
+        Ok(crate::pq::pqpkh_script(&id).expect("scheme 2 is registered"))
+    }
+
+    /// True when `script` pays this wallet as a YED holder: a P2PKH to an own key, or a
+    /// `TX_PQPKH` to an own Falcon holder id (in `falcon`, from [`Wallet::own_falcon_holders`]).
+    pub fn is_own_holder_script(
+        script: &[u8],
+        own: &HashSet<[u8; 20]>,
+        falcon: &HashMap<crate::pq::PqKeyId, AddressRow>,
+    ) -> bool {
+        if let Some(h) = crate::script::p2pkh_hash(script) {
+            return own.contains(&h);
+        }
+        crate::pq::pqpkh_of(script).is_some_and(|id| falcon.contains_key(&id))
+    }
+
     /// The server's post-quantum terms as last read ([`Wallet::note_server_params`]); the
     /// default (relay floor, Falcon inactive) before any server has answered.
+    ///
+    /// **Mainnet and testnet: Falcon from day one** (owner decision 2026-10-10: `pqFalconHeight
+    /// = 0`, Falcon goes live with the vault upgrade). Off regtest the terms always say Falcon is
+    /// active, whatever a server or the offline default says, so a YED holder there is a Falcon
+    /// key from the first block (receive address, change, mint tokens). Regtest follows the
+    /// server (`-pqfalconheight`), so the P2PKH holder paths stay testable before Falcon.
     pub fn pq_terms(&self) -> crate::build::terms::PqTerms {
-        *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner())
+        let mut t = *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner());
+        if self.network != Network::Regtest {
+            t.falcon_active = true;
+            t.falcon_height = Some(0);
+        }
+        t
+    }
+
+    /// TOK-PQ is in force for the next block as far as this wallet knows (the last synced tip
+    /// and the server's terms): its YED receive address is then its Falcon holder address.
+    pub fn falcon_now(&self) -> bool {
+        let tip = self.store.meta_u64("last_synced_height").unwrap_or(0);
+        self.pq_terms().falcon_at(tip + 1)
     }
 
     /// Remember the post-quantum terms of a `GetYellowbackInfo.params` (rpcversion 7); refused
@@ -474,7 +625,35 @@ impl Wallet {
             }
         })?)?;
         *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner()) = t;
+        // Remembered for an offline open (the receive address, the CLI): a failed write only
+        // costs the default until the next server answer.
+        let _ = self.store.set_meta(
+            "pq_terms",
+            &format!(
+                "{} {} {}",
+                t.fee_rate_zat_per_kb,
+                t.falcon_height.map(|h| h as i64).unwrap_or(-1),
+                u8::from(t.falcon_active)
+            ),
+        );
         Ok(t)
+    }
+
+    /// The terms [`Wallet::note_server_params`] last remembered in the store, if any.
+    fn stored_pq_terms(store: &Store) -> Option<crate::build::terms::PqTerms> {
+        let v = store.meta("pq_terms").ok()??;
+        let mut it = v.split(' ');
+        let rate: i64 = it.next()?.parse().ok()?;
+        let height: i64 = it.next()?.parse().ok()?;
+        let active: u8 = it.next()?.parse().ok()?;
+        Some(crate::build::terms::PqTerms {
+            fee_rate_zat_per_kb: rate.clamp(
+                crate::params::RELAY_FLOOR_ZAT_PER_KB,
+                crate::params::MAX_PQ_FEE_RATE_ZAT_PER_KB,
+            ),
+            falcon_height: u64::try_from(height).ok(),
+            falcon_active: active != 0,
+        })
     }
 
     /// Export the WIF of an own address (D-W-11).
@@ -742,6 +921,100 @@ mod tests {
             Some(5),
         )
         .unwrap()
+    }
+
+    /// Falcon YED holders (TOK-PQ): one per HD key (external i → i, change i → 2³¹ + i), from
+    /// `DerivePQSeed(seed, 2, index)`, cached in the store, found back from their id, and the
+    /// holder output follows the Falcon rule; an imported key has none.
+    #[test]
+    fn falcon_holders_pair_with_hd_keys() {
+        assert_eq!(falcon_holder_index(Chain::External, 7), Some(7));
+        assert_eq!(falcon_holder_index(Chain::Change, 7), Some(0x8000_0007));
+        assert_eq!(falcon_holder_index(Chain::Change, 0x8000_0000), None);
+        let w = wallet();
+        let rows = w.addresses().unwrap();
+        let ext0 = rows.iter().find(|r| r.chain == 0 && r.index == 0).unwrap();
+        let chg0 = rows.iter().find(|r| r.chain == 1 && r.index == 0).unwrap();
+        let a = w.falcon_holder_id(ext0).unwrap();
+        let b = w.falcon_holder_id(chg0).unwrap();
+        assert_eq!((a.scheme, b.scheme), (2, 2));
+        assert_ne!(a, b);
+        assert_eq!(a, w.pq_root.falcon_key(0).id());
+        assert_eq!(b, w.pq_root.falcon_key(0x8000_0000).id());
+        assert_eq!(w.store.pq_holder(0).unwrap(), Some(a));
+        let addr = w.falcon_holder_address(ext0).unwrap();
+        assert_eq!(addr.len(), 53);
+        assert!(addr.starts_with("yr"));
+        let key = w.falcon_key_for_id(&a).unwrap().unwrap();
+        assert_eq!(key.id(), a);
+        assert!(w
+            .falcon_key_for_id(&crate::pq::PqKeyId {
+                scheme: 2,
+                hash: [1; 32]
+            })
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            w.yed_holder_script(ext0, true).unwrap(),
+            crate::pq::pqpkh_script(&a).unwrap()
+        );
+        assert_eq!(
+            w.yed_holder_script(ext0, false).unwrap(),
+            crate::script::p2pkh_script(&ext0.hash160)
+        );
+        let own: HashSet<[u8; 20]> = rows.iter().map(|r| r.hash160).collect();
+        let falcon = w.own_falcon_holders().unwrap();
+        assert_eq!(falcon.len(), rows.len());
+        assert!(Wallet::is_own_holder_script(
+            &crate::pq::pqpkh_script(&b).unwrap(),
+            &own,
+            &falcon
+        ));
+        assert!(!Wallet::is_own_holder_script(
+            &crate::pq::pqpkh_script(&crate::pq::PqKeyId {
+                scheme: 2,
+                hash: [1; 32]
+            })
+            .unwrap(),
+            &own,
+            &falcon
+        ));
+        // An imported key has no Falcon pair.
+        let wif = keys::encode_wif(
+            Network::Regtest,
+            &secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap(),
+        );
+        let imp = w.import_wif(&wif).unwrap();
+        assert!(w.falcon_holder_id(&imp).is_none());
+        assert!(w.yed_holder_script(&imp, true).is_err());
+    }
+
+    /// The server's terms survive an offline reopen; mainnet and testnet are Falcon from day one
+    /// whatever the terms say (owner decision 2026-10-10), regtest follows the server.
+    #[test]
+    fn pq_terms_persist_and_mainnet_is_falcon_from_day_one() {
+        let seed = keys::seed_from_mnemonic(PHRASE, "").unwrap();
+        let w = wallet();
+        assert!(!w.falcon_now());
+        let p = crate::net::rpc::YellowbackParams {
+            pq: Some(crate::net::rpc::YellowbackPqParams {
+                schemes: vec![1],
+                falcon_active: false,
+                falcon_height: 0,
+                fee_rate_zat_per_kb: 300,
+            }),
+            ..Default::default()
+        };
+        w.note_server_params(Some(&p)).unwrap();
+        assert!(w.falcon_now());
+        let store = w.store;
+        let w2 = Wallet::from_parts(store, Network::Regtest, &seed, None).unwrap();
+        assert_eq!(w2.pq_terms().fee_rate_zat_per_kb, 300);
+        assert!(w2.falcon_now());
+        for net in [Network::Mainnet, Network::Testnet] {
+            let m = Wallet::from_parts(Store::open_in_memory().unwrap(), net, &seed, None).unwrap();
+            assert!(m.falcon_now() && m.pq_terms().falcon_at(1));
+        }
     }
 
     #[test]

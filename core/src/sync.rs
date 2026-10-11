@@ -142,6 +142,23 @@ pub async fn sync(
         ..Default::default()
     };
 
+    // rpcversion 7: the post-quantum terms (fee rate, Falcon activation) for this sync and the
+    // builders after it. A bad `params.pq` is not fatal here (the builders re-read and refuse).
+    if let Some(yb) = yellowback.as_mut() {
+        if let Ok(info) = yb.info().await {
+            let _ = wallet.note_server_params(info.params.as_ref());
+        }
+    }
+    // TOK-PQ: once the server announces a Falcon height (mainnet and testnet: the vault
+    // upgrade's first block), every HD key also has a Falcon YED holder; their tokens are found
+    // through `GetAddressTokens` on the 53-character addresses (PQ outputs are not
+    // address-indexed, so `GetTaddressTxids`/`GetAddressUtxos` never list them).
+    let falcon_on = yellowback.is_some() && {
+        let t = wallet.pq_terms();
+        t.falcon_active || t.falcon_height.is_some()
+    };
+    let mut falcon_tokens: HashMap<OutPoint, crate::net::Token> = HashMap::new();
+
     // 1-3. Addresses and history, extending the gap until no address in the last GAP_LIMIT
     // of either chain turns out used. The last REORG_WINDOW blocks already scanned are read
     // again, so a reorg there corrects the history (yew-shielded plan S5).
@@ -158,7 +175,33 @@ pub async fn sync(
     let mut seen_txids: HashSet<[u8; 32]> = HashSet::new();
     while !pending.is_empty() {
         let own = wallet.own_hashes()?;
+        let own_falcon = if falcon_on {
+            wallet.own_falcon_holders()?
+        } else {
+            HashMap::new()
+        };
         let mut any_new_use = false;
+        if falcon_on {
+            // The Falcon holders paired with this pass's addresses: a listed token marks the
+            // pair used (the gap rule), and its transaction goes into history.
+            let batch: HashSet<&str> = pending.iter().map(|(a, _)| a.as_str()).collect();
+            let falcon_addrs: Vec<String> = own_falcon
+                .iter()
+                .filter(|(_, r)| batch.contains(r.address_s.as_str()))
+                .filter_map(|(id, _)| keys::encode_pq_yellowback(wallet.network, id))
+                .collect();
+            if let Some(yb) = yellowback.as_mut() {
+                for t in yb.address_tokens(&falcon_addrs, 0).await? {
+                    let Ok(id) = keys::parse_pq_address(wallet.network, &t.address) else {
+                        continue;
+                    };
+                    if let Some(row) = own_falcon.get(&id) {
+                        any_new_use |= wallet.store.mark_used(&row.hash160)?;
+                    }
+                    falcon_tokens.insert(t.outpoint, t);
+                }
+            }
+        }
         for (address, from) in pending.drain(..) {
             report.addresses += 1;
             // lightwalletd refuses a range starting at 0 ("Start and end are expected to be
@@ -172,7 +215,8 @@ pub async fn sync(
                 if !seen_txids.insert(txid) {
                     continue;
                 }
-                any_new_use |= record_transaction(wallet, &tx, &txid, raw.height, &own)?;
+                any_new_use |=
+                    record_transaction(wallet, &tx, &txid, raw.height, &own, &own_falcon)?;
                 report.transactions += 1;
             }
         }
@@ -219,6 +263,17 @@ pub async fn sync(
             wallet.store.insert_own_token(&t.outpoint, t.cents)?;
             tokens.insert(t.outpoint, t.cents);
         }
+    }
+    // The Falcon holder tokens (TOK-PQ), as UTXO rows of class TOKEN: `GetAddressUtxos` never
+    // lists a `TX_PQPKH`, so the row is built from the token and the output's own script, read
+    // from the transaction (a `TX_PQCHANNEL` client output is listed under the same address but
+    // is not a wallet coin, D-Q-19: it is skipped).
+    let falcon_rows = falcon_token_utxos(wallet, client, &falcon_tokens, tip).await?;
+    for u in &falcon_rows {
+        wallet.store.insert_own_token(&u.outpoint, u.cents)?;
+        tokens.insert(u.outpoint, u.cents);
+    }
+    if yellowback.is_some() {
         report.tokens = tokens.len();
     }
 
@@ -250,6 +305,7 @@ pub async fn sync(
             }
         })
         .collect();
+    utxos.extend(falcon_rows);
     coins::apply_fee_reserve(&mut utxos);
     for u in &utxos {
         if let Some(h) = script::p2pkh_hash(&u.script) {
@@ -284,21 +340,26 @@ pub async fn sync(
 
     // 4b. PENDING_TOKEN (`PreLock`): the outputs of the wallet's own still-unconfirmed
     // transactions that their payload marks as YED for own keys. In neither balance.
+    let own_falcon = if falcon_on {
+        wallet.own_falcon_holders()?
+    } else {
+        HashMap::new()
+    };
     let present: HashSet<OutPoint> = utxos.iter().map(|u| u.outpoint).collect();
     for (txid, raw, _expiry) in wallet.store.pending_txs()? {
         let (tx, _) = match Transaction::parse(&raw) {
             Ok(t) => t,
             Err(_) => continue,
         };
-        for (n, cents) in coins::pre_lock(&tx, |h| own.contains(h)) {
+        for (n, cents) in
+            coins::pre_lock_scripts(&tx, |s| Wallet::is_own_holder_script(s, &own, &own_falcon))
+        {
             let outpoint = OutPoint { txid, n };
             if present.contains(&outpoint) {
                 continue;
             }
             let script = tx.vout[n as usize].script_pubkey.clone();
-            let address = script::p2pkh_hash(&script)
-                .map(|h| keys::encode_p2pkh(wallet.network, &h))
-                .unwrap_or_default();
+            let address = crate::build::yed_transfer::holder_address(wallet.network, &script);
             utxos.push(Utxo {
                 outpoint,
                 address,
@@ -887,6 +948,7 @@ fn record_transaction(
     txid: &[u8; 32],
     height: u64,
     own: &HashSet<[u8; 20]>,
+    own_falcon: &HashMap<crate::pq::PqKeyId, crate::store::AddressRow>,
 ) -> Result<bool, WalletError> {
     let mut newly_used = false;
     let mut delta = 0i64;
@@ -895,16 +957,22 @@ fn record_transaction(
         if script::is_op_return(&o.script_pubkey) {
             has_payload = true;
         }
-        if let Some(h) = script::p2pkh_hash(&o.script_pubkey) {
-            if own.contains(&h) {
-                delta += o.value;
-                let op = OutPoint {
-                    txid: *txid,
-                    n: n as u32,
-                };
-                wallet.store.insert_own_output(&op, o.value, &h)?;
-                newly_used |= wallet.store.mark_used(&h)?;
-            }
+        // An own Falcon holder output counts like its paired key's (TOK-PQ).
+        let h = script::p2pkh_hash(&o.script_pubkey)
+            .filter(|h| own.contains(h))
+            .or_else(|| {
+                crate::pq::pqpkh_of(&o.script_pubkey)
+                    .and_then(|id| own_falcon.get(&id))
+                    .map(|r| r.hash160)
+            });
+        if let Some(h) = h {
+            delta += o.value;
+            let op = OutPoint {
+                txid: *txid,
+                n: n as u32,
+            };
+            wallet.store.insert_own_output(&op, o.value, &h)?;
+            newly_used |= wallet.store.mark_used(&h)?;
         }
     }
     for i in &tx.vin {
@@ -969,6 +1037,82 @@ fn record_transaction(
     }
     wallet.store.upsert_history(&row)?;
     Ok(newly_used)
+}
+
+/// The UTXO rows of the wallet's Falcon holder tokens (`tokens`, from `GetAddressTokens` on the
+/// 53-character addresses): each output's script is checked to be the own `TX_PQPKH` (a row the
+/// last sync stored is trusted; otherwise the transaction is fetched once, recorded in history,
+/// and read). Class TOKEN, the address the token was listed under.
+async fn falcon_token_utxos(
+    wallet: &Wallet,
+    client: &mut CompactClient,
+    tokens: &HashMap<OutPoint, crate::net::Token>,
+    tip: u64,
+) -> Result<Vec<Utxo>, WalletError> {
+    if tokens.is_empty() {
+        return Ok(Vec::new());
+    }
+    let own = wallet.own_hashes()?;
+    let own_falcon = wallet.own_falcon_holders()?;
+    let known: HashMap<OutPoint, Vec<u8>> = wallet
+        .store
+        .utxos()?
+        .into_iter()
+        .filter(|u| crate::pq::pqpkh_of(&u.script).is_some())
+        .map(|u| (u.outpoint, u.script))
+        .collect();
+    let mut fetched: HashMap<[u8; 32], Option<Transaction>> = HashMap::new();
+    let mut out = Vec::new();
+    for (op, t) in tokens {
+        let Ok(id) = keys::parse_pq_address(wallet.network, &t.address) else {
+            continue;
+        };
+        if !own_falcon.contains_key(&id) {
+            continue;
+        }
+        let want = crate::pq::pqpkh_script(&id).unwrap_or_default();
+        let script = if let Some(s) = known.get(op).filter(|s| **s == want) {
+            s.clone()
+        } else {
+            if let std::collections::hash_map::Entry::Vacant(slot) = fetched.entry(op.txid) {
+                let tx = match client.get_transaction(&op.txid).await? {
+                    Some((raw, height)) => {
+                        let (tx, txid) = Transaction::parse(&raw)?;
+                        let height = if height == 0 && t.height > 0 {
+                            t.height as u64
+                        } else {
+                            height
+                        };
+                        if height <= tip {
+                            record_transaction(wallet, &tx, &txid, height, &own, &own_falcon)?;
+                        }
+                        Some(tx)
+                    }
+                    None => None,
+                };
+                slot.insert(tx);
+            }
+            match fetched
+                .get(&op.txid)
+                .and_then(|t| t.as_ref())
+                .and_then(|tx| tx.vout.get(op.n as usize))
+            {
+                Some(o) if o.script_pubkey == want => want.clone(),
+                _ => continue, // a channel output, or a transaction the server cannot serve
+            }
+        };
+        out.push(Utxo {
+            outpoint: *op,
+            address: t.address.clone(),
+            script,
+            value: t.value_zat,
+            height: t.height.max(0) as u64,
+            class: UtxoClass::Token,
+            cents: t.cents,
+        });
+    }
+    out.sort_by_key(|u| (u.height, u.outpoint.txid, u.outpoint.n));
+    Ok(out)
 }
 
 fn release_spent_by(wallet: &Wallet, txid: &[u8; 32]) -> Result<(), WalletError> {

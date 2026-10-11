@@ -472,6 +472,7 @@ CREATE TABLE IF NOT EXISTS vaults (
   owner_height INTEGER NOT NULL DEFAULT 0, app_height INTEGER NOT NULL DEFAULT 0,
   owner_scheme INTEGER NOT NULL DEFAULT 0, owner_hash BLOB NOT NULL DEFAULT x'');
 CREATE TABLE IF NOT EXISTS pq_owners (idx INTEGER PRIMARY KEY, scheme INTEGER NOT NULL, hash BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS pq_holders (idx INTEGER PRIMARY KEY, scheme INTEGER NOT NULL, hash BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS claim_bounds (
   mint_id INTEGER PRIMARY KEY, max_burn_cents INTEGER NOT NULL, min_out_zat INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS claim_intents (
@@ -1355,6 +1356,33 @@ impl Store {
     pub fn set_pq_owner(&self, idx: u32, id: &crate::pq::PqKeyId) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT OR REPLACE INTO pq_owners (idx, scheme, hash) VALUES (?1, ?2, ?3)",
+            params![idx, id.scheme as i64, id.hash.as_slice()],
+        )?;
+        Ok(())
+    }
+
+    /// The cached public id of the Falcon YED holder key at holder index `idx`
+    /// (`Wallet::falcon_holder_id`; additive table, no schema version change: `CREATE TABLE IF
+    /// NOT EXISTS` on every open). Public data: a key hash, never a key.
+    pub fn pq_holder(&self, idx: u32) -> Result<Option<crate::pq::PqKeyId>, StoreError> {
+        let row: Option<(i64, Vec<u8>)> = self
+            .conn
+            .query_row(
+                "SELECT scheme, hash FROM pq_holders WHERE idx = ?1",
+                params![idx],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        match row {
+            None => Ok(None),
+            Some((scheme, hash)) => owner_of(scheme, &hash),
+        }
+    }
+
+    /// Cache the Falcon holder id of holder index `idx`.
+    pub fn set_pq_holder(&self, idx: u32, id: &crate::pq::PqKeyId) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO pq_holders (idx, scheme, hash) VALUES (?1, ?2, ?3)",
             params![idx, id.scheme as i64, id.hash.as_slice()],
         )?;
         Ok(())
