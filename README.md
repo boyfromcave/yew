@@ -254,8 +254,8 @@ wraps it for YEW: directory `~/yb-devnet-w0c`, port seed 9, `lightwalletd-dd --y
 
 ```bash
 scripts/devnet-w4.sh up | status | down [--wipe]
-scripts/run-ios.sh [host:port] [--test m1|m2]       # default server 127.0.0.1:9267
-scripts/run-android.sh [host:port] [--test m1|m2]   # default server 10.0.2.2:9267 (the emulator's name for the host)
+scripts/run-ios.sh [host:port] [--test m1|m2|q]     # default server 127.0.0.1:9267
+scripts/run-android.sh [host:port] [--test m1|m2|q] # default server 10.0.2.2:9267 (the emulator's name for the host)
 ```
 
 **In the app**: Create, accept the trust statement, network **regtest**, server as above with
@@ -280,6 +280,26 @@ you to fund or mine, and wait up to three minutes. `m1` passes on both platforms
 the mint estimate and stops because the node's minimum mint is $100 while the test's amounts
 were written smaller (see [What is left](#what-is-left)).
 
+**The post-quantum flow (`q`) runs unattended.** It needs a quantum devnet with Falcon active
+from the start, as on mainnet, and `scripts/devnet-operator.py`, a small HTTP server on the
+host that funds and mines when the test asks (it binds 127.0.0.1; the emulator reaches it as
+`10.0.2.2`). Node 0 needs YED to send, e.g. `dn cli -- yed_mint 300000 48 "" "" false` and two
+mined blocks:
+
+```bash
+YEW_PQ_FALCON_HEIGHT=1 YELLOWBACK_DEVNET_PORTSEED=<seed> YEW_LWD_PORT=<lwd> scripts/devnet-falcon.sh up
+YEW_DEVNET_TOOL=... YELLOWBACK_DEVNET_DIR=... YELLOWBACK_DEVNET_PORTSEED=<seed> scripts/devnet-operator.py --port <op> &
+YEW_OPERATOR=127.0.0.1:<op> scripts/run-ios.sh 127.0.0.1:<lwd> --test q
+YEW_OPERATOR=10.0.2.2:<op> scripts/run-android.sh 10.0.2.2:<lwd> --test q
+```
+
+It checks the 53-character Falcon receive address on screen, receives YEC and YED, sends YED
+from a Falcon input, mints $100.00 with an SLH-DSA owner, redeems it in term from the Vault
+screen, restores the second wallet, and prints `YEW Q: timing` / `YEW Q: jank` lines.
+`cargo build -p yew-core --release --example pq_bench --target <device target>` times SLH-DSA
+and Falcon keygen/sign/verify on the device itself (`xcrun simctl spawn booted …`,
+`adb shell /data/local/tmp/pq_bench`).
+
 ## Testing
 
 | Level | Where | Runs |
@@ -289,7 +309,7 @@ were written smaller (see [What is left](#what-is-left)).
 | Widget | `app/test/` | `flutter test`; 29 tests over the fake bridge |
 | Devnet acceptance | `core/tests/devnet.rs` | `scripts/devnet-w1.sh test`, `devnet-w2.sh test`, `devnet-w4.sh test`; YEC round trip and restore, YED transfer and gate refusal, mint/redeem/claim/lapse/resume; `devnet-it.sh test [it|w4]` on the in-term line (early redeem in term, the in-term claim, listed-not-claimable refusal); `devnet-falcon.sh up && devnet-falcon.sh test` on the quantum line (Falcon YED holders across `-pqfalconheight`); nightly, not CI |
 | Shielded devnet | `core/tests/devnet.rs` `s2_` | `scripts/devnet-s2.sh dd <seed>` and `scripts/devnet-s2.sh 6 <seed>` (the 4.5.0 and 6.21.0 node lines; builds lightwalletd-dd 0b3448e+, needs the Sapling parameters on the machine): restore with a memo, z→z with a memo confirmed by `z_listreceivedbyaddress`, z→t with `revealsShielded`, transparent fallback, transparent YEC and YED regressions, no spending key in any file; `s4_`: move 1 YEC to private, 0.5 YEC to public, all to private, the mint shortfall to public and the mint, with YED and the fee reserve untouched and balances exact; `s5_`: restore with a birthday (at, after and without one), reorgs under a synced wallet (re-mined, dropped and re-mined, a send dropped past its expiry) with lightwalletd-dd following, an interrupted sync (future dropped, process killed) resuming to the same state |
-| Device integration | `app/integration_test/` | `scripts/run-ios.sh --test m1`, `run-android.sh --test m1` |
+| Device integration | `app/integration_test/` | `scripts/run-ios.sh --test m1`, `run-android.sh --test m1`; `--test q` on the quantum line (Falcon receive/send, SLH-DSA mint and redeem, restore; unattended with `scripts/devnet-operator.py`) |
 
 `ywallet_derivation_vector` is `#[ignore]`d until `core/tests/vectors/ywallet.json` is filled
 from a Ywallet desktop build.
@@ -364,10 +384,13 @@ Everything below needs a device, an account, a public server or a decision:
    lightwalletd-dd with `GetChainInfo`. (Restore with a birthday, reorgs and interrupted sync
    run on both node lines in `s5_`; the private screens ran on the iOS simulator against both.)
 7. **Post-quantum line (rpcversion 7)**: sending YEC to `sq…` addresses once the node decodes
-   them; a residual released by another party is a PQ coin YEW cannot find; Falcon signing on
-   a real phone (the C cross-compiles for every app target; speed and the device keystore are
-   unmeasured) (`docs/design-notes.md` "Q7"). Falcon YED holders are done: YED is received,
-   held and sent as Falcon `TX_PQPKH` from the Falcon height (mainnet and testnet: day one).
+   them; a residual released by another party is a PQ coin YEW cannot find; signing on a real
+   phone and the device keystore (`docs/design-notes.md` "Q7"). Falcon YED holders are done:
+   YED is received, held and sent as Falcon `TX_PQPKH` from the Falcon height (mainnet and
+   testnet: day one). The `q` device flow passes on the iOS simulator and the arm64 Android
+   emulator; `pq_bench` there (Apple-silicon host, so near desktop speed, not a phone's): SLH-DSA
+   keygen ~85 ms, sign ~0.75-0.8 s, verify 0.5 ms; Falcon keygen ~10 ms, sign ~3 ms. Signing
+   runs on the bridge's worker thread: the UI kept drawing through the SLH-DSA redeem preview.
 
 ## Further reading
 
