@@ -326,8 +326,12 @@ pub enum IntentState {
     Pending,
     /// The release was broadcast.
     Releasing,
-    /// The release confirmed: the value is the recipient's YEC.
+    /// The release confirmed: the value is the recipient's YEC — or, for a residual paying the
+    /// vault owner's `PQPKH` (quantum spec F-3), a post-quantum coin still to be moved to a
+    /// P2PKH key ([`IntentRow::pq_spend_txid`]).
     Released,
+    /// A residual's post-quantum coin was moved to an own P2PKH key, confirmed (schema v5).
+    Swept,
     /// The attestor set cancelled the claim (I-2): the collateral went back into the vault and
     /// the claim's burn is not refunded (U-24).
     Cancelled,
@@ -341,6 +345,7 @@ impl IntentState {
             IntentState::Releasing => "RELEASING",
             IntentState::Released => "RELEASED",
             IntentState::Cancelled => "CANCELLED",
+            IntentState::Swept => "SWEPT",
         }
     }
 
@@ -351,6 +356,7 @@ impl IntentState {
             "RELEASING" => IntentState::Releasing,
             "RELEASED" => IntentState::Released,
             "CANCELLED" => IntentState::Cancelled,
+            "SWEPT" => IntentState::Swept,
             _ => return None,
         })
     }
@@ -386,6 +392,9 @@ pub struct IntentRow {
     pub state: IntentState,
     /// The release (or cancel) transaction, zero until known.
     pub spend_txid: [u8; 32],
+    /// A residual paying the owner's `PQPKH`: the transaction moving that post-quantum coin
+    /// (`spend_txid:0`) to an own P2PKH key, zero until broadcast (schema v5).
+    pub pq_spend_txid: [u8; 32],
     /// What the screen says about it.
     pub note: String,
 }
@@ -469,7 +478,7 @@ CREATE TABLE IF NOT EXISTS claim_intents (
   txid BLOB NOT NULL, n INTEGER NOT NULL, vault_txid BLOB NOT NULL, role TEXT NOT NULL,
   value INTEGER NOT NULL, recipient_script BLOB NOT NULL, intent_script BLOB NOT NULL,
   delay INTEGER NOT NULL, height INTEGER NOT NULL, state TEXT NOT NULL, spend_txid BLOB NOT NULL,
-  note TEXT NOT NULL DEFAULT '', PRIMARY KEY (txid, n));
+  note TEXT NOT NULL DEFAULT '', pq_spend_txid BLOB NOT NULL DEFAULT x'', PRIMARY KEY (txid, n));
 ";
 
 /// The additive v1 → v2 migration (W2).
@@ -581,6 +590,18 @@ impl Store {
             conn.execute_batch(MIGRATE_4_TO_5)?;
         }
         conn.execute_batch(SCHEMA)?;
+        // v5: `claim_intents.pq_spend_txid` (the table is additive, so a v3/v4 file may or may
+        // not have it; added here, after SCHEMA, whenever it is missing).
+        let has_pq_spend: bool = conn
+            .prepare(
+                "SELECT 1 FROM pragma_table_info('claim_intents') WHERE name = 'pq_spend_txid'",
+            )?
+            .exists([])?;
+        if !has_pq_spend {
+            conn.execute_batch(
+                "ALTER TABLE claim_intents ADD COLUMN pq_spend_txid BLOB NOT NULL DEFAULT x'';",
+            )?;
+        }
         // v2 → v3 (W4) is the two new tables SCHEMA just created; v3 → v4 and v4 → v5 the
         // columns above; v5's `pq_owners` comes from SCHEMA.
         if matches!(
@@ -1345,10 +1366,11 @@ impl Store {
     pub fn upsert_intent(&self, i: &IntentRow) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT OR REPLACE INTO claim_intents (txid, n, vault_txid, role, value, recipient_script, intent_script, delay,
-               height, state, spend_txid, note) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+               height, state, spend_txid, note, pq_spend_txid) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 i.outpoint.txid.as_slice(), i.outpoint.n, i.vault_txid.as_slice(), i.role, i.value, i.recipient_script,
-                i.intent_script, i.delay, i.height as i64, i.state.as_str(), i.spend_txid.as_slice(), i.note
+                i.intent_script, i.delay, i.height as i64, i.state.as_str(), i.spend_txid.as_slice(), i.note,
+                if i.pq_spend_txid == [0; 32] { &[][..] } else { i.pq_spend_txid.as_slice() }
             ],
         )?;
         Ok(())
@@ -1357,8 +1379,8 @@ impl Store {
     /// Every intent row, newest claim first.
     pub fn intents(&self) -> Result<Vec<IntentRow>, StoreError> {
         let mut st = self.conn.prepare(
-            "SELECT txid, n, vault_txid, role, value, recipient_script, intent_script, delay, height, state, spend_txid, note
-               FROM claim_intents ORDER BY height DESC, txid, n",
+            "SELECT txid, n, vault_txid, role, value, recipient_script, intent_script, delay, height, state, spend_txid, note,
+               pq_spend_txid FROM claim_intents ORDER BY height DESC, txid, n",
         )?;
         let rows = st.query_map([], |r| {
             Ok((
@@ -1374,11 +1396,13 @@ impl Store {
                 r.get::<_, String>(9)?,
                 r.get::<_, Vec<u8>>(10)?,
                 r.get::<_, String>(11)?,
+                r.get::<_, Vec<u8>>(12)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (txid, n, vault, role, value, rs, is, delay, height, state, spend, note) = row?;
+            let (txid, n, vault, role, value, rs, is, delay, height, state, spend, note, pq_spend) =
+                row?;
             out.push(IntentRow {
                 outpoint: OutPoint {
                     txid: arr32(&txid)?,
@@ -1394,6 +1418,11 @@ impl Store {
                 state: IntentState::parse(&state)
                     .ok_or_else(|| StoreError::Corrupt(format!("intent state {state:?}")))?,
                 spend_txid: arr32(&spend)?,
+                pq_spend_txid: if pq_spend.is_empty() {
+                    [0; 32]
+                } else {
+                    arr32(&pq_spend)?
+                },
                 note,
             });
         }

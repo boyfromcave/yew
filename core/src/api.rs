@@ -568,7 +568,10 @@ pub struct AddressCheck {
     /// Parses for the network.
     pub valid: bool,
     /// `p2pkh` / `p2sh`, `sapling` for a private address (`ys1…` / `ytestsapling1…` /
-    /// `yregtestsapling1…`), empty when invalid.
+    /// `yregtestsapling1…`); for the 53-character post-quantum forms (rpcversion 7, D-Q-20):
+    /// `pq` (a Falcon YED holder address: valid, it receives YED once Falcon is active),
+    /// `pq_owner` (an SLH-DSA vault-owner address: never a payment address, C-10) and `pq_yec`
+    /// (`sq…`/`tq…`/`rq…`, recognised; YEW cannot send to it yet). Empty when unknown.
     pub kind: String,
     /// The `yb…` form was given.
     pub yellowback_form: bool,
@@ -853,7 +856,8 @@ pub struct ClaimIntent {
     pub role: String,
     /// The intent's value, zat (what the release pays).
     pub value_zat: i64,
-    /// `PENDING`, `RELEASING`, `RELEASED` or `CANCELLED`.
+    /// `PENDING`, `RELEASING`, `RELEASED`, `CANCELLED` or `SWEPT` (a residual's post-quantum
+    /// coin moved to the wallet).
     pub state: String,
     /// The height the claim confirmed at, 0 while unconfirmed.
     pub height: i64,
@@ -861,8 +865,12 @@ pub struct ClaimIntent {
     pub release_height: i64,
     /// Blocks until then (0 once reached).
     pub blocks_until_release: i64,
-    /// The release can be built now.
+    /// The release can be built now — or, with [`ClaimIntent::pq_move`], the move.
     pub releasable: bool,
+    /// The residual was released to the vault owner's post-quantum key (quantum spec F-3) and
+    /// [`release_preview`] now builds the move of that coin into the wallet (one ~8 KB
+    /// post-quantum spend; its size-priced fee comes out of the coin).
+    pub pq_move: bool,
     /// The attestor set cancelled the claim: the collateral went back into the vault and the
     /// claim's burn is not refunded (U-24).
     pub cancelled: bool,
@@ -874,18 +882,22 @@ pub struct ClaimIntent {
     pub note: String,
 }
 
-/// [`release_preview`]: the signed RELEASE waiting for [`release_confirm`].
+/// [`release_preview`]: the signed RELEASE (or post-quantum move) waiting for [`release_confirm`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReleasePreview {
     /// Pass to [`release_confirm`].
     pub preview_id: String,
+    /// `release`, or `pq_move` (a released residual's post-quantum coin into the wallet).
+    pub kind: String,
     /// The intent released, `txid:n`.
     pub intent: String,
-    /// What the release pays, zat.
+    /// What the recipient receives, zat.
     pub value_zat: i64,
-    /// The own address it pays.
+    /// The address it pays: an own `s…` key, or (a residual's release) the vault owner's
+    /// 53-character post-quantum address.
     pub recipient_address: String,
-    /// The network fee, zat (from the wallet's YEC).
+    /// The network fee, zat: from the wallet's YEC (a release), or out of the coin, priced by
+    /// size (a move: `max(1,000, pqfeerate × size)`).
     pub fee_zat: i64,
     /// The txid the broadcast will have.
     pub txid: String,
@@ -1354,7 +1366,29 @@ pub fn validate_address(network: NetworkId, address: String) -> AddressCheck {
             message: String::new(),
         };
     }
-    match keys::parse_address(network.to_network(), address.trim()) {
+    let net = network.to_network();
+    if let Ok(id) = keys::parse_pq_address(net, address.trim()) {
+        let falcon = id.scheme == crate::pq::SCHEME_FN_DSA_512;
+        return AddressCheck {
+            valid: falcon,
+            kind: if falcon { "pq" } else { "pq_owner" }.into(),
+            yellowback_form: true,
+            message: if falcon {
+                String::new()
+            } else {
+                keys::KeyError::PqOwnerAddress(address.trim().into()).to_string()
+            },
+        };
+    }
+    if keys::parse_pq_yec_address(net, address.trim()).is_ok() {
+        return AddressCheck {
+            valid: false,
+            kind: "pq_yec".into(),
+            yellowback_form: false,
+            message: keys::KeyError::PqYecAddress(address.trim().into()).to_string(),
+        };
+    }
+    match keys::parse_address(net, address.trim()) {
         Ok(a) => AddressCheck {
             valid: true,
             kind: match a.kind {
@@ -2579,6 +2613,7 @@ fn claim_intent_of(
             (rh as i64 - (tip as i64 + 1)).max(0)
         },
         releasable: crate::build::release::not_releasable(i, tip).is_none(),
+        pq_move: crate::build::release::pq_coin(i).is_some(),
         cancelled: i.state == crate::store::IntentState::Cancelled,
         release_time_secs: if rh == 0 {
             0
@@ -2943,10 +2978,15 @@ pub fn release_preview(intent: String) -> Result<ReleasePreview, YewError> {
             let id = txid_hex(&p.txid);
             let out = ReleasePreview {
                 preview_id: id.clone(),
+                kind: match p.kind {
+                    crate::build::release::ReleaseKind::Release => "release",
+                    crate::build::release::ReleaseKind::PqSweep => "pq_move",
+                }
+                .into(),
                 intent: format!("{}:{}", txid_hex(&p.intent.txid), p.intent.n),
                 value_zat: p.value,
                 recipient_address: p.recipient_address.clone(),
-                fee_zat: crate::params::FEE_ZAT,
+                fee_zat: p.fee,
                 txid: id.clone(),
             };
             o.previews.insert(id, Preview::Release(p));
@@ -3504,6 +3544,34 @@ mod tests {
         assert!(ok.valid && ok.yellowback_form && ok.kind == "p2pkh");
         let bad = validate_address(NetworkId::Regtest, "ye-not-an-address".into());
         assert!(!bad.valid && !bad.message.is_empty());
+        // The post-quantum forms (rpcversion 7; D-Q-20): a Falcon holder is valid (the builder
+        // applies the Falcon rule), an SLH-DSA owner never a payment address (C-10), sq… known.
+        let id = |scheme| crate::pq::PqKeyId {
+            scheme,
+            hash: [3; 32],
+        };
+        let f = validate_address(
+            NetworkId::Regtest,
+            keys::encode_pq_yellowback(Network::Regtest, &id(2)).unwrap(),
+        );
+        assert!(f.valid && f.kind == "pq" && f.yellowback_form);
+        let o = validate_address(
+            NetworkId::Regtest,
+            keys::encode_pq_yellowback(Network::Regtest, &id(1)).unwrap(),
+        );
+        assert!(!o.valid && o.kind == "pq_owner" && o.message.contains("vault-owner"));
+        let q = validate_address(
+            NetworkId::Regtest,
+            keys::encode_pq_yec(Network::Regtest, &id(1)).unwrap(),
+        );
+        assert!(!q.valid && q.kind == "pq_yec" && q.message.contains("post-quantum YEC"));
+        // a mainnet PQ address on regtest is nothing
+        assert!(validate_address(
+            NetworkId::Regtest,
+            keys::encode_pq_yellowback(Network::Mainnet, &id(2)).unwrap()
+        )
+        .kind
+        .is_empty());
         // Private addresses are kind `sapling` on their own network only (S4; the app no longer
         // guesses by prefix).
         for (net, id) in [

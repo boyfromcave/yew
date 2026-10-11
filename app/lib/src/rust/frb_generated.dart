@@ -1730,8 +1730,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ClaimIntent dco_decode_claim_intent(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 13)
-      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
     return ClaimIntent(
       intent: dco_decode_String(arr[0]),
       vaultTxid: dco_decode_String(arr[1]),
@@ -1742,10 +1742,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       releaseHeight: dco_decode_i_64(arr[6]),
       blocksUntilRelease: dco_decode_i_64(arr[7]),
       releasable: dco_decode_bool(arr[8]),
-      cancelled: dco_decode_bool(arr[9]),
-      releaseTimeSecs: dco_decode_i_64(arr[10]),
-      spendTxid: dco_decode_String(arr[11]),
-      note: dco_decode_String(arr[12]),
+      pqMove: dco_decode_bool(arr[9]),
+      cancelled: dco_decode_bool(arr[10]),
+      releaseTimeSecs: dco_decode_i_64(arr[11]),
+      spendTxid: dco_decode_String(arr[12]),
+      note: dco_decode_String(arr[13]),
     );
   }
 
@@ -2175,15 +2176,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ReleasePreview dco_decode_release_preview(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
     return ReleasePreview(
       previewId: dco_decode_String(arr[0]),
-      intent: dco_decode_String(arr[1]),
-      valueZat: dco_decode_i_64(arr[2]),
-      recipientAddress: dco_decode_String(arr[3]),
-      feeZat: dco_decode_i_64(arr[4]),
-      txid: dco_decode_String(arr[5]),
+      kind: dco_decode_String(arr[1]),
+      intent: dco_decode_String(arr[2]),
+      valueZat: dco_decode_i_64(arr[3]),
+      recipientAddress: dco_decode_String(arr[4]),
+      feeZat: dco_decode_i_64(arr[5]),
+      txid: dco_decode_String(arr[6]),
     );
   }
 
@@ -2573,6 +2575,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_releaseHeight = sse_decode_i_64(deserializer);
     var var_blocksUntilRelease = sse_decode_i_64(deserializer);
     var var_releasable = sse_decode_bool(deserializer);
+    var var_pqMove = sse_decode_bool(deserializer);
     var var_cancelled = sse_decode_bool(deserializer);
     var var_releaseTimeSecs = sse_decode_i_64(deserializer);
     var var_spendTxid = sse_decode_String(deserializer);
@@ -2587,6 +2590,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       releaseHeight: var_releaseHeight,
       blocksUntilRelease: var_blocksUntilRelease,
       releasable: var_releasable,
+      pqMove: var_pqMove,
       cancelled: var_cancelled,
       releaseTimeSecs: var_releaseTimeSecs,
       spendTxid: var_spendTxid,
@@ -3183,6 +3187,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ReleasePreview sse_decode_release_preview(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_previewId = sse_decode_String(deserializer);
+    var var_kind = sse_decode_String(deserializer);
     var var_intent = sse_decode_String(deserializer);
     var var_valueZat = sse_decode_i_64(deserializer);
     var var_recipientAddress = sse_decode_String(deserializer);
@@ -3190,6 +3195,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_txid = sse_decode_String(deserializer);
     return ReleasePreview(
       previewId: var_previewId,
+      kind: var_kind,
       intent: var_intent,
       valueZat: var_valueZat,
       recipientAddress: var_recipientAddress,
@@ -3655,6 +3661,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_64(self.releaseHeight, serializer);
     sse_encode_i_64(self.blocksUntilRelease, serializer);
     sse_encode_bool(self.releasable, serializer);
+    sse_encode_bool(self.pqMove, serializer);
     sse_encode_bool(self.cancelled, serializer);
     sse_encode_i_64(self.releaseTimeSecs, serializer);
     sse_encode_String(self.spendTxid, serializer);
@@ -4089,6 +4096,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.previewId, serializer);
+    sse_encode_String(self.kind, serializer);
     sse_encode_String(self.intent, serializer);
     sse_encode_i_64(self.valueZat, serializer);
     sse_encode_String(self.recipientAddress, serializer);

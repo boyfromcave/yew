@@ -50,6 +50,23 @@ void main() {
     expect(find.text('Released'), findsOneWidget);
   });
 
+  testWidgets('a residual released to the vault-owner key offers the move into the wallet (quantum F-3)', (tester) async {
+    final h = Harness(withWallet: true);
+    final i = h.api.intent(txid: 'a6' * 32, role: 'residual', state: 'RELEASED', height: 470, valueZat: 300000, pqMove: true);
+    h.api.intentsAnswer = [i, h.api.intent(txid: 'a7' * 32, role: 'residual', state: 'SWEPT', height: 460)];
+    await openYellowback(tester, h);
+    expect(find.text('residual of your claimed vault · released to your vault-owner key · move it to your wallet'), findsOneWidget);
+    expect(find.text('residual of your claimed vault · released and moved to your wallet'), findsOneWidget);
+    await tester.tap(find.byKey(Key('intent-${i.intent}')));
+    await tester.pumpAndSettle();
+    expect(find.text('Move to wallet'), findsOneWidget);
+    expect(find.textContaining('one post-quantum signature (about 8 KB)'), findsOneWidget);
+    expect(find.text('0.00001000 YEC (out of the residual, priced by size)'), findsOneWidget);
+    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('releaseConfirm rl-${i.intent}'));
+  });
+
   testWidgets('a pending (not yet mature) claim is not tappable; a claimed own vault reads CLAIMING', (tester) async {
     final h = Harness(withWallet: true);
     final i = h.api.intent(txid: 'a1' * 32, height: 480);

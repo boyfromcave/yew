@@ -16,6 +16,14 @@ address shows its amount on the chain.
 Your keys never leave this device. The seed is kept in the phone's secure keystore, and every
 signature is made in the wallet's own core. No server can spend your YEC or your YED.
 
+Your vaults are owned by a post-quantum key (SLH-DSA), made from your seed on this phone. It
+protects who can spend a vault: the owner's signature is designed to resist a quantum computer.
+It does not make the rest of the wallet post-quantum: public YEC and YED are held by ordinary
+keys, and private (Sapling) YEC is not post-quantum either. A vault-owner key cannot be kept on
+a hardware wallet, watched from another wallet, or shared as an extended public key (xpub): only
+your seed, in a wallet that knows post-quantum keys, can spend a vault. A vault-owner address
+(53 characters) names a vault; it is never an address to receive YED or YEC.
+
 For what it knows about the chain, YEW trusts one light-client server: the one named in
 Settings. That server tells the wallet which coins exist, which of them are YED, the current
 price, and whether a transaction it is about to send is sound. A dishonest server cannot spend

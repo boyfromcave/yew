@@ -17,6 +17,8 @@ import 'package:yew_app/state/secrets.dart';
 
 const fakeYe = 'yr1qkfcjyqz9y4d3qz9v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8';
 const fakeS = 'smV6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v';
+/// A regtest post-quantum vault-owner address (53 characters, rpcversion 7).
+const fakeOwnerPq = 'yrPq8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8vOwn';
 const fakeZ = 'yregtestsapling1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfake';
 const fakeZ2 = 'yregtestsapling1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzsecond';
 const fakeWords = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -127,7 +129,7 @@ class FakeWalletApi implements WalletApi {
   VaultSummary vault({required String txid, String status = 'ACTIVE', int cents = 2500, int lockHeight = 528, int tip = 484, bool underwater = false, String voidReason = '', int grace = 20, int claimPrice = 520000}) => VaultSummary(
     vaultTxid: txid,
     status: status,
-    ownerAddress: fakeYe,
+    ownerAddress: fakeOwnerPq,
     termClass: 'A',
     cents: cents,
     collateralZat: 950000000,
@@ -141,6 +143,7 @@ class FakeWalletApi implements WalletApi {
     blocksUntilTermEnd: lockHeight > tip ? lockHeight - tip : 0,
     earlyRedeem: status == 'ACTIVE' && tip + 1 < lockHeight,
     earlyRedeemFeeZat: status == 'ACTIVE' && tip + 1 < lockHeight ? 47500000 : 0,
+    earlyRedeemFeeUsdCents: status == 'ACTIVE' && tip + 1 < lockHeight ? 24 : 0,
     earlyRedeemFeeBps: 500,
     inTermClaims: true,
     claimThresholdBps: 12500,
@@ -164,7 +167,7 @@ class FakeWalletApi implements WalletApi {
     reopened: status == 'REOPENED',
   );
 
-  ClaimIntent intent({required String txid, String role = 'claimant', String state = 'PENDING', int height = 480, int delay = 10, int tip = 484, int valueZat = 937499000}) {
+  ClaimIntent intent({required String txid, String role = 'claimant', String state = 'PENDING', int height = 480, int delay = 10, int tip = 484, int valueZat = 937499000, bool pqMove = false}) {
     final release = height == 0 ? 0 : height + delay;
     return ClaimIntent(
       intent: '$txid:0',
@@ -175,7 +178,8 @@ class FakeWalletApi implements WalletApi {
       height: height,
       releaseHeight: release,
       blocksUntilRelease: release == 0 ? 0 : (release - (tip + 1)).clamp(0, 1 << 30),
-      releasable: state == 'PENDING' && height > 0 && release <= tip + 1,
+      releasable: pqMove || (state == 'PENDING' && height > 0 && release <= tip + 1),
+      pqMove: pqMove,
       cancelled: state == 'CANCELLED',
       releaseTimeSecs: nowSecs + (release - tip) * 75,
       spendTxid: '',
@@ -289,8 +293,10 @@ class FakeWalletApi implements WalletApi {
       feeZat: v.releasable ? 0 : 50000000 + early,
       enforcementFeeZat: v.releasable ? 0 : 50000000,
       earlyRedeemFeeZat: early,
+      earlyRedeemFeeUsdCents: early > 0 ? 24 : 0,
       lockHeight: v.lockHeight,
       payee: v.releasable ? '' : payee,
+      networkFeeZat: 1000,
       collateralZat: v.collateralZat - (v.releasable ? 1000 : 50001000 + early),
       collateralAddress: fakeS,
       lockTime: v.lockHeight,
@@ -348,7 +354,7 @@ class FakeWalletApi implements WalletApi {
     calls.add('releasePreview $intent');
     if (releaseError != null) throw releaseError!;
     final i = intentsAnswer.firstWhere((x) => x.intent == intent);
-    return ReleasePreview(previewId: 'rl-$intent', intent: intent, valueZat: i.valueZat, recipientAddress: fakeS, feeZat: 1000, txid: 're' * 32);
+    return ReleasePreview(previewId: 'rl-$intent', kind: i.pqMove ? 'pq_move' : 'release', intent: intent, valueZat: i.pqMove ? i.valueZat - 1000 : i.valueZat, recipientAddress: i.pqMove || i.role != 'residual' ? fakeS : fakeOwnerPq, feeZat: 1000, txid: 're' * 32);
   }
 
   @override
@@ -359,7 +365,7 @@ class FakeWalletApi implements WalletApi {
     intentsAnswer = [
       for (final x in intentsAnswer)
         if (x.intent == intent)
-          ClaimIntent(intent: x.intent, vaultTxid: x.vaultTxid, role: x.role, valueZat: x.valueZat, state: 'RELEASING', height: x.height, releaseHeight: x.releaseHeight, blocksUntilRelease: 0, releasable: false, cancelled: false, releaseTimeSecs: x.releaseTimeSecs, spendTxid: 're' * 32, note: '')
+          ClaimIntent(intent: x.intent, vaultTxid: x.vaultTxid, role: x.role, valueZat: x.valueZat, state: 'RELEASING', height: x.height, releaseHeight: x.releaseHeight, blocksUntilRelease: 0, releasable: false, pqMove: false, cancelled: false, releaseTimeSecs: x.releaseTimeSecs, spendTxid: 're' * 32, note: '')
         else
           x,
     ];

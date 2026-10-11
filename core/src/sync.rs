@@ -741,6 +741,7 @@ async fn record_residual_intents(
             height: i.height.max(0) as u64,
             state: IntentState::Pending,
             spend_txid: [0; 32],
+            pq_spend_txid: [0; 32],
             note: format!(
                 "your vault {} was claimed: the RED-5 residual is yours after the claim delay",
                 &txid_hex(&vault_txid)[..8]
@@ -770,6 +771,28 @@ pub async fn refresh_intents(
     let set_hex = txid_hex(&vt.attestor_set_id);
     let mut live: Option<HashSet<OutPoint>> = None;
     for i in wallet.store.intents()? {
+        // A released residual's post-quantum coin being moved (quantum spec F-3): confirmed ⇒
+        // `Swept`; dropped unconfirmed ⇒ offered again.
+        if i.state == IntentState::Released && i.pq_spend_txid != [0; 32] {
+            let mut row = i.clone();
+            if confirmed_height(wallet, &i.pq_spend_txid)?.is_some() {
+                row.state = IntentState::Swept;
+                row.note = "the residual is in your wallet".into();
+            } else if wallet
+                .store
+                .pending_txs()?
+                .iter()
+                .all(|(t, _, _)| *t != i.pq_spend_txid)
+            {
+                row.pq_spend_txid = [0; 32];
+                row.note = "the move expired unconfirmed; move it again".into();
+            }
+            if row != i {
+                wallet.store.upsert_intent(&row)?;
+                moved += 1;
+            }
+            continue;
+        }
         if !i.state.open() {
             continue;
         }
@@ -782,7 +805,11 @@ pub async fn refresh_intents(
         if row.state == IntentState::Releasing {
             if confirmed_height(wallet, &row.spend_txid)?.is_some() {
                 row.state = IntentState::Released;
-                row.note = "released".into();
+                row.note = if crate::build::release::pq_coin(&row).is_some() {
+                    "released to your vault-owner (post-quantum) key: move it to your wallet".into()
+                } else {
+                    "released".into()
+                };
             } else if wallet
                 .store
                 .pending_txs()?
@@ -830,8 +857,14 @@ pub async fn refresh_intents(
             if !alive {
                 if row.role == crate::build::claim::ROLE_RESIDUAL || status == "CLAIMED" {
                     row.state = IntentState::Released;
-                    row.note =
-                        "released (by another party: a release needs no signature, U-15)".into();
+                    row.note = if crate::pq::pqpkh_of(&row.recipient_script).is_some() {
+                        // The coin is `PQPKH(owner)` in a transaction this wallet did not make:
+                        // post-quantum outputs are not address-indexed, so YEW cannot find it
+                        // (a recorded gap; the funds stay the owner key's, restorable from the seed).
+                        "released by another party to your vault-owner (post-quantum) key; this version of YEW cannot find that coin to move it".into()
+                    } else {
+                        "released (by another party: a release needs no signature, U-15)".into()
+                    };
                 } else {
                     row.state = IntentState::Cancelled;
                     row.note = "cancelled by the attestor set: the collateral went back into the vault and the claim's burn is not refunded (U-24)".into();

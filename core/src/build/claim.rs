@@ -840,6 +840,7 @@ pub async fn finish(
         height: 0,
         state: IntentState::Pending,
         spend_txid: [0; 32],
+        pq_spend_txid: [0; 32],
         note: format!(
             "claim of vault {}: released {} blocks after it confirms unless an attestor cancels it",
             &txid_hex(&m.vault_txid)[..8],

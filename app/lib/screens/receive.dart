@@ -66,7 +66,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                       caption: switch (kind) {
                         ReceiveKind.shielded => 'Send YEC here privately. The amount and any message are hidden on the chain.',
                         ReceiveKind.transparent => 'Your public Ycash address, for any Ycash wallet (YecWallet, Ywallet).',
-                        ReceiveKind.yed => 'Send YED or YEC here. Same key as your public address.',
+                        ReceiveKind.yed => 'Send YED or YEC here: the same key as your public address. A vault-owner address (53 characters) is never a receive address.',
                       },
                     ),
                   const SizedBox(height: 16),

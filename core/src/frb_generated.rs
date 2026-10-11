@@ -1693,6 +1693,7 @@ impl SseDecode for crate::api::ClaimIntent {
         let mut var_releaseHeight = <i64>::sse_decode(deserializer);
         let mut var_blocksUntilRelease = <i64>::sse_decode(deserializer);
         let mut var_releasable = <bool>::sse_decode(deserializer);
+        let mut var_pqMove = <bool>::sse_decode(deserializer);
         let mut var_cancelled = <bool>::sse_decode(deserializer);
         let mut var_releaseTimeSecs = <i64>::sse_decode(deserializer);
         let mut var_spendTxid = <String>::sse_decode(deserializer);
@@ -1707,6 +1708,7 @@ impl SseDecode for crate::api::ClaimIntent {
             release_height: var_releaseHeight,
             blocks_until_release: var_blocksUntilRelease,
             releasable: var_releasable,
+            pq_move: var_pqMove,
             cancelled: var_cancelled,
             release_time_secs: var_releaseTimeSecs,
             spend_txid: var_spendTxid,
@@ -2373,6 +2375,7 @@ impl SseDecode for crate::api::ReleasePreview {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_previewId = <String>::sse_decode(deserializer);
+        let mut var_kind = <String>::sse_decode(deserializer);
         let mut var_intent = <String>::sse_decode(deserializer);
         let mut var_valueZat = <i64>::sse_decode(deserializer);
         let mut var_recipientAddress = <String>::sse_decode(deserializer);
@@ -2380,6 +2383,7 @@ impl SseDecode for crate::api::ReleasePreview {
         let mut var_txid = <String>::sse_decode(deserializer);
         return crate::api::ReleasePreview {
             preview_id: var_previewId,
+            kind: var_kind,
             intent: var_intent,
             value_zat: var_valueZat,
             recipient_address: var_recipientAddress,
@@ -2898,6 +2902,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::ClaimIntent {
             self.release_height.into_into_dart().into_dart(),
             self.blocks_until_release.into_into_dart().into_dart(),
             self.releasable.into_into_dart().into_dart(),
+            self.pq_move.into_into_dart().into_dart(),
             self.cancelled.into_into_dart().into_dart(),
             self.release_time_secs.into_into_dart().into_dart(),
             self.spend_txid.into_into_dart().into_dart(),
@@ -3371,6 +3376,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::ReleasePreview {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.preview_id.into_into_dart().into_dart(),
+            self.kind.into_into_dart().into_dart(),
             self.intent.into_into_dart().into_dart(),
             self.value_zat.into_into_dart().into_dart(),
             self.recipient_address.into_into_dart().into_dart(),
@@ -3782,6 +3788,7 @@ impl SseEncode for crate::api::ClaimIntent {
         <i64>::sse_encode(self.release_height, serializer);
         <i64>::sse_encode(self.blocks_until_release, serializer);
         <bool>::sse_encode(self.releasable, serializer);
+        <bool>::sse_encode(self.pq_move, serializer);
         <bool>::sse_encode(self.cancelled, serializer);
         <i64>::sse_encode(self.release_time_secs, serializer);
         <String>::sse_encode(self.spend_txid, serializer);
@@ -4259,6 +4266,7 @@ impl SseEncode for crate::api::ReleasePreview {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.preview_id, serializer);
+        <String>::sse_encode(self.kind, serializer);
         <String>::sse_encode(self.intent, serializer);
         <i64>::sse_encode(self.value_zat, serializer);
         <String>::sse_encode(self.recipient_address, serializer);

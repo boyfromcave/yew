@@ -33,14 +33,20 @@ void main() {
     expect(find.text('\$0.40 per YEC (under 125 % of the debt)'), findsOneWidget);
     expect(find.text('\$0.52 per YEC'), findsOneWidget);
     expect(find.byKey(const Key('claim-warning')), findsNothing);
-    expect(find.text('5 % · about 0.47500000 YEC'), findsOneWidget);
+    expect(find.text('5 % · about 0.47500000 YEC (about \$0.24)'), findsOneWidget);
+    // The owner is the vault's post-quantum address, labelled as such (C-10).
+    expect(find.text('Vault owner (post-quantum)'), findsOneWidget);
+    expect(find.text('Owner'), findsNothing);
     // Nothing is sent until the preview is on screen (audit G-2).
     await tester.tap(find.byKey(const Key('preview')));
     await tester.pumpAndSettle();
     expect(h.api.calls, contains('redeemPreview $txid'));
     expect(find.byKey(const Key('early-fee')), findsOneWidget);
-    expect(find.text('0.47500000 YEC (redeeming before the term ends at height 528)'), findsOneWidget);
+    expect(find.text('0.47500000 YEC (about \$0.24) (redeeming before the term ends at height 528)'), findsOneWidget);
+    // The size-priced network fee of the post-quantum owner spend.
+    expect(find.text('0.00001000 YEC (a post-quantum signature, ~8 KB)'), findsOneWidget);
     expect(find.text('0.50000000 YEC'), findsOneWidget); // the enforcement fee alone
+    await tester.scrollUntilVisible(find.byKey(const Key('slide-to-confirm')), 200, scrollable: find.byType(Scrollable).first);
     expect(find.text('Slide to redeem: burn \$25.00, pay 0.97500000 YEC in fees, early-redeem fee included'), findsOneWidget);
     expect(h.api.calls.where((c) => c.startsWith('redeemConfirm')), isEmpty);
     await tester.longPress(find.byKey(const Key('slide-to-confirm')));

@@ -321,7 +321,10 @@ class AddressCheck {
   final bool valid;
 
   /// `p2pkh` / `p2sh`, `sapling` for a private address (`ys1…` / `ytestsapling1…` /
-  /// `yregtestsapling1…`), empty when invalid.
+  /// `yregtestsapling1…`); for the 53-character post-quantum forms (rpcversion 7, D-Q-20):
+  /// `pq` (a Falcon YED holder address: valid, it receives YED once Falcon is active),
+  /// `pq_owner` (an SLH-DSA vault-owner address: never a payment address, C-10) and `pq_yec`
+  /// (`sq…`/`tq…`/`rq…`, recognised; YEW cannot send to it yet). Empty when unknown.
   final String kind;
 
   /// The `yb…` form was given.
@@ -527,7 +530,8 @@ class ClaimIntent {
   /// The intent's value, zat (what the release pays).
   final PlatformInt64 valueZat;
 
-  /// `PENDING`, `RELEASING`, `RELEASED` or `CANCELLED`.
+  /// `PENDING`, `RELEASING`, `RELEASED`, `CANCELLED` or `SWEPT` (a residual's post-quantum
+  /// coin moved to the wallet).
   final String state;
 
   /// The height the claim confirmed at, 0 while unconfirmed.
@@ -539,8 +543,13 @@ class ClaimIntent {
   /// Blocks until then (0 once reached).
   final PlatformInt64 blocksUntilRelease;
 
-  /// The release can be built now.
+  /// The release can be built now — or, with [`ClaimIntent::pq_move`], the move.
   final bool releasable;
+
+  /// The residual was released to the vault owner's post-quantum key (quantum spec F-3) and
+  /// [`release_preview`] now builds the move of that coin into the wallet (one ~8 KB
+  /// post-quantum spend; its size-priced fee comes out of the coin).
+  final bool pqMove;
 
   /// The attestor set cancelled the claim: the collateral went back into the vault and the
   /// claim's burn is not refunded (U-24).
@@ -565,6 +574,7 @@ class ClaimIntent {
     required this.releaseHeight,
     required this.blocksUntilRelease,
     required this.releasable,
+    required this.pqMove,
     required this.cancelled,
     required this.releaseTimeSecs,
     required this.spendTxid,
@@ -582,6 +592,7 @@ class ClaimIntent {
       releaseHeight.hashCode ^
       blocksUntilRelease.hashCode ^
       releasable.hashCode ^
+      pqMove.hashCode ^
       cancelled.hashCode ^
       releaseTimeSecs.hashCode ^
       spendTxid.hashCode ^
@@ -601,6 +612,7 @@ class ClaimIntent {
           releaseHeight == other.releaseHeight &&
           blocksUntilRelease == other.blocksUntilRelease &&
           releasable == other.releasable &&
+          pqMove == other.pqMove &&
           cancelled == other.cancelled &&
           releaseTimeSecs == other.releaseTimeSecs &&
           spendTxid == other.spendTxid &&
@@ -1816,21 +1828,26 @@ class RedeemResult {
           expiryHeight == other.expiryHeight;
 }
 
-/// [`release_preview`]: the signed RELEASE waiting for [`release_confirm`].
+/// [`release_preview`]: the signed RELEASE (or post-quantum move) waiting for [`release_confirm`].
 class ReleasePreview {
   /// Pass to [`release_confirm`].
   final String previewId;
 
+  /// `release`, or `pq_move` (a released residual's post-quantum coin into the wallet).
+  final String kind;
+
   /// The intent released, `txid:n`.
   final String intent;
 
-  /// What the release pays, zat.
+  /// What the recipient receives, zat.
   final PlatformInt64 valueZat;
 
-  /// The own address it pays.
+  /// The address it pays: an own `s…` key, or (a residual's release) the vault owner's
+  /// 53-character post-quantum address.
   final String recipientAddress;
 
-  /// The network fee, zat (from the wallet's YEC).
+  /// The network fee, zat: from the wallet's YEC (a release), or out of the coin, priced by
+  /// size (a move: `max(1,000, pqfeerate × size)`).
   final PlatformInt64 feeZat;
 
   /// The txid the broadcast will have.
@@ -1838,6 +1855,7 @@ class ReleasePreview {
 
   const ReleasePreview({
     required this.previewId,
+    required this.kind,
     required this.intent,
     required this.valueZat,
     required this.recipientAddress,
@@ -1848,6 +1866,7 @@ class ReleasePreview {
   @override
   int get hashCode =>
       previewId.hashCode ^
+      kind.hashCode ^
       intent.hashCode ^
       valueZat.hashCode ^
       recipientAddress.hashCode ^
@@ -1860,6 +1879,7 @@ class ReleasePreview {
       other is ReleasePreview &&
           runtimeType == other.runtimeType &&
           previewId == other.previewId &&
+          kind == other.kind &&
           intent == other.intent &&
           valueZat == other.valueZat &&
           recipientAddress == other.recipientAddress &&

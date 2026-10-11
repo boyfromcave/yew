@@ -154,12 +154,12 @@ class _VaultScreenState extends State<VaultScreen> {
                     PreviewRow('Term ends', 'height ${v.lockHeight}'),
                     if (v.status == 'ACTIVE') PreviewRow('Term ends on', formatDate(v.lockTimeSecs), key: const Key('lock-date')),
                     if (v.status == 'ACTIVE' && v.earlyRedeem)
-                      PreviewRow('Early-redeem fee now', '${formatBps(v.earlyRedeemFeeBps)} · about ${formatYec(v.earlyRedeemFeeZat)} YEC', key: const Key('early-fee-now')),
+                      PreviewRow('Early-redeem fee now', '${formatBps(v.earlyRedeemFeeBps)} · about ${formatYec(v.earlyRedeemFeeZat)} YEC${v.earlyRedeemFeeUsdCents > 0 ? ' (about ${formatYed(v.earlyRedeemFeeUsdCents)})' : ''}', key: const Key('early-fee-now')),
                     if (v.underwaterAtMicroUsd > 0)
                       PreviewRow('Claimable below', '${formatUsdPerYec(v.underwaterAtMicroUsd)} (under ${formatBps(v.claimThresholdBps)} of the debt)', key: const Key('claimable-at')),
                     if (v.claimPriceMicroUsd > 0) PreviewRow('Claim price now', formatUsdPerYec(v.claimPriceMicroUsd), key: const Key('claim-price')),
                     PreviewRow('Claimable now', v.claimable ? 'YES: redeem to stop it' : (v.nearThreshold ? 'no, but within ${formatBps(2500)} of it' : 'no'), key: const Key('claimable-state')),
-                    PreviewRow('Owner', shorten(v.ownerAddress, head: 14, tail: 8)),
+                    PreviewRow('Vault owner (post-quantum)', shorten(v.ownerAddress, head: 14, tail: 8), key: const Key('owner-pq')),
                     PreviewRow('Vault', shorten(v.vaultTxid)),
                     if (v.closingTxid.isNotEmpty) PreviewRow('Closed by', shorten(v.closingTxid)),
                   ],
@@ -256,8 +256,9 @@ class _RedeemPreviewCard extends StatelessWidget {
             if (p.changeCents > 0) PreviewRow('YED change', formatYed(p.changeCents)),
             PreviewRow('Enforcement fee', p.enforcementFeeZat > 0 ? '${formatYec(p.enforcementFeeZat)} YEC' : 'none'),
             if (p.earlyRedeemFeeZat > 0)
-              PreviewRow('Early-redeem fee', '${formatYec(p.earlyRedeemFeeZat)} YEC (redeeming before the term ends at height ${p.lockHeight})', key: const Key('early-fee'), emphasis: true),
+              PreviewRow('Early-redeem fee', '${formatYec(p.earlyRedeemFeeZat)} YEC${p.earlyRedeemFeeUsdCents > 0 ? ' (about ${formatYed(p.earlyRedeemFeeUsdCents)})' : ''} (redeeming before the term ends at height ${p.lockHeight})', key: const Key('early-fee'), emphasis: true),
             if (p.payee.isNotEmpty) PreviewRow('Fees paid to', shorten(p.payee, head: 10, tail: 6)),
+            PreviewRow('Network fee', '${formatYec(p.networkFeeZat)} YEC (a post-quantum signature, ~8 KB)', key: const Key('network-fee')),
             PreviewRow('To', shorten(p.collateralAddress, head: 14, tail: 8)),
             PreviewRow('Expires', 'height ${p.expiryHeight}'),
           ],

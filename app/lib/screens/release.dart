@@ -27,7 +27,10 @@ String intentLabel(ClaimIntent i) {
     case 'RELEASING':
       return '$what · release sent → waiting for 1 confirmation';
     case 'RELEASED':
+      if (i.pqMove) return '$what · released to your vault-owner key · move it to your wallet';
       return '$what · released';
+    case 'SWEPT':
+      return '$what · released and moved to your wallet';
     case 'CANCELLED':
       return 'claim cancelled by the attestor set: the collateral went back into the vault; the YED you burned is not refunded';
   }
@@ -120,13 +123,15 @@ class _ReleaseScreenState extends State<ReleaseScreen> {
     final p = _preview;
     final r = _result;
     return Scaffold(
-      appBar: AppBar(title: const Text('Release')),
+      appBar: AppBar(title: Text(widget.intent.pqMove ? 'Move to wallet' : 'Release')),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
           children: [
             Text(
-              widget.intent.role == 'residual'
+              widget.intent.pqMove
+                  ? 'The residual was released to your vault-owner (post-quantum) key. Move it to your wallet: one post-quantum signature (about 8 KB), its network fee paid out of the residual.'
+                  : widget.intent.role == 'residual'
                   ? 'Your vault was claimed. The part of its collateral above the claim (the residual) waited out the claim delay and is yours to release.'
                   : 'The claim delay is over and no attestor cancelled the claim: release the collateral to this wallet.',
               style: t.bodyMedium?.copyWith(color: c.pending),
@@ -166,14 +171,14 @@ class _ReleaseScreenState extends State<ReleaseScreen> {
                     children: [
                       PreviewRow('You receive', '${formatYec(p.valueZat)} YEC', emphasis: true, color: c.yec),
                       PreviewRow('To', shorten(p.recipientAddress, head: 10, tail: 6)),
-                      PreviewRow('Network fee', '${formatYec(p.feeZat)} YEC (from your YEC)'),
+                      PreviewRow('Network fee', p.kind == 'pq_move' ? '${formatYec(p.feeZat)} YEC (out of the residual, priced by size)' : '${formatYec(p.feeZat)} YEC (from your YEC)'),
                       PreviewRow('Intent', shorten(p.intent)),
                     ],
                   ),
                 ),
               ),
               const SizedBox(height: 12),
-              SlideToConfirm(label: 'Slide to release', color: c.yec, onConfirmed: _confirm),
+              SlideToConfirm(label: p.kind == 'pq_move' ? 'Slide to move' : 'Slide to release', color: c.yec, onConfirmed: _confirm),
             ],
           ],
         ),

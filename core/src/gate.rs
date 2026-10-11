@@ -134,6 +134,11 @@ pub enum Path {
     /// `build::release`): the named intent at `vin[0]` (a template output, never classified),
     /// fee inputs `YEC` / `FeeReserve` only, no payload.
     IntentRelease(OutPoint),
+    /// The move of a released residual's post-quantum coin (`TX_PQPKH` of an own vault owner,
+    /// quantum spec F-3; `build::release`) to an own P2PKH key: the named coin is the **only**
+    /// input (an ~8 KB SLH-DSA spend), no payload. Named, never classified: PQPKH outputs are not
+    /// address-indexed, so the wallet knows the coin from the intent it released.
+    PqSweep(OutPoint),
     /// A spend of the wallet's Sapling notes (`shielded.rs`): no transparent input.
     Shielded,
     /// A shield (S4, `build::yec_move`): transparent `YEC` inputs only (never the fee reserve,
@@ -153,6 +158,7 @@ impl Path {
             Path::Claim(_) => "claim",
             Path::Sweep => "sweep",
             Path::IntentRelease(_) => "intent release",
+            Path::PqSweep(_) => "post-quantum coin move",
             Path::Shielded => "shielded",
             Path::Shield => "shield",
         }
@@ -168,6 +174,7 @@ impl Path {
             Path::Claim(_) => c.claim_spendable(),
             Path::Sweep => c == UtxoClass::Carrier,
             Path::IntentRelease(_) => c.yec_spendable(),
+            Path::PqSweep(_) => false,
             Path::Shielded => false,
             Path::Shield => c == UtxoClass::Yec,
         }
@@ -203,7 +210,7 @@ pub fn check(
     for (n, i) in tx.vin.iter().enumerate() {
         // The claim path's vault is another wallet's output, and a released intent a template
         // output: each is named, never classified.
-        if let Path::Claim(named) | Path::IntentRelease(named) = path {
+        if let Path::Claim(named) | Path::IntentRelease(named) | Path::PqSweep(named) = path {
             if n == 0 {
                 if i.prevout != named {
                     return Err(GateError::VaultShape(path.name(), named.display()));
@@ -307,6 +314,12 @@ pub fn check(
             }
         }
         Path::Sweep | Path::Shield | Path::IntentRelease(_) => no_payload(&tx)?,
+        Path::PqSweep(named) => {
+            no_payload(&tx)?;
+            if tx.vin.len() != 1 {
+                return Err(GateError::VaultShape(path.name(), named.display()));
+            }
+        }
         Path::Shielded => unreachable!("checked by check_shielded above"),
     }
     Ok(tx)
