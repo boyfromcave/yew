@@ -40,7 +40,14 @@ use crate::tx::{txid_from_hex, OutPoint};
 /// MINT's payload is version 4 (`attest.mintPayloadVersion`), and `params.pq` carries the owner
 /// schemes, the Falcon activation and the size-priced fee rate. Exact again: an rpcversion-6
 /// node would hand back secp256k1 owners this build can neither sign for nor check.
-pub const KNOWN_RPCVERSION: i64 = 7;
+/// `8` is the fee structure this build implements (branch `q/fees`, the workspace's
+/// `docs/plans/yellowback-quantum-fees-spec.md` §3.4, owner decisions D-Q-23..D-Q-26): the protocol fee
+/// is dollars of the debt in marginal bands at the vault's stored `pMint` (`params.fees.protocol`,
+/// `YedVault.pMint`), the early-redeem fee is of the debt, network fees are dollars per KB at the
+/// attested price (`params.fees.network`), `maxMintCents` is $100,000, `params.feeMinZat` /
+/// `feeBps` and `GetFeePayee`'s collateral and fee are gone. Exact again: an rpcversion-7 node
+/// charges a collateral fee this build no longer computes.
+pub const KNOWN_RPCVERSION: i64 = 8;
 
 /// The upgrade status string that means "active" (`YellowbackActivation.status`, rpcversion 5:
 /// `"pending"` | `"active"`).
@@ -462,31 +469,34 @@ impl YellowbackClient {
             .into_inner())
     }
 
-    /// `EstimateFee` (`yed_estimatefee <collateralZat>`).
+    /// `EstimateFee` (`yed_estimatefee <mintedCents> [priceMicroUsd]`, rpcversion 8): the protocol fee
+    /// of a debt; `price_micro_usd` 0 = the node's reference price.
     pub async fn estimate_fee(
         &mut self,
-        collateral_zat: i64,
+        minted_cents: u64,
+        price_micro_usd: u64,
     ) -> Result<rpc::YedFeeEstimate, NetError> {
         Ok(self
             .inner
-            .estimate_fee(rpc::YedFeeQuery { collateral_zat })
+            .estimate_fee(rpc::YedFeeQuery {
+                minted_cents,
+                price_micro_usd,
+            })
             .await
             .map_err(map_status)?
             .into_inner())
     }
 
-    /// `GetFeePayee` (`yed_getfeepayee <refHeight> <collateralZat> [selectorHex]`).
+    /// `GetFeePayee` (`yed_getfeepayee <refHeight> [selectorHex]`; rpcversion 8: no collateral, no fee).
     pub async fn fee_payee(
         &mut self,
         ref_height: u32,
-        collateral_zat: i64,
         selector_hex: &str,
     ) -> Result<rpc::YedPayee, NetError> {
         Ok(self
             .inner
             .get_fee_payee(rpc::YedPayeeQuery {
                 ref_height,
-                collateral_zat,
                 selector_hex: selector_hex.to_string(),
             })
             .await
