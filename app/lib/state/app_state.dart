@@ -56,7 +56,12 @@ class AppState extends ChangeNotifier {
     yedPendingCents: 0,
     heldCount: 0,
     syncHeight: 0,
-    yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false,
+    yedSendMinZat: 21000,
+    yecShieldedZat: 0,
+    yecShieldedSpendableZat: 0,
+    yecShieldedPendingZat: 0,
+    shieldedScannedHeight: 0,
+    shieldedSendable: false,
   );
   Status? status;
   List<HistoryItem> history = const [];
@@ -64,6 +69,7 @@ class AppState extends ChangeNotifier {
   /// The two-step rows (mints and claims) and the own vaults, from the core's store (W4).
   List<MintStatus> mints = const [];
   List<VaultSummary> vaults = const [];
+
   /// The claim intents paying this wallet (the vault upgrade): pending, releasable, released,
   /// cancelled by the attestor set.
   List<ClaimIntent> intents = const [];
@@ -198,9 +204,13 @@ class AppState extends ChangeNotifier {
       balances = await api.balances();
       receive = await api.receiveAddress(fresh: false);
       try {
-        receivePrivate = await api.receiveAddress(kind: ReceiveKind.shielded, fresh: false);
+        receivePrivate = await api.receiveAddress(
+          kind: ReceiveKind.shielded,
+          fresh: false,
+        );
       } catch (_) {
-        receivePrivate = null; // the private side is unavailable; public receive still works
+        receivePrivate =
+            null; // the private side is unavailable; public receive still works
       }
       history = (await api.history(page: 0, pageSize: 200)).rows;
       mints = await api.mints();
@@ -233,6 +243,7 @@ class AppState extends ChangeNotifier {
     syncPercent = 0;
     notifyListeners();
     final done = Completer<void>();
+    String? failed;
     _sync = api.syncNow().listen(
       (e) {
         syncMessage = e.message;
@@ -241,11 +252,11 @@ class AppState extends ChangeNotifier {
         if (e.stage == SyncStage.probing || e.stage == SyncStage.done) {
           yellowbackUsable = e.yellowbackUsable;
         }
-        if (e.stage == SyncStage.failed) lastError = e.message;
+        if (e.stage == SyncStage.failed) lastError = failed = e.message;
         notifyListeners();
       },
       onError: (Object e) {
-        lastError = messageOf(e);
+        lastError = failed = messageOf(e);
         if (!done.isCompleted) done.complete();
       },
       onDone: () {
@@ -256,11 +267,23 @@ class AppState extends ChangeNotifier {
     _sync = null;
     syncing = false;
     await refresh();
+    // refresh() clears lastError when the local store reads fine: a failed sync (the server
+    // down, lightwalletd's rate limit) stays on Home until the next good one.
+    if (failed != null) {
+      lastError = failed;
+      notifyListeners();
+    }
   }
 
   Future<void> setServer(String server, bool plain, {String caPem = ''}) async {
-    await api.setServer(server: server, plain: plain, caPem: caPem.isEmpty ? null : caPem);
-    await saveSettings(settings.copyWith(server: server, plain: plain, caPem: caPem));
+    await api.setServer(
+      server: server,
+      plain: plain,
+      caPem: caPem.isEmpty ? null : caPem,
+    );
+    await saveSettings(
+      settings.copyWith(server: server, plain: plain, caPem: caPem),
+    );
     status = null;
   }
 
@@ -286,7 +309,8 @@ class AppState extends ChangeNotifier {
   }
 
   /// Send YED is possible only when the server offers Yellowback and there is YEC for the fee.
-  bool get canPayYedFee => balances.yecZat + balances.yecReservedZat >= balances.yedSendMinZat;
+  bool get canPayYedFee =>
+      balances.yecZat + balances.yecReservedZat >= balances.yedSendMinZat;
 
   /// Public YEC: available plus the part kept for YED fees.
   int get publicYecZat => balances.yecZat + balances.yecReservedZat;
@@ -295,7 +319,9 @@ class AppState extends ChangeNotifier {
   int get totalYecZat => publicYecZat + balances.yecShieldedZat;
 
   /// The rows still moving (the Yellowback screen's "in progress" list).
-  List<MintStatus> get mintsInProgress => mints.where((m) => m.inProgress || m.canSweep || m.state == 'SWEEP_SENT').toList();
+  List<MintStatus> get mintsInProgress => mints
+      .where((m) => m.inProgress || m.canSweep || m.state == 'SWEEP_SENT')
+      .toList();
 
   /// One row by id, from the last refresh.
   MintStatus? mintById(int id) {

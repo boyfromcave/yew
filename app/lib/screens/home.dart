@@ -44,20 +44,32 @@ class _HomeScreenState extends State<HomeScreen> {
     final t = Theme.of(context).textTheme;
     return Scaffold(
       appBar: AppBar(
-        title: Text('YEW', style: t.titleLarge?.copyWith(color: c.yed, fontWeight: FontWeight.w700)),
+        title: Text(
+          'YEW',
+          style: t.titleLarge?.copyWith(
+            color: c.yed,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
         actions: [
           IconButton(
             key: const Key('sync'),
             tooltip: app.syncing ? app.syncMessage : 'Sync now',
             onPressed: app.syncing ? null : app.sync,
             icon: app.syncing
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
                 : const Icon(Icons.sync_rounded),
           ),
           IconButton(
             key: const Key('settings'),
             tooltip: 'Settings',
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const SettingsScreen())),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
+            ),
             icon: const Icon(Icons.settings_outlined),
           ),
         ],
@@ -74,8 +86,10 @@ class _HomeScreenState extends State<HomeScreen> {
               unit: 'YED',
               accent: c.yed,
               subLines: [
-                if (b.yedPendingCents > 0) '+ ${formatYed(b.yedPendingCents)} pending',
-                if (!app.yellowbackUsable && app.balances.syncHeight > 0) 'YED hidden: this server offers no Yellowback service',
+                if (b.yedPendingCents > 0)
+                  '+ ${formatYed(b.yedPendingCents)} pending',
+                if (!app.yellowbackUsable && app.balances.syncHeight > 0)
+                  'YED hidden: this server offers no Yellowback service',
               ],
             ),
             const SizedBox(height: 12),
@@ -106,11 +120,28 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 4),
               child: Row(
                 children: [
-                  Expanded(child: Text(formatPriceLine(b.priceMicroUsd), key: const Key('price'), style: t.bodyMedium)),
-                  Text(
-                    app.syncing ? '${app.syncMessage} · ${app.syncPercent}%' : (b.syncHeight > 0 ? 'synced to ${b.syncHeight}' : 'not synced'),
-                    key: const Key('sync-state'),
-                    style: t.bodySmall?.copyWith(color: c.pending),
+                  Expanded(
+                    child: Text(
+                      formatPriceLine(b.priceMicroUsd),
+                      key: const Key('price'),
+                      style: t.bodyMedium,
+                    ),
+                  ),
+                  // Flexible + ellipsis: a sync message beside the price line overflowed a
+                  // phone-width row (402 pt iPhone: 138 px) while the 800x600 widget tests passed.
+                  Flexible(
+                    child: Text(
+                      app.syncing
+                          ? '${app.syncMessage} · ${app.syncPercent}%'
+                          : (b.syncHeight > 0
+                                ? 'synced to ${b.syncHeight}'
+                                : 'not synced'),
+                      key: const Key('sync-state'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.end,
+                      style: t.bodySmall?.copyWith(color: c.pending),
+                    ),
                   ),
                 ],
               ),
@@ -122,7 +153,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   color: c.danger.withValues(alpha: 0.08),
                   child: ListTile(
                     title: Text(app.lastError!, key: const Key('error')),
-                    trailing: IconButton(icon: const Icon(Icons.close), onPressed: app.clearError),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: app.clearError,
+                    ),
                   ),
                 ),
               ),
@@ -132,7 +166,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 Expanded(
                   child: OutlinedButton.icon(
                     key: const Key('receive'),
-                    onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const ReceiveScreen())),
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const ReceiveScreen(),
+                      ),
+                    ),
                     icon: const Icon(Icons.qr_code_2_rounded),
                     label: const Text('Receive'),
                   ),
@@ -141,7 +179,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 Expanded(
                   child: FilledButton.icon(
                     key: const Key('send'),
-                    onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const SendScreen())),
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const SendScreen(),
+                      ),
+                    ),
                     icon: const Icon(Icons.arrow_outward_rounded),
                     label: const Text('Send'),
                   ),
@@ -187,17 +229,34 @@ class _YecSplit extends StatelessWidget {
         ? null
         : app.syncing
         ? 'Syncing private balance… sending available at 100%'
-        : (app.shieldedNote.isNotEmpty ? app.shieldedNote : 'Private balance not up to date: sync to send from it');
+        : (app.shieldedNote.isNotEmpty
+              ? app.shieldedNote
+              : 'Private balance not up to date: sync to send from it');
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        line(const Key('yec-private'), Icons.lock_rounded, 'Private', b.yecShieldedZat),
+        line(
+          const Key('yec-private'),
+          Icons.lock_rounded,
+          'Private',
+          b.yecShieldedZat,
+        ),
         if (privateNote != null) note(privateNote, const Key('private-note')),
-        if (b.yecShieldedPendingZat > 0) note('${formatYec(b.yecShieldedPendingZat)} YEC pending'),
-        line(const Key('yec-public'), Icons.public_rounded, 'Public', app.publicYecZat),
+        if (b.yecShieldedPendingZat > 0)
+          note('${formatYec(b.yecShieldedPendingZat)} YEC pending'),
+        line(
+          const Key('yec-public'),
+          Icons.public_rounded,
+          'Public',
+          app.publicYecZat,
+        ),
         note('${formatYec(b.yecReservedZat)} YEC reserved for fees'),
-        if (b.yecPendingZat > 0) note('${formatYec(b.yecPendingZat)} YEC pending'),
-        if (b.heldCount > 0) note('${b.heldCount} output${b.heldCount == 1 ? '' : 's'} held until the server classifies ${b.heldCount == 1 ? 'it' : 'them'}'),
+        if (b.yecPendingZat > 0)
+          note('${formatYec(b.yecPendingZat)} YEC pending'),
+        if (b.heldCount > 0)
+          note(
+            '${b.heldCount} output${b.heldCount == 1 ? '' : 's'} held until the server classifies ${b.heldCount == 1 ? 'it' : 'them'}',
+          ),
       ],
     );
   }
