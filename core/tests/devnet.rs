@@ -25,7 +25,12 @@
 //!   a bundle with one mutated signature refused; a redeem after `lockHeight`; a −80 % price
 //!   shock and the claim of node 0's vault by the YEW wallet (the liquidator persona).
 //!
-//! Run: `YEW_DEVNET=1 cargo test -p yew-core --test devnet -- --ignored --nocapture [w1_|w2_|w4_]`.
+//! - `q_falcon_holders_receive_send_mint_and_restore` (quantum line, TOK-PQ): an ARMED devnet whose
+//!   nodes run `-pqfalconheight=<F>` (`scripts/devnet-falcon.sh`): P2PKH YED before `F`, the
+//!   Falcon receive address from `F`, a transfer spending a P2PKH and a Falcon token with Falcon
+//!   change, a mint whose token goes to a Falcon holder, and a restore from the seed.
+//!
+//! Run: `YEW_DEVNET=1 cargo test -p yew-core --test devnet -- --ignored --nocapture [w1_|w2_|w4_|q_]`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -3793,4 +3798,187 @@ async fn s5_interrupted_sync_resumes() {
     assert_eq!(private_rows(&w), want.1);
     let _ = std::fs::remove_dir_all(&dir);
     s.finish("interrupt");
+}
+
+/// Falcon YED holders (TOK-PQ; quantum spec F-7, owner decision 2026-10-10: Falcon from day one on
+/// mainnet). On an ARMED devnet of the quantum node whose nodes all run `-pqfalconheight=<F>`
+/// (`scripts/devnet-falcon.sh`, portseed 2200, lightwalletd on 2219):
+///
+/// 1. before `F` the wallet's YED receive address is its P2PKH key and node 0 pays it YED;
+/// 2. from `F` the receive address is the 53-character Falcon holder of the same key, node 0 pays
+///    it YED (a `TX_PQPKH` scheme 2 token, found through `GetAddressTokens`);
+/// 3. YEW sends YED to node 0's Falcon address spending the P2PKH and the Falcon token (the
+///    Falcon input signed with the vendored PQClean code, 1,577-byte scriptSig), its change
+///    going to a Falcon holder; the node's gate verdict is `ok` and the block accepts it;
+/// 4. a YEW mint after `F` puts its token on the holder key's Falcon pair;
+/// 5. a wallet restored from the seed finds every Falcon token (the gap scan).
+#[tokio::test]
+#[ignore = "needs an ARMED quantum devnet with -pqfalconheight (scripts/devnet-falcon.sh) and YEW_DEVNET=1"]
+async fn q_falcon_holders_receive_send_mint_and_restore() {
+    use yew_core::build::mint::window_open;
+    if std::env::var("YEW_DEVNET").ok().as_deref() != Some("1") {
+        eprintln!("YEW_DEVNET is not 1; skipping");
+        return;
+    }
+    let dn = Devnet::new("yb-devnet-falcon", "2200");
+    let server =
+        Server::parse(&env_or("YEW_DEVNET_SERVER", "127.0.0.1:2219".into()), true).unwrap();
+    let channel = server.connect().await.expect("connect to lightwalletd");
+    let mut c = CompactClient::from_channel(channel.clone());
+    let info = c.lightd_info_for(Network::Regtest).await.unwrap();
+    let (mut v, availability) = Validator::detect(YellowbackClient::from_channel(channel))
+        .await
+        .expect("probe");
+    assert!(availability.usable(), "{availability:?}");
+    let falcon_height = match &availability {
+        Availability::Present { info, .. } => {
+            let pq = info
+                .params
+                .as_ref()
+                .unwrap()
+                .pq
+                .as_ref()
+                .expect("params.pq");
+            assert!(
+                pq.falcon_height > 0,
+                "the devnet runs -pqfalconheight: {pq:?}"
+            );
+            pq.falcon_height as u64
+        }
+        Availability::Absent => unreachable!(),
+    };
+    warm_and_fund_node_yed(&dn, &mut c, &mut v, &availability).await;
+    let tip = c.latest_height().await.unwrap();
+    assert!(
+        tip + 6 < falcon_height,
+        "start the test well before the Falcon height {falcon_height} (tip {tip})"
+    );
+
+    let dir = std::env::temp_dir().join(format!("yew-devnet-falcon-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let birthday = info.block_height.saturating_sub(1);
+    let (mut a, mnemonic) = fresh_wallet(&dir, "a", birthday);
+    let fund = fund_node();
+    let addr = a.receive_address(false).unwrap();
+    for amount in ["12", "3"] {
+        let t = dn.node(fund, &["sendtoaddress", &addr.address_s, amount]);
+        assert_eq!(t.len(), 64, "{t}");
+        dn.wait_mempool(&t);
+    }
+    // 1. Before Falcon: a P2PKH YED receive address.
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert!(!a.falcon_now(), "tip {} before {falcon_height}", r.tip);
+    let pre = dn.node_json(0, &["yed_send", &addr.address_ye, "5000"]);
+    confirm(&dn, &mut c, pre["txid"].as_str().unwrap()).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(r.yed, (5_000, 0), "{r:?}");
+    assert_eq!(r.yec.0 + r.yec.1, 15 * 100_000_000);
+
+    // 2. Mine to the Falcon height: the receive address becomes the Falcon holder.
+    loop {
+        let h = dn.mine_pool();
+        wait_for_height(&mut c, h).await;
+        if h + 1 >= falcon_height {
+            break;
+        }
+    }
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert!(a.falcon_now(), "tip {} at {falcon_height}", r.tip);
+    let row = a.receive_address(false).unwrap();
+    let falcon_addr = a.falcon_holder_address(&row).unwrap();
+    assert_eq!(falcon_addr.len(), 53, "{falcon_addr}");
+    assert!(falcon_addr.starts_with("yr"));
+    // the node agrees it is a Falcon holder address
+    let va = dn.node_json(0, &["yed_validateaddress", &falcon_addr]);
+    assert_eq!(va["isvalid"].as_bool(), Some(true), "{va}");
+    // a P2PKH YED address is refused by the node now (TOK-PQ), as by YEW
+    let refused = dn.node_try(0, &["yed_send", &addr.address_ye, "1000"]);
+    assert!(refused.contains("bad-yed-holder"), "{refused}");
+    let to_falcon = dn.node_json(0, &["yed_send", &falcon_addr, "3000"]);
+    confirm(&dn, &mut c, to_falcon["txid"].as_str().unwrap()).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(r.yed, (8_000, 0), "{r:?}");
+    let utxos = a.store.utxos().unwrap();
+    let falcon_token = utxos
+        .iter()
+        .find(|u| u.class == UtxoClass::Token && yew_core::pq::pqpkh_of(&u.script).is_some())
+        .expect("a Falcon TOKEN row");
+    assert_eq!(
+        (falcon_token.cents, falcon_token.address.as_str()),
+        (3_000, falcon_addr.as_str())
+    );
+
+    // 3. Send 6,000 cents to node 0's Falcon address: both tokens in, Falcon change.
+    let node_falcon = dn.node(0, &["yed_getnewaddress"]);
+    assert_eq!(node_falcon.len(), 53, "{node_falcon}");
+    let p =
+        yed_transfer::build_yed_transfer(&a, &[(node_falcon.clone(), 6_000)], r.tip, r.branch_id)
+            .unwrap();
+    assert_eq!((p.yed_inputs.len(), p.change_cents), (2, 2_000));
+    let (tx, _) = Transaction::parse(&p.raw).unwrap();
+    let falcon_in = tx
+        .vin
+        .iter()
+        .find(|i| i.prevout == falcon_token.outpoint)
+        .expect("the Falcon token is spent");
+    assert_eq!(falcon_in.script_sig.len(), 1_577);
+    let change = yew_core::pq::pqpkh_of(&tx.vout[1].script_pubkey).expect("Falcon change");
+    assert!(a.own_falcon_holders().unwrap().contains_key(&change));
+    let (txid, validation) = yed_transfer::broadcast(&a, &mut c, &mut v, &p)
+        .await
+        .unwrap();
+    assert_eq!(validation.verdict, "ok", "{validation:?}");
+    confirm(&dn, &mut c, &txid).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(r.yed, (2_000, 0), "{r:?}");
+    let listed = dn.node_json(0, &["yed_listtokens", &format!("[\"{node_falcon}\"]")]);
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["txid"] == txid.as_str() && t["cents"] == 6_000),
+        "{listed}"
+    );
+
+    // 4. A mint after Falcon: the token goes to the holder key's Falcon pair.
+    let id = a
+        .mint_start(&mut c, &mut v, 10_000, 96, None, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    let m = a.store.mint(id).unwrap().unwrap();
+    confirm(&dn, &mut c, &txid_hex(&m.carrier_txid)).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert!(window_open(r.tip, m.expiry_height));
+    let f = a
+        .mint_finish(&mut c, &mut v, id, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    assert_eq!(f.validation.verdict, "ok", "{:?}", f.validation);
+    confirm(&dn, &mut c, &f.txid).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(r.yed, (12_000, 0), "{r:?}");
+    let (mtx, _) = Transaction::parse(&f.raw).unwrap();
+    let minted = yew_core::pq::pqpkh_of(&mtx.vout[1].script_pubkey).expect("Falcon token");
+    assert_eq!(minted.scheme, 2);
+    assert!(a.own_falcon_holders().unwrap().contains_key(&minted));
+
+    // 5. Restore from the seed: every Falcon token is found again.
+    let path = dir.join("restored.sqlite").to_string_lossy().to_string();
+    let mut b = Wallet::open(&path, Network::Regtest, &mnemonic, "", Some(birthday)).unwrap();
+    let rb = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(rb.yed, r.yed, "{rb:?}");
+    let falcon_rows = b
+        .store
+        .utxos()
+        .unwrap()
+        .into_iter()
+        .filter(|u| u.class == UtxoClass::Token && yew_core::pq::pqpkh_of(&u.script).is_some())
+        .count();
+    assert_eq!(falcon_rows, 2, "the Falcon change and the minted token");
+    println!(
+        "Falcon devnet ok: F={falcon_height}, transfer {txid} (Falcon input + change), mint {}",
+        f.txid
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
