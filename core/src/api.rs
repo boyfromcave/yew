@@ -236,7 +236,7 @@ pub struct Created {
     /// The mnemonic, **only when this call generated it** (the app stores it in the platform
     /// keystore and shows it once for backup); `None` when the caller supplied the words.
     pub seed_words: Option<String>,
-    /// The primary receive address, `ye…` form.
+    /// The primary receive address, `yb…` form.
     pub address_ye: String,
 }
 
@@ -347,7 +347,7 @@ pub enum ReceiveKind {
     Transparent,
     /// The private Sapling `ys1…` address (shielded YEC, memos).
     Shielded,
-    /// The Yellowback `ye…` form of the transparent address (YED, mint).
+    /// The Yellowback `yb…` form of the transparent address (YED, mint).
     Yed,
 }
 
@@ -355,7 +355,7 @@ pub enum ReceiveKind {
 /// are the two forms of the same key, for a shielded address both are empty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AddressPair {
-    /// The Yellowback form (`ye…` / `yt…` / `yr…`).
+    /// The Yellowback form (`yb…` / `yt…` / `yr…`).
     pub ye: String,
     /// The transparent form (`s1…` / `sm…`).
     pub s: String,
@@ -363,7 +363,7 @@ pub struct AddressPair {
     pub path: String,
     /// `false` for an imported key (not covered by the seed backup).
     pub covered_by_seed: bool,
-    /// The address of `kind` (`s…`, `ye…` or `ys1…`).
+    /// The address of `kind` (`s…`, `yb…` or `ys1…`).
     pub address: String,
     /// The kind of `address`.
     pub kind: ReceiveKind,
@@ -504,7 +504,7 @@ pub struct DryRun {
 /// One recipient of a YED send.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Recipient {
-    /// `ye…` / `yr…` / `s…`.
+    /// `yb…` / `yr…` / `s…`.
     pub address: String,
     /// Cents.
     pub cents: i64,
@@ -552,7 +552,7 @@ pub struct SendResult {
 /// [`export_wif`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WifExport {
-    /// The address, `ye…` form.
+    /// The address, `yb…` form.
     pub address_ye: String,
     /// The address, `s…` form.
     pub address_s: String,
@@ -570,7 +570,7 @@ pub struct AddressCheck {
     /// `p2pkh` / `p2sh`, `sapling` for a private address (`ys1…` / `ytestsapling1…` /
     /// `yregtestsapling1…`), empty when invalid.
     pub kind: String,
-    /// The `ye…` form was given.
+    /// The `yb…` form was given.
     pub yellowback_form: bool,
     /// Why it is invalid, empty when valid.
     pub message: String,
@@ -740,7 +740,7 @@ pub struct VaultSummary {
     pub vault_txid: String,
     /// `ACTIVE`, `VOID`, `CLOSED`, `CLAIMED`.
     pub status: String,
-    /// The owner address, `ye…` form (an own key).
+    /// The owner address, `yb…` form (an own key).
     pub owner_address: String,
     /// The term class letter.
     pub term_class: String,
@@ -935,7 +935,7 @@ pub struct ClaimTerms {
 pub struct ClaimableItem {
     /// The vault's mint txid.
     pub vault_txid: String,
-    /// The owner, `ye…`.
+    /// The owner, `yb…`.
     pub owner_address: String,
     /// The debt to burn, cents (the wallet must hold at least this).
     pub cents: i64,

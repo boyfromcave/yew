@@ -262,7 +262,7 @@ pub fn select_yed(
     Ok((sel, s.stage, s.change as u64))
 }
 
-/// Build and sign a transfer of `recipients` (`address`, `cents`) — `ye…`, `yr…`, `yt…` or the
+/// Build and sign a transfer of `recipients` (`address`, `cents`) — `yb…`, `yr…`, `yt…` or the
 /// `s…` form, the same key hash — from this wallet (`BuildTransfer`).
 pub fn build_yed_transfer(
     wallet: &Wallet,

@@ -3,7 +3,7 @@
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
 // Receive (plan §5.1; yew-shielded plan §3): one QR. The private `ys1…` address by default once
-// the private balance has synced; a toggle to the public `s…` address and to the YED `ye…`
+// the private balance has synced; a toggle to the public `s…` address and to the YED `yb…`
 // form; copy; "new address" (a new private address on the private tab).
 import 'package:flutter/material.dart';
 

@@ -897,7 +897,7 @@ pub fn mint_outputs(
     Ok(vout)
 }
 
-/// The P2PKH script of an `s…` / `ye…` address.
+/// The P2PKH script of an `s…` / `yb…` address.
 pub(crate) fn p2pkh_of_address(wallet: &Wallet, address: &str) -> Result<Vec<u8>, WalletError> {
     match keys::parse_address(wallet.network, address)?.kind {
         keys::AddressKind::P2pkh(h) => Ok(script::p2pkh_script(&h)),

@@ -92,7 +92,7 @@ pub struct Token {
     pub value_zat: i64,
     /// The height the token was created at.
     pub height: i64,
-    /// The `ye…` form.
+    /// The `yb…` form.
     pub address: String,
     /// The `s…` form.
     pub transparent_address: String,
@@ -551,7 +551,7 @@ impl YellowbackClient {
     }
 
     /// `GetAddressTokens` (`yed_listtokens <addresses> [minHeight]`; lightwalletd Phase L2):
-    /// the live YED outputs paying any of `addresses` (`s…` or `ye…` form), whoever holds the
+    /// the live YED outputs paying any of `addresses` (`s…` or `yb…` form), whoever holds the
     /// keys — **the only source of the TOKEN class** (D-W-8). Spent tokens are never listed
     /// (IN-1 erases them). Chunked by [`TOKENS_MAX_ADDRESSES`]; the stream is collected.
     pub async fn address_tokens(

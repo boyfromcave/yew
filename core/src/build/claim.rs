@@ -45,7 +45,7 @@ use super::yec_send::MIN_CHANGE;
 pub struct Claimable {
     /// The vault's mint txid (display form).
     pub vault_txid: String,
-    /// The vault's owner (`ye…`).
+    /// The vault's owner (`yb…`).
     pub owner_address: String,
     /// The debt to burn, cents.
     pub minted_cents: u64,

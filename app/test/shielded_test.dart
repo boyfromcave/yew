@@ -164,7 +164,7 @@ void main() {
     await tester.tap(find.byKey(const Key('send')));
     await tester.pumpAndSettle();
     await previewTo(tester, fakeZ, amount: '1');
-    expect(find.text('YED can only be sent to a public address (ye… or s…).'), findsOneWidget);
+    expect(find.text('YED can only be sent to a public address (yb… or s…).'), findsOneWidget);
     expect(find.byKey(const Key('memo')), findsNothing);
     expect(h.api.calls.where((c) => c.startsWith('yedPreview')), isEmpty);
   });

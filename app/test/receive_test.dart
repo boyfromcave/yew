@@ -8,7 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'fake_wallet_api.dart';
 
 void main() {
-  testWidgets('before the private balance has synced receive shows the ye… form, toggles to s…, and asks for a new address', (tester) async {
+  testWidgets('before the private balance has synced receive shows the yb… form, toggles to s…, and asks for a new address', (tester) async {
     final h = Harness(withWallet: true);
     await h.pump(tester);
     await tester.tap(find.byKey(const Key('receive')));

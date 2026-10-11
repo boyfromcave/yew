@@ -75,7 +75,7 @@ class _SendScreenState extends State<SendScreen> {
     final to = _address.text.trim();
     final private = _toPrivate(app);
     if (private && _asset == Asset.yed) {
-      setState(() => _error = 'YED can only be sent to a public address (ye… or s…).');
+      setState(() => _error = 'YED can only be sent to a public address (yb… or s…).');
       return;
     }
     if (!private) {
@@ -203,7 +203,7 @@ class _SendScreenState extends State<SendScreen> {
               onChanged: (_) => _reset(),
               decoration: InputDecoration(
                 labelText: 'To',
-                hintText: _asset == Asset.yed ? 'ye… address' : 'ys1…, s… or ye… address',
+                hintText: _asset == Asset.yed ? 'yb… address' : 'ys1…, s… or yb… address',
                 suffixIcon: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [

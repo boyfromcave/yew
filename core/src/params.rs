@@ -87,27 +87,44 @@ impl Network {
     }
 
     /// Yellowback address version bytes: the same key hash as the `s…` P2PKH address under a
-    /// prefix that renders `ye…` / `yt…` / `yr…` (spec D10).
-    /// `ycash-dd/src/yellowback/params.cpp:142` (main `{0x1F,0xE4}`), `:156` (test
-    /// `{0x20,0x07}`), `:189` (regtest `{0x20,0x02}`).
+    /// prefix that renders `yb…` / `yt…` / `yr…` (spec D10; on the post-quantum line the mainnet
+    /// prefix is `yb…`, owner decision D-Q-21, superseding D10's `ye…` there).
+    /// Main `{0x1F,0xDD}` (D-Q-21; the node's `yellowback/params.cpp` still says `{0x1F,0xE4}` =
+    /// `ye…` until the plan's §8.1 Y-B sweep), test `{0x20,0x07}`, regtest `{0x20,0x02}`
+    /// (`ycash-dd/src/yellowback/params.cpp:156`, `:189`; unchanged).
     pub fn yellowback_prefix(self) -> [u8; 2] {
         match self {
-            Network::Mainnet => [0x1F, 0xE4],
+            Network::Mainnet => [0x1F, 0xDD],
             Network::Testnet => [0x20, 0x07],
             Network::Regtest => [0x20, 0x02],
         }
     }
 
     /// Post-quantum Yellowback address version bytes (quantum spec §4, F-4): the 33-byte payload
-    /// `scheme ‖ keyHash` of a `CPQKeyID` renders `ye…` / `yt…` / `yr…` at 53 characters, beside
-    /// the 35-character 20-byte form. `ycash-dd/src/yellowback/params.cpp` `pqAddressVersion`
-    /// (branch `q/yed`): main `{0x56,0xBF}`, test `{0x57,0x1E}`, regtest `{0x57,0x10}` — each the
-    /// lowest version whose whole payload interval keeps the prefix and the length.
+    /// `scheme ‖ keyHash` of a `CPQKeyID` renders `yb…` / `yt…` / `yr…` at 53 characters, beside
+    /// the 35-character 20-byte form. Main `{0x56,0xAB}` (D-Q-21; the node's
+    /// `pqAddressVersion` is `{0x56,0xBF}` = `ye…` until the Y-B sweep), test `{0x57,0x1E}`,
+    /// regtest `{0x57,0x10}` (`ycash-dd/src/yellowback/params.cpp` `pqAddressVersion`) — each
+    /// the lowest version whose whole payload interval keeps the prefix and the length.
     pub fn pq_yellowback_prefix(self) -> [u8; 2] {
         match self {
-            Network::Mainnet => [0x56, 0xBF],
+            Network::Mainnet => [0x56, 0xAB],
             Network::Testnet => [0x57, 0x1E],
             Network::Regtest => [0x57, 0x10],
+        }
+    }
+
+    /// Post-quantum plain-YEC address version bytes (owner decision D-Q-20): the same 33-byte
+    /// `scheme ‖ keyHash` payload and the same `TX_PQPKH` script as the post-quantum Yellowback
+    /// form, rendered `sq…` / `tq…` / `rq…` (53 characters): main `{0x4D,0xD9}`, test
+    /// `{0x4F,0x61}`, regtest `{0x4C,0x51}`. The node's chain-wide `key_io` decoder for it is
+    /// built after the Q3–Q5 merge (plan §8.1 "SQ"); YEW recognises and renders the form but
+    /// does not send to it yet.
+    pub fn pq_yec_prefix(self) -> [u8; 2] {
+        match self {
+            Network::Mainnet => [0x4D, 0xD9],
+            Network::Testnet => [0x4F, 0x61],
+            Network::Regtest => [0x4C, 0x51],
         }
     }
 
@@ -596,6 +613,39 @@ pub const GAP_LIMIT: u32 = 20;
 /// - `yed_getinfo` exposes it as `params.feeZat` (`src/rpc/yellowback.cpp:669`); confirmed on
 ///   the regtest devnet in Phase W1 (`scripts/devnet-w1.sh`).
 pub const FEE_ZAT: i64 = 1_000;
+
+/// The relay floor, zatoshi per 1,000 bytes (`ycash-dd/src/main.h:68` `DEFAULT_MIN_RELAY_TX_FEE`,
+/// the same on ycash6): the lowest size rate YEW ever charges, whatever a server reports.
+pub const RELAY_FLOOR_ZAT_PER_KB: i64 = 100;
+
+/// The highest `params.pq.feeRateZatPerKB` YEW accepts from a server: 100× the relay floor
+/// (an 8 KB SLH-DSA owner spend would then cost 80,000 zat). A server reporting more is refused
+/// as inconsistent rather than allowed to drain fees (the quantum plan's Q8 release multiplier
+/// is expected to be a small single digit).
+pub const MAX_PQ_FEE_RATE_ZAT_PER_KB: i64 = 100 * RELAY_FLOOR_ZAT_PER_KB;
+
+/// The network fee of a transaction of `size` bytes that spends a post-quantum input (quantum
+/// plan §4.5, client survey C-5): `max(floor, rate × size)`, with `CFeeRate::GetFee`'s rounding
+/// (`ycash-dd/src/amount.cpp:27-35`: `rate · size / 1000`, and the rate itself when that is 0),
+/// exactly the node's `PQSizeFee` (`ycash-dd/src/policy/policy.cpp` `PQSizeFee`, upgrade/quantum-vaults).
+///
+/// **Per node line** (quantum briefing "Fee rules for Q5"): ycash-dd's wallet charges
+/// `max(DEFAULT_FEE, pqfeerate × size)`; ycash6's charges `max(-yellowbackfee, ZIP-317
+/// conventional, pqfeerate × size)`. The ZIP-317 term is ycash6's *own wallet's* funding choice
+/// (`ycash6/src/zip317.h`: `FeePolicy` is node-local, and the ZIP-317 unpaid-action relay limits
+/// are `SIZE_MAX`, i.e. off, by default); neither line's relay or mempool demands it. YEW cannot
+/// tell the lines apart through lightwalletd and pays what both relay: this formula, with `rate`
+/// the server's `params.pq.feeRateZatPerKB` (at least [`RELAY_FLOOR_ZAT_PER_KB`]). An operator
+/// who turns ZIP-317 relay on (`-txunpaidactionlimit=0`) would refuse an 8 KB owner spend at
+/// this fee (≈55 logical actions); that is recorded in `docs/design-notes.md`, not priced.
+pub fn pq_size_fee(floor: i64, rate_zat_per_kb: i64, size: usize) -> i64 {
+    let rate = rate_zat_per_kb.max(RELAY_FLOOR_ZAT_PER_KB);
+    let mut f = rate.saturating_mul(size as i64) / 1000;
+    if f == 0 {
+        f = rate;
+    }
+    floor.max(f)
+}
 
 /// The floor of the YEC fee reserve (plan §3.7, "Fee reserve" item 1):
 /// `reserveZat = max(RESERVE_MIN, RESERVE_K · (FEE_ZAT + 2 · TOKEN_VALUE))`.

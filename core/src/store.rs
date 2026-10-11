@@ -57,7 +57,7 @@ pub struct AddressRow {
     pub index: u32,
     /// The `s…` form.
     pub address_s: String,
-    /// The `ye…` form.
+    /// The `yb…` form.
     pub address_ye: String,
     /// `HASH160(pubkey)`.
     pub hash160: [u8; 20],
