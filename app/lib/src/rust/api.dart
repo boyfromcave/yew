@@ -669,8 +669,14 @@ class ClaimableItem {
   /// `pClaim` at the node's tip, micro-USD per YEC.
   final PlatformInt64 pClaimMicroUsd;
 
-  /// The enforcement fee, zat.
+  /// The protocol fee, zat: FEE-1′ of the debt at the vault's `pMint` (rpcversion 8).
   final PlatformInt64 feeZat;
+
+  /// The protocol fee, US cents.
+  final PlatformInt64 protocolFeeCents;
+
+  /// The vault's stored mint price, µUSD per YEC.
+  final PlatformInt64 pMintMicroUsd;
 
   /// The attestor fee, zat.
   final PlatformInt64 attestFeeZat;
@@ -706,6 +712,8 @@ class ClaimableItem {
     required this.claimPath,
     required this.pClaimMicroUsd,
     required this.feeZat,
+    required this.protocolFeeCents,
+    required this.pMintMicroUsd,
     required this.attestFeeZat,
     required this.residualZat,
     required this.claimantZat,
@@ -726,6 +734,8 @@ class ClaimableItem {
       claimPath.hashCode ^
       pClaimMicroUsd.hashCode ^
       feeZat.hashCode ^
+      protocolFeeCents.hashCode ^
+      pMintMicroUsd.hashCode ^
       attestFeeZat.hashCode ^
       residualZat.hashCode ^
       claimantZat.hashCode ^
@@ -748,6 +758,8 @@ class ClaimableItem {
           claimPath == other.claimPath &&
           pClaimMicroUsd == other.pClaimMicroUsd &&
           feeZat == other.feeZat &&
+          protocolFeeCents == other.protocolFeeCents &&
+          pMintMicroUsd == other.pMintMicroUsd &&
           attestFeeZat == other.attestFeeZat &&
           residualZat == other.residualZat &&
           claimantZat == other.claimantZat &&
@@ -1125,14 +1137,19 @@ class MintEstimate {
   /// The collateral the MINT will lock (rounded as `BuildMint` does).
   final PlatformInt64 collateralZat;
 
-  /// The enforcement fee, zat (0 under FEE-0).
+  /// The protocol fee, zat (0 under FEE-0): FEE-1′ (rpcversion 8), the debt's dollars in marginal
+  /// bands (1 % to $1,000, 0.5 % to $10,000, 0.1 % above, at least $1) at `pMint`; a redeem of the
+  /// vault pays the same dollars again at the same price.
   final PlatformInt64 feeZat;
+
+  /// The protocol fee in US cents (shown even under FEE-0, where it is not paid).
+  final PlatformInt64 protocolFeeCents;
 
   /// The attestor fee, zat (0 under AFEE-0).
   final PlatformInt64 attestFeeZat;
 
-  /// The enforcement fee payee (`s…`), empty under FEE-0. The amount is checked against
-  /// FEE-1 locally; the payee's eligibility is the node's to judge (audit G-2).
+  /// The protocol fee payee (`s…`), empty under FEE-0. The amount is computed locally (FEE-1′);
+  /// the payee's eligibility is the node's to judge (audit G-2).
   final String payee;
 
   /// `CARRIER_VALUE`, zat.
@@ -1141,8 +1158,12 @@ class MintEstimate {
   /// `TOKEN_VALUE` for the new YED output, zat.
   final PlatformInt64 tokenZat;
 
-  /// The two network fees, zat.
+  /// The two network fees, zat: the carrier's flat fee and the MINT's Yellowback size fee
+  /// (dollars per KB at the attested price, rpcversion 8).
   final PlatformInt64 networkFeeZat;
+
+  /// `MAX_MINT`, cents ($100,000 on every network, D-Q-24).
+  final PlatformInt64 maxMintCents;
 
   /// Everything the two steps need from YEC, zat.
   final PlatformInt64 totalZat;
@@ -1173,11 +1194,13 @@ class MintEstimate {
     required this.requiredZat,
     required this.collateralZat,
     required this.feeZat,
+    required this.protocolFeeCents,
     required this.attestFeeZat,
     required this.payee,
     required this.carrierZat,
     required this.tokenZat,
     required this.networkFeeZat,
+    required this.maxMintCents,
     required this.totalZat,
     required this.availableZat,
     required this.affordable,
@@ -1198,11 +1221,13 @@ class MintEstimate {
       requiredZat.hashCode ^
       collateralZat.hashCode ^
       feeZat.hashCode ^
+      protocolFeeCents.hashCode ^
       attestFeeZat.hashCode ^
       payee.hashCode ^
       carrierZat.hashCode ^
       tokenZat.hashCode ^
       networkFeeZat.hashCode ^
+      maxMintCents.hashCode ^
       totalZat.hashCode ^
       availableZat.hashCode ^
       affordable.hashCode ^
@@ -1225,11 +1250,13 @@ class MintEstimate {
           requiredZat == other.requiredZat &&
           collateralZat == other.collateralZat &&
           feeZat == other.feeZat &&
+          protocolFeeCents == other.protocolFeeCents &&
           attestFeeZat == other.attestFeeZat &&
           payee == other.payee &&
           carrierZat == other.carrierZat &&
           tokenZat == other.tokenZat &&
           networkFeeZat == other.networkFeeZat &&
+          maxMintCents == other.maxMintCents &&
           totalZat == other.totalZat &&
           availableZat == other.availableZat &&
           affordable == other.affordable &&
@@ -1636,19 +1663,24 @@ class RedeemPreview {
   /// YED inputs spent.
   final int yedInputs;
 
-  /// What the fee output pays, zat: the enforcement fee (FEE-1, checked locally) plus the
+  /// What the fee output pays, zat: the protocol fee (FEE-1′, computed locally) plus the
   /// early-redeem fee.
   final PlatformInt64 feeZat;
 
-  /// The enforcement fee alone (FEE-1).
-  final PlatformInt64 enforcementFeeZat;
+  /// The protocol fee alone (FEE-1′ of the debt at the vault's `pMint`), zat.
+  final PlatformInt64 protocolFeeZat;
 
-  /// The early-redeem fee within `fee_zat` (IT-9): due when the redeem confirms before
-  /// `lockHeight`, 0 otherwise and under FEE-0. Shown before the slider.
+  /// The protocol fee, US cents (rpcversion 8: the same dollars the mint paid).
+  final PlatformInt64 protocolFeeCents;
+
+  /// The vault's stored mint price, µUSD per YEC: the price both fees are struck at.
+  final PlatformInt64 pMintMicroUsd;
+
+  /// The early-redeem fee within `fee_zat` (IT-9′, of the debt): due when the redeem confirms
+  /// before `lockHeight`, 0 otherwise and under FEE-0. Shown before the slider.
   final PlatformInt64 earlyRedeemFeeZat;
 
-  /// [`RedeemPreview::early_redeem_fee_zat`] in US cents at the last sync's price (0 when the
-  /// price is unknown).
+  /// [`RedeemPreview::early_redeem_fee_zat`] in US cents: the debt's share, exact (0 when none).
   final PlatformInt64 earlyRedeemFeeUsdCents;
 
   /// The vault's `lockHeight` (the end of the term).
@@ -1657,9 +1689,12 @@ class RedeemPreview {
   /// The enforcement fee payee (`s…`), empty under FEE-0.
   final String payee;
 
-  /// The network fee taken from the collateral, zat: `max(1,000, pqfeerate × size)` for the
-  /// ~8 KB post-quantum owner spend (quantum plan §4.5).
+  /// The network fee taken from the collateral, zat: the Yellowback size fee of the ~8 KB
+  /// post-quantum owner spend (dollars per KB at the attested price, rpcversion 8).
   final PlatformInt64 networkFeeZat;
+
+  /// [`RedeemPreview::network_fee_zat`] in US cents at the last sync's price (0 when unknown).
+  final PlatformInt64 networkFeeUsdCents;
 
   /// The collateral returned, zat.
   final PlatformInt64 collateralZat;
@@ -1685,12 +1720,15 @@ class RedeemPreview {
     required this.changeCents,
     required this.yedInputs,
     required this.feeZat,
-    required this.enforcementFeeZat,
+    required this.protocolFeeZat,
+    required this.protocolFeeCents,
+    required this.pMintMicroUsd,
     required this.earlyRedeemFeeZat,
     required this.earlyRedeemFeeUsdCents,
     required this.lockHeight,
     required this.payee,
     required this.networkFeeZat,
+    required this.networkFeeUsdCents,
     required this.collateralZat,
     required this.collateralAddress,
     required this.lockTime,
@@ -1708,12 +1746,15 @@ class RedeemPreview {
       changeCents.hashCode ^
       yedInputs.hashCode ^
       feeZat.hashCode ^
-      enforcementFeeZat.hashCode ^
+      protocolFeeZat.hashCode ^
+      protocolFeeCents.hashCode ^
+      pMintMicroUsd.hashCode ^
       earlyRedeemFeeZat.hashCode ^
       earlyRedeemFeeUsdCents.hashCode ^
       lockHeight.hashCode ^
       payee.hashCode ^
       networkFeeZat.hashCode ^
+      networkFeeUsdCents.hashCode ^
       collateralZat.hashCode ^
       collateralAddress.hashCode ^
       lockTime.hashCode ^
@@ -1733,12 +1774,15 @@ class RedeemPreview {
           changeCents == other.changeCents &&
           yedInputs == other.yedInputs &&
           feeZat == other.feeZat &&
-          enforcementFeeZat == other.enforcementFeeZat &&
+          protocolFeeZat == other.protocolFeeZat &&
+          protocolFeeCents == other.protocolFeeCents &&
+          pMintMicroUsd == other.pMintMicroUsd &&
           earlyRedeemFeeZat == other.earlyRedeemFeeZat &&
           earlyRedeemFeeUsdCents == other.earlyRedeemFeeUsdCents &&
           lockHeight == other.lockHeight &&
           payee == other.payee &&
           networkFeeZat == other.networkFeeZat &&
+          networkFeeUsdCents == other.networkFeeUsdCents &&
           collateralZat == other.collateralZat &&
           collateralAddress == other.collateralAddress &&
           lockTime == other.lockTime &&
@@ -1766,10 +1810,10 @@ class RedeemResult {
   /// YED change, cents.
   final PlatformInt64 changeCents;
 
-  /// The enforcement fee, zat.
+  /// The protocol fee plus any early-redeem fee, zat (the fee output).
   final PlatformInt64 feeZat;
 
-  /// The early-redeem fee within `fee_zat` (IT-9).
+  /// The early-redeem fee within `fee_zat` (IT-9′).
   final PlatformInt64 earlyRedeemFeeZat;
 
   /// The enforcement fee payee (`s…`), empty under FEE-0.
@@ -2242,18 +2286,27 @@ class VaultSummary {
   /// (IT-9).
   final bool earlyRedeem;
 
-  /// The early-redeem fee a redeem now would pay, zat: `collateral · earlyRedeemFeeBps[class] /
-  /// 10⁴` while [`VaultSummary::early_redeem`], else 0 (the preview's figure is the one signed:
-  /// it is 0 under FEE-0, which this offline summary cannot know).
+  /// The early-redeem fee a redeem now would pay, zat: `earlyRedeemFeeBps[class]` of the debt at
+  /// the vault's `pMint` (IT-9′, rpcversion 8) while [`VaultSummary::early_redeem`], else 0 (the
+  /// preview's figure is the one signed: it is 0 under FEE-0, which this offline summary cannot know).
   final PlatformInt64 earlyRedeemFeeZat;
 
-  /// [`VaultSummary::early_redeem_fee_zat`] in US cents at the last sync's price (0 when the
-  /// price is unknown): the fee is shown in dollars too, since the collateral's dollar value is
-  /// what an owner weighs it against.
+  /// The early-redeem fee in US cents: the debt's share, exact (it no longer moves with the price);
+  /// shown beside the debt, and gone at the end of the term (the lockup report's recommendation).
   final PlatformInt64 earlyRedeemFeeUsdCents;
 
-  /// The class's early-redeem fee rate, bps of the collateral (500 / 250 / 100).
+  /// The class's early-redeem fee rate, bps of the debt (500 / 250 / 100).
   final PlatformInt64 earlyRedeemFeeBps;
+
+  /// The vault's stored mint price, µUSD per YEC (0 until a sync has read it): every fee of the
+  /// vault is struck at it.
+  final PlatformInt64 pMintMicroUsd;
+
+  /// The protocol fee a redeem pays, US cents (FEE-1′ of the debt; 0 for a vault that is not ACTIVE).
+  final PlatformInt64 protocolFeeCents;
+
+  /// [`VaultSummary::protocol_fee_cents`] in zat at `pMint` (0 when the price is unknown).
+  final PlatformInt64 protocolFeeZat;
 
   /// Claims are judged by the threshold at every height (in-term plan IT-2): always true on this
   /// build (the server's `inTermClaims` is checked at connect).
@@ -2348,6 +2401,9 @@ class VaultSummary {
     required this.earlyRedeemFeeZat,
     required this.earlyRedeemFeeUsdCents,
     required this.earlyRedeemFeeBps,
+    required this.pMintMicroUsd,
+    required this.protocolFeeCents,
+    required this.protocolFeeZat,
     required this.inTermClaims,
     required this.claimThresholdBps,
     required this.claimPriceMicroUsd,
@@ -2390,6 +2446,9 @@ class VaultSummary {
       earlyRedeemFeeZat.hashCode ^
       earlyRedeemFeeUsdCents.hashCode ^
       earlyRedeemFeeBps.hashCode ^
+      pMintMicroUsd.hashCode ^
+      protocolFeeCents.hashCode ^
+      protocolFeeZat.hashCode ^
       inTermClaims.hashCode ^
       claimThresholdBps.hashCode ^
       claimPriceMicroUsd.hashCode ^
@@ -2434,6 +2493,9 @@ class VaultSummary {
           earlyRedeemFeeZat == other.earlyRedeemFeeZat &&
           earlyRedeemFeeUsdCents == other.earlyRedeemFeeUsdCents &&
           earlyRedeemFeeBps == other.earlyRedeemFeeBps &&
+          pMintMicroUsd == other.pMintMicroUsd &&
+          protocolFeeCents == other.protocolFeeCents &&
+          protocolFeeZat == other.protocolFeeZat &&
           inTermClaims == other.inTermClaims &&
           claimThresholdBps == other.claimThresholdBps &&
           claimPriceMicroUsd == other.claimPriceMicroUsd &&
@@ -2636,8 +2698,12 @@ class YedPreview {
   /// Number of YEC inputs (fee).
   final int yecInputs;
 
-  /// The fee, zat.
+  /// The network fee, zat (rpcversion 8: the Yellowback size fee, dollars per KB at the attested
+  /// price).
   final PlatformInt64 feeZat;
+
+  /// [`YedPreview::fee_zat`] in US cents at the last sync's price (0 when unknown).
+  final PlatformInt64 feeUsdCents;
 
   /// YEC change, zat.
   final PlatformInt64 yecChangeZat;
@@ -2660,6 +2726,7 @@ class YedPreview {
     required this.changeCents,
     required this.yecInputs,
     required this.feeZat,
+    required this.feeUsdCents,
     required this.yecChangeZat,
     required this.expiryHeight,
     required this.txid,
@@ -2676,6 +2743,7 @@ class YedPreview {
       changeCents.hashCode ^
       yecInputs.hashCode ^
       feeZat.hashCode ^
+      feeUsdCents.hashCode ^
       yecChangeZat.hashCode ^
       expiryHeight.hashCode ^
       txid.hashCode ^
@@ -2694,6 +2762,7 @@ class YedPreview {
           changeCents == other.changeCents &&
           yecInputs == other.yecInputs &&
           feeZat == other.feeZat &&
+          feeUsdCents == other.feeUsdCents &&
           yecChangeZat == other.yecChangeZat &&
           expiryHeight == other.expiryHeight &&
           txid == other.txid &&
