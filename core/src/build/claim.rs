@@ -249,6 +249,14 @@ pub async fn start(
     // The YED to burn must be there before the carrier is funded, and (U-23: the vault's value
     // goes into intents) the YEC for the carrier and for the claim's fees.
     let (yed, change_cents, _, _) = redeem::select_yed_burn(wallet, entry.minted_cents)?;
+    // TOK-PQ (quantum spec F-7): from the Falcon height the claim's YED change would need a
+    // Falcon holder key, which YEW does not have yet.
+    if change_cents > 0 && wallet.pq_terms().falcon_at(r as u64 + 1) {
+        return Err(WalletError::Other(format!(
+            "falcon-holder-required: Falcon is active, so the {} of YED change must go to a Falcon (post-quantum) key, which this version of YEW cannot hold yet; claim with YED that covers the debt exactly",
+            crate::wallet::dollars(change_cents as i64)
+        )));
+    }
     let yed_value: i64 = yed.iter().map(|u| u.value).sum();
     let fees_needed = claim_funding_needed(
         if entry.payee.is_empty() {

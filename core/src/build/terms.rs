@@ -701,8 +701,17 @@ pub fn mint_gate(
         .upgrade
         .as_ref()
         .is_some_and(|a| a.status == crate::net::yellowback::STATUS_ACTIVE);
+    // TOK-PQ (quantum spec §3.6, F-7): from the Falcon height a MINT's token must go to a Falcon
+    // holder, and YEW holds no Falcon key yet.
+    let falcon = info
+        .params
+        .as_ref()
+        .and_then(|p| pq_terms(p).ok())
+        .is_some_and(|t| t.falcon_at(info.height.max(0) as u64 + 1));
     let blocked = if !info.enabled || !active {
         Some("Yellowback is not active on this server's node: nothing can be minted.".to_string())
+    } else if falcon {
+        Some("Falcon is active on this network: a new mint's YED must go to a Falcon (post-quantum) key, which this version of YEW cannot hold yet. Redeeming your vaults is not affected.".to_string())
     } else if requires_armed && !price.armed {
         Some(format!(
             "Minting is paused: the price feed is not armed (attestation {}). The node refuses every mint until enough attestors arm it. Redeeming and claiming are not affected.",
@@ -1446,6 +1455,17 @@ mod tests {
         i.upgrade.as_mut().unwrap().status = "pending".into();
         let g = mint_gate(r, &i, &price(true), &stats(&["A"], &[])).unwrap();
         assert!(g.blocked.as_deref().unwrap().contains("not active"));
+        // TOK-PQ: from the Falcon height YEW cannot hold a new mint's token (no Falcon key).
+        let mut i = info(false);
+        i.height = 299;
+        let mut p = server_params(Network::Regtest);
+        p.pq.as_mut().unwrap().falcon_height = 301;
+        i.params = Some(p.clone());
+        let g = mint_gate(r, &i, &price(true), &stats(&["A"], &[])).unwrap();
+        assert!(g.blocked.is_none(), "the next block (300) is before Falcon");
+        i.height = 300;
+        let g = mint_gate(r, &i, &price(true), &stats(&["A"], &[])).unwrap();
+        assert!(g.blocked.as_deref().unwrap().contains("Falcon is active"));
     }
 
     /// RED-5 recomputed from `pClaim`, and the claim bounds (H-9.3).
