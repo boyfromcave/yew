@@ -44,7 +44,20 @@ pub enum TxError {
     /// A post-quantum signature or scriptSig could not be made.
     #[error("post-quantum signing: {0}")]
     Pq(#[from] crate::pq::PqError),
+    /// An input's scriptSig is over the relay limit (`IsStandardTx` / `AreInputsStandard`):
+    /// 9,000 bytes for a post-quantum spend, 1,650 for every other input (quantum spec §2.3).
+    #[error("scriptsig-size: input {0}'s scriptSig is {1} bytes, over the relay limit {2}")]
+    ScriptSigSize(usize, usize, usize),
 }
+
+/// The largest P2PKH scriptSig: `<DER sig (≤ 72) ‖ hashtype>` and `<33-byte key>`, each pushed
+/// with one length byte: 1 + 73 + 1 + 33 = 108 bytes. A size bound for a fee uses it for every
+/// ECDSA input (a re-sign can change the DER length by a byte or two).
+pub const MAX_P2PKH_SCRIPT_SIG: usize = 108;
+
+/// `MAX_STANDARD_SCRIPTSIG_SIZE`: the relay limit on a non-post-quantum scriptSig
+/// (`ycash-dd/src/policy/policy.cpp:94`, `> 1650`).
+pub const MAX_STANDARD_SCRIPT_SIG: usize = 1_650;
 
 /// A reference to an output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -480,6 +493,44 @@ impl Transaction {
         let (digest, sig) = self.pq_signature(index, key, script_pubkey, amount, branch_id)?;
         self.vin[index].script_sig = crate::pq::pqpkh_script_sig(&sig, key.public_key())?;
         Ok(digest)
+    }
+
+    /// The serialized size of this transaction with input `i`'s scriptSig `script_sig_sizes[i]`
+    /// bytes long (the scriptSigs it holds now are ignored): the size a fee is priced on before
+    /// anything is signed. A post-quantum scriptSig has an exact size
+    /// ([`crate::pq::pq_sig_pushes_size`] plus any selector); an ECDSA one is bounded by
+    /// [`MAX_P2PKH_SCRIPT_SIG`].
+    pub fn size_with_script_sigs(&self, script_sig_sizes: &[usize]) -> Result<usize, TxError> {
+        if script_sig_sizes.len() != self.vin.len() {
+            return Err(TxError::InputIndex(script_sig_sizes.len()));
+        }
+        let mut t = self.clone();
+        for (i, n) in t.vin.iter_mut().zip(script_sig_sizes) {
+            i.script_sig = vec![0; *n];
+        }
+        Ok(t.serialize()?.len())
+    }
+
+    /// The relay limits on scriptSig sizes, checked before anything is broadcast (quantum spec
+    /// §2.3): an input whose scriptSig is a post-quantum spend (it parses as the chunked
+    /// `<sig…> <s> <pk…> <p>`, optionally followed by a template selector) may use up to
+    /// [`crate::pq::MAX_STANDARD_PQ_SCRIPTSIG`]; every other input [`MAX_STANDARD_SCRIPT_SIG`].
+    pub fn check_script_sig_sizes(&self) -> Result<(), TxError> {
+        for (n, i) in self.vin.iter().enumerate() {
+            let len = i.script_sig.len();
+            if len <= MAX_STANDARD_SCRIPT_SIG {
+                continue;
+            }
+            let limit = if crate::pq::is_pq_script_sig(&i.script_sig) {
+                crate::pq::MAX_STANDARD_PQ_SCRIPTSIG
+            } else {
+                MAX_STANDARD_SCRIPT_SIG
+            };
+            if len > limit {
+                return Err(TxError::ScriptSigSize(n, len, limit));
+            }
+        }
+        Ok(())
     }
 
     /// Sum of output values.

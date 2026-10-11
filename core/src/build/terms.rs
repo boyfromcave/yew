@@ -462,6 +462,93 @@ pub fn check_vault(network: Network, v: &rpc::YedVault) -> Result<(), MintError>
     Ok(())
 }
 
+/// The post-quantum terms a server reports (`GetYellowbackInfo.params.pq` and
+/// `attest.mintPayloadVersion`, rpcversion 7; quantum spec §6.2, client survey C-5): the size
+/// fee rate and the Falcon activation. Unlike the rest of the parameter set these are the node's
+/// *operator* settings (`-pqfeerate`) and a height, so they are read, bounded and used, not
+/// compared with a compiled value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PqTerms {
+    /// `pq.feeRateZatPerKB`, at least the relay floor.
+    pub fee_rate_zat_per_kb: i64,
+    /// `pq.falconHeight` (`None` = no activation height: mainnet and testnet today).
+    pub falcon_height: Option<u64>,
+    /// `pq.falconActive` as the node judged it (at its next block).
+    pub falcon_active: bool,
+}
+
+impl Default for PqTerms {
+    /// Before a server has answered: the relay floor, Falcon unknown (treated as inactive; the
+    /// node's dry run judges `TOK-PQ` before anything is sent).
+    fn default() -> PqTerms {
+        PqTerms {
+            fee_rate_zat_per_kb: params::RELAY_FLOOR_ZAT_PER_KB,
+            falcon_height: None,
+            falcon_active: false,
+        }
+    }
+}
+
+impl PqTerms {
+    /// Falcon (scheme 2) and `TOK-PQ` apply to a transaction mined at `height`
+    /// (`IsPQFalconActive(params, nHeight)`: `nHeight >= pqFalconHeight`; R-A2), or the node
+    /// already said so.
+    pub fn falcon_at(&self, height: u64) -> bool {
+        self.falcon_active || self.falcon_height.is_some_and(|h| height >= h)
+    }
+
+    /// The network fee of a transaction of `size` bytes with a post-quantum input:
+    /// [`params::pq_size_fee`]`(FEE_ZAT, rate, size)`.
+    pub fn fee(&self, size: usize) -> i64 {
+        params::pq_size_fee(params::FEE_ZAT, self.fee_rate_zat_per_kb, size)
+    }
+}
+
+/// Read and bound `params.pq` (rpcversion 7). Refused: no `pq` block; a scheme list without
+/// SLH-DSA (1), or with Falcon (2) while Falcon is inactive, or naming an unknown scheme; a
+/// negative rate or one above [`params::MAX_PQ_FEE_RATE_ZAT_PER_KB`]; a MINT payload version
+/// other than this build's ([`crate::payload::MINT_VERSION`]).
+pub fn pq_terms(p: &rpc::YellowbackParams) -> Result<PqTerms, MintError> {
+    let pq =
+        p.pq.as_ref()
+            .ok_or_else(|| inconsistent("params.pq missing (rpcversion 7)"))?;
+    if !pq
+        .schemes
+        .contains(&(crate::pq::SCHEME_SLH_DSA_SHA2_128S as i64))
+        || pq
+            .schemes
+            .iter()
+            .any(|&s| !u8::try_from(s).is_ok_and(crate::pq::is_known_scheme))
+        || (pq.schemes.contains(&(crate::pq::SCHEME_FN_DSA_512 as i64)) && !pq.falcon_active)
+    {
+        return Err(inconsistent(format!(
+            "params.pq.schemes {:?} (falconActive {})",
+            pq.schemes, pq.falcon_active
+        )));
+    }
+    if pq.fee_rate_zat_per_kb < 0 || pq.fee_rate_zat_per_kb > params::MAX_PQ_FEE_RATE_ZAT_PER_KB {
+        return Err(inconsistent(format!(
+            "params.pq.feeRateZatPerKB {} (YEW accepts 0..={})",
+            pq.fee_rate_zat_per_kb,
+            params::MAX_PQ_FEE_RATE_ZAT_PER_KB
+        )));
+    }
+    if let Some(a) = p.attest.as_ref() {
+        if a.mint_payload_version != crate::payload::MINT_VERSION as i64 {
+            return Err(inconsistent(format!(
+                "params.attest.mintPayloadVersion {} (this build writes {})",
+                a.mint_payload_version,
+                crate::payload::MINT_VERSION
+            )));
+        }
+    }
+    Ok(PqTerms {
+        fee_rate_zat_per_kb: pq.fee_rate_zat_per_kb.max(params::RELAY_FLOOR_ZAT_PER_KB),
+        falcon_height: u64::try_from(pq.falcon_height).ok(),
+        falcon_active: pq.falcon_active,
+    })
+}
+
 /// The parameter set a server reports (`GetYellowbackInfo.params`) against the one this build
 /// compiles for the network (audit G-1, G-2; hardening H-9.3 "recompute the fee floor and the
 /// height identities locally"). The wallet never prices a mint, a fee or a deadline from the
@@ -531,6 +618,8 @@ pub fn check_server_params(
         a.residual_min_zat,
         params::RESIDUAL_MIN_ZAT,
     )?;
+    // rpcversion 7: the post-quantum block must be present and sane (its values are read, not compared).
+    pq_terms(p)?;
     for c in network.term_classes() {
         let s = p
             .classes
@@ -1126,7 +1215,15 @@ mod tests {
             attest: Some(rpc::YellowbackAttestParams {
                 attest_fee_bps: network.attest_fee_bps(),
                 residual_min_zat: params::RESIDUAL_MIN_ZAT,
+                mint_payload_version: 4,
                 ..Default::default()
+            }),
+            // rpcversion 7 (quantum spec §6.2)
+            pq: Some(rpc::YellowbackPqParams {
+                schemes: vec![1],
+                falcon_active: false,
+                falcon_height: -1,
+                fee_rate_zat_per_kb: 100,
             }),
             classes: network
                 .term_classes()
@@ -1150,6 +1247,74 @@ mod tests {
             in_term_claims: true,
             ..Default::default()
         }
+    }
+
+    /// rpcversion 7: `params.pq` is read and bounded; Falcon by height.
+    #[test]
+    fn pq_terms_are_read_and_bounded() {
+        let base = server_params(Network::Regtest);
+        let t = pq_terms(&base).unwrap();
+        assert_eq!(t, PqTerms::default());
+        assert!(!t.falcon_at(1_000_000));
+        // the rate is floored at the relay floor and capped
+        let with = |f: &dyn Fn(&mut rpc::YellowbackPqParams)| {
+            let mut p = base.clone();
+            f(p.pq.as_mut().unwrap());
+            p
+        };
+        assert_eq!(
+            pq_terms(&with(&|q| q.fee_rate_zat_per_kb = 0))
+                .unwrap()
+                .fee_rate_zat_per_kb,
+            100
+        );
+        assert_eq!(
+            pq_terms(&with(&|q| q.fee_rate_zat_per_kb = 500))
+                .unwrap()
+                .fee_rate_zat_per_kb,
+            500
+        );
+        assert!(pq_terms(&with(&|q| q.fee_rate_zat_per_kb = -1)).is_err());
+        assert!(pq_terms(&with(&|q| q.fee_rate_zat_per_kb = 10_001)).is_err());
+        // schemes: SLH required, Falcon only when active, nothing unknown
+        assert!(pq_terms(&with(&|q| q.schemes = vec![])).is_err());
+        assert!(pq_terms(&with(&|q| q.schemes = vec![1, 2])).is_err());
+        assert!(pq_terms(&with(&|q| q.schemes = vec![1, 3])).is_err());
+        let f = pq_terms(&with(&|q| {
+            q.schemes = vec![1, 2];
+            q.falcon_active = true;
+            q.falcon_height = 200;
+        }))
+        .unwrap();
+        assert!(f.falcon_active && f.falcon_at(0));
+        let h = pq_terms(&with(&|q| q.falcon_height = 300)).unwrap();
+        assert_eq!(h.falcon_height, Some(300));
+        assert!(!h.falcon_at(299) && h.falcon_at(300));
+        // no pq block, or another MINT payload version: refused (and so is the parameter set)
+        let mut p = base.clone();
+        p.pq = None;
+        assert!(pq_terms(&p).is_err());
+        assert!(check_server_params(Network::Regtest, Some(&p)).is_err());
+        let mut p = base.clone();
+        p.attest.as_mut().unwrap().mint_payload_version = 3;
+        assert!(pq_terms(&p).is_err());
+        // the fee: max(1,000, rate × size), CFeeRate rounding
+        let t = PqTerms {
+            fee_rate_zat_per_kb: 100,
+            ..PqTerms::default()
+        };
+        assert_eq!(t.fee(8_200), 1_000, "1x at the default: unchanged (C-5)");
+        let t5 = PqTerms {
+            fee_rate_zat_per_kb: 500,
+            ..t
+        };
+        assert_eq!(t5.fee(8_200), 4_100);
+        assert_eq!(
+            t5.fee(8_201),
+            4_100,
+            "integer division, as CFeeRate::GetFee"
+        );
+        assert_eq!(params::pq_size_fee(0, 100, 0), 100, "a 0 fee is the rate");
     }
 
     /// H-9.3: the server's parameter set must be the network's.

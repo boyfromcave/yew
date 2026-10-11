@@ -324,7 +324,7 @@ class AddressCheck {
   /// `yregtestsapling1…`), empty when invalid.
   final String kind;
 
-  /// The `ye…` form was given.
+  /// The `yb…` form was given.
   final bool yellowbackForm;
 
   /// Why it is invalid, empty when valid.
@@ -358,7 +358,7 @@ class AddressCheck {
 /// A receive address: `address` is the one of `kind`; for the transparent kinds `ye` and `s`
 /// are the two forms of the same key, for a shielded address both are empty.
 class AddressPair {
-  /// The Yellowback form (`ye…` / `yt…` / `yr…`).
+  /// The Yellowback form (`yb…` / `yt…` / `yr…`).
   final String ye;
 
   /// The transparent form (`s1…` / `sm…`).
@@ -370,7 +370,7 @@ class AddressPair {
   /// `false` for an imported key (not covered by the seed backup).
   final bool coveredBySeed;
 
-  /// The address of `kind` (`s…`, `ye…` or `ys1…`).
+  /// The address of `kind` (`s…`, `yb…` or `ys1…`).
   final String address;
 
   /// The kind of `address`.
@@ -636,7 +636,7 @@ class ClaimableItem {
   /// The vault's mint txid.
   final String vaultTxid;
 
-  /// The owner, `ye…`.
+  /// The owner, `yb…`.
   final String ownerAddress;
 
   /// The debt to burn, cents (the wallet must hold at least this).
@@ -752,7 +752,7 @@ class Created {
   /// keystore and shows it once for backup); `None` when the caller supplied the words.
   final String? seedWords;
 
-  /// The primary receive address, `ye…` form.
+  /// The primary receive address, `yb…` form.
   final String addressYe;
 
   const Created({
@@ -1563,13 +1563,13 @@ enum ReceiveKind {
   /// The private Sapling `ys1…` address (shielded YEC, memos).
   shielded,
 
-  /// The Yellowback `ye…` form of the transparent address (YED, mint).
+  /// The Yellowback `yb…` form of the transparent address (YED, mint).
   yed,
 }
 
 /// One recipient of a YED send.
 class Recipient {
-  /// `ye…` / `yr…` / `s…`.
+  /// `yb…` / `yr…` / `s…`.
   final String address;
 
   /// Cents.
@@ -1624,11 +1624,19 @@ class RedeemPreview {
   /// `lockHeight`, 0 otherwise and under FEE-0. Shown before the slider.
   final PlatformInt64 earlyRedeemFeeZat;
 
+  /// [`RedeemPreview::early_redeem_fee_zat`] in US cents at the last sync's price (0 when the
+  /// price is unknown).
+  final PlatformInt64 earlyRedeemFeeUsdCents;
+
   /// The vault's `lockHeight` (the end of the term).
   final PlatformInt64 lockHeight;
 
   /// The enforcement fee payee (`s…`), empty under FEE-0.
   final String payee;
+
+  /// The network fee taken from the collateral, zat: `max(1,000, pqfeerate × size)` for the
+  /// ~8 KB post-quantum owner spend (quantum plan §4.5).
+  final PlatformInt64 networkFeeZat;
 
   /// The collateral returned, zat.
   final PlatformInt64 collateralZat;
@@ -1656,8 +1664,10 @@ class RedeemPreview {
     required this.feeZat,
     required this.enforcementFeeZat,
     required this.earlyRedeemFeeZat,
+    required this.earlyRedeemFeeUsdCents,
     required this.lockHeight,
     required this.payee,
+    required this.networkFeeZat,
     required this.collateralZat,
     required this.collateralAddress,
     required this.lockTime,
@@ -1677,8 +1687,10 @@ class RedeemPreview {
       feeZat.hashCode ^
       enforcementFeeZat.hashCode ^
       earlyRedeemFeeZat.hashCode ^
+      earlyRedeemFeeUsdCents.hashCode ^
       lockHeight.hashCode ^
       payee.hashCode ^
+      networkFeeZat.hashCode ^
       collateralZat.hashCode ^
       collateralAddress.hashCode ^
       lockTime.hashCode ^
@@ -1700,8 +1712,10 @@ class RedeemPreview {
           feeZat == other.feeZat &&
           enforcementFeeZat == other.enforcementFeeZat &&
           earlyRedeemFeeZat == other.earlyRedeemFeeZat &&
+          earlyRedeemFeeUsdCents == other.earlyRedeemFeeUsdCents &&
           lockHeight == other.lockHeight &&
           payee == other.payee &&
+          networkFeeZat == other.networkFeeZat &&
           collateralZat == other.collateralZat &&
           collateralAddress == other.collateralAddress &&
           lockTime == other.lockTime &&
@@ -2152,7 +2166,9 @@ class VaultSummary {
   /// `ACTIVE`, `VOID`, `CLOSED`, `CLAIMED`.
   final String status;
 
-  /// The owner address, `ye…` form (an own key).
+  /// The vault owner's post-quantum address (quantum spec §4, §6.2 `ownerAddress`: 53
+  /// characters, `yb…`/`yt…`/`yr…`): a vault identifier, **never** a receive address (client
+  /// survey C-10). YED and YEC go to the receive addresses.
   final String ownerAddress;
 
   /// The term class letter.
@@ -2199,6 +2215,11 @@ class VaultSummary {
   /// 10⁴` while [`VaultSummary::early_redeem`], else 0 (the preview's figure is the one signed:
   /// it is 0 under FEE-0, which this offline summary cannot know).
   final PlatformInt64 earlyRedeemFeeZat;
+
+  /// [`VaultSummary::early_redeem_fee_zat`] in US cents at the last sync's price (0 when the
+  /// price is unknown): the fee is shown in dollars too, since the collateral's dollar value is
+  /// what an owner weighs it against.
+  final PlatformInt64 earlyRedeemFeeUsdCents;
 
   /// The class's early-redeem fee rate, bps of the collateral (500 / 250 / 100).
   final PlatformInt64 earlyRedeemFeeBps;
@@ -2294,6 +2315,7 @@ class VaultSummary {
     required this.blocksUntilTermEnd,
     required this.earlyRedeem,
     required this.earlyRedeemFeeZat,
+    required this.earlyRedeemFeeUsdCents,
     required this.earlyRedeemFeeBps,
     required this.inTermClaims,
     required this.claimThresholdBps,
@@ -2335,6 +2357,7 @@ class VaultSummary {
       blocksUntilTermEnd.hashCode ^
       earlyRedeem.hashCode ^
       earlyRedeemFeeZat.hashCode ^
+      earlyRedeemFeeUsdCents.hashCode ^
       earlyRedeemFeeBps.hashCode ^
       inTermClaims.hashCode ^
       claimThresholdBps.hashCode ^
@@ -2378,6 +2401,7 @@ class VaultSummary {
           blocksUntilTermEnd == other.blocksUntilTermEnd &&
           earlyRedeem == other.earlyRedeem &&
           earlyRedeemFeeZat == other.earlyRedeemFeeZat &&
+          earlyRedeemFeeUsdCents == other.earlyRedeemFeeUsdCents &&
           earlyRedeemFeeBps == other.earlyRedeemFeeBps &&
           inTermClaims == other.inTermClaims &&
           claimThresholdBps == other.claimThresholdBps &&
@@ -2403,7 +2427,7 @@ class VaultSummary {
 
 /// [`export_wif`].
 class WifExport {
-  /// The address, `ye…` form.
+  /// The address, `yb…` form.
   final String addressYe;
 
   /// The address, `s…` form.

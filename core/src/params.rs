@@ -614,6 +614,16 @@ pub const GAP_LIMIT: u32 = 20;
 ///   the regtest devnet in Phase W1 (`scripts/devnet-w1.sh`).
 pub const FEE_ZAT: i64 = 1_000;
 
+/// `zat` of YEC in US cents at `price_micro_usd` (µUSD per YEC), rounded down: `zat · price /
+/// 10¹²` (10⁸ zat per YEC, 10⁴ µUSD per cent). 0 for an unknown (≤ 0) price. Display only (the
+/// early-redeem fee in dollars, the lockup investigation's recommendation); nothing is priced by it.
+pub fn zat_to_usd_cents(zat: i64, price_micro_usd: i64) -> i64 {
+    if price_micro_usd <= 0 || zat <= 0 {
+        return 0;
+    }
+    ((zat as i128 * price_micro_usd as i128) / 1_000_000_000_000) as i64
+}
+
 /// The relay floor, zatoshi per 1,000 bytes (`ycash-dd/src/main.h:68` `DEFAULT_MIN_RELAY_TX_FEE`,
 /// the same on ycash6): the lowest size rate YEW ever charges, whatever a server reports.
 pub const RELAY_FLOOR_ZAT_PER_KB: i64 = 100;

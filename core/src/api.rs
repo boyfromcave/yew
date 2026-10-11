@@ -740,7 +740,9 @@ pub struct VaultSummary {
     pub vault_txid: String,
     /// `ACTIVE`, `VOID`, `CLOSED`, `CLAIMED`.
     pub status: String,
-    /// The owner address, `yb…` form (an own key).
+    /// The vault owner's post-quantum address (quantum spec §4, §6.2 `ownerAddress`: 53
+    /// characters, `yb…`/`yt…`/`yr…`): a vault identifier, **never** a receive address (client
+    /// survey C-10). YED and YEC go to the receive addresses.
     pub owner_address: String,
     /// The term class letter.
     pub term_class: String,
@@ -774,6 +776,10 @@ pub struct VaultSummary {
     /// 10⁴` while [`VaultSummary::early_redeem`], else 0 (the preview's figure is the one signed:
     /// it is 0 under FEE-0, which this offline summary cannot know).
     pub early_redeem_fee_zat: i64,
+    /// [`VaultSummary::early_redeem_fee_zat`] in US cents at the last sync's price (0 when the
+    /// price is unknown): the fee is shown in dollars too, since the collateral's dollar value is
+    /// what an owner weighs it against.
+    pub early_redeem_fee_usd_cents: i64,
     /// The class's early-redeem fee rate, bps of the collateral (500 / 250 / 100).
     pub early_redeem_fee_bps: i64,
     /// Claims are judged by the threshold at every height (in-term plan IT-2): always true on this
@@ -1008,10 +1014,16 @@ pub struct RedeemPreview {
     /// The early-redeem fee within `fee_zat` (IT-9): due when the redeem confirms before
     /// `lockHeight`, 0 otherwise and under FEE-0. Shown before the slider.
     pub early_redeem_fee_zat: i64,
+    /// [`RedeemPreview::early_redeem_fee_zat`] in US cents at the last sync's price (0 when the
+    /// price is unknown).
+    pub early_redeem_fee_usd_cents: i64,
     /// The vault's `lockHeight` (the end of the term).
     pub lock_height: i64,
     /// The enforcement fee payee (`s…`), empty under FEE-0.
     pub payee: String,
+    /// The network fee taken from the collateral, zat: `max(1,000, pqfeerate × size)` for the
+    /// ~8 KB post-quantum owner spend (quantum plan §4.5).
+    pub network_fee_zat: i64,
     /// The collateral returned, zat.
     pub collateral_zat: i64,
     /// The own address it returns to.
@@ -1191,7 +1203,13 @@ async fn connect(server: &Server, network: Network) -> Result<Conn, YewError> {
 /// Connect if not connected.
 async fn ensure_conn(o: &mut Open) -> Result<(), YewError> {
     if o.conn.is_none() {
-        o.conn = Some(connect(&o.server, o.wallet.network).await?);
+        let c = connect(&o.server, o.wallet.network).await?;
+        // rpcversion 7: the size fee rate and the Falcon activation, for every builder. A bad
+        // `params.pq` is not fatal here: the mint/redeem/claim paths re-read and refuse it.
+        if let Availability::Present { info, .. } = &c.availability {
+            let _ = o.wallet.note_server_params(info.params.as_ref());
+        }
+        o.conn = Some(c);
     }
     Ok(())
 }
@@ -2488,7 +2506,7 @@ fn vault_summary(
     VaultSummary {
         vault_txid: txid_hex(&v.txid),
         status: v.status.clone(),
-        owner_address: keys::encode_yellowback(network, &v.owner_hash160),
+        owner_address: keys::encode_pq_yellowback(network, &v.owner).unwrap_or_default(),
         term_class: v.term_class.clone(),
         cents: v.minted_cents as i64,
         collateral_zat: v.collateral_zat,
@@ -2503,6 +2521,14 @@ fn vault_summary(
         early_redeem: early,
         early_redeem_fee_zat: if early {
             crate::params::early_redeem_fee_zat(v.collateral_zat, fee_bps)
+        } else {
+            0
+        },
+        early_redeem_fee_usd_cents: if early {
+            crate::params::zat_to_usd_cents(
+                crate::params::early_redeem_fee_zat(v.collateral_zat, fee_bps),
+                p_claim,
+            )
         } else {
             0
         },
@@ -2821,6 +2847,7 @@ pub fn redeem_preview(vault_txid: String) -> Result<RedeemPreview, YewError> {
                     .await?
             };
             let id = txid_hex(&p.txid);
+            let price_micro_usd = r.price_micro_usd.unwrap_or(0);
             let out = RedeemPreview {
                 preview_id: id.clone(),
                 vault_txid: p.vault_txid.clone(),
@@ -2832,8 +2859,13 @@ pub fn redeem_preview(vault_txid: String) -> Result<RedeemPreview, YewError> {
                 fee_zat: p.fee_zat,
                 enforcement_fee_zat: p.fee_zat - p.early_redeem_fee_zat,
                 early_redeem_fee_zat: p.early_redeem_fee_zat,
+                early_redeem_fee_usd_cents: crate::params::zat_to_usd_cents(
+                    p.early_redeem_fee_zat,
+                    price_micro_usd,
+                ),
                 lock_height: p.lock_height as i64,
                 payee: p.payee.clone(),
+                network_fee_zat: p.network_fee_zat,
                 collateral_zat: p.collateral_out,
                 collateral_address: p.collateral_address.clone(),
                 lock_time: p.lock_time as i64,
@@ -3385,8 +3417,11 @@ mod tests {
         // The block before lockHeight is the last early one: a redeem then confirms at lockHeight.
         let v = vault_summary(&vault, 516, Some(520_000), Network::Regtest, &[], NOW);
         assert!(v.early_redeem && v.early_redeem_fee_zat == 47_500_000);
+        // shown in dollars too: 0.475 YEC at $0.52 = 24.7 cents, rounded down
+        assert_eq!(v.early_redeem_fee_usd_cents, 24);
         let v = vault_summary(&vault, 517, Some(520_000), Network::Regtest, &[], NOW);
         assert!(!v.early_redeem && v.early_redeem_fee_zat == 0 && !v.renewable);
+        assert_eq!(v.early_redeem_fee_usd_cents, 0);
         let row_for_vault = MintRow {
             vault_txid: [0xef; 32],
             lock_blocks: 60,
@@ -3396,7 +3431,13 @@ mod tests {
         assert!(v.renewable && !v.claim_warning && v.renew_lock_blocks == 60);
         assert_eq!(v.lock_time_secs, NOW - 18 * 75);
         assert_eq!(v.cents, 25_000);
+        // C-10: the owner address is the 53-character post-quantum form, never the holder's.
         assert_eq!(
+            v.owner_address,
+            keys::encode_pq_yellowback(Network::Regtest, &vault.owner).unwrap()
+        );
+        assert_eq!(v.owner_address.len(), 53);
+        assert_ne!(
             v.owner_address,
             keys::encode_yellowback(Network::Regtest, &[2; 20])
         );

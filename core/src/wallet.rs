@@ -113,6 +113,9 @@ pub struct Wallet {
     pq_root: crate::pq::PqSeedRoot,
     /// Owner ids already derived, by external index (SLH-DSA key generation is not free).
     pq_ids: std::sync::Mutex<HashMap<u32, crate::pq::PqKeyId>>,
+    /// The server's post-quantum terms as last read (`params.pq`, rpcversion 7): the size fee
+    /// rate and the Falcon activation ([`Wallet::pq_terms`]).
+    pq_terms: std::sync::Mutex<crate::build::terms::PqTerms>,
     /// The Sapling side (`None` for a wallet over an in-memory store, as the unit tests use).
     pub shielded: Option<Shielded>,
 }
@@ -243,6 +246,7 @@ impl Wallet {
             wrap_secret,
             pq_root: crate::pq::PqSeedRoot::from_seed(seed),
             pq_ids: std::sync::Mutex::new(HashMap::new()),
+            pq_terms: std::sync::Mutex::new(Default::default()),
             shielded: None,
         };
         w.ensure_gap()?;
@@ -450,6 +454,27 @@ impl Wallet {
             )));
         }
         Ok(Some(key))
+    }
+
+    /// The server's post-quantum terms as last read ([`Wallet::note_server_params`]); the
+    /// default (relay floor, Falcon inactive) before any server has answered.
+    pub fn pq_terms(&self) -> crate::build::terms::PqTerms {
+        *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Remember the post-quantum terms of a `GetYellowbackInfo.params` (rpcversion 7); refused
+    /// (and nothing remembered) when they are missing or out of bounds.
+    pub fn note_server_params(
+        &self,
+        p: Option<&crate::net::rpc::YellowbackParams>,
+    ) -> Result<crate::build::terms::PqTerms, crate::build::mint::MintError> {
+        let t = crate::build::terms::pq_terms(p.ok_or_else(|| {
+            crate::build::mint::MintError::Inconsistent {
+                what: "GetYellowbackInfo carries no params".into(),
+            }
+        })?)?;
+        *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner()) = t;
+        Ok(t)
     }
 
     /// Export the WIF of an own address (D-W-11).

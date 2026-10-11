@@ -296,6 +296,21 @@ pub fn parse_pq_sig_ops(ops: &[ScriptOp]) -> Option<(Vec<u8>, Vec<u8>)> {
     (sig_first == 0).then_some((sig, pk))
 }
 
+/// True when `script_sig` is a post-quantum spend: the chunked `<sig…> <s> <pk…> <p>`, alone
+/// (`TX_PQPKH`) or followed by one template selector (`OP_1`..`OP_16`: the V/I owner paths). Used
+/// only to pick the relay size limit ([`MAX_STANDARD_PQ_SCRIPTSIG`]) before a broadcast.
+pub fn is_pq_script_sig(script_sig: &[u8]) -> bool {
+    let Ok(ops) = script::ops(script_sig) else {
+        return false;
+    };
+    if parse_pq_sig_ops(&ops).is_some() {
+        return true;
+    }
+    ops.split_last().is_some_and(|(last, rest)| {
+        (op::OP_1..=op::OP_16).contains(&last.opcode) && parse_pq_sig_ops(rest).is_some()
+    })
+}
+
 /// Parse a `TX_PQPKH` scriptSig into `(sig_with_hashtype, pk)`.
 pub fn parse_pqpkh_script_sig(script_sig: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
     parse_pq_sig_ops(&script::ops(script_sig).ok()?)

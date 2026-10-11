@@ -83,6 +83,9 @@ pub struct VaultSpendShape {
     pub carrier_value: i64,
     /// The collateral destination.
     pub collateral_script: Vec<u8>,
+    /// The network fee taken from the collateral: `FEE_ZAT`, or the size-priced fee of an owner
+    /// spend (quantum plan §4.5: `max(FEE_ZAT, pqfeerate × size)`, [`super::terms::PqTerms::fee`]).
+    pub network_fee: i64,
 }
 
 /// `VaultSpendPlan` (`txbuilder.h:196-208`).
@@ -145,7 +148,7 @@ pub fn plan_vault_spend(s: &VaultSpendShape) -> Result<VaultSpendPlan, WalletErr
     let attest = s.with_payload && s.attest_script.is_some();
     let residual = s.with_payload && s.residual_zat > 0;
     let collateral_out = s.vault_value + s.carrier_value + yed_value
-        - FEE_ZAT
+        - s.network_fee
         - if fee { s.fee_zat } else { 0 }
         - if attest { s.attest_fee_zat } else { 0 }
         - if residual { s.residual_zat } else { 0 }
@@ -358,10 +361,24 @@ pub struct RedeemBuild {
     pub lock_time: u32,
     /// `nExpiryHeight`.
     pub expiry_height: u32,
+    /// The network fee taken from the collateral: `max(FEE_ZAT, pqfeerate × size)`.
+    pub network_fee_zat: i64,
     /// The signed transaction.
     pub raw: Vec<u8>,
     /// Its txid.
     pub txid: [u8; 32],
+}
+
+/// The size an owner-path vault spend will have once signed, at most: `vin[0]` the owner's
+/// chunked post-quantum scriptSig plus the selector (exact: 7,939 bytes for SLH-DSA), every other
+/// input a P2PKH scriptSig at its largest ([`crate::tx::MAX_P2PKH_SCRIPT_SIG`]).
+pub fn owner_spend_size_bound(tx: &Transaction, owner_scheme: u8) -> Result<usize, WalletError> {
+    let owner = crate::pq::pq_sig_pushes_size(owner_scheme)
+        .ok_or_else(|| WalletError::Other("the vault owner's scheme is not registered".into()))?
+        + 1;
+    let mut sizes = vec![crate::tx::MAX_P2PKH_SCRIPT_SIG; tx.vin.len()];
+    sizes[0] = owner;
+    Ok(tx.size_with_script_sigs(&sizes)?)
 }
 
 /// The V script of a stored vault under the vault upgrade's terms (U-23), with its own branch
@@ -482,12 +499,20 @@ pub async fn build_redeem(
     // IT-9 locally: the early-redeem fee rides on the FEE-1 payee's output (RED-3 checks that
     // output against FEE-1 + the early fee; AFEE-1 gives the owner path no attestor share).
     let early_redeem_fee_zat = early_redeem_fee_for(wallet.network, &v, r, !payee.is_empty());
+    // TOK-PQ (quantum spec F-7, after the Falcon height): YED change must go to a Falcon holder,
+    // and YEW has no Falcon key yet. A redeem that burns exactly the debt (no change) is fine.
+    if active && change_cents > 0 && wallet.pq_terms().falcon_at(r as u64 + 1) {
+        return Err(WalletError::Other(format!(
+            "falcon-holder-required: Falcon is active, so the {} of YED change must go to a Falcon (post-quantum) key, which this version of YEW cannot hold yet; redeem with YED that covers the debt exactly",
+            dollars(change_cents as i64)
+        )));
+    }
     let change_row = if change_cents > 0 {
         Some(mint::fresh_external(wallet)?)
     } else {
         None
     };
-    let shape = VaultSpendShape {
+    let mut shape = VaultSpendShape {
         vault_out,
         vault_value: v.collateral_zat,
         lock_height: v.lock_height,
@@ -521,15 +546,27 @@ pub async fn build_redeem(
         })?,
         carrier_value: 0,
         collateral_script: script::p2pkh_script(&dest.hash160),
+        network_fee: FEE_ZAT,
     };
-    let plan = plan_vault_spend(&shape)?;
-    let mut tx = Transaction::new_v4();
-    tx.lock_time = plan.lock_time;
-    tx.expiry_height = expiry_height;
-    tx.vin = plan.vin.clone();
-    tx.vout = plan.vout.clone();
+    // The size-priced fee (quantum plan §4.5; client survey C-5), from the exact owner scriptSig
+    // and a bound on each ECDSA one, before anything is signed (an SLH-DSA signature takes ~0.5 s).
+    let unsigned = |shape: &VaultSpendShape| -> Result<(VaultSpendPlan, Transaction), WalletError> {
+        let plan = plan_vault_spend(shape)?;
+        let mut tx = Transaction::new_v4();
+        tx.lock_time = plan.lock_time;
+        tx.expiry_height = expiry_height;
+        tx.vin = plan.vin.clone();
+        tx.vout = plan.vout.clone();
+        Ok((plan, tx))
+    };
+    let (_, draft) = unsigned(&shape)?;
+    shape.network_fee = wallet
+        .pq_terms()
+        .fee(owner_spend_size_bound(&draft, owner.scheme())?);
+    let (plan, mut tx) = unsigned(&shape)?;
     sign_owner_input(&mut tx, &owner, &vault_script, v.collateral_zat, branch_id)?;
     mint::sign_p2pkh_inputs(wallet, &mut tx, &yed_inputs, 1, branch_id)?;
+    tx.check_script_sig_sizes()?;
     let raw = tx.serialize()?;
     let txid = tx.txid()?;
     let path = if active {
@@ -540,6 +577,7 @@ pub async fn build_redeem(
     gate::check(path, &raw, |op| wallet.store.utxo_class(op).ok().flatten())?;
     let _ = CARRIER_VALUE;
     Ok(RedeemBuild {
+        network_fee_zat: shape.network_fee,
         vault_txid: txid_hex(&v.txid),
         kind: if active { "redeem" } else { "release" },
         yed_inputs,
@@ -708,6 +746,7 @@ mod tests {
             .unwrap(),
             carrier_value: 0,
             collateral_script: script::p2pkh_script(&[4; 20]),
+            network_fee: FEE_ZAT,
         }
     }
 
@@ -842,5 +881,62 @@ mod tests {
             ..v
         };
         assert_eq!(early_redeem_fee_for(r, &c, 500, true), 4_000_000_000);
+    }
+
+    /// Quantum plan §4.5: the owner spend is priced on its size before signing; the bound is
+    /// exact for the SLH-DSA owner scriptSig (7,939 bytes with the selector) and an upper bound
+    /// for each ECDSA input; the relay limits hold.
+    #[test]
+    fn owner_spend_is_priced_by_size_and_within_the_relay_limits() {
+        let shape = shape(true, true, 2_000, false, 0);
+        let plan = plan_vault_spend(&shape).unwrap();
+        let mut tx = Transaction::new_v4();
+        tx.lock_time = plan.lock_time;
+        tx.vin = plan.vin.clone();
+        tx.vout = plan.vout.clone();
+        let bound = owner_spend_size_bound(&tx, 1).unwrap();
+        assert!(owner_spend_size_bound(&tx, 3).is_err());
+        let key = crate::pq::PqKey::from_seed(1, &[7u8; 48]).unwrap();
+        let script = vec![0x51]; // the scriptCode only enters the sighash
+        sign_owner_input(&mut tx, &key, &script, shape.vault_value, 0x6d5b_7a31).unwrap();
+        assert_eq!(tx.vin[0].script_sig.len(), 7_939);
+        for i in &mut tx.vin[1..] {
+            i.script_sig = vec![0; 106]; // a typical P2PKH scriptSig
+        }
+        let signed = tx.serialize().unwrap().len();
+        assert!(
+            signed <= bound && bound - signed == 2 * 2,
+            "{signed} vs {bound}"
+        );
+        assert!(signed > 8_000, "an SLH-DSA owner spend is ~8 KB");
+        tx.check_script_sig_sizes().unwrap();
+        // 1x the relay floor: unchanged at 1,000 (C-5); 5x: size-priced.
+        let t = super::super::terms::PqTerms::default();
+        assert_eq!(t.fee(bound), FEE_ZAT);
+        let t5 = super::super::terms::PqTerms {
+            fee_rate_zat_per_kb: 500,
+            ..t
+        };
+        assert_eq!(t5.fee(bound), 500 * bound as i64 / 1000);
+        // the fee comes out of the collateral
+        let priced = VaultSpendShape {
+            network_fee: t5.fee(bound),
+            ..shape.clone()
+        };
+        assert_eq!(
+            plan.collateral_out - plan_vault_spend(&priced).unwrap().collateral_out,
+            t5.fee(bound) - FEE_ZAT
+        );
+        // a P2PKH-sized input over 1,650 bytes, or a PQ one over 9,000, is refused
+        tx.vin[1].script_sig = vec![0; 1_651];
+        assert!(matches!(
+            tx.check_script_sig_sizes(),
+            Err(crate::tx::TxError::ScriptSigSize(1, 1_651, 1_650))
+        ));
+        tx.vin[1].script_sig = vec![0; 106];
+        let mut big = tx.vin[0].script_sig.clone();
+        big.splice(0..0, std::iter::repeat_n(0x00u8, 1_100)); // OP_0 pushes ahead: not PQ-shaped
+        tx.vin[0].script_sig = big;
+        assert!(tx.check_script_sig_sizes().is_err());
     }
 }

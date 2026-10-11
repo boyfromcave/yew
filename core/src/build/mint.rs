@@ -454,6 +454,7 @@ pub async fn vault_terms_now(
 ) -> Result<terms::VaultTerms, WalletError> {
     let info = yb.info().await?;
     terms::check_server_params(wallet.network, info.params.as_ref())?;
+    wallet.note_server_params(info.params.as_ref())?;
     let t = terms::vault_terms(wallet.network, &info)?;
     let hex = keys::hex(&t.attestor_set_id);
     match wallet.store.meta("attestor_set_id")? {

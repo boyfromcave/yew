@@ -726,6 +726,7 @@ fn check_redeem(v: &Value, key: &str, m: &NodeMint, early: bool) {
         owner_script: yew_core::pq::pqpkh_script(&m.owner).unwrap(),
         carrier_value: 0,
         collateral_script: rtx.vout[0].script_pubkey.clone(),
+        network_fee: yew_core::params::FEE_ZAT,
     };
     let plan = yew_core::build::redeem::plan_vault_spend(&shape).unwrap();
     assert_eq!(
