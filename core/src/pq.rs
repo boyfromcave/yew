@@ -23,15 +23,16 @@
 //! of the ZIP-243 sighash in memory order, exactly what [`crate::tx::Transaction::sighash`]
 //! returns and what the ECDSA signer hands secp256k1.
 //!
-//! **Scheme 2, FN-DSA-512 (PQClean `falcon-padded-512`):** YEW neither signs nor verifies it
-//! yet. Its sizes are registered (chunking, size estimates, the scheme byte of a script), and
-//! the key id of a Falcon key is computed like any other, but [`PqKey::from_seed`] and
-//! [`verify`] refuse scheme 2. A Falcon holder needs PQClean's keygen (48-byte seed into its
-//! SHAKE256 DRBG, spec ruling C-8) and signer byte for byte — the node's vendored
-//! `falcon-padded-512/clean` built with `cc`, or `fn-dsa =0.3.0` in original-Falcon mode proven
-//! against PQClean both ways (client survey C-7; `fn-dsa` 0.4 is not compatible) — plus the
-//! 88-byte signing entropy the node's vectors carry (`entropy`), since Falcon signing is
-//! randomized.
+//! **Scheme 2, FN-DSA-512 (PQClean `falcon-padded-512`):** the node's own C, vendored at
+//! `core/pq-c/falcon/` (byte copies of ycash-dd `src/crypto/pq/falcon/`: PQClean
+//! `falcon-padded-512/clean`, the inline-SHAKE patch P1 and the Ycash entry points
+//! `ycash_falcon512_keygen_from_seed` / `ycash_falcon512_sign` / `ycash_falcon512_verify`),
+//! compiled by `build.rs` with `cc`. Key generation from the 48-byte seed (SHAKE256 DRBG, spec
+//! ruling C-8) and signing with explicit 88-byte entropy (`nonce(40) ‖ sampler seed(48)`)
+//! therefore reproduce the node's golden vectors byte for byte; [`PqKey::sign`] draws that entropy
+//! from the OS RNG, as the node's `pq::Sign` does from `GetRandBytes`. A pure-Rust Falcon was not
+//! used: `fn-dsa` 0.4 hashes a different message representative and keygen (client survey C-7),
+//! and no crate reproduces PQClean's seeded keygen. Signature: 666 bytes, key 897, secret 1,281.
 //!
 //! **Seed (A-12).** `DerivePQSeed`: HKDF-SHA256 (RFC 5869), IKM = the wallet seed, salt empty,
 //! info = `"Ycash PQ key"` ‖ scheme u8 ‖ index u32 big-endian, L = 48. The node's IKM is its raw
@@ -71,6 +72,79 @@ pub const SEED_SIZE: usize = 48;
 pub const DERIVE_INFO: &[u8; 12] = b"Ycash PQ key";
 
 type Slh = slh_dsa::Sha2_128s;
+
+/// Falcon-512 secret key size (PQClean padded: `0x59 ‖ f ‖ g ‖ F`).
+pub const FALCON_SECRET_KEY_SIZE: usize = 1_281;
+/// Falcon signing entropy: the 40-byte nonce then the 48-byte sampler seed (`pq::SignWithEntropy`).
+pub const FALCON_SIGN_ENTROPY_SIZE: usize = 88;
+
+/// The vendored Falcon entry points (`core/pq-c/falcon/ycash_falcon.h`).
+mod falcon_ffi {
+    extern "C" {
+        pub fn ycash_falcon512_verify(
+            sig: *const u8,
+            siglen: usize,
+            m: *const u8,
+            mlen: usize,
+            pk: *const u8,
+        ) -> i32;
+        pub fn ycash_falcon512_keygen_from_seed(
+            pk: *mut u8,
+            sk: *mut u8,
+            seed: *const u8,
+            seedlen: usize,
+        ) -> i32;
+        pub fn ycash_falcon512_sign(
+            sig: *mut u8,
+            m: *const u8,
+            mlen: usize,
+            sk: *const u8,
+            nonce: *const u8,
+            seed: *const u8,
+        ) -> i32;
+    }
+}
+
+/// `ycash_falcon512_keygen_from_seed`: `(pk 897, sk 1,281)`.
+fn falcon_keygen(seed: &[u8; SEED_SIZE]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let mut pk = vec![0u8; 897];
+    let mut sk = vec![0u8; FALCON_SECRET_KEY_SIZE];
+    // SAFETY: the buffers have the sizes ycash_falcon.h names; the seed is SEED_SIZE bytes.
+    let r = unsafe {
+        falcon_ffi::ycash_falcon512_keygen_from_seed(
+            pk.as_mut_ptr(),
+            sk.as_mut_ptr(),
+            seed.as_ptr(),
+            seed.len(),
+        )
+    };
+    if r != 0 {
+        wipe(&mut sk);
+        return None;
+    }
+    Some((pk, sk))
+}
+
+/// `ycash_falcon512_sign` over `msg` with explicit entropy: 666 bytes.
+fn falcon_sign(sk: &[u8], msg: &[u8], entropy: &[u8; FALCON_SIGN_ENTROPY_SIZE]) -> Option<Vec<u8>> {
+    if sk.len() != FALCON_SECRET_KEY_SIZE {
+        return None;
+    }
+    let mut sig = vec![0u8; 666];
+    // SAFETY: sig is YCASH_FALCON512_SIGBYTES, sk YCASH_FALCON512_SECRETKEYBYTES, nonce 40 and
+    // the sampler seed 48 bytes inside `entropy`.
+    let r = unsafe {
+        falcon_ffi::ycash_falcon512_sign(
+            sig.as_mut_ptr(),
+            msg.as_ptr(),
+            msg.len(),
+            sk.as_ptr(),
+            entropy.as_ptr(),
+            entropy.as_ptr().add(40),
+        )
+    };
+    (r == 0).then_some(sig)
+}
 
 /// PQ errors.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -392,16 +466,28 @@ impl PqSeedRoot {
         wipe(&mut seed);
         k
     }
+
+    /// The Falcon (scheme 2) key at `index`: `DerivePQSeed(seed, 2, index)` into PQClean's seeded
+    /// keygen. YEW's YED holder keys (the index space is the wallet's; see
+    /// `Wallet::falcon_holder_key`).
+    pub fn falcon_key(&self, index: u32) -> PqKey {
+        let mut seed = self.derive(SCHEME_FN_DSA_512, index);
+        let k = PqKey::from_seed(SCHEME_FN_DSA_512, &seed).expect("scheme 2, 48 bytes");
+        wipe(&mut seed);
+        k
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
 // Keys, signing, verification
 
-/// A PQ key pair kept as its 48-byte seed (wiped on drop) and its public key.
+/// A PQ key pair kept as its 48-byte seed (wiped on drop) and its public key; a Falcon key also
+/// keeps its expanded secret key (wiped on drop), since Falcon signing does not re-derive it.
 pub struct PqKey {
     scheme: u8,
     seed: [u8; SEED_SIZE],
     pk: Vec<u8>,
+    falcon_sk: Vec<u8>,
 }
 
 impl std::fmt::Debug for PqKey {
@@ -413,6 +499,7 @@ impl std::fmt::Debug for PqKey {
 impl Drop for PqKey {
     fn drop(&mut self) {
         wipe(&mut self.seed);
+        wipe(&mut self.falcon_sk);
     }
 }
 
@@ -421,10 +508,10 @@ fn slh_signing_key(seed: &[u8; SEED_SIZE]) -> slh_dsa::SigningKey<Slh> {
 }
 
 impl PqKey {
-    /// `pq::KeyGen`: SLH-DSA from `SK.seed ‖ SK.prf ‖ PK.seed`. Scheme 2 is refused (no Falcon
-    /// signer in YEW yet; module docs).
+    /// `pq::KeyGen` from the 48-byte seed: SLH-DSA from `SK.seed ‖ SK.prf ‖ PK.seed`, Falcon
+    /// through PQClean's SHAKE256-seeded keygen (`ycash_falcon512_keygen_from_seed`).
     pub fn from_seed(scheme: u8, seed: &[u8]) -> Result<PqKey, PqError> {
-        if scheme != SCHEME_SLH_DSA_SHA2_128S {
+        if !is_known_scheme(scheme) {
             return Err(PqError::Scheme(scheme));
         }
         let seed: [u8; SEED_SIZE] = seed.try_into().map_err(|_| PqError::Size {
@@ -432,8 +519,22 @@ impl PqKey {
             got: seed.len(),
             want: SEED_SIZE,
         })?;
+        if scheme == SCHEME_FN_DSA_512 {
+            let (pk, falcon_sk) = falcon_keygen(&seed).ok_or(PqError::Scheme(scheme))?;
+            return Ok(PqKey {
+                scheme,
+                seed,
+                pk,
+                falcon_sk,
+            });
+        }
         let pk = slh_signing_key(&seed).verifying_key().to_bytes().to_vec();
-        Ok(PqKey { scheme, seed, pk })
+        Ok(PqKey {
+            scheme,
+            seed,
+            pk,
+            falcon_sk: Vec::new(),
+        })
     }
 
     /// The scheme byte.
@@ -453,22 +554,61 @@ impl PqKey {
 
     /// `pq::Sign`: the signature (no hashtype) over the 32-byte message (a ZIP-243 sighash in
     /// memory order). SLH-DSA: pure mode, empty context, deterministic (`opt_rand = PK.seed`).
+    /// Falcon: randomized, the 88 bytes of entropy from the OS RNG (`pq::Sign`'s
+    /// `GetRandBytes`), wiped after use; the signature is checked before it is returned.
     pub fn sign(&self, msg: &[u8; 32]) -> Vec<u8> {
+        if self.scheme == SCHEME_FN_DSA_512 {
+            use rand::RngCore;
+            let mut entropy = [0u8; FALCON_SIGN_ENTROPY_SIZE];
+            rand::rngs::OsRng.fill_bytes(&mut entropy);
+            let sig = self.sign_with_entropy(msg, &entropy);
+            wipe(&mut entropy);
+            let sig = sig.expect("a Falcon key from keygen signs");
+            assert!(
+                verify(self.scheme, &self.pk, &sig, msg),
+                "a fresh Falcon signature verifies"
+            );
+            return sig;
+        }
         let sk = slh_signing_key(&self.seed);
         sk.try_sign_with_context(msg, &[], None)
             .expect("an empty context is at most 255 bytes")
             .to_vec()
     }
+
+    /// `pq::SignWithEntropy` for Falcon (`nonce(40) ‖ sampler seed(48)`): the node's vector
+    /// signatures are reproduced with it. `None` for an SLH-DSA key (deterministic: [`PqKey::sign`]).
+    pub fn sign_with_entropy(
+        &self,
+        msg: &[u8; 32],
+        entropy: &[u8; FALCON_SIGN_ENTROPY_SIZE],
+    ) -> Option<Vec<u8>> {
+        if self.scheme != SCHEME_FN_DSA_512 {
+            return None;
+        }
+        falcon_sign(&self.falcon_sk, msg, entropy)
+    }
 }
 
-/// `pq::Verify` for the schemes YEW implements (SLH-DSA); `false` for anything else, a wrong
-/// size, or a bad signature. A wallet-side self-check, never a verdict (the node judges).
+/// `pq::Verify`; `false` for an unknown scheme, a wrong size (Falcon: exactly 666 bytes, the
+/// padded form only), or a bad signature. A wallet-side self-check, never a verdict (the node
+/// judges).
 pub fn verify(scheme: u8, pk: &[u8], sig: &[u8], msg: &[u8; 32]) -> bool {
-    if scheme != SCHEME_SLH_DSA_SHA2_128S
-        || pk.len() != pub_key_size(scheme)
-        || sig.len() != sig_size(scheme)
+    if !is_known_scheme(scheme) || pk.len() != pub_key_size(scheme) || sig.len() != sig_size(scheme)
     {
         return false;
+    }
+    if scheme == SCHEME_FN_DSA_512 {
+        // SAFETY: pk is 897 bytes (checked above); sig and msg are passed with their lengths.
+        return unsafe {
+            falcon_ffi::ycash_falcon512_verify(
+                sig.as_ptr(),
+                sig.len(),
+                msg.as_ptr(),
+                msg.len(),
+                pk.as_ptr(),
+            )
+        } == 0;
     }
     let (Ok(vk), Ok(sig)) = (
         slh_dsa::VerifyingKey::<Slh>::try_from(pk),
@@ -507,14 +647,14 @@ mod tests {
         assert_eq!(pq_sig_pushes_size(3), None);
     }
 
-    /// Every SLH-DSA entry of the node's golden vectors: seed → pk, keyhash, and msg → sig byte
-    /// for byte (deterministic signing), and the signature verifies. Falcon entries: the key
-    /// hash only (YEW has no Falcon implementation; module docs).
+    /// Every entry of the node's golden vectors, both schemes: seed → pk, keyhash, and msg → sig
+    /// byte for byte (SLH-DSA deterministic; Falcon with the recorded 88-byte entropy), the
+    /// signature verifies, and a flipped message or signature does not.
     #[test]
-    fn slh_dsa_reproduces_the_node_vectors() {
+    fn pq_reproduces_the_node_vectors() {
         let v = vectors();
         assert_eq!(v["format"], "ycash-pq-vectors-1");
-        let mut slh = 0;
+        let (mut slh, mut falcon) = (0, 0);
         for k in v["keys"].as_array().unwrap() {
             let scheme = k["scheme"].as_u64().unwrap() as u8;
             let pk = b(&k["pk"]);
@@ -522,19 +662,6 @@ mod tests {
             assert_eq!(key_hash(scheme, &pk), keyhash, "{}", k["label"]);
             assert_eq!(pk.len(), pub_key_size(scheme));
             assert_eq!(b(&k["sig"]).len(), sig_size(scheme));
-            if scheme != SCHEME_SLH_DSA_SHA2_128S {
-                assert_eq!(
-                    PqKey::from_seed(scheme, &b(&k["seed"])).unwrap_err(),
-                    PqError::Scheme(scheme)
-                );
-                continue;
-            }
-            slh += 1;
-            assert_eq!(
-                b(&k["entropy"]),
-                Vec::<u8>::new(),
-                "SLH-DSA is deterministic"
-            );
             let key = PqKey::from_seed(scheme, &b(&k["seed"])).unwrap();
             assert_eq!(hex(key.public_key()), hex(&pk), "{}", k["label"]);
             assert_eq!(
@@ -545,17 +672,199 @@ mod tests {
                 }
             );
             let msg: [u8; 32] = b(&k["msg"]).try_into().unwrap();
-            let sig = key.sign(&msg);
+            let entropy = b(&k["entropy"]);
+            let sig = if scheme == SCHEME_SLH_DSA_SHA2_128S {
+                slh += 1;
+                assert_eq!(entropy, Vec::<u8>::new(), "SLH-DSA is deterministic");
+                key.sign(&msg)
+            } else {
+                falcon += 1;
+                let e: [u8; FALCON_SIGN_ENTROPY_SIZE] = entropy.try_into().unwrap();
+                let s = key.sign_with_entropy(&msg, &e).unwrap();
+                // a fresh randomized signature differs and verifies too
+                let r = key.sign(&msg);
+                assert_ne!(r, s);
+                assert!(verify(scheme, &pk, &r, &msg));
+                s
+            };
             assert_eq!(hex(&sig), hex(&b(&k["sig"])), "{}", k["label"]);
             assert!(verify(scheme, &pk, &sig, &msg));
+            assert!(verify(scheme, &pk, &b(&k["sig"]), &msg));
             let mut bad = msg;
             bad[0] ^= 1;
             assert!(!verify(scheme, &pk, &sig, &bad));
             let mut bad_sig = sig.clone();
             bad_sig[100] ^= 1;
             assert!(!verify(scheme, &pk, &bad_sig, &msg));
+            assert!(!verify(scheme, &pk, &sig[..sig.len() - 1], &msg));
         }
-        assert_eq!(slh, 2);
+        assert_eq!((slh, falcon), (2, 3));
+    }
+
+    /// Falcon accepts only the padded 666-byte form (`pq::Verify`): a non-zero padding byte, a
+    /// wrong header, a wrong key header, or the signature under another scheme byte fail.
+    #[test]
+    fn falcon_padding_and_headers_are_exact() {
+        let v = vectors();
+        let k = v["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|k| k["scheme"] == 2)
+            .unwrap()
+            .clone();
+        let (pk, sig) = (b(&k["pk"]), b(&k["sig"]));
+        let msg: [u8; 32] = b(&k["msg"]).try_into().unwrap();
+        assert!(verify(2, &pk, &sig, &msg));
+        let mut pad = sig.clone();
+        *pad.last_mut().unwrap() ^= 1;
+        assert!(!verify(2, &pk, &pad, &msg), "non-zero padding");
+        let mut h = sig.clone();
+        h[0] = 0x3a;
+        assert!(!verify(2, &pk, &h, &msg), "signature header");
+        let mut kh = pk.clone();
+        kh[0] = 0x0a;
+        assert!(!verify(2, &kh, &sig, &msg), "key header");
+        assert!(!verify(1, &pk, &sig, &msg));
+        assert!(!verify(3, &pk, &sig, &msg));
+    }
+
+    /// The NIST PQC KAT generator's AES-256 CTR DRBG (`rng.c` of the NIST package), as the
+    /// node's `pq_crypto_tests.cpp` `NistDrbg`.
+    struct NistDrbg {
+        key: [u8; 32],
+        v: [u8; 16],
+    }
+
+    impl NistDrbg {
+        fn block(&mut self) -> [u8; 16] {
+            use aes::cipher::{BlockEncrypt, KeyInit};
+            for i in (0..16).rev() {
+                self.v[i] = self.v[i].wrapping_add(1);
+                if self.v[i] != 0 {
+                    break;
+                }
+            }
+            let c = aes::Aes256::new(&self.key.into());
+            let mut blk = self.v.into();
+            c.encrypt_block(&mut blk);
+            blk.into()
+        }
+
+        fn update(&mut self, provided: Option<&[u8]>) {
+            let mut t = [0u8; 48];
+            for i in 0..3 {
+                t[16 * i..16 * i + 16].copy_from_slice(&self.block());
+            }
+            if let Some(p) = provided {
+                for (x, y) in t.iter_mut().zip(p) {
+                    *x ^= y;
+                }
+            }
+            self.key.copy_from_slice(&t[..32]);
+            self.v.copy_from_slice(&t[32..]);
+        }
+
+        fn new(seed: &[u8]) -> NistDrbg {
+            let mut d = NistDrbg {
+                key: [0; 32],
+                v: [0; 16],
+            };
+            d.update(Some(seed));
+            d
+        }
+
+        fn get(&mut self, n: usize) -> Vec<u8> {
+            let mut out = Vec::with_capacity(n);
+            while out.len() < n {
+                let blk = self.block();
+                let k = (n - out.len()).min(16);
+                out.extend_from_slice(&blk[..k]);
+            }
+            self.update(None);
+            out
+        }
+    }
+
+    /// The Falcon-512 KATs the node checks (`tests/vectors/pq_falcon_kat.json`, a byte copy of
+    /// ycash-dd `src/test/data/pq_falcon_kat.json`), replayed through the NIST DRBG: the NIST
+    /// round-3 entries (counts 0–4: keys equal, the signature equals the round-3 compressed
+    /// signature in the padded layout) and PQClean's padded KAT (count 0) — an independent check
+    /// of the vendored C against the Falcon reference and PQClean.
+    #[test]
+    fn falcon_reproduces_the_nist_kats() {
+        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/vectors/pq_falcon_kat.json");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        let replay = |e: &Value| {
+            let mut d = NistDrbg::new(&b(&e["seed"]));
+            let kseed = d.get(48);
+            let key = PqKey::from_seed(2, &kseed).unwrap();
+            assert_eq!(hex(key.public_key()), e["pk"].as_str().unwrap());
+            assert_eq!(hex(&key.falcon_sk), e["sk"].as_str().unwrap());
+            let msg = b(&e["msg"]);
+            let entropy: [u8; 88] = [d.get(40), d.get(48)].concat().try_into().unwrap();
+            let sig = falcon_sign(&key.falcon_sk, &msg, &entropy).unwrap();
+            (key, msg, entropy, sig)
+        };
+        let mut n = 0;
+        for e in v["r3"].as_array().unwrap() {
+            let (key, msg, entropy, sig) = replay(e);
+            let sm = b(&e["sm"]);
+            let siglen = ((sm[0] as usize) << 8) | sm[1] as usize;
+            assert_eq!(sm.len(), 2 + 40 + msg.len() + siglen);
+            assert_eq!(&sm[2..42], &entropy[..40]);
+            assert_eq!(sm[42 + msg.len()], 0x29);
+            let mut padded = vec![0x39];
+            padded.extend_from_slice(&entropy[..40]);
+            padded.extend_from_slice(&sm[43 + msg.len()..]);
+            padded.resize(666, 0);
+            assert_eq!(hex(&sig), hex(&padded), "r3 count {}", e["count"]);
+            if let Ok(m) = <[u8; 32]>::try_from(msg.as_slice()) {
+                assert!(verify(2, key.public_key(), &sig, &m));
+            }
+            n += 1;
+        }
+        assert_eq!(n, 5);
+        for e in v["padded"].as_array().unwrap() {
+            let (_, msg, _, sig) = replay(e);
+            assert_eq!(hex(&[sig, msg].concat()), e["sm"].as_str().unwrap());
+            n += 1;
+        }
+        assert_eq!(n, 6);
+    }
+
+    /// The vendored Falcon C is exactly the files `core/pq-c/SHA256SUMS` pins (byte copies of
+    /// the node's `src/crypto/pq/falcon/`, `core/pq-c/README.md`).
+    #[test]
+    fn vendored_falcon_matches_its_manifest() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("pq-c");
+        let sums = std::fs::read_to_string(dir.join("SHA256SUMS")).unwrap();
+        let mut n = 0;
+        for line in sums.lines() {
+            let (h, f) = line.split_once("  ").unwrap();
+            let bytes = std::fs::read(dir.join("falcon").join(f)).unwrap();
+            assert_eq!(hex(&sha256(&bytes)), h, "{f}");
+            n += 1;
+        }
+        let files = std::fs::read_dir(dir.join("falcon")).unwrap().count();
+        assert_eq!((n, files), (16, 16));
+    }
+
+    /// The Falcon holder chain: deterministic, distinct per index, and the node's scheme-2
+    /// derivation seed (`pq_wallet_tests.cpp`, HD seed 0x00..0x1f) gives the same key here.
+    #[test]
+    fn falcon_keys_derive_deterministically() {
+        let raw: Vec<u8> = (0u8..32).collect();
+        let root = PqSeedRoot::from_seed(&raw);
+        let a = root.falcon_key(0);
+        let b2 = PqKey::from_seed(2, &root.derive(2, 0)).unwrap();
+        assert_eq!(a.public_key(), b2.public_key());
+        assert_eq!(a.scheme(), 2);
+        assert_eq!(a.public_key().len(), 897);
+        assert_ne!(root.falcon_key(1).id(), a.id());
+        let msg = [9u8; 32];
+        assert!(verify(2, a.public_key(), &a.sign(&msg), &msg));
     }
 
     /// The node's PQPKH spends: scriptPubKey from the key id, and the chunked scriptSig of the
