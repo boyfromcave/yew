@@ -1499,6 +1499,15 @@ pub fn create_wallet(
         )?;
         let id = wallet_id(&wallet)?;
         let primary = wallet.receive_address(false)?;
+        // The YED form as `receive_address` gives it: the Falcon holder once TOK-PQ is in force
+        // (mainnet and testnet always; regtest once the server's terms are known), never a
+        // P2PKH `yb…` a sender's node would refuse as `bad-yed-holder`.
+        let address_ye = if wallet.falcon_now() {
+            wallet.falcon_holder_address(&primary)
+        } else {
+            None
+        }
+        .unwrap_or_else(|| primary.address_ye.clone());
         if generated.is_some() {
             // A seed generated here has no history: the private account starts at the tip
             // when no birthday was given (`build::yec_private::sync_shielded`).
@@ -1514,7 +1523,7 @@ pub fn create_wallet(
         Ok(Created {
             wallet_id: id,
             seed_words: generated,
-            address_ye: primary.address_ye,
+            address_ye,
         })
     })
 }
@@ -2297,8 +2306,8 @@ pub fn import_wif(wif: String, birthday: Option<i64>) -> Result<AddressPair, Yew
 /// Sync now, reporting progress on `sink` (Dart: a `Stream<SyncEvent>`), ending with `Done`
 /// or `Failed`: the transparent sync (addresses, YED) and then the private (Sapling) scan, as
 /// one progress (`percent`). A failed private sync does not fail the call: `Done` carries it
-/// in `shielded_message` (transparent YEC and YED are synced either way). The returned error
-/// mirrors the `Failed` event.
+/// in `shielded_message` (transparent YEC and YED are synced either way). A failure is the
+/// `Failed` event, never the returned error (which the generated Dart does not await).
 pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
     let emit = |e: SyncEvent| {
         let _ = sink.add(e);
@@ -2426,8 +2435,12 @@ pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
             Ok(())
         }
         Err(e) => {
-            emit(event(SyncStage::Failed, e.message.clone(), 0, 0));
-            Err(e)
+            // The failure is the stream's last event, and only that: flutter_rust_bridge hands a
+            // stream function's `Err` to a future the generated Dart never awaits, so returning
+            // it surfaced as an uncaught "Instance of 'YewError'" (the q device flow, a sync
+            // refused by lightwalletd's rate limit) instead of the Failed event the app reads.
+            emit(event(SyncStage::Failed, e.message, 0, 0));
+            Ok(())
         }
     }
 }
@@ -3214,6 +3227,31 @@ mod tests {
             .kind,
             ErrorKind::Input
         );
+
+        // Mainnet is Falcon from day one: the created wallet's YED address is its 53-character
+        // Falcon holder (`yb…`), the one Receive shows, not the P2PKH form (device run, q flow).
+        let m = create_wallet(
+            Some(PHRASE.into()),
+            String::new(),
+            Some(5),
+            NetworkId::Mainnet,
+            "lwd.example.org:443".into(),
+            false,
+            None,
+            tmp_dir("main-created"),
+        )
+        .unwrap();
+        assert_eq!(
+            (m.address_ye.len(), &m.address_ye[..2]),
+            (53, "yb"),
+            "{}",
+            m.address_ye
+        );
+        assert_eq!(
+            receive_address(ReceiveKind::Yed, false).unwrap().ye,
+            m.address_ye
+        );
+        lock();
 
         let dir = tmp_dir("regtest");
         let c = create_wallet(

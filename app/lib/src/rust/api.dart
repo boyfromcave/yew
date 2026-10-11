@@ -215,8 +215,8 @@ Future<AddressPair> importWif({required String wif, PlatformInt64? birthday}) =>
 /// Sync now, reporting progress on `sink` (Dart: a `Stream<SyncEvent>`), ending with `Done`
 /// or `Failed`: the transparent sync (addresses, YED) and then the private (Sapling) scan, as
 /// one progress (`percent`). A failed private sync does not fail the call: `Done` carries it
-/// in `shielded_message` (transparent YEC and YED are synced either way). The returned error
-/// mirrors the `Failed` event.
+/// in `shielded_message` (transparent YEC and YED are synced either way). A failure is the
+/// `Failed` event, never the returned error (which the generated Dart does not await).
 Stream<SyncEvent> syncNow() => RustLib.instance.api.crateApiSyncNow();
 
 /// Whether a mint can be made now (connects; no sync): the Mint screen calls it before the
