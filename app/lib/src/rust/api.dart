@@ -648,7 +648,8 @@ class ClaimableItem {
   /// The vault's mint txid.
   final String vaultTxid;
 
-  /// The owner, `yb…`.
+  /// The owner's post-quantum address as the server reports it (`ownerAddress`, 53
+  /// characters on rpcversion 7): it names the vault, never a payment address.
   final String ownerAddress;
 
   /// The debt to burn, cents (the wallet must hold at least this).

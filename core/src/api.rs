@@ -953,7 +953,8 @@ pub struct ClaimTerms {
 pub struct ClaimableItem {
     /// The vault's mint txid.
     pub vault_txid: String,
-    /// The owner, `yb…`.
+    /// The owner's post-quantum address as the server reports it (`ownerAddress`, 53
+    /// characters on rpcversion 7): it names the vault, never a payment address.
     pub owner_address: String,
     /// The debt to burn, cents (the wallet must hold at least this).
     pub cents: i64,

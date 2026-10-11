@@ -1165,14 +1165,11 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     let node5_yed = dn.node_json(5, &["yed_getbalance"])["confirmedCents"]
         .as_u64()
         .unwrap();
-    // In-term D-IT-15: a redeem before lockHeight is valid (with the early-redeem fee), so node 5
-    // would close vault 2 here with the imported key and the YED at its address; the probe asks
-    // for the quote only (yed_estimateredeem), and the redeem stays in 5b.
+    // In-term D-IT-15: a redeem before lockHeight is valid (with the early-redeem fee); before the
+    // quantum line node 5 could close vault 2 with the imported key. Now it quotes the early fee
+    // but cannot redeem (vault-not-owned: the owner is YEW's PQ key), and 5b records the refusal.
     let early = dn.node_try(5, &["yed_estimateredeem", &f2.txid]);
-    assert!(
-        !seen5,
-        "the holder key does not carry the post-quantum vault"
-    );
+    // (`yed_listvaults` is the index's list of every vault: `seen5` says nothing about ownership.)
     assert!(
         early.contains("vault-not-owned") && early.contains("\"early\": true"),
         "{early}"
