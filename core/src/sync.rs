@@ -683,6 +683,7 @@ pub async fn refresh_vaults(
             updated_height: tip,
             owner_height: yv.owner_height(),
             app_height: yv.app_height(),
+            p_mint: v.p_mint,
         })?;
         n += 1;
         if v.status == "CLAIMING" {
@@ -726,6 +727,7 @@ pub async fn refresh_vaults(
                 close_height: 0,
                 closing_txid: String::new(),
                 updated_height: tip,
+                p_mint: v.p_mint,
                 ..row.clone()
             })?;
             found = Some(t);

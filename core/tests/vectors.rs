@@ -677,10 +677,20 @@ fn check_redeem(v: &Value, key: &str, m: &NodeMint, early: bool) {
     let bps = network.term_classes()[m.term_class as usize].early_redeem_fee_bps;
     if early {
         assert!(r + 1 < m.lock_height);
-        assert_eq!(
-            early_fee,
-            yew_core::params::early_redeem_fee_zat(collateral, bps)
-        );
+        // The vectors' devnet states its rpcversion: IT-9 (≤ 7) is of the collateral, IT-9′ (8, the
+        // fee structure) of the debt at the vault's stored pMint. The vectors are still the quantum
+        // devnet's (rpcversion 7) until they are regenerated on a fees-line (q/fees) devnet.
+        let rpcversion = load("params.json")["yed_getinfo"]["rpcversion"]
+            .as_i64()
+            .unwrap_or(0);
+        let want = if rpcversion >= 8 {
+            let p_mint = redeem["estimate"]["pMint"].as_i64().unwrap_or(0);
+            let debt = redeem["estimate"]["burnedCents"].as_u64().unwrap_or(0);
+            yew_core::params::early_redeem_fee_zat(debt, bps, p_mint)
+        } else {
+            ((collateral as i128) * (bps as i128) / 10_000) as i64
+        };
+        assert_eq!(early_fee, want);
         assert!(early_fee > 0);
         let e = &redeem["estimate"];
         assert_eq!(e["early"].as_bool(), Some(true));

@@ -66,20 +66,25 @@ pub struct Claimable {
     pub claim_path: String,
     /// `pClaim` at the node's tip.
     pub p_claim: i64,
-    /// The enforcement fee.
+    /// The protocol fee (FEE-1′ of the debt at the vault's `pMint`, rpcversion 8).
     pub fee_zat: i64,
+    /// The protocol fee in cents.
+    pub protocol_fee_cents: i64,
+    /// The vault's stored mint price, µUSD per YEC (the fee's price).
+    pub p_mint: i64,
     /// The attestor fee.
     pub attest_fee_zat: i64,
     /// RED-5's residual to the owner.
     pub residual_zat: i64,
     /// What the claimant keeps: collateral − fees − residual − network fee (+ the carrier).
     pub claimant_zat: i64,
-    /// The enforcement fee payee for `(R, vault)` (`s…`), empty under FEE-0 (audit G-2).
+    /// The protocol fee payee for `(R, vault)` (`s…`), empty under FEE-0 (audit G-2).
     pub payee: String,
 }
 
-/// `claimable` (plan §3.4): `ListClaimable` mapped for the screen. The fee is FEE-1 computed
-/// locally and the attestor fee AFEE-1 (audit G-2): a server quoting another figure is
+/// `claimable` (plan §3.4): `ListClaimable` mapped for the screen. The fee is FEE-1′ of the debt at
+/// the row's `pMint`, computed locally (rpcversion 8), and the attestor fee AFEE-1′ (audit G-2): a
+/// server quoting another figure is
 /// refused; the payee comes from `GetFeePayee` for the vault's selector at the index tip. The
 /// residual is RED-5 recomputed from the row's `pClaim` (`terms::check_claimable`, H-9.3),
 /// and the server's parameter set must be the network's (`terms::check_server_params`).
@@ -117,7 +122,10 @@ pub async fn claimable(
                 underwater_at: c.underwater_at,
                 claim_path: String::new(),
                 p_claim: c.p_claim,
-                fee_zat: crate::params::fee_zat_for(network, c.collateral_zat),
+                fee_zat: crate::params::protocol_fee_zat(c.minted_cents.max(0) as u64, c.p_mint)
+                    .unwrap_or(0),
+                protocol_fee_cents: crate::params::protocol_fee_cents(c.minted_cents.max(0) as u64),
+                p_mint: c.p_mint,
                 attest_fee_zat: 0,
                 residual_zat: 0,
                 claimant_zat: 0,
@@ -126,12 +134,14 @@ pub async fn claimable(
             continue;
         }
         let residual_zat = terms::check_claimable(&c)?;
-        let (fee_zat, payee) = mint::fee_payee(network, yb, r, c.collateral_zat, &selector).await?;
+        let payee = mint::fee_payee(yb, r, &selector).await?;
+        let debt = c.minted_cents.max(0) as u64;
+        let fee_zat = terms::protocol_fee(debt, c.p_mint, &payee)?;
         if !payee.is_empty() && c.fee_zat != fee_zat {
             return Err(MintError::Inconsistent {
                 what: format!(
-                    "ListClaimable feeZat {} for collateral {} (FEE-1 gives {fee_zat})",
-                    c.fee_zat, c.collateral_zat
+                    "ListClaimable feeZat {} for a debt of {debt} cents at pMint {} (FEE-1′ gives {fee_zat})",
+                    c.fee_zat, c.p_mint
                 ),
             }
             .into());
@@ -164,6 +174,8 @@ pub async fn claimable(
             claim_path: c.claim_path,
             p_claim: c.p_claim,
             fee_zat,
+            protocol_fee_cents: crate::params::protocol_fee_cents(debt),
+            p_mint: c.p_mint,
             attest_fee_zat,
             residual_zat,
             claimant_zat: terms::claimant_take(
@@ -270,9 +282,19 @@ pub async fn start(
     let b = yb.build_bundle(r, &keys::hex(&selector)).await?;
     let bundle_bytes = unhex(&b.hex).map_err(|e| MintError::Relay(format!("bundle hex: {e}")))?;
     let seqs = mint::verify_bundle(client, yb, &bundle_bytes).await?;
-    // FEE-1 locally (audit G-2); the payee must be the one the Claimable screen showed.
-    let (fee_zat, payee) =
-        mint::fee_payee(wallet.network, yb, r, v.collateral_zat, &selector).await?;
+    // FEE-1′ locally (audit G-2): the debt at the vault's stored pMint, which the row and GetVault
+    // (checked by check_vault) must agree on; the payee must be the one the Claimable screen showed.
+    if v.p_mint != entry.p_mint {
+        return Err(MintError::Inconsistent {
+            what: format!(
+                "GetVault pMint {} disagrees with ListClaimable pMint {}",
+                v.p_mint, entry.p_mint
+            ),
+        }
+        .into());
+    }
+    let payee = mint::fee_payee(yb, r, &selector).await?;
+    let fee_zat = terms::protocol_fee(entry.minted_cents, v.p_mint, &payee)?;
     if payee != entry.payee {
         return Err(MintError::TermsChanged {
             what: "fee payee",
@@ -381,8 +403,7 @@ pub struct ClaimShape {
     pub funding_change_script: Vec<u8>,
     /// The carrier outpoint (`vin[last]`), whose `CARRIER_VALUE` joins the inputs.
     pub carrier: OutPoint,
-    /// The network fee: `FEE_ZAT`, or `max(FEE_ZAT, pqfeerate × size)` when a Falcon holder YED
-    /// input makes the claim a post-quantum spend (quantum plan §4.5).
+    /// The network fee: the Yellowback size fee (rpcversion 8, [`claim_network_fee`]).
     pub network_fee: i64,
 }
 
@@ -428,6 +449,22 @@ enum Slot {
     Residual,
     Payload,
     FundChange,
+}
+
+/// The network fee of a CLAIM (`BuildClaim`: `YedNetworkFee` over the YED inputs, raised by
+/// `PQFeeFollower` as fee coins are selected; rpcversion 8, dollars per KB at the attested price):
+/// the node's estimated size — 1,000 bytes, 150 per P2PKH input, a Falcon holder input at its
+/// spend size; the vault and the carrier are not counted.
+pub fn claim_network_fee(t: &super::terms::PqTerms, yed_inputs: &[Utxo], funding: &[Utxo]) -> i64 {
+    let mut pq = Vec::new();
+    let mut other = 0;
+    for u in yed_inputs.iter().chain(funding) {
+        match crate::pq::pqpkh_of(&u.script) {
+            Some(id) => pq.push(id.scheme),
+            None => other += 1,
+        }
+    }
+    t.yed_fee(crate::params::yed_estimated_size(other, &pq))
 }
 
 /// YEC the fee side of a claim needs from the claimant's own coins (U-23): the network fee, the
@@ -692,10 +729,9 @@ pub async fn finish(
     };
     // Peeked, not taken: the key is marked used only if the plan returns change to it.
     let fund_change_row = wallet.change_address()?;
-    // The network fee: FEE_ZAT, re-priced by size when a Falcon holder input makes this a
-    // post-quantum spend (sign, measure, re-price; the Falcon scriptSigs are exact, the ECDSA and
-    // carrier ones vary by a byte or two, covered by a small margin).
-    let mut network_fee = FEE_ZAT;
+    // The network fee (rpcversion 8): the Yellowback size fee at the node's estimated size, raised
+    // as fee coins are selected (`PQFeeFollower`).
+    let mut network_fee = claim_network_fee(&wallet.pq_terms(), &yed_inputs, &[]);
     let (plan, tx, funding) = loop {
         let needed = claim_funding_needed(
             if m.payee.is_empty() { 0 } else { m.fee_zat },
@@ -779,14 +815,12 @@ pub async fn finish(
             &m.bundle,
             branch_id,
         )?;
+        let priced = claim_network_fee(&wallet.pq_terms(), &yed_inputs, &funding);
+        if priced > network_fee {
+            network_fee = priced;
+            continue;
+        }
         if pq_input {
-            let priced = wallet
-                .pq_terms()
-                .fee(tx.serialize()?.len() + 4 * tx.vin.len());
-            if priced > network_fee {
-                network_fee = priced;
-                continue;
-            }
             tx.check_script_sig_sizes()?;
         }
         break (plan, tx, funding);

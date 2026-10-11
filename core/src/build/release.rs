@@ -25,7 +25,7 @@
 use crate::coins::{self, Utxo};
 use crate::gate::{self, Validator};
 use crate::net::{CompactClient, Validation};
-use crate::params::{FEE_ZAT, TOKEN_VALUE, TX_EXPIRY_DELTA};
+use crate::params::{TOKEN_VALUE, TX_EXPIRY_DELTA};
 use crate::pq::PqKeyId;
 use crate::script;
 use crate::store::{HistoryRow, IntentRow, IntentState};
@@ -150,9 +150,28 @@ pub fn build_release(
             "intent-not-ours: the intent does not pay this wallet".into(),
         ));
     };
-    let inputs = coins::select_yec(&wallet.spendable_utxos()?, FEE_ZAT, true)?;
+    // rpcversion 8: `vault_release` prices the release at the Yellowback rate by its size
+    // (`YedSizeFee(VAULT_RPC_FEE, size)` capped by `YedMaxTxFee()`): the intent input (an empty-ish
+    // scriptSig), the fee coins at their P2PKH bound, the recipient and a change output.
+    let spendable = wallet.spendable_utxos()?;
+    let sized = |n_inputs: usize| -> i64 {
+        // version/header/expiry ~ 30, the intent input ~ 45, each P2PKH input ≤ 41 + 107 + 3,
+        // two outputs ≤ 2 × 45 (Transaction::size_with_script_sigs is exact once built)
+        wallet
+            .pq_terms()
+            .yed_fee(30 + 45 + n_inputs * 151 + 90 + row.recipient_script.len())
+    };
+    let mut fee = sized(1);
+    let inputs = loop {
+        let sel = coins::select_yec(&spendable, fee, true)?;
+        let next = sized(sel.len());
+        if next <= fee {
+            break sel;
+        }
+        fee = next;
+    };
     let selected: i64 = inputs.iter().map(|u| u.value).sum();
-    let mut change = selected - FEE_ZAT;
+    let mut change = selected - fee;
     if change == TOKEN_VALUE {
         change -= 1;
     }
@@ -193,7 +212,7 @@ pub fn build_release(
         intent: row.outpoint,
         value: row.value,
         recipient_address,
-        fee: FEE_ZAT,
+        fee,
         inputs,
         change,
         expiry_height: tx.expiry_height,
@@ -410,6 +429,7 @@ pub async fn broadcast(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::params::FEE_ZAT;
 
     fn row(height: u64, state: IntentState) -> IntentRow {
         IntentRow {

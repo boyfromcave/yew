@@ -1263,9 +1263,10 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
         .redeem_preview(&mut v, &v1.txid, r.tip, r.branch_id)
         .await
         .unwrap();
+    // rpcversion 8: FEE-1′ of the debt at the vault's stored pMint
     assert_eq!(
         p.fee_zat,
-        yew_core::params::fee_zat_for(Network::Regtest, v1.collateral_zat)
+        yew_core::params::protocol_fee_zat(v1.minted_cents, v1.p_mint).unwrap()
     );
     let (sent, val) = a.redeem_confirm(&mut c, &mut v, &p).await.unwrap();
     assert_eq!(
@@ -1844,7 +1845,7 @@ async fn mine_and_sync(
 #[ignore = "needs an ARMED in-term regtest devnet (scripts/devnet-it.sh) and YEW_DEVNET=1"]
 async fn it_early_redeem_and_in_term_claim() {
     use yew_core::build::mint::window_open;
-    use yew_core::params::{early_redeem_fee_zat, fee_zat_for, CLAIM_THRESHOLD_BPS};
+    use yew_core::params::{early_redeem_fee_zat, protocol_fee_zat, CLAIM_THRESHOLD_BPS};
     if std::env::var("YEW_DEVNET").ok().as_deref() != Some("1") {
         eprintln!("YEW_DEVNET is not 1; skipping");
         return;
@@ -1954,8 +1955,8 @@ async fn it_early_redeem_and_in_term_claim() {
         .redeem_preview(&mut v, &v1.txid, r.tip, r.branch_id)
         .await
         .unwrap();
-    let fee1 = fee_zat_for(Network::Regtest, v1.collateral_zat);
-    let early = early_redeem_fee_zat(v1.collateral_zat, 500);
+    let fee1 = protocol_fee_zat(v1.minted_cents, v1.p_mint).unwrap();
+    let early = early_redeem_fee_zat(v1.minted_cents, 500, v1.p_mint);
     assert_eq!(
         (p.early_redeem_fee_zat, p.fee_zat, p.lock_time),
         (early, fee1 + early, v1.owner_height),
@@ -2171,7 +2172,7 @@ async fn it_early_redeem_and_in_term_claim() {
         .redeem_preview(&mut v, &v2.txid, r.tip, r.branch_id)
         .await
         .unwrap();
-    let early2 = early_redeem_fee_zat(v2.collateral_zat, 500);
+    let early2 = early_redeem_fee_zat(v2.minted_cents, 500, v2.p_mint);
     assert_eq!(p2.early_redeem_fee_zat, early2, "{p2:?}");
     let (sent2, val2) = a.redeem_confirm(&mut c, &mut v, &p2).await.unwrap();
     assert_eq!((val2.verdict.as_str(), val2.path.as_str()), ("ok", "owner"));

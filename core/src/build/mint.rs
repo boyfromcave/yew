@@ -47,8 +47,7 @@ use crate::gate::{self, Validator};
 use crate::keys::{self, unhex};
 use crate::net::{CompactClient, Validation, YellowbackClient};
 use crate::params::{
-    CARRIER_VALUE, FEE_MIN_ZAT, FEE_ZAT, REF_WINDOW, TOKEN_VALUE, TX_EXPIRING_SOON_THRESHOLD,
-    TX_EXPIRY_DELTA,
+    CARRIER_VALUE, FEE_ZAT, REF_WINDOW, TOKEN_VALUE, TX_EXPIRING_SOON_THRESHOLD, TX_EXPIRY_DELTA,
 };
 use crate::payload::{self, Payload, FEE_VOUT_NONE};
 use crate::script;
@@ -196,14 +195,21 @@ pub struct MintEstimate {
     pub claim_height: u32,
     /// `requiredZat` as the node reports it.
     pub required_zat: i64,
-    /// The collateral the MINT will carry: `max(required, 4·feeMin)` rounded up to 1,000 zat.
+    /// The collateral the MINT will carry: `requiredZat` rounded up to 1,000 zat (MINT-5′,
+    /// rpcversion 8: the `4 · FEE_MIN` floor is gone).
     pub collateral_zat: i64,
-    /// The enforcement fee for that collateral (0 under FEE-0).
+    /// The protocol fee (FEE-1′, rpcversion 8): the debt's dollars in bands at `p_mint`, in zat
+    /// (0 under FEE-0).
     pub fee_zat: i64,
+    /// The protocol fee in cents (`ProtocolFeeCents`; shown even under FEE-0, where it is not paid).
+    pub protocol_fee_cents: i64,
+    /// The network fees of the two transactions: the carrier's flat fee and the MINT's
+    /// Yellowback size fee at one funding input (dollars per KB at the attested price).
+    pub network_fee_zat: i64,
     /// The attestor fee (0 under AFEE-0).
     pub attest_fee_zat: i64,
-    /// The enforcement fee payee for `(R, ownerPubKey)` (`s…`), empty under FEE-0. Checked
-    /// against FEE-1 locally; its eligibility cannot be (`docs/trust.md`).
+    /// The protocol fee payee for `(R, owner)` (`s…`), empty under FEE-0. The fee is FEE-1′
+    /// computed locally; the payee's eligibility cannot be checked (`docs/trust.md`).
     pub payee: String,
     /// The holder key the estimate was made for (the next unused external key; the vault owner
     /// is the PQ key paired with it); `start` takes the same key.
@@ -240,28 +246,36 @@ pub struct CarrierStep {
     pub validation: Validation,
 }
 
-/// `FeeZat(collateral, feeMin, feeBps)` and the payee for `(R, selector)`, from `GetFeePayee`:
-/// `(fee_zat, payee)`; `payee` empty under FEE-0 (no eligible pool). The fee is checked against
-/// FEE-1 locally (`terms::check_fee`, audit G-2); the payee's eligibility cannot be.
+/// The protocol fee's payee for `(R, selector)`, from `GetFeePayee` (rpcversion 8: the RPC quotes no
+/// fee; FEE-1′ is computed locally from the debt and the price, [`terms::protocol_fee`]); empty under
+/// FEE-0 (no eligible pool). The payee's eligibility cannot be checked locally (`docs/trust.md`).
 pub(crate) async fn fee_payee(
-    network: crate::params::Network,
     yb: &mut YellowbackClient,
     ref_height: u32,
-    collateral_zat: i64,
     selector: &[u8],
-) -> Result<(i64, String), WalletError> {
-    let p = yb
-        .fee_payee(ref_height, collateral_zat, &keys::hex(selector))
-        .await?;
-    let payee = if !p.preferred.is_empty() {
+) -> Result<String, WalletError> {
+    let p = yb.fee_payee(ref_height, &keys::hex(selector)).await?;
+    Ok(if !p.preferred.is_empty() {
         p.preferred
     } else if let Some(d) = p.default {
         d.payout_address
     } else {
         String::new()
-    };
-    let fee = terms::check_fee(network, collateral_zat, &payee, p.fee_zat)?;
-    Ok((fee, payee))
+    })
+}
+
+/// The network fee of a MINT funded by `funding_inputs` P2PKH coins (`BuildMint`: `YedNetworkFee`
+/// raised by `PQFeeFollower` as coins are selected — every selected input counts 150 bytes on the
+/// 1,000-byte base, a post-quantum one its spend size; the carrier is not counted).
+pub fn mint_network_fee(wallet: &Wallet, funding: &[Utxo]) -> i64 {
+    let pq: Vec<u8> = funding
+        .iter()
+        .filter_map(|u| crate::pq::pqpkh_of(&u.script).map(|id| id.scheme))
+        .collect();
+    let other = funding.len() - pq.len();
+    wallet
+        .pq_terms()
+        .yed_fee(crate::params::yed_estimated_size(other, &pq))
 }
 
 /// The seated set for bundle verification: `seq → attestorPubKey` from `ListAttestors`.
@@ -343,10 +357,10 @@ pub async fn attest_payee(
     Ok((addr, terms::attest_fee(network, fee_zat, seqs)))
 }
 
-/// `BuildMint:1105-1106`: `max(required, 4 · FEE_MIN)` rounded up to 1,000 zat (MINT-5, K14);
-/// `FEE_MIN` is the local constant (audit G-2).
+/// `BuildMint`: the requirement rounded up to 1,000 zat (MINT-5′, rpcversion 8: the `4 · FEE_MIN`
+/// floor of MINT-5 is gone, `requiredZatFloored = requiredZat`).
 pub fn collateral_for(required_zat: i64) -> i64 {
-    let mut c = required_zat.max(4 * FEE_MIN_ZAT);
+    let mut c = required_zat;
     if c % 1000 != 0 {
         c += 1000 - c % 1000;
     }
@@ -355,7 +369,8 @@ pub fn collateral_for(required_zat: i64) -> i64 {
 
 /// `mint_estimate` (plan §3.4): the numbers the Mint screen shows, from `EstimateCollateral`
 /// and `GetFeePayee`, each checked against the spec's rules for the network before it is
-/// shown (`terms::check_estimate`, audit G-1). Nothing is signed or reserved; the owner key
+/// shown (`terms::check_estimate`, audit G-1); the protocol fee is FEE-1′ of `cents` at the
+/// estimate's `pMint`, computed here (rpcversion 8). Nothing is signed or reserved; the owner key
 /// is the next unused external key, which `start` then takes.
 pub async fn estimate(
     wallet: &Wallet,
@@ -398,18 +413,18 @@ pub async fn estimate(
     let (_, owner) = wallet
         .pq_owner_for_hash(&owner_row.hash160)?
         .ok_or_else(|| WalletError::Other("owner key".into()))?;
-    let (fee_zat, payee) = fee_payee(
-        wallet.network,
-        yb,
-        e.ref_height as u32,
-        collateral_zat,
-        &owner.to_bytes(),
-    )
-    .await?;
+    let payee = fee_payee(yb, e.ref_height as u32, &owner.to_bytes()).await?;
+    let fee_zat = terms::protocol_fee(cents, e.p_mint, &payee)?;
     let bundle_seqs: Vec<u16> = e.bundle_seqs.iter().map(|s| *s as u16).collect();
     let attest_fee_zat = terms::attest_fee(wallet.network, fee_zat, &bundle_seqs);
+    // The carrier pays the flat fee (`BuildCarrier`); the MINT the Yellowback size fee, here at one
+    // P2PKH funding input (more inputs raise it at `finish`, from the reserve).
+    let network_fee_zat = wallet.pq_terms().flat_zat
+        + wallet
+            .pq_terms()
+            .yed_fee(crate::params::yed_estimated_size(1, &[]));
     let total_zat =
-        collateral_zat + TOKEN_VALUE + fee_zat + attest_fee_zat + CARRIER_VALUE + 2 * FEE_ZAT;
+        collateral_zat + TOKEN_VALUE + fee_zat + attest_fee_zat + CARRIER_VALUE + network_fee_zat;
     let (avail, reserved) = coins::yec_balances(&wallet.spendable_utxos()?);
     Ok(MintEstimate {
         cents,
@@ -421,6 +436,8 @@ pub async fn estimate(
         required_zat: e.required_zat,
         collateral_zat,
         fee_zat,
+        protocol_fee_cents: crate::params::protocol_fee_cents(cents),
+        network_fee_zat,
         attest_fee_zat,
         payee,
         owner_hash160: owner_row.hash160,
@@ -526,7 +543,8 @@ pub async fn carrier_step(
         .ok_or_else(|| WalletError::Other("carrier key".into()))?;
     let redeem = script::carrier_script(&carrier_key.pubkey, &bundle::bundle_hash(bundle))
         .map_err(MintError::Script)?;
-    let needed = CARRIER_VALUE + FEE_ZAT;
+    // `BuildCarrier`: the flat Yellowback fee (`g_yellowbackFee`, `fees.network.flatZat`)
+    let needed = CARRIER_VALUE + wallet.pq_terms().flat_zat;
     let spendable = wallet.spendable_utxos()?;
     let inputs = coins::select_yec(&spendable, needed, true)?;
     let selected: i64 = inputs.iter().map(|u| u.value).sum();
@@ -618,7 +636,7 @@ pub async fn start(
             need: est.total_zat,
             collateral: est.collateral_zat,
             token: TOKEN_VALUE,
-            fees: est.fee_zat + est.attest_fee_zat + 2 * FEE_ZAT,
+            fees: est.fee_zat + est.attest_fee_zat + est.network_fee_zat,
             carrier: CARRIER_VALUE,
             have: est.available_zat,
         }
@@ -710,7 +728,7 @@ fn check_confirmed(c: &ConfirmedTerms, est: &MintEstimate) -> Result<(), MintErr
     }
     if est.fee_zat != c.fee_zat {
         return Err(changed(
-            "enforcement fee",
+            "protocol fee",
             c.fee_zat.to_string(),
             est.fee_zat.to_string(),
         ));
@@ -1008,10 +1026,19 @@ pub async fn finish(
     tx.expiry_height = m.expiry_height;
     tx.vout = mint_outputs(wallet, &m, &owner, &vt)?;
     let outputs: i64 = tx.vout.iter().map(|o| o.value).sum();
-    // needed = outputs + fee − CARRIER_VALUE: the carrier input pays CARRIER_VALUE (:1136).
-    let needed = outputs + FEE_ZAT - CARRIER_VALUE;
+    // needed = outputs + fee − CARRIER_VALUE: the carrier input pays CARRIER_VALUE (:1136). The fee
+    // is the Yellowback size fee (rpcversion 8), raised as the selection grows (`PQFeeFollower`).
     let spendable = wallet.spendable_utxos()?;
-    let inputs = coins::select_yec(&spendable, needed, true)?;
+    let mut fee = mint_network_fee(wallet, &[]);
+    let inputs = loop {
+        let sel = coins::select_yec(&spendable, outputs + fee - CARRIER_VALUE, true)?;
+        let next = mint_network_fee(wallet, &sel);
+        if next <= fee {
+            break sel;
+        }
+        fee = next;
+    };
+    let needed = outputs + fee - CARRIER_VALUE;
     let selected: i64 = inputs.iter().map(|u| u.value).sum();
     let mut change = selected - needed;
     if change == TOKEN_VALUE {
@@ -1197,7 +1224,7 @@ mod tests {
     fn collateral_floor_and_rounding() {
         assert_eq!(collateral_for(1_000_000_000), 1_000_000_000);
         assert_eq!(collateral_for(1_000_000_001), 1_000_001_000);
-        assert_eq!(collateral_for(1), 200_000_000);
+        assert_eq!(collateral_for(1), 1_000); // MINT-5′: no 4 · FEE_MIN floor (rpcversion 8)
         assert!(window_open(480, 520));
         assert!(window_open(516, 520));
         assert!(!window_open(517, 520));
@@ -1215,8 +1242,10 @@ mod tests {
             claim_height: 552,
             required_zat: 96_153_846_154,
             collateral_zat: 96_153_847_000,
-            fee_zat: 240_384_617,
-            attest_fee_zat: 60_096_154,
+            fee_zat: 192_307_693, // FEE-1′: $1.00 (the floor of a $100 debt) at $0.52
+            protocol_fee_cents: 100,
+            network_fee_zat: 2_000,
+            attest_fee_zat: 48_076_923,
             payee: "s1pool".into(),
             owner_hash160: [1; 20],
             p_mint: 520_000,

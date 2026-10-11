@@ -27,7 +27,7 @@ use crate::gate::{self, Validator};
 use crate::keys::{self, YedDestination};
 use crate::net::{CompactClient, Validation};
 use crate::params::Network;
-use crate::params::{FEE_ZAT, MAX_INPUTS, MIN_OUTPUT_CENTS, TOKEN_VALUE, TX_EXPIRY_DELTA};
+use crate::params::{MAX_INPUTS, MIN_OUTPUT_CENTS, TOKEN_VALUE, TX_EXPIRY_DELTA};
 use crate::payload::{self, Assignment, Payload, MAX_ASSIGNMENTS};
 use crate::script;
 use crate::store::HistoryRow;
@@ -181,35 +181,31 @@ pub fn assemble(
     let token_in = yed_inputs.len() as i64 * TOKEN_VALUE;
     let token_out = token_outputs.len() as i64 * TOKEN_VALUE;
     let spendable = wallet.spendable_utxos()?;
-    // A post-quantum (Falcon holder) YED input prices the transaction by size (quantum plan
-    // §4.5): `max(FEE_ZAT, pqfeerate × size)` over the exact Falcon scriptSigs and a bound on
-    // each ECDSA one, re-selected until the YEC inputs cover it.
-    let pq_input = yed_inputs
-        .iter()
-        .any(|u| crate::pq::pqpkh_of(&u.script).is_some());
-    let mut base_fee = FEE_ZAT;
+    // rpcversion 8 (D-Q-23 (b)): a YED transfer is a Yellowback transaction, priced by size at the
+    // Yellowback rate (dollars per KB at the attested price) whether or not it has a post-quantum
+    // input — the node's `YedNetworkFee` over the YED inputs, raised as YEC inputs are selected
+    // (`PQFeeFollower`): 1,000 bytes, 150 per P2PKH input, a Falcon holder input at its spend size.
+    let priced_for = |inputs: &[Utxo]| -> i64 {
+        let mut pq = Vec::new();
+        let mut other = 0;
+        for u in yed_inputs.iter().chain(inputs) {
+            match crate::pq::pqpkh_of(&u.script) {
+                Some(id) => pq.push(id.scheme),
+                None => other += 1,
+            }
+        }
+        wallet
+            .pq_terms()
+            .yed_fee(crate::params::yed_estimated_size(other, &pq))
+    };
+    let mut base_fee = priced_for(&[]);
     let (yec_inputs, mut fee, mut yec_change) = loop {
         let yec_needed = token_out + base_fee - token_in;
         let yec_inputs = coins::select_yec(&spendable, yec_needed, true)?;
-        if pq_input {
-            let mut t = tx.clone();
-            for u in &yec_inputs {
-                t.vin.push(TxIn::new(u.outpoint));
-            }
-            t.vout.push(TxOut {
-                value: 1,
-                script_pubkey: script::p2pkh_script(yec_change_hash),
-            });
-            let sizes: Vec<usize> = yed_inputs
-                .iter()
-                .chain(yec_inputs.iter())
-                .map(|u| crate::tx::script_sig_size_bound(&u.script))
-                .collect();
-            let priced = wallet.pq_terms().fee(t.size_with_script_sigs(&sizes)?);
-            if priced > base_fee {
-                base_fee = priced;
-                continue;
-            }
+        let priced = priced_for(&yec_inputs);
+        if priced > base_fee {
+            base_fee = priced;
+            continue;
         }
         let selected_yec: i64 = yec_inputs.iter().map(|u| u.value).sum();
         break (yec_inputs, base_fee, selected_yec - yec_needed);
@@ -526,6 +522,7 @@ pub fn spendable_classes() -> [UtxoClass; 3] {
 mod tests {
     use super::*;
     use crate::params::Network;
+    use crate::params::FEE_ZAT;
     use crate::store::Store;
 
     const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -577,6 +574,7 @@ mod tests {
                 falcon_height: height.unwrap_or(-1),
                 fee_rate_zat_per_kb: 100,
             }),
+            fees: Some(crate::build::terms::fallback_fee_params(100)),
             ..Default::default()
         };
         w.note_server_params(Some(&p)).unwrap();
@@ -715,7 +713,8 @@ mod tests {
         assert!(w.own_falcon_holders().unwrap().contains_key(&change));
         assert!(tx.vin[1].script_sig.len() <= crate::tx::MAX_P2PKH_SCRIPT_SIG);
         tx.check_script_sig_sizes().unwrap();
-        // At 1× (100 zat/kB) a ~1.9 kB transaction still pays FEE_ZAT; at 100× size binds.
+        // rpcversion 8: the Yellowback size fee at the node's estimated size (1,000 bytes, 150 per
+        // P2PKH input, the Falcon input at its spend size): at 1× (100 zat/kB) still FEE_ZAT.
         assert_eq!(p.fee, FEE_ZAT);
         let rich = crate::net::rpc::YellowbackParams {
             pq: Some(crate::net::rpc::YellowbackPqParams {
@@ -724,6 +723,7 @@ mod tests {
                 falcon_height: 0,
                 fee_rate_zat_per_kb: 10_000,
             }),
+            fees: Some(crate::build::terms::fallback_fee_params(10_000)),
             ..Default::default()
         };
         w.note_server_params(Some(&rich)).unwrap();
@@ -737,13 +737,15 @@ mod tests {
             branch,
         )
         .unwrap();
+        let size = crate::params::yed_estimated_size(q.yec_inputs.len(), &[2]);
+        assert_eq!(crate::params::pq_spend_input_size(2), 1_620);
+        // folded change may add a little on top of the priced fee
         assert!(
-            q.fee >= 10_000 * q.raw.len() as i64 / 1000,
-            "{} for {} bytes",
-            q.fee,
-            q.raw.len()
+            q.fee >= 10_000 * size as i64 / 1000,
+            "{} for {size} bytes",
+            q.fee
         );
-        assert!(q.fee < 10_000 * (q.raw.len() as i64 + 100) / 1000);
+        assert!(q.fee < 10_000 * size as i64 / 1000 + crate::build::yec_send::MIN_CHANGE);
     }
 
     #[test]

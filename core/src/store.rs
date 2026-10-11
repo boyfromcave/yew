@@ -317,6 +317,10 @@ pub struct VaultRow {
     /// The V's `appHeight` (`refHeight + 1`; `lockHeight + GRACE` before the rule): a claim may be
     /// made from here, RED-4's threshold deciding. 0 = not yet refreshed.
     pub app_height: u32,
+    /// `pMint` (rpcversion 8): the stored mint price (micro-USD per YEC) every fee of the vault is
+    /// struck at — FEE-1′ on the redeem, IT-9′'s early fee. 0 = not yet refreshed (column
+    /// `vaults.p_mint`, additive: no schema version change).
+    pub p_mint: i64,
 }
 
 /// The state of a claim intent this wallet is paid by (the vault upgrade, U-23).
@@ -470,7 +474,8 @@ CREATE TABLE IF NOT EXISTS vaults (
   sweep_before INTEGER NOT NULL, close_height INTEGER NOT NULL, closing_txid TEXT NOT NULL,
   void_reason TEXT NOT NULL, updated_height INTEGER NOT NULL,
   owner_height INTEGER NOT NULL DEFAULT 0, app_height INTEGER NOT NULL DEFAULT 0,
-  owner_scheme INTEGER NOT NULL DEFAULT 0, owner_hash BLOB NOT NULL DEFAULT x'');
+  owner_scheme INTEGER NOT NULL DEFAULT 0, owner_hash BLOB NOT NULL DEFAULT x'',
+  p_mint INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS pq_owners (idx INTEGER PRIMARY KEY, scheme INTEGER NOT NULL, hash BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS pq_holders (idx INTEGER PRIMARY KEY, scheme INTEGER NOT NULL, hash BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS claim_bounds (
@@ -602,6 +607,13 @@ impl Store {
             conn.execute_batch(
                 "ALTER TABLE claim_intents ADD COLUMN pq_spend_txid BLOB NOT NULL DEFAULT x'';",
             )?;
+        }
+        // rpcversion 8: `vaults.p_mint` (additive like the column above; the next sync fills it).
+        let has_p_mint: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('vaults') WHERE name = 'p_mint'")?
+            .exists([])?;
+        if !has_p_mint {
+            conn.execute_batch("ALTER TABLE vaults ADD COLUMN p_mint INTEGER NOT NULL DEFAULT 0;")?;
         }
         // v2 → v3 (W4) is the two new tables SCHEMA just created; v3 → v4 and v4 → v5 the
         // columns above; v5's `pq_owners` comes from SCHEMA.
@@ -1469,14 +1481,14 @@ impl Store {
         self.conn.execute(
             "INSERT OR REPLACE INTO vaults (txid, vout, status, owner_hash160, owner_scheme, owner_hash, term_class, lock_height,
                claim_height, collateral_zat, minted_cents, mint_height, claimable, underwater_at, sweep_before, close_height,
-               closing_txid, void_reason, updated_height, owner_height, app_height)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+               closing_txid, void_reason, updated_height, owner_height, app_height, p_mint)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             params![
                 v.txid.as_slice(), v.vout, v.status, v.owner_hash160.as_slice(), v.owner.scheme as i64,
                 v.owner.hash.as_slice(), v.term_class, v.lock_height, v.claim_height, v.collateral_zat,
                 v.minted_cents as i64, v.mint_height as i64, v.claimable as i64, v.underwater_at,
                 v.sweep_before as i64, v.close_height as i64, v.closing_txid, v.void_reason,
-                v.updated_height as i64, v.owner_height, v.app_height
+                v.updated_height as i64, v.owner_height, v.app_height, v.p_mint
             ],
         )?;
         Ok(())
@@ -1492,7 +1504,7 @@ impl Store {
         let mut st = self.conn.prepare(
             "SELECT txid, vout, status, owner_hash160, owner_hash, term_class, lock_height, claim_height, collateral_zat,
                minted_cents, mint_height, claimable, underwater_at, sweep_before, close_height, closing_txid, void_reason,
-               updated_height, owner_height, app_height, owner_scheme FROM vaults ORDER BY mint_height, txid",
+               updated_height, owner_height, app_height, owner_scheme, p_mint FROM vaults ORDER BY mint_height, txid",
         )?;
         let rows = st.query_map([], |r| {
             Ok((
@@ -1517,6 +1529,7 @@ impl Store {
                 r.get::<_, u32>(18)?,
                 r.get::<_, u32>(19)?,
                 r.get::<_, i64>(20)?,
+                r.get::<_, i64>(21)?,
             ))
         })?;
         let mut out = Vec::new();
@@ -1543,6 +1556,7 @@ impl Store {
                 owner_height,
                 app_height,
                 owner_scheme,
+                p_mint,
             ) = row?;
             let owner = owner_of(owner_scheme, &opk)?
                 .ok_or_else(|| StoreError::Corrupt("vault without an owner".into()))?;
@@ -1567,6 +1581,7 @@ impl Store {
                 updated_height: updated.max(0) as u64,
                 owner_height,
                 app_height,
+                p_mint,
             });
         }
         Ok(out)
@@ -2018,6 +2033,7 @@ mod tests {
             updated_height: 490,
             owner_height: 479,
             app_height: 479,
+            p_mint: 520_000,
         };
         s.upsert_vault(&v).unwrap();
         assert_eq!(s.vault(&[6; 32]).unwrap(), Some(v.clone()));

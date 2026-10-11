@@ -341,12 +341,18 @@ pub struct RedeemBuild {
     pub extra_burn_cents: u64,
     /// YED change (cents).
     pub change_cents: u64,
-    /// What the fee output pays (0 under FEE-0): the enforcement fee plus the early-redeem fee.
+    /// What the fee output pays (0 under FEE-0): the protocol fee plus the early-redeem fee.
     pub fee_zat: i64,
-    /// The early-redeem fee within `fee_zat` (IT-9): `collateral · earlyRedeemFeeBps[class] / 10⁴`
-    /// when the redeem confirms before `lockHeight` (judged at `R + 1`, the node builder's
+    /// The protocol fee in cents (FEE-1′ of the debt, rpcversion 8), paid at the vault's `pMint`.
+    pub protocol_fee_cents: i64,
+    /// The vault's stored mint price, µUSD per YEC: the price both fees are struck at.
+    pub p_mint: i64,
+    /// The early-redeem fee within `fee_zat` (IT-9′): `earlyRedeemFeeBps[class]` of the debt at
+    /// `pMint` when the redeem confirms before `lockHeight` (judged at `R + 1`, the node builder's
     /// reading), 0 at or after it and under FEE-0.
     pub early_redeem_fee_zat: i64,
+    /// [`RedeemBuild::early_redeem_fee_zat`] in cents (the debt's share in dollars; 0 when none).
+    pub early_redeem_fee_cents: i64,
     /// The vault's `lockHeight`: a redeem confirming before it pays the early-redeem fee.
     pub lock_height: u32,
     /// The fee payee (`s…`), empty under FEE-0.
@@ -361,7 +367,8 @@ pub struct RedeemBuild {
     pub lock_time: u32,
     /// `nExpiryHeight`.
     pub expiry_height: u32,
-    /// The network fee taken from the collateral: `max(FEE_ZAT, pqfeerate × size)`.
+    /// The network fee taken from the collateral: the Yellowback size fee (dollars per KB at the
+    /// attested price, [`owner_spend_network_fee`]).
     pub network_fee_zat: i64,
     /// The signed transaction.
     pub raw: Vec<u8>,
@@ -431,8 +438,9 @@ pub fn vault_script_of(
     Ok(vt.vault_script_at(&owner, v.owner_height, v.app_height)?)
 }
 
-/// IT-9's early-redeem fee of an owner redeem of `v` built at index height `r` (`EarlyRedeemFeeAt`
-/// / `BuildVaultSpend`, `ycash-dd` branch `upgrade/vault-in-term`): the spend confirms at `r + 1`
+/// IT-9′'s early-redeem fee of an owner redeem of `v` built at index height `r` (`EarlyRedeemFeeAt`
+/// / `BuildVaultSpend`, `ycash-dd` branch `q/fees`: `earlyRedeemFeeBps[class]` of the **debt** at the
+/// vault's stored `pMint`, rpcversion 8): the spend confirms at `r + 1`
 /// at the earliest, so the fee is due when `r + 1 < lockHeight`; 0 at or past it, for a vault that
 /// is not ACTIVE, under FEE-0 (`payee_known` false: RED-3 then charges neither fee), and for a
 /// class this network does not know.
@@ -449,8 +457,56 @@ pub fn early_redeem_fee_for(
         .term_classes()
         .iter()
         .find(|c| c.letter == v.term_class && c.enabled())
-        .map(|c| crate::params::early_redeem_fee_zat(v.collateral_zat, c.early_redeem_fee_bps))
+        .map(|c| {
+            crate::params::early_redeem_fee_zat(v.minted_cents, c.early_redeem_fee_bps, v.p_mint)
+        })
         .unwrap_or(0)
+}
+
+/// [`early_redeem_fee_for`] in dollars (`yed_estimateredeem.earlyRedeemFeeCents`): what YEW shows
+/// beside the debt, 0 when no early fee is due.
+pub fn early_redeem_fee_cents_for(
+    network: crate::params::Network,
+    v: &VaultRow,
+    r: u32,
+    payee_known: bool,
+) -> i64 {
+    if early_redeem_fee_for(network, v, r, payee_known) == 0 {
+        return 0;
+    }
+    network
+        .term_classes()
+        .iter()
+        .find(|c| c.letter == v.term_class)
+        .map(|c| crate::params::early_redeem_fee_cents(v.minted_cents, c.early_redeem_fee_bps))
+        .unwrap_or(0)
+}
+
+/// The network fee of an owner-path vault spend (`BuildVaultSpend`, review B L-1, D-Q-23 (b)): the
+/// Yellowback size fee at the node's estimated size (the owner's post-quantum input, each Falcon
+/// holder input at its spend size, every other input 150 bytes); clamped to the floor rate
+/// (`YedFloorSizeFee`) when it would take everything the vault has left after the protocol fees.
+pub fn owner_spend_network_fee(
+    t: &super::terms::PqTerms,
+    owner_scheme: u8,
+    yed_inputs: &[Utxo],
+    spendable_before_fee: i64,
+) -> i64 {
+    let mut pq = vec![owner_scheme];
+    let mut other = 0;
+    for u in yed_inputs {
+        match crate::pq::pqpkh_of(&u.script) {
+            Some(id) => pq.push(id.scheme),
+            None => other += 1,
+        }
+    }
+    let size = crate::params::yed_estimated_size(other, &pq);
+    let fee = t.yed_fee(size);
+    if fee >= spendable_before_fee {
+        t.yed_floor_fee(size)
+    } else {
+        fee
+    }
 }
 
 /// `BuildRedeem` (`txbuilder.cpp:1286-1299`): the owner-path spend of an own open vault at any
@@ -509,15 +565,21 @@ pub async fn build_redeem(
     let (yed_inputs, change_cents, extra_burn, stage, fee_zat, payee) = if active {
         let (sel, change, extra, stage) = select_yed_burn(wallet, v.minted_cents)?;
         let selector = crate::bundle::outpoint_selector(&v.txid, v.vout);
-        // FEE-1 locally (audit G-2): a server quoting more is refused before anything is signed.
-        let (fee_zat, payee) =
-            mint::fee_payee(wallet.network, yb, r, v.collateral_zat, &selector).await?;
+        // FEE-1′ locally (audit G-2; rpcversion 8): the debt's dollars at the vault's stored pMint.
+        let payee = mint::fee_payee(yb, r, &selector).await?;
+        if v.p_mint <= 0 {
+            return Err(WalletError::Other(
+                "vault-not-synced: the vault's mint price is not known yet; sync and try again"
+                    .into(),
+            ));
+        }
+        let fee_zat = super::terms::protocol_fee(v.minted_cents, v.p_mint, &payee)?;
         (sel, change, extra, stage, fee_zat, payee)
     } else {
         (Vec::new(), 0, 0, SelectStage::None, 0, String::new())
     };
-    // IT-9 locally: the early-redeem fee rides on the FEE-1 payee's output (RED-3 checks that
-    // output against FEE-1 + the early fee; AFEE-1 gives the owner path no attestor share).
+    // IT-9′ locally: the early-redeem fee rides on the FEE-1′ payee's output (RED-3′ checks that
+    // output against FEE-1′ + the early fee; AFEE-1′ gives the owner path no attestor share).
     let early_redeem_fee_zat = early_redeem_fee_for(wallet.network, &v, r, !payee.is_empty());
     // TOK-PQ (quantum spec F-7, after the Falcon height): YED change goes to a Falcon holder.
     let falcon = wallet.pq_terms().falcon_at(r as u64 + 1);
@@ -573,12 +635,15 @@ pub async fn build_redeem(
         tx.vout = plan.vout.clone();
         Ok((plan, tx))
     };
-    let (_, draft) = unsigned(&shape)?;
-    shape.network_fee = wallet.pq_terms().fee(owner_spend_size_bound_with(
-        &draft,
+    let yed_value: i64 = yed_inputs.iter().map(|u| u.value).sum();
+    shape.network_fee = owner_spend_network_fee(
+        &wallet.pq_terms(),
         owner.scheme(),
         &yed_inputs,
-    )?);
+        v.collateral_zat + yed_value
+            - shape.fee_zat
+            - if change_cents > 0 { TOKEN_VALUE } else { 0 },
+    );
     let (plan, mut tx) = unsigned(&shape)?;
     sign_owner_input(&mut tx, &owner, &vault_script, v.collateral_zat, branch_id)?;
     mint::sign_p2pkh_inputs(wallet, &mut tx, &yed_inputs, 1, branch_id)?;
@@ -602,7 +667,19 @@ pub async fn build_redeem(
         extra_burn_cents: extra_burn,
         change_cents,
         fee_zat: shape.fee_zat,
+        protocol_fee_cents: if active {
+            crate::params::protocol_fee_cents(v.minted_cents)
+        } else {
+            0
+        },
+        p_mint: v.p_mint,
         early_redeem_fee_zat,
+        early_redeem_fee_cents: early_redeem_fee_cents_for(
+            wallet.network,
+            &v,
+            r,
+            !payee.is_empty(),
+        ),
         lock_height: v.lock_height,
         payee,
         collateral_out: plan.collateral_out,
@@ -833,7 +910,7 @@ mod tests {
         let mut s = shape(true, true, 0, false, 0);
         s.owner_height = 401;
         s.app_height = 401;
-        let early = crate::params::early_redeem_fee_zat(s.vault_value, 500);
+        let early = 50_000_000; // IT-9′'s figure (of the debt at pMint) is early_redeem_fee_for's
         s.fee_zat = 50_000_000 + early;
         let p = plan_vault_spend(&s).unwrap();
         assert_eq!(p.lock_time, 401);
@@ -873,11 +950,19 @@ mod tests {
             updated_height: 500,
             owner_height: 498,
             app_height: 498,
+            p_mint: 50_000,
         };
         let r = crate::params::Network::Regtest;
-        // Class B: 2.5 % of 4,000 YEC = 100 YEC while R + 1 < lockHeight.
-        assert_eq!(early_redeem_fee_for(r, &v, 500, true), 10_000_000_000);
-        assert_eq!(early_redeem_fee_for(r, &v, 598, true), 10_000_000_000);
+        // IT-9′ (rpcversion 8): class B is 2.5 % of the $100 debt = $2.50, at the vault's pMint
+        // $0.05 = 50 YEC, while R + 1 < lockHeight — whatever the collateral.
+        assert_eq!(early_redeem_fee_for(r, &v, 500, true), 5_000_000_000);
+        assert_eq!(early_redeem_fee_cents_for(r, &v, 500, true), 250);
+        assert_eq!(early_redeem_fee_for(r, &v, 598, true), 5_000_000_000);
+        let unsynced = VaultRow {
+            p_mint: 0,
+            ..v.clone()
+        };
+        assert_eq!(early_redeem_fee_for(r, &unsynced, 500, true), 0);
         // Built at R = 599 the spend confirms at 600 = lockHeight at the earliest: no fee.
         assert_eq!(early_redeem_fee_for(r, &v, 599, true), 0);
         assert_eq!(early_redeem_fee_for(r, &v, 700, true), 0);
@@ -892,12 +977,52 @@ mod tests {
             term_class: "A".into(),
             ..v.clone()
         };
-        assert_eq!(early_redeem_fee_for(r, &a, 500, true), 20_000_000_000);
+        assert_eq!(early_redeem_fee_for(r, &a, 500, true), 10_000_000_000);
         let c = VaultRow {
             term_class: "C".into(),
             ..v
         };
-        assert_eq!(early_redeem_fee_for(r, &c, 500, true), 4_000_000_000);
+        assert_eq!(early_redeem_fee_for(r, &c, 500, true), 2_000_000_000);
+        assert_eq!(early_redeem_fee_cents_for(r, &c, 599, true), 0);
+    }
+
+    /// rpcversion 8 (review B L-1): the owner spend's network fee is the Yellowback size fee at the
+    /// node's estimated size, clamped to the floor rate when it would take what the vault has left.
+    #[test]
+    fn owner_spend_network_fee_is_the_nodes() {
+        let t = super::super::terms::PqTerms {
+            yed_rate_zat_per_kb: 12_500_000,
+            floor_rate_zat_per_kb: 5_000,
+            max_fee_zat: 500_000_000,
+            ..Default::default()
+        };
+        // SLH-DSA owner (7,981) + 1,000, no YED input
+        assert_eq!(
+            owner_spend_network_fee(&t, 1, &[], 10 * crate::params::COIN),
+            112_262_500
+        );
+        // a P2PKH YED input adds 150 bytes
+        let u = Utxo {
+            outpoint: OutPoint {
+                txid: [3; 32],
+                n: 0,
+            },
+            address: String::new(),
+            script: script::p2pkh_script(&[4; 20]),
+            value: TOKEN_VALUE,
+            height: 1,
+            class: UtxoClass::Token,
+            cents: 100,
+        };
+        assert_eq!(
+            owner_spend_network_fee(&t, 1, &[u], 10 * crate::params::COIN),
+            12_500_000 * 9_131 / 1000
+        );
+        // a small vault after a crash: the floor rate instead of a refusal
+        assert_eq!(
+            owner_spend_network_fee(&t, 1, &[], 100_000_000),
+            5_000 * 8_981 / 1000
+        );
     }
 
     /// Quantum plan §4.5: the owner spend is priced on its size before signing; the bound is
