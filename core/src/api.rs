@@ -482,6 +482,10 @@ pub struct ParamsProgress {
     pub total_bytes: i64,
     /// The last event: both files verified and in place.
     pub finished: bool,
+    /// The last event of a failed download: why (empty otherwise). A failure is reported only
+    /// here: flutter_rust_bridge hands a stream function's `Err` to a future the generated Dart
+    /// never awaits, so the app would never see it.
+    pub error: String,
 }
 
 /// The node's dry run of a preview (`ValidateRawTransaction`).
@@ -554,7 +558,8 @@ pub struct SendResult {
 /// [`export_wif`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WifExport {
-    /// The address, `yb…` form.
+    /// The key's P2PKH address, `yb…` form (35 characters). Once Falcon is in force YED is
+    /// received at the key's Falcon holder instead, which has no WIF.
     pub address_ye: String,
     /// The address, `s…` form.
     pub address_s: String,
@@ -1766,21 +1771,32 @@ pub fn new_shielded_address() -> Result<AddressPair, YewError> {
 /// Every address of the wallet (Settings → export private key picks one).
 pub fn addresses() -> Result<Vec<AddressPair>, YewError> {
     with_open(|o| {
+        // TOK-PQ: once Falcon is in force the YED form of an HD key is its Falcon holder (as
+        // `receive_address`); the P2PKH `yb…` form is the key's WIF export only
+        // (`export_wif`, labelled there). An imported key has no Falcon pair.
+        let falcon = o.wallet.falcon_now();
         Ok(o.wallet
             .addresses()?
             .into_iter()
             .map(|r| {
                 let hd = r.hd_chain().is_some();
+                let holder = if falcon && hd {
+                    o.wallet.falcon_holder_address(&r)
+                } else {
+                    None
+                };
                 AddressPair {
                     address: r.address_s.clone(),
                     kind: ReceiveKind::Transparent,
-                    ye: r.address_ye,
-                    s: r.address_s,
-                    path: if hd {
-                        format!("m/44'/347'/0'/{}/{}", r.chain, r.index)
-                    } else {
-                        "imported".into()
+                    path: match (hd, holder.is_some()) {
+                        (true, true) => {
+                            format!("m/44'/347'/0'/{}/{} (Falcon holder)", r.chain, r.index)
+                        }
+                        (true, false) => format!("m/44'/347'/0'/{}/{}", r.chain, r.index),
+                        _ => "imported".into(),
                     },
+                    ye: holder.unwrap_or(r.address_ye),
+                    s: r.address_s,
                     covered_by_seed: hd,
                 }
             })
@@ -2110,9 +2126,33 @@ fn params_status_of(dir: &std::path::Path) -> ParamsStatus {
 /// loopback `http://` for tests), or, when `base_url` is empty, from
 /// [`sapling_params::DEFAULT_SOURCES`] in order (the next is tried when one fails), into the app's data directory,
 /// each file verified against its pinned SHA-256 before it is kept. Progress on `sink`, ending
-/// with a `finished` event ([`params_status`] then says `ready`); the wallet stays usable
-/// meanwhile (the download does not hold the wallet).
+/// with a `finished` event ([`params_status`] then says `ready`) or, on any failure, an event
+/// carrying `error`; the wallet stays usable meanwhile (the download does not hold the wallet).
 pub fn download_params(base_url: String, sink: StreamSink<ParamsProgress>) -> Result<(), YewError> {
+    download_params_to(base_url, |p| {
+        let _ = sink.add(p);
+    });
+    Ok(())
+}
+
+/// [`download_params`] with its events going to `emit`: every outcome is an event, the last one
+/// `finished` or carrying `error` (never a returned error, which the app would not see).
+fn download_params_to(base_url: String, emit: impl Fn(ParamsProgress) + Send + Sync + Clone) {
+    if let Err(e) = download_params_inner(base_url, emit.clone()) {
+        emit(ParamsProgress {
+            file: String::new(),
+            done_bytes: 0,
+            total_bytes: 0,
+            finished: false,
+            error: e.message,
+        });
+    }
+}
+
+fn download_params_inner(
+    base_url: String,
+    emit: impl Fn(ParamsProgress) + Send + Sync + Clone,
+) -> Result<(), YewError> {
     static DOWNLOADING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let Ok(_guard) = DOWNLOADING.try_lock() else {
         return Err(YewError::new(
@@ -2139,13 +2179,14 @@ pub fn download_params(base_url: String, sink: StreamSink<ParamsProgress>) -> Re
     let mut last_err = String::new();
     let mut done = None;
     for source in &sources {
-        let progress_sink = sink.clone();
+        let progress = emit.clone();
         match runtime().block_on(sapling_params::download(source, &dir, move |p| {
-            let _ = progress_sink.add(ParamsProgress {
+            progress(ParamsProgress {
                 file: p.file.to_string(),
                 done_bytes: p.done as i64,
                 total_bytes: p.total as i64,
                 finished: false,
+                error: String::new(),
             });
         })) {
             Ok(st) => {
@@ -2156,11 +2197,12 @@ pub fn download_params(base_url: String, sink: StreamSink<ParamsProgress>) -> Re
         }
     }
     let st = done.ok_or_else(|| YewError::new(ErrorKind::Network, last_err))?;
-    let _ = sink.add(ParamsProgress {
+    emit(ParamsProgress {
         file: String::new(),
         done_bytes: (sapling_params::TOTAL_BYTES - st.missing_bytes) as i64,
         total_bytes: sapling_params::TOTAL_BYTES as i64,
         finished: true,
+        error: String::new(),
     });
     Ok(())
 }
@@ -3251,7 +3293,31 @@ mod tests {
             receive_address(ReceiveKind::Yed, false).unwrap().ye,
             m.address_ye
         );
+        // The address list shows the Falcon holders too; the P2PKH form is the WIF export's.
+        let listed = addresses().unwrap();
+        assert!(!listed.is_empty());
+        for a in &listed {
+            assert_eq!(a.ye.len(), 53, "{a:?}");
+            assert!(a.path.ends_with("(Falcon holder)"), "{a:?}");
+        }
+        assert!(listed.iter().any(|a| a.ye == m.address_ye));
+        let w = export_wif(listed[0].s.clone()).unwrap();
+        assert_eq!((w.address_ye.len(), &w.address_ye[..2]), (35, "yb"));
         lock();
+
+        // download_params reports every failure as its stream's last event (`error`), never as
+        // a returned error the generated Dart would leave unawaited.
+        for url in ["not a url", "https://params.example/"] {
+            let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let sink = events.clone();
+            download_params_to(url.into(), move |p| sink.lock().unwrap().push(p));
+            let events = events.lock().unwrap();
+            let last = events.last().expect("a terminal event");
+            assert!(
+                !last.finished && !last.error.is_empty(),
+                "{url}: {events:?}"
+            );
+        }
 
         let dir = tmp_dir("regtest");
         let c = create_wallet(

@@ -338,6 +338,55 @@ void main() {
   );
 
   testWidgets(
+    'send: a failed parameter download (the core reports it as the last event) shows on the sheet',
+    (tester) async {
+      final h = Harness(withWallet: true);
+      h.secrets.write(
+        'settings',
+        const WalletSettings(
+          server: '127.0.0.1:9267',
+          plain: true,
+          network: NetworkId.regtest,
+          trustAccepted: true,
+          paramsUrl: 'https://params.example/',
+        ).encode(),
+      );
+      h.api.balancesAnswer = synced;
+      h.api.yecFunding = YecFunding.shielded;
+      h.api.yecConfirmError = const YewError(
+        kind: ErrorKind.paramsMissing,
+        message: 'proving parameters missing',
+      );
+      final ctl = StreamController<ParamsProgress>();
+      h.api.paramsController = ctl;
+      await openSendYec(tester, h);
+      await previewTo(tester, fakeZ);
+      await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('params-download')));
+      await tester.pump();
+      ctl.add(
+        const ParamsProgress(
+          file: '',
+          doneBytes: 0,
+          totalBytes: 0,
+          finished: false,
+          error: 'The proving parameters are already downloading.',
+        ),
+      );
+      await ctl.close();
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('params-progress')), findsNothing);
+      expect(
+        tester.widget<Text>(find.byKey(const Key('params-error'))).data,
+        'The proving parameters are already downloading.',
+      );
+      expect(find.text('Try again'), findsOneWidget);
+      expect(h.api.calls.where((c) => c == 'yecConfirm p1').length, 1);
+    },
+  );
+
+  testWidgets(
     'send: the params sheet shows progress, and a core that finds them missing gets the sheet once',
     (tester) async {
       final h = Harness(withWallet: true);
@@ -375,6 +424,7 @@ void main() {
           doneBytes: 25000000,
           totalBytes: 51551256,
           finished: false,
+          error: '',
         ),
       );
       await tester.pump();
@@ -386,6 +436,7 @@ void main() {
           doneBytes: 51551256,
           totalBytes: 51551256,
           finished: true,
+          error: '',
         ),
       );
       await ctl.close();

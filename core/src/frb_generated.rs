@@ -2241,11 +2241,13 @@ impl SseDecode for crate::api::ParamsProgress {
         let mut var_doneBytes = <i64>::sse_decode(deserializer);
         let mut var_totalBytes = <i64>::sse_decode(deserializer);
         let mut var_finished = <bool>::sse_decode(deserializer);
+        let mut var_error = <String>::sse_decode(deserializer);
         return crate::api::ParamsProgress {
             file: var_file,
             done_bytes: var_doneBytes,
             total_bytes: var_totalBytes,
             finished: var_finished,
+            error: var_error,
         };
     }
 }
@@ -3250,6 +3252,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::ParamsProgress {
             self.done_bytes.into_into_dart().into_dart(),
             self.total_bytes.into_into_dart().into_dart(),
             self.finished.into_into_dart().into_dart(),
+            self.error.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4180,6 +4183,7 @@ impl SseEncode for crate::api::ParamsProgress {
         <i64>::sse_encode(self.done_bytes, serializer);
         <i64>::sse_encode(self.total_bytes, serializer);
         <bool>::sse_encode(self.finished, serializer);
+        <String>::sse_encode(self.error, serializer);
     }
 }
 

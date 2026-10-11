@@ -53,8 +53,8 @@ class FakeWalletApi implements WalletApi {
   bool paramsNeeded = false;
   Object? yecConfirmError;
   List<ParamsProgress> paramsEvents = const [
-    ParamsProgress(file: 'sapling-spend.params', doneBytes: 25000000, totalBytes: 51551256, finished: false),
-    ParamsProgress(file: 'sapling-output.params', doneBytes: 51551256, totalBytes: 51551256, finished: true),
+    ParamsProgress(file: 'sapling-spend.params', doneBytes: 25000000, totalBytes: 51551256, finished: false, error: ''),
+    ParamsProgress(file: 'sapling-output.params', doneBytes: 51551256, totalBytes: 51551256, finished: true, error: ''),
   ];
   Object? paramsError;
   StreamController<ParamsProgress>? paramsController;

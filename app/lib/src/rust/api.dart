@@ -7,7 +7,7 @@ import 'frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `claim_intent_of`, `connect`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `height_time`, `hex_or_empty`, `history_item`, `locked`, `merge_shielded`, `mint_status_of`, `new`, `now_secs`, `open_wallet`, `params_dir_of`, `params_status_of`, `parse_outpoint`, `parse_server`, `parse_txid`, `renew_lock_blocks`, `row_status`, `runtime`, `shielded_pair`, `store_err`, `sync_shielded`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `yec_preview_of`, `yellowback_status`
+// These functions are ignored because they are not marked as `pub`: `claim_intent_of`, `connect`, `download_params_inner`, `download_params_to`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `height_time`, `hex_or_empty`, `history_item`, `locked`, `merge_shielded`, `mint_status_of`, `new`, `now_secs`, `open_wallet`, `params_dir_of`, `params_status_of`, `parse_outpoint`, `parse_server`, `parse_txid`, `renew_lock_blocks`, `row_status`, `runtime`, `shielded_pair`, `store_err`, `sync_shielded`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `yec_preview_of`, `yellowback_status`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Conn`, `Open`, `Preview`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
 
@@ -187,8 +187,8 @@ Future<ParamsStatus> paramsStatus() =>
 /// loopback `http://` for tests), or, when `base_url` is empty, from
 /// [`sapling_params::DEFAULT_SOURCES`] in order (the next is tried when one fails), into the app's data directory,
 /// each file verified against its pinned SHA-256 before it is kept. Progress on `sink`, ending
-/// with a `finished` event ([`params_status`] then says `ready`); the wallet stays usable
-/// meanwhile (the download does not hold the wallet).
+/// with a `finished` event ([`params_status`] then says `ready`) or, on any failure, an event
+/// carrying `error`; the wallet stays usable meanwhile (the download does not hold the wallet).
 Stream<ParamsProgress> downloadParams({required String baseUrl}) =>
     RustLib.instance.api.crateApiDownloadParams(baseUrl: baseUrl);
 
@@ -1506,11 +1506,17 @@ class ParamsProgress {
   /// The last event: both files verified and in place.
   final bool finished;
 
+  /// The last event of a failed download: why (empty otherwise). A failure is reported only
+  /// here: flutter_rust_bridge hands a stream function's `Err` to a future the generated Dart
+  /// never awaits, so the app would never see it.
+  final String error;
+
   const ParamsProgress({
     required this.file,
     required this.doneBytes,
     required this.totalBytes,
     required this.finished,
+    required this.error,
   });
 
   @override
@@ -1518,7 +1524,8 @@ class ParamsProgress {
       file.hashCode ^
       doneBytes.hashCode ^
       totalBytes.hashCode ^
-      finished.hashCode;
+      finished.hashCode ^
+      error.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1528,7 +1535,8 @@ class ParamsProgress {
           file == other.file &&
           doneBytes == other.doneBytes &&
           totalBytes == other.totalBytes &&
-          finished == other.finished;
+          finished == other.finished &&
+          error == other.error;
 }
 
 /// [`params_status`]: the Sapling proving parameters on this device.
@@ -2450,7 +2458,8 @@ class VaultSummary {
 
 /// [`export_wif`].
 class WifExport {
-  /// The address, `yb…` form.
+  /// The key's P2PKH address, `yb…` form (35 characters). Once Falcon is in force YED is
+  /// received at the key's Falcon holder instead, which has no WIF.
   final String addressYe;
 
   /// The address, `s…` form.
