@@ -564,6 +564,13 @@ the plain `sq…` form and maps a 53-character PQ `yb…` to it).**
   released residual (one Falcon or SLH-DSA input, fee `max(FEE_ZAT, pqfeerate × size)` out of the
   coin, `Path::PqSweep`, the remote layer must say `ok, burned 0`), the coin locked until it
   confirms or expires.
+- *Devnet (2026-10-12, ycash-dd q/attest `87f826f61`, lightwalletd-dd q/pqaddr `f33fb1e`, portseed
+  3370, lightwalletd on 3389).* `scripts/devnet-pqaddr.sh up|test`: `q_pqaddr_sq_receive_send_and_move`
+  — node 0 pays YEC (2 YEC and exactly `TOKEN_VALUE`) to the `rq…` form of a YEW Falcon holder and
+  YED to its `yr…` form; the sync finds them as one PQ_OWNED, one HELD and one TOKEN row (the YEC
+  balance unchanged); YEW pays node 0's `rq…` (`gettxout` type `pqpubkeyhash`, listed by
+  lightwalletd) and refuses its `yr…` as a YEC destination; the PQ_OWNED coin moves into the wallet
+  (1,577-byte Falcon scriptSig, verdict `ok`, burned 0); a restore from the seed agrees (52 s).
 - *Not done.* YEW still hands out `s…` for YEC (no `sq…` receive address), and a YEC send does not
   spend `PQ_OWNED` coins directly (they are moved first).
 

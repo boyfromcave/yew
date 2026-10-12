@@ -30,7 +30,13 @@
 //!   Falcon receive address from `F`, a transfer spending a P2PKH and a Falcon token with Falcon
 //!   change, a mint whose token goes to a Falcon holder, and a restore from the seed.
 //!
-//! Run: `YEW_DEVNET=1 cargo test -p yew-core --test devnet -- --ignored --nocapture [w1_|w2_|w4_|q_]`.
+//! - `q_pqaddr_sq_receive_send_and_move` (quantum line, D-Q-20/D-Q-21): an ARMED devnet in the
+//!   mainnet regime with lightwalletd-dd q/pqaddr (`scripts/devnet-pqaddr.sh`): YEC and YED to the
+//!   wallet's Falcon holder found through its `rq…` form (YED a TOKEN row only, a `TOKEN_VALUE`
+//!   output HELD, plain YEC PQ_OWNED), a YEC send to the node's `rq…`, the PQ coin moved into the
+//!   wallet, and a restore from the seed.
+//!
+//! Run: `YEW_DEVNET=1 cargo test -p yew-core --test devnet -- --ignored --nocapture [w1_|w2_|w4_|q_falcon_|q_pqaddr_]`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -3980,6 +3986,180 @@ async fn q_falcon_holders_receive_send_mint_and_restore() {
     println!(
         "Falcon devnet ok: F={falcon_height}, transfer {txid} (Falcon input + change), mint {}",
         f.txid
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Post-quantum addresses end to end (lightwalletd-dd q/pqaddr: `TX_PQPKH` in the taddr methods
+/// under the plain `sq…`/`rq…` form). On an ARMED quantum devnet in the mainnet regime (Falcon
+/// from the vault activation; `scripts/devnet-pqaddr.sh`, portseed 3370, lightwalletd on 3389):
+///
+/// 1. node 2 pays YEC to the `rq…` form of the wallet's Falcon holder (once plain, once exactly
+///    `TOKEN_VALUE`) and node 0 pays YED to its `yr…` form: the sync finds all three through the
+///    `rq…` address; the YED is one TOKEN row (from `GetAddressTokens`, not duplicated by
+///    `GetAddressUtxos`), the `TOKEN_VALUE` output is HELD, the plain YEC is PQ_OWNED — in neither
+///    YEC balance — and the payment is in history;
+/// 2. YEW sends YEC to node 0's `rq…` address (a `TX_PQPKH` output the node and lightwalletd see)
+///    and refuses its 53-character `yr…` form as a YEC destination;
+/// 3. the PQ_OWNED coin moves into the wallet (one Falcon input, gate `ok`, mined);
+/// 4. a wallet restored from the seed finds the same balances.
+#[tokio::test]
+#[ignore = "needs an ARMED quantum devnet and lightwalletd-dd q/pqaddr (scripts/devnet-pqaddr.sh) and YEW_DEVNET=1"]
+async fn q_pqaddr_sq_receive_send_and_move() {
+    if std::env::var("YEW_DEVNET").ok().as_deref() != Some("1") {
+        eprintln!("YEW_DEVNET is not 1; skipping");
+        return;
+    }
+    let dn = Devnet::new("yb-devnet-pqaddr", "3370");
+    let server =
+        Server::parse(&env_or("YEW_DEVNET_SERVER", "127.0.0.1:3389".into()), true).unwrap();
+    let channel = server.connect().await.expect("connect to lightwalletd");
+    let mut c = CompactClient::from_channel(channel.clone());
+    let info = c.lightd_info_for(Network::Regtest).await.unwrap();
+    let (mut v, availability) = Validator::detect(YellowbackClient::from_channel(channel))
+        .await
+        .expect("probe");
+    assert!(availability.usable(), "{availability:?}");
+    warm_and_fund_node_yed(&dn, &mut c, &mut v, &availability).await;
+
+    let dir = std::env::temp_dir().join(format!("yew-devnet-pqaddr-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let birthday = info.block_height.saturating_sub(1);
+    let (mut a, mnemonic) = fresh_wallet(&dir, "a", birthday);
+    let fund = fund_node();
+    let addr = a.receive_address(false).unwrap();
+    let t = dn.node(fund, &["sendtoaddress", &addr.address_s, "5"]);
+    confirm(&dn, &mut c, &t).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert!(
+        a.falcon_now(),
+        "the devnet mirrors mainnet: Falcon from the vault activation"
+    );
+    assert_eq!(r.yec.0 + r.yec.1, 5 * 100_000_000);
+    assert!(
+        !r.pq_unindexed,
+        "lightwalletd-dd q/pqaddr serves PQ addresses: {r:?}"
+    );
+
+    // 1. YEC and YED to the wallet's Falcon holder, YEC through its rq… form.
+    let row = a.receive_address(false).unwrap();
+    let falcon = a.falcon_holder_id(&row).unwrap();
+    let holder_yr = keys::encode_pq_yellowback(Network::Regtest, &falcon).unwrap();
+    let holder_rq = keys::encode_pq_yec(Network::Regtest, &falcon).unwrap();
+    assert!(
+        holder_rq.starts_with("rq") && holder_rq.len() == 53,
+        "{holder_rq}"
+    );
+    let va = dn.node_json(0, &["validateaddress", &holder_rq]);
+    assert_eq!(va["isvalid"].as_bool(), Some(true), "{va}");
+    let pay = dn.node(fund, &["sendtoaddress", &holder_rq, "2"]);
+    let token_sized = dn.node(fund, &["sendtoaddress", &holder_rq, "0.0001"]);
+    dn.wait_mempool(&pay);
+    dn.wait_mempool(&token_sized);
+    let yed = dn.node_json(0, &["yed_send", &holder_yr, "3000"]);
+    let yed_txid = yed["txid"].as_str().unwrap().to_string();
+    confirm(&dn, &mut c, &yed_txid).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert!(r.pq_addresses > 0 && !r.pq_unindexed, "{r:?}");
+    assert_eq!(r.yed, (3_000, 0), "{r:?}");
+    assert_eq!(
+        r.yec.0 + r.yec.1,
+        5 * 100_000_000,
+        "YEC at a PQ key is in neither balance"
+    );
+    let utxos = a.store.utxos().unwrap();
+    let pq_of = |class: UtxoClass| {
+        utxos
+            .iter()
+            .filter(|u| u.class == class && yew_core::pq::pqpkh_of(&u.script) == Some(falcon))
+            .collect::<Vec<_>>()
+    };
+    let tokens = pq_of(UtxoClass::Token);
+    assert_eq!(tokens.len(), 1, "one Falcon TOKEN row: {utxos:?}");
+    assert_eq!(tokens[0].cents, 3_000);
+    assert_eq!(txid_hex(&tokens[0].outpoint.txid), yed_txid);
+    let held = pq_of(UtxoClass::Held);
+    assert_eq!(held.len(), 1, "{utxos:?}");
+    assert_eq!(held[0].value, TOKEN_VALUE);
+    assert_eq!(txid_hex(&held[0].outpoint.txid), token_sized);
+    let owned = pq_of(UtxoClass::PqOwned);
+    assert_eq!(owned.len(), 1, "{utxos:?}");
+    assert_eq!(owned[0].value, 2 * 100_000_000);
+    assert_eq!(txid_hex(&owned[0].outpoint.txid), pay);
+    let b = a.balances().unwrap();
+    assert_eq!(b.yec_pq_zat, 2 * 100_000_000);
+    assert_eq!(b.pq_coins, vec![owned[0].outpoint]);
+    let hist = a.store.history().unwrap();
+    let paid = hist
+        .iter()
+        .find(|h| txid_hex(&h.txid) == pay)
+        .expect("the rq… payment is in history");
+    assert!(paid.yec_delta >= 2 * 100_000_000, "{paid:?}");
+
+    // 2. YEW → node 0's rq… address; its yr… form is refused as a YEC destination.
+    let node_yr = dn.node(0, &["yed_getnewaddress"]);
+    let node_id = keys::parse_pq_address(Network::Regtest, &node_yr).unwrap();
+    let node_rq = keys::encode_pq_yec(Network::Regtest, &node_id).unwrap();
+    let e =
+        yec_send::build_yec_send(&a, &node_yr, 100_000_000, false, r.tip, r.branch_id).unwrap_err();
+    assert!(e.to_string().contains("sq…"), "{e}");
+    let p = yec_send::build_yec_send(&a, &node_rq, 100_000_000, false, r.tip, r.branch_id).unwrap();
+    let sent = yec_send::broadcast(&a, &mut c, &mut v, &p).await.unwrap();
+    confirm(&dn, &mut c, &sent).await;
+    let out = dn.node_json(0, &["gettxout", &sent, "0"]);
+    assert_eq!(
+        out["scriptPubKey"]["type"].as_str(),
+        Some("pqpubkeyhash"),
+        "{out}"
+    );
+    let listed = c
+        .address_utxos(std::slice::from_ref(&node_rq), 0)
+        .await
+        .unwrap();
+    assert!(
+        listed
+            .iter()
+            .any(|u| txid_hex(&u.txid) == sent && u.index == 0 && u.value_zat == 100_000_000),
+        "lightwalletd lists the payment under {node_rq}"
+    );
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(r.yec.0 + r.yec.1, 4 * 100_000_000 - p.fee);
+
+    // 3. The PQ_OWNED coin moves into the wallet.
+    let coin = a.balances().unwrap().pq_coins[0];
+    let mv = a.release_preview(&coin, r.tip, r.branch_id).unwrap();
+    let (mtx, _) = Transaction::parse(&mv.raw).unwrap();
+    assert_eq!(mtx.vin.len(), 1);
+    assert_eq!(mtx.vin[0].script_sig.len(), 1_577);
+    let (moved, validation) = a.release_confirm(&mut c, &mut v, &mv).await.unwrap();
+    assert_eq!(validation.verdict, "ok", "{validation:?}");
+    assert_eq!(validation.burned, 0);
+    confirm(&dn, &mut c, &moved).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(r.yec.0 + r.yec.1, 4 * 100_000_000 - p.fee + mv.value);
+    assert_eq!(r.yed, (3_000, 0));
+    let b = a.balances().unwrap();
+    assert_eq!((b.yec_pq_zat, b.pq_coins.len()), (0, 0));
+
+    // 4. Restore from the seed.
+    let path = dir.join("restored.sqlite").to_string_lossy().to_string();
+    let mut w = Wallet::open(&path, Network::Regtest, &mnemonic, "", Some(birthday)).unwrap();
+    let rw = sync(&mut w, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(
+        (rw.yec.0 + rw.yec.1, rw.yed),
+        (r.yec.0 + r.yec.1, r.yed),
+        "{rw:?}"
+    );
+    assert_eq!(w.balances().unwrap().yec_pq_zat, 0);
+    assert!(w
+        .store
+        .history()
+        .unwrap()
+        .iter()
+        .any(|h| txid_hex(&h.txid) == pay));
+    println!(
+        "pqaddr devnet ok: rq… payment {pay}, YED {yed_txid}, YEW → {node_rq} {sent}, move {moved} ({} zat fee)",
+        mv.fee
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
