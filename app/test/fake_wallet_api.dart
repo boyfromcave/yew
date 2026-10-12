@@ -36,6 +36,8 @@ class FakeWalletApi implements WalletApi {
     heldCount: 0,
     syncHeight: 484,
     yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false,
+    yecPqZat: 0,
+    pqCoins: [],
   );
   List<HistoryItem> historyAnswer = const [];
   Object? yedPreviewError;
@@ -362,6 +364,10 @@ class FakeWalletApi implements WalletApi {
   Future<ReleasePreview> releasePreview({required String intent}) async {
     calls.add('releasePreview $intent');
     if (releaseError != null) throw releaseError!;
+    // An own post-quantum coin (Balances.pqCoins): the core moves it like a released residual.
+    if (balancesAnswer.pqCoins.contains(intent)) {
+      return ReleasePreview(previewId: 'rl-$intent', kind: 'pq_move', intent: intent, valueZat: balancesAnswer.yecPqZat - 3000, recipientAddress: fakeS, feeZat: 3000, txid: 're' * 32);
+    }
     final i = intentsAnswer.firstWhere((x) => x.intent == intent);
     return ReleasePreview(previewId: 'rl-$intent', kind: i.pqMove ? 'pq_move' : 'release', intent: intent, valueZat: i.pqMove ? i.valueZat - 1000 : i.valueZat, recipientAddress: i.pqMove || i.role != 'residual' ? fakeS : fakeOwnerPq, feeZat: 1000, txid: 're' * 32);
   }
@@ -370,6 +376,9 @@ class FakeWalletApi implements WalletApi {
   Future<ReleaseResult> releaseConfirm({required String previewId}) async {
     calls.add('releaseConfirm $previewId');
     final intent = previewId.substring(3);
+    if (balancesAnswer.pqCoins.contains(intent)) {
+      return ReleaseResult(txid: 're' * 32, verdict: 'ok', valueZat: balancesAnswer.yecPqZat - 3000);
+    }
     final i = intentsAnswer.firstWhere((x) => x.intent == intent);
     intentsAnswer = [
       for (final x in intentsAnswer)
@@ -569,6 +578,14 @@ class FakeWalletApi implements WalletApi {
   @override
   AddressCheck validateAddress({required NetworkId network, required String address}) => address.startsWith('yregtestsapling1')
       ? const AddressCheck(valid: true, kind: 'sapling', yellowbackForm: false, message: '')
+      // The 53-character post-quantum regtest forms (the core's kinds; vectors: a q/attest node's
+      // vault_getnewowner pairs): rq… plain YEC, yr2V… a Falcon YED holder, yr2U… an SLH-DSA owner.
+      : address.length == 53 && address.startsWith('rq')
+      ? const AddressCheck(valid: true, kind: 'pq_yec', yellowbackForm: false, message: '')
+      : address.length == 53 && address.startsWith('yr2V')
+      ? const AddressCheck(valid: true, kind: 'pq', yellowbackForm: true, message: '')
+      : address.length == 53 && address.startsWith('yr2U')
+      ? AddressCheck(valid: false, kind: 'pq_owner', yellowbackForm: true, message: '$address is a post-quantum vault-owner address, not a payment address')
       : address.startsWith('yr1') || address.startsWith('sm')
       ? AddressCheck(valid: true, kind: 'p2pkh', yellowbackForm: address.startsWith('yr1'), message: '')
       : const AddressCheck(valid: false, kind: '', yellowbackForm: false, message: 'not a Regtest address: bad base58check');

@@ -16,6 +16,7 @@ import '../widgets/balance_card.dart';
 import '../widgets/claim_warning.dart';
 import '../widgets/move_sheet.dart';
 import 'receive.dart';
+import 'release.dart';
 import 'send.dart';
 import 'settings.dart';
 
@@ -253,6 +254,16 @@ class _YecSplit extends StatelessWidget {
         note('${formatYec(b.yecReservedZat)} YEC reserved for fees'),
         if (b.yecPendingZat > 0)
           note('${formatYec(b.yecPendingZat)} YEC pending'),
+        if (b.yecPqZat > 0 && b.pqCoins.isNotEmpty)
+          InkWell(
+            key: const Key('pq-yec'),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => ReleaseScreen.pqCoin(coin: b.pqCoins.first)),
+            ),
+            child: note(
+              '${formatYec(b.yecPqZat)} YEC at your post-quantum addresses · tap to move it to your wallet',
+            ),
+          ),
         if (b.heldCount > 0)
           note(
             '${b.heldCount} output${b.heldCount == 1 ? '' : 's'} held until the server classifies ${b.heldCount == 1 ? 'it' : 'them'}',
