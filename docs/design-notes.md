@@ -469,14 +469,14 @@ regtest follows the server's `-pqfalconheight`, so the P2PKH holder paths stay t
 Falcon. From the Falcon height (judged for the block the transaction can first be mined in) YEW:
 
 - *receives* on the 53-character Falcon holder address (`yb…`/`yt…`/`yr…`, scheme 2) paired with
-  its receive key (`receive_address(Yed)`, `yew-cli address`). YED only: YEC sent to a `TX_PQPKH`
-  is a coin no index lists. The server's `params.pq` is remembered in the store so an offline
+  its receive key (`receive_address(Yed)`, `yew-cli address`). YED only: YEC for the same key goes
+  to its `sq…` form (below, "Post-quantum addresses end to end"). The server's `params.pq` is remembered in the store so an offline
   open shows the right address;
 - *holds*: one Falcon key per HD key, `DerivePQSeed(BIP39 seed, 2, index)` with external `i` →
   `i` and change `i` → `2³¹ + i`, so the address gap scan is also the holder gap scan. The ids
   are cached in the additive `pq_holders` table (no schema bump); signing re-derives the key and
-  checks its id. Sync asks `GetAddressTokens` for the Falcon addresses of every derived key (PQ
-  outputs are not address-indexed: `GetTaddressTxids`/`GetAddressUtxos` never list them); a
+  checks its id. Sync asks `GetAddressTokens` for the Falcon addresses of every derived key (the
+  only source of YED; the taddr methods see the same outputs on the `sq…` form, below); a
   listed token marks its pair used (the gap rule), its transaction is fetched once
   (`GetTransaction`) to check the output is the own `TX_PQPKH` — a `TX_PQCHANNEL` client output
   is listed under the same address but is no wallet coin — and is recorded in history; the coin
@@ -528,17 +528,44 @@ implementations (plan §4.6): only this code (and the node's) re-derives it.
 releases it like a claimant intent (recipient shown as the 53-character owner address), and once
 that release confirms the same intent row offers the move of the coin (`release txid:0`) into a
 fresh P2PKH change key: one SLH-DSA spend, its size-priced fee out of the coin, gated by name
-(`Path::PqSweep`). Discovery stays intent-driven. **Gap:** a residual released by another party
-(a release needs no signature) creates a PQPKH coin in a transaction YEW never sees — PQ outputs
-are not address-indexed (spec §2.2) and lightwalletd's taddr RPCs refuse PQ addresses — so YEW
-cannot find it to move it. The funds stay the owner key's (the seed restores it in any wallet that
-can scan for it).
+(`Path::PqSweep`). A residual released by another party (a release needs no signature) was a
+recorded gap until q/pqaddr: the sync now finds that coin on the owner's `sq…` form (below).
 
 **Addresses.** Mainnet YED is `yb…` on this line (D-Q-21: 0x1FDD, PQ 0x56AB); testnet `yt…`,
 regtest `yr…` unchanged. Plain-YEC PQ addresses `sq…`/`tq…`/`rq…` (D-Q-20: 0x4DD9 / 0x4F61 /
-0x4C51) are recognised (`validate_address` kind `pq_yec`) and refused as destinations until the
-node's chain-wide decoder (plan §8.1 "SQ") exists. The node at `aa0fd3812` still renders mainnet
+0x4C51) are YEC destinations since q/pqaddr (below). The node at `aa0fd3812` still renders mainnet
 `ye…` until its Y-B sweep; the regenerated vectors are regtest and already final.
+
+**Post-quantum addresses end to end (q/pqaddr, 2026-10-11; lightwalletd-dd q/pqaddr `f33fb1e`,
+which serves `TX_PQPKH` in `GetTaddressTxids` / `GetTaddressBalance` / `GetAddressUtxos` under
+the plain `sq…` form and maps a 53-character PQ `yb…` to it).**
+- *Send.* A YEC destination is `s1…`, `s3…`, the 35-character `yb…` (as before) or `sq…`/`tq…`/
+  `rq…` of either scheme (`keys::parse_yec_destination`), paid a 35-byte `TX_PQPKH`; the inputs
+  stay P2PKH, so the fee is any YEC send's. A private-funded send never pays a PQ recipient (the
+  Sapling builder has no `TX_PQPKH` output): it goes transparent. A 53-character PQ `yb…` is
+  **refused** as a YEC destination — a Falcon one names a YED holder (D-Q-21; "ask for its sq…
+  address"), an SLH-DSA one a vault owner (C-10) — because D-Q-20 gives plain YEC its own prefix
+  and the node's `key_io` decodes only that one (`sendtoaddress` refuses the YED form). A YED
+  destination never takes `sq…`. `validate_address` reports `pq_yec` as valid; the Send screen
+  refuses the asset mismatch before the preview (`destinationMismatch`), the builders again.
+- *Sync.* Each pass also asks `GetTaddressTxids` for the `sq…` form of every own post-quantum key
+  paired with the pass's addresses — the Falcon holders (once TOK-PQ is announced) and the
+  SLH-DSA vault owners (when the server offers Yellowback) — and one `GetAddressUtxos` for all of
+  them. History counts own PQ outputs (the residual included); a used PQ key marks its pair used.
+  A server that answers `INVALID_ARGUMENT` (a lightwalletd before q/pqaddr) only switches the PQ
+  lookups off for that run (`SyncReport.pq_unindexed`).
+- *YED stays out of YEC.* `GetAddressTokens` remains the only source of YED. A `GetAddressUtxos`
+  row for a PQ address that is a Falcon token row already is skipped; one that any
+  `GetAddressTokens` answer lists (the Falcon holders' and, asked separately, the vault owners'
+  53-character addresses), or of exactly `TOKEN_VALUE`, is `HELD`; any other own PQ output is
+  `PQ_OWNED` (`coins::classify_pq_listed`): in neither YEC balance and in no P2PKH path's selection.
+- *Spend.* `Balances.yec_pq_zat` / `pq_coins` show it on Home ("YEC at your post-quantum
+  addresses"); `release_preview(<coin>)` moves one coin to a fresh P2PKH change key exactly like a
+  released residual (one Falcon or SLH-DSA input, fee `max(FEE_ZAT, pqfeerate × size)` out of the
+  coin, `Path::PqSweep`, the remote layer must say `ok, burned 0`), the coin locked until it
+  confirms or expires.
+- *Not done.* YEW still hands out `s…` for YEC (no `sq…` receive address), and a YEC send does not
+  spend `PQ_OWNED` coins directly (they are moved first).
 
 **Vectors and devnet (2026-10-10, ycash-dd `aa0fd3812`, lightwalletd-dd `ef70570`, portseed
 1860).** `transparent/addresses/params/templates.json` regenerated with `yellowback-devnet vectors
