@@ -57,6 +57,9 @@ message YellowbackAttestParams {
   int64 bundleMax = 6; string carrierMode = 7; int64 carrierValueZat = 8; int64 mSelect = 9; int64 payloadVersion = 10;
   bool required = 11; int64 residualMinZat = 12; int64 emergencyRatioBps = 13;
   int64 mintPayloadVersion = 14;                                      // rpcversion 7: a MINT's payload version (4); payloadVersion (3) is every other type's
+  // rpcversion 8 (D-Q-30, the attestor bond follows YED vault collateral): bondMinZat (5) is now computed, the
+  // floor a join in the NEXT block must meet, clamp(ceil(collateral * bondShareBps / (10^4 * nSlots)), floor, cap).
+  int64 bondMinCapZat = 15; int64 bondMinFloorZat = 16; int64 bondShareBps = 17;
 }
 // rpcversion 7 (post-quantum vault owners, quantum spec section 6.2): the signature schemes a vault owner
 // may use at the next block (1 SLH-DSA-SHA2-128s; 2 FN-DSA-512 once Falcon is active), the Falcon
@@ -229,6 +232,10 @@ message YedAttestor {
   bool pinned = 11; bool poolFresh = 12; int64 registerHeight = 13; bool seated = 14; int64 seatedSince = 15; int64 seq = 16;
   string status = 17; int64 statusHeight = 18; string weight = 19;
   int64 lastAct = 20; bool bondFrozen = 21;                           // rpcversion 5 (P4-b): the attestor set's member state
+  // rpcversion 8 (seats, owner 2026-10-11): evicted from the full set by a larger bond (status WITHDRAWN, bond not
+  // frozen); seatWeight = bondZat x the log tenure factor at the height asked, a decimal Q16 string (/ 65,536 for zat).
+  // A WITHDRAWN record's unfrozen bond is spendable from statusHeight + params.attest.bondMaturity (the exit delay).
+  bool evicted = 22; string seatWeight = 23;
 }
 
 // ---- getblockchaininfo (the stock node RPC; the one message here not backed by a yed_* RPC) --
