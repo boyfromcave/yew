@@ -324,7 +324,10 @@ class AddressCheck {
   /// `yregtestsapling1…`); for the 53-character post-quantum forms (rpcversion 7, D-Q-20):
   /// `pq` (a Falcon YED holder address: valid, it receives YED once Falcon is active),
   /// `pq_owner` (an SLH-DSA vault-owner address: never a payment address, C-10) and `pq_yec`
-  /// (`sq…`/`tq…`/`rq…`, recognised; YEW cannot send to it yet). Empty when unknown.
+  /// (`sq…`/`tq…`/`rq…`, D-Q-20: valid, it receives YEC and never YED). The kind is
+  /// asset-blind: a `pq` address is refused as a YEC destination and a `pq_yec` one as a YED
+  /// destination (the Send screen says so before the preview; the builders refuse too).
+  /// Empty when unknown.
   final String kind;
 
   /// The `yb…` form was given.
@@ -456,6 +459,14 @@ class Balances {
   /// Scanned to the tip: private sending is available ("sending available at 100%").
   final bool shieldedSendable;
 
+  /// YEC at the wallet's own post-quantum keys (class `PQ_OWNED`: a payment to a Falcon
+  /// holder's `sq…` form, a vault owner's residual), zat. In neither YEC balance: no P2PKH
+  /// path spends it; [`release_preview`] of a coin in [`Balances::pq_coins`] moves it.
+  final PlatformInt64 yecPqZat;
+
+  /// The `PQ_OWNED` coins not already being moved, `txid:n`, oldest first.
+  final List<String> pqCoins;
+
   const Balances({
     required this.yecZat,
     required this.yecReservedZat,
@@ -471,6 +482,8 @@ class Balances {
     required this.yecShieldedPendingZat,
     required this.shieldedScannedHeight,
     required this.shieldedSendable,
+    required this.yecPqZat,
+    required this.pqCoins,
   });
 
   static Future<Balances> default_() =>
@@ -491,7 +504,9 @@ class Balances {
       yecShieldedSpendableZat.hashCode ^
       yecShieldedPendingZat.hashCode ^
       shieldedScannedHeight.hashCode ^
-      shieldedSendable.hashCode;
+      shieldedSendable.hashCode ^
+      yecPqZat.hashCode ^
+      pqCoins.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -511,7 +526,9 @@ class Balances {
           yecShieldedSpendableZat == other.yecShieldedSpendableZat &&
           yecShieldedPendingZat == other.yecShieldedPendingZat &&
           shieldedScannedHeight == other.shieldedScannedHeight &&
-          shieldedSendable == other.shieldedSendable;
+          shieldedSendable == other.shieldedSendable &&
+          yecPqZat == other.yecPqZat &&
+          pqCoins == other.pqCoins;
 }
 
 /// A claim intent paying this wallet (the vault upgrade, U-15, U-23, U-24): the claimant's
@@ -1888,10 +1905,11 @@ class ReleasePreview {
   /// Pass to [`release_confirm`].
   final String previewId;
 
-  /// `release`, or `pq_move` (a released residual's post-quantum coin into the wallet).
+  /// `release`, or `pq_move` (a released residual's post-quantum coin, or any own
+  /// post-quantum coin of [`Balances::pq_coins`], into the wallet).
   final String kind;
 
-  /// The intent released, `txid:n`.
+  /// The intent released (or the post-quantum coin moved), `txid:n`.
   final String intent;
 
   /// What the recipient receives, zat.

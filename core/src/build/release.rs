@@ -17,10 +17,15 @@
 //! `PQPKH(owner)` (35 bytes), not a P2PKH key. Its release is built as above; the coin it makes is
 //! then moved to an own P2PKH key by a second transaction ([`ReleaseKind::PqSweep`], one ~8 KB
 //! SLH-DSA spend signed with `Wallet::pq_key_for_owner`), offered on the same intent row once the
-//! release has confirmed. Discovery stays intent-driven: PQPKH outputs are not address-indexed
-//! (spec §2.2), so the coin is `spend_txid:0` of a release this wallet broadcast. A residual
-//! released by someone else (allowed: the release needs no signature, U-15) leaves a coin whose
-//! txid this wallet does not learn; that is a recorded gap (`docs/design-notes.md`).
+//! release has confirmed: the coin is `spend_txid:0` of a release this wallet broadcast.
+//!
+//! **Any own post-quantum coin.** Since lightwalletd-dd q/pqaddr indexes `TX_PQPKH` under the
+//! plain `sq…` address, the sync lists the YEC at the wallet's own post-quantum keys (a residual
+//! released by someone else — allowed, the release needs no signature, U-15 — or a payment to a
+//! Falcon holder's `sq…` form) as `PQ_OWNED` UTXO rows. [`build_pq_coin_move`] moves one such
+//! coin to an own P2PKH key the same way (one input, signed by the owner's SLH-DSA key or the
+//! holder's Falcon key, the fee out of the coin); the remote gate layer must say `ok, burned 0`,
+//! so a coin that is in fact a YED token is never moved as YEC.
 
 use crate::coins::{self, Utxo};
 use crate::gate::{self, Validator};
@@ -242,35 +247,117 @@ fn build_pq_sweep(
     let key = wallet
         .pq_key_for_owner(owner, &paired)?
         .ok_or_else(|| WalletError::Other("vault-not-owned: owner key missing".into()))?;
+    pq_move(
+        wallet,
+        row.outpoint,
+        coin,
+        row.value,
+        &row.recipient_script,
+        &key,
+        tip,
+        branch_id,
+    )
+}
+
+/// The key of an own post-quantum id: a vault owner (SLH-DSA, through its paired external key)
+/// or a Falcon YED holder.
+fn own_pq_key(wallet: &Wallet, id: &PqKeyId) -> Result<Option<crate::pq::PqKey>, WalletError> {
+    if let Some(paired) = wallet.own_pq_owners()?.get(id).copied() {
+        return wallet.pq_key_for_owner(id, &paired);
+    }
+    wallet.falcon_key_for_id(id)
+}
+
+/// The move of an own post-quantum coin the sync found (class `PQ_OWNED`: plain YEC at a vault
+/// owner's or a Falcon holder's `TX_PQPKH`, never a listed token, never exactly `TOKEN_VALUE`)
+/// to a fresh own P2PKH change key, its fee out of the coin. `intent` of the result is the coin.
+pub fn build_pq_coin_move(
+    wallet: &Wallet,
+    coin: &OutPoint,
+    tip: u64,
+    branch_id: u32,
+) -> Result<ReleaseBuild, WalletError> {
+    let u = wallet
+        .spendable_utxos()?
+        .into_iter()
+        .find(|u| u.outpoint == *coin)
+        .ok_or_else(|| {
+            WalletError::Other(format!(
+                "pq-coin-unknown: {} is not an unspent coin of this wallet",
+                coin.display()
+            ))
+        })?;
+    if u.class != coins::UtxoClass::PqOwned {
+        return Err(WalletError::Other(format!(
+            "pq-coin-class: {} is {}, not post-quantum YEC",
+            coin.display(),
+            u.class.as_str()
+        )));
+    }
+    let id = crate::pq::pqpkh_of(&u.script).ok_or_else(|| {
+        WalletError::Other(format!(
+            "pq-coin-script: {} is not a TX_PQPKH",
+            coin.display()
+        ))
+    })?;
+    let key = own_pq_key(wallet, &id)?.ok_or_else(|| {
+        WalletError::Other(format!(
+            "pq-coin-not-ours: no key of this wallet signs for {}",
+            coin.display()
+        ))
+    })?;
+    pq_move(
+        wallet, *coin, *coin, u.value, &u.script, &key, tip, branch_id,
+    )
+}
+
+/// One post-quantum input `coin` (`value` zat, `script` its `TX_PQPKH`) to a fresh own P2PKH
+/// change key, signed by `key`; `intent` names what the result is recorded under.
+#[allow(clippy::too_many_arguments)]
+fn pq_move(
+    wallet: &Wallet,
+    intent: OutPoint,
+    coin: OutPoint,
+    value_in: i64,
+    script_pubkey: &[u8],
+    key: &crate::pq::PqKey,
+    tip: u64,
+    branch_id: u32,
+) -> Result<ReleaseBuild, WalletError> {
+    let owner = &key.id();
+    if crate::pq::pqpkh_of(script_pubkey) != Some(*owner) {
+        return Err(WalletError::Other(
+            "the post-quantum key does not match the coin's script".into(),
+        ));
+    }
     let dest = wallet.change_address()?;
     let mut tx = Transaction::new_v4();
     tx.expiry_height = (tip as u32).saturating_add(TX_EXPIRY_DELTA);
     tx.vin.push(TxIn::new(coin));
     tx.vout.push(TxOut {
-        value: row.value,
+        value: value_in,
         script_pubkey: script::p2pkh_script(&dest.hash160),
     });
     let ss = crate::pq::pq_sig_pushes_size(owner.scheme)
-        .ok_or_else(|| WalletError::Other("the vault owner's scheme is not registered".into()))?;
+        .ok_or_else(|| WalletError::Other("the key's scheme is not registered".into()))?;
     let fee = wallet.pq_terms().fee(tx.size_with_script_sigs(&[ss])?);
-    let mut value = row.value - fee;
+    let mut value = value_in - fee;
     if value == TOKEN_VALUE {
         value -= 1; // never a YEC output that looks like a token
     }
     if value < MIN_CHANGE {
         return Err(WalletError::Other(format!(
-            "pq-coin-too-small: the coin ({} zat) does not cover the {fee} zat fee of a post-quantum spend",
-            row.value
+            "pq-coin-too-small: the coin ({value_in} zat) does not cover the {fee} zat fee of a post-quantum spend"
         )));
     }
     tx.vout[0].value = value;
-    let digest = tx.sign_pqpkh_input(0, &key, &row.recipient_script, row.value, branch_id)?;
+    let digest = tx.sign_pqpkh_input(0, key, script_pubkey, value_in, branch_id)?;
     let ok = crate::pq::parse_pqpkh_script_sig(&tx.vin[0].script_sig).is_some_and(|(sig, pk)| {
         crate::pq::verify(owner.scheme, &pk, &sig[..sig.len() - 1], &digest)
     });
     if !ok {
         return Err(WalletError::Other(
-            "the owner's post-quantum signature does not verify".into(),
+            "the post-quantum signature does not verify".into(),
         ));
     }
     tx.check_script_sig_sizes()?;
@@ -281,10 +368,10 @@ fn build_pq_sweep(
     })?;
     Ok(ReleaseBuild {
         kind: ReleaseKind::PqSweep,
-        intent: row.outpoint,
+        intent,
         value,
         recipient_address: dest.address_s.clone(),
-        fee: row.value - value,
+        fee: value_in - value,
         inputs: Vec::new(),
         change: 0,
         expiry_height: tx.expiry_height,
@@ -351,6 +438,63 @@ async fn broadcast_pq_sweep(
     Ok((txid_hex(&p.txid), validation))
 }
 
+/// The broadcast of a [`build_pq_coin_move`]: the coin still `PQ_OWNED` and unlocked, both gate
+/// layers on the named coin (the remote one must say `ok, burned 0`), then the coin locked
+/// until the move confirms or expires, the own output and the history row.
+async fn broadcast_pq_coin_move(
+    wallet: &Wallet,
+    client: &mut CompactClient,
+    validator: &mut Validator,
+    p: &ReleaseBuild,
+) -> Result<(String, Validation), WalletError> {
+    let coin = p.intent;
+    let u = wallet
+        .spendable_utxos()?
+        .into_iter()
+        .find(|u| u.outpoint == coin && u.class == coins::UtxoClass::PqOwned)
+        .ok_or_else(|| {
+            WalletError::Other(format!(
+                "pq-coin-unknown: {} is no longer an unspent post-quantum coin of this wallet",
+                coin.display()
+            ))
+        })?;
+    let (tx, validation) = gate::confirm(validator, gate::Path::PqSweep(coin), &p.raw, |op| {
+        wallet.store.utxo_class(op).ok().flatten()
+    })
+    .await?;
+    let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
+    mint::send(client, &p.raw, &p.txid).await?;
+    mint::record_broadcast(wallet, &p.txid, &p.raw, p.expiry_height, &[u])?;
+    if let Some(h) = tx
+        .vout
+        .first()
+        .and_then(|o| script::p2pkh_hash(&o.script_pubkey))
+    {
+        wallet.store.mark_used(&h)?;
+        wallet.ensure_gap()?;
+        wallet
+            .store
+            .insert_own_output(&OutPoint { txid: p.txid, n: 0 }, p.value, &h)?;
+    }
+    wallet.store.upsert_history(&HistoryRow {
+        txid: p.txid,
+        height: 0,
+        yec_delta: -p.fee,
+        has_payload: false,
+        pending: true,
+        shielded: false,
+        yed_delta: 0,
+        kind: "pq_sweep".into(),
+        verdict: String::new(),
+        label: format!(
+            "moving {} from your post-quantum address",
+            crate::wallet::yec(p.value)
+        ),
+        labelled: false,
+    })?;
+    Ok((txid_hex(&p.txid), validation))
+}
+
 /// Both gate layers, broadcast, locks, the history row; the intent row to `Releasing`.
 pub async fn broadcast(
     wallet: &Wallet,
@@ -358,10 +502,17 @@ pub async fn broadcast(
     validator: &mut Validator,
     p: &ReleaseBuild,
 ) -> Result<(String, Validation), WalletError> {
-    let row = wallet
-        .store
-        .intent(&p.intent)?
-        .ok_or_else(|| WalletError::Other("intent-unknown: not an intent of this wallet".into()))?;
+    let row = match wallet.store.intent(&p.intent)? {
+        Some(r) => r,
+        None if p.kind == ReleaseKind::PqSweep => {
+            return broadcast_pq_coin_move(wallet, client, validator, p).await
+        }
+        None => {
+            return Err(WalletError::Other(
+                "intent-unknown: not an intent of this wallet".into(),
+            ))
+        }
+    };
     if p.kind == ReleaseKind::PqSweep {
         return broadcast_pq_sweep(wallet, client, validator, p, row).await;
     }
@@ -555,5 +706,93 @@ mod tests {
             |_| None
         )
         .is_err());
+    }
+
+    /// The sync's `PQ_OWNED` rows (lightwalletd-dd q/pqaddr): plain YEC at a Falcon holder's
+    /// `sq…` form or at a vault owner's key, moved one coin at a time through `release_preview`;
+    /// a HELD (token-marked) or locked coin, or one no own key signs, is never moved.
+    #[test]
+    fn own_pq_coins_move_into_the_wallet() {
+        use crate::coins::{Utxo, UtxoClass};
+        const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let seed = crate::keys::seed_from_mnemonic(PHRASE, "").unwrap();
+        let mut w = Wallet::from_parts(
+            crate::store::Store::open_in_memory().unwrap(),
+            crate::params::Network::Regtest,
+            &seed,
+            None,
+        )
+        .unwrap();
+        let first = w.addresses().unwrap()[0].clone();
+        let falcon = w.falcon_holder_id(&first).unwrap();
+        let owner = w.pq_owner_id(0);
+        let stranger = crate::pq::PqKeyId {
+            scheme: 2,
+            hash: [9; 32],
+        };
+        let op = |n| OutPoint {
+            txid: [0xc0; 32],
+            n,
+        };
+        let pq_row = |n, id: &crate::pq::PqKeyId, value, class| Utxo {
+            outpoint: op(n),
+            address: crate::keys::encode_pq_yec(w.network, id).unwrap(),
+            script: crate::pq::pqpkh_script(id).unwrap(),
+            value,
+            height: 300 + n as u64,
+            class,
+            cents: 0,
+        };
+        w.store
+            .replace_utxos(&[
+                pq_row(0, &falcon, 150_000_000, UtxoClass::PqOwned),
+                pq_row(1, &owner, 4_000_000, UtxoClass::PqOwned),
+                pq_row(2, &falcon, 77_777, UtxoClass::Held),
+                pq_row(3, &stranger, 9_000_000, UtxoClass::PqOwned),
+            ])
+            .unwrap();
+        let b = w.balances().unwrap();
+        assert_eq!(b.yec_pq_zat, 163_000_000);
+        assert_eq!((b.yec_zat, b.yec_reserved_zat), (0, 0));
+        assert_eq!(b.pq_coins, vec![op(0), op(1), op(3)]);
+
+        // The Falcon holder's coin: one 1,577-byte Falcon scriptSig, the fee out of the coin.
+        let f = w.release_preview(&op(0), 500, 0x6d5b_7a31).unwrap();
+        assert_eq!((f.kind, f.intent), (ReleaseKind::PqSweep, op(0)));
+        let (tx, _) = Transaction::parse(&f.raw).unwrap();
+        assert_eq!(tx.vin.len(), 1);
+        assert_eq!(tx.vin[0].prevout, op(0));
+        assert_eq!(tx.vin[0].script_sig.len(), 1_577);
+        assert_eq!(tx.vout.len(), 1);
+        assert_eq!(f.value + f.fee, 150_000_000);
+        assert_eq!(f.fee, w.pq_terms().fee(f.raw.len()));
+        let to = script::p2pkh_hash(&tx.vout[0].script_pubkey).unwrap();
+        assert!(w.own_hashes().unwrap().contains(&to));
+        assert!(gate::check(gate::Path::PqSweep(op(0)), &f.raw, |_| None).is_ok());
+        // The vault owner's coin: one 7,938-byte SLH-DSA scriptSig.
+        let o = w.release_preview(&op(1), 500, 0x6d5b_7a31).unwrap();
+        let (tx, _) = Transaction::parse(&o.raw).unwrap();
+        assert_eq!(tx.vin[0].script_sig.len(), 7_938);
+        assert_eq!(o.value + o.fee, 4_000_000);
+        // A token-marked (HELD) coin is not post-quantum YEC; a stranger's key signs nothing here.
+        let held = build_pq_coin_move(&w, &op(2), 500, 0x6d5b_7a31).unwrap_err();
+        assert!(held.to_string().starts_with("pq-coin-class"), "{held}");
+        assert!(w
+            .release_preview(&op(2), 500, 0x6d5b_7a31)
+            .unwrap_err()
+            .to_string()
+            .starts_with("intent-unknown"));
+        let foreign = build_pq_coin_move(&w, &op(3), 500, 0x6d5b_7a31).unwrap_err();
+        assert!(
+            foreign.to_string().starts_with("pq-coin-not-ours"),
+            "{foreign}"
+        );
+        // A coin being moved (locked) is not offered again.
+        w.store.lock(&op(0), "spent-by:x", 524).unwrap();
+        assert!(build_pq_coin_move(&w, &op(0), 500, 0x6d5b_7a31)
+            .unwrap_err()
+            .to_string()
+            .starts_with("pq-coin-unknown"));
+        assert_eq!(w.balances().unwrap().pq_coins, vec![op(1), op(3)]);
     }
 }

@@ -134,10 +134,11 @@ pub enum Path {
     /// `build::release`): the named intent at `vin[0]` (a template output, never classified),
     /// fee inputs `YEC` / `FeeReserve` only, no payload.
     IntentRelease(OutPoint),
-    /// The move of a released residual's post-quantum coin (`TX_PQPKH` of an own vault owner,
-    /// quantum spec F-3; `build::release`) to an own P2PKH key: the named coin is the **only**
-    /// input (an ~8 KB SLH-DSA spend), no payload. Named, never classified: PQPKH outputs are not
-    /// address-indexed, so the wallet knows the coin from the intent it released.
+    /// The move of an own post-quantum coin (`TX_PQPKH`: a released residual's, quantum spec
+    /// F-3, or a `PQ_OWNED` row the sync found on an own `sq…` address; `build::release`) to an
+    /// own P2PKH key: the named coin is the **only** input (one SLH-DSA or Falcon spend), no
+    /// payload. Named, never classified here: the builders check a `PQ_OWNED` row's class
+    /// themselves, and a residual's coin is known from the intent it released.
     PqSweep(OutPoint),
     /// A spend of the wallet's Sapling notes (`shielded.rs`): no transparent input.
     Shielded,

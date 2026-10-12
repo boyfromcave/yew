@@ -2,7 +2,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
-//! A YEC send: `SelectYec` inputs, one P2PKH/P2SH output to the destination, change to the
+//! A YEC send: `SelectYec` inputs, one P2PKH/P2SH/`TX_PQPKH` output to the destination (an
+//! `s1…`/`s3…`/`yb…` address, or a post-quantum `sq…`, D-Q-20), change to the
 //! next change address, fee = `FEE_ZAT`, `nExpiryHeight = tip + TX_EXPIRY_DELTA`, signed with
 //! ZIP-243 under the server's branch id. The preview is the transaction that will be sent.
 //!
@@ -15,7 +16,7 @@
 
 use crate::coins::{self, Utxo};
 use crate::gate::{self, Validator};
-use crate::keys::{self, AddressKind};
+use crate::keys;
 use crate::net::CompactClient;
 use crate::params::{FEE_ZAT, TOKEN_VALUE, TX_EXPIRY_DELTA};
 use crate::script;
@@ -65,11 +66,9 @@ pub fn build_yec_send(
     if amount <= 0 {
         return Err(WalletError::Other("amount must be positive".into()));
     }
-    let dest = keys::parse_address(wallet.network, to)?;
-    let dest_script = match dest.kind {
-        AddressKind::P2pkh(h) => script::p2pkh_script(&h),
-        AddressKind::P2sh(h) => script::p2sh_script(&h),
-    };
+    // A post-quantum `sq…`/`tq…`/`rq…` is paid a `TX_PQPKH` (D-Q-20): the inputs stay the
+    // wallet's P2PKH keys, so the transaction's size and fee are those of any YEC send.
+    let dest_script = keys::parse_yec_destination(wallet.network, to)?.script();
     let (amount, amount_bumped) = if amount == TOKEN_VALUE {
         (amount + 1, true)
     } else {
@@ -285,6 +284,47 @@ mod tests {
             1
         )
         .is_err());
+    }
+
+    /// D-Q-20: YEC to a post-quantum `sq…`/`rq…` pays a `TX_PQPKH` (the regtest pair from a
+    /// q/attest node, lightwalletd-dd q/pqaddr `pqPlainVectors`); the inputs and fee are those of
+    /// any YEC send. A 53-character `yr…` is refused (Falcon: its sq… form receives YEC; SLH-DSA:
+    /// a vault owner).
+    #[test]
+    fn pays_a_post_quantum_yec_address() {
+        let w = wallet_with(&[(50_000, UtxoClass::Yec)]);
+        let to = "rq5MXCssfNHhhz8WuNL5bKAmUKc1k1Wx7TpG2fM8ks9Gz5cPeCqKa";
+        let p = build_yec_send(&w, to, 20_000, false, 100, 0x6d5b_7a31).unwrap();
+        let (tx, _) = Transaction::parse(&p.raw).unwrap();
+        let id = keys::parse_pq_yec_address(Network::Regtest, to).unwrap();
+        assert_eq!(id.scheme, 2);
+        assert_eq!(
+            tx.vout[0].script_pubkey,
+            crate::pq::pqpkh_script(&id).unwrap()
+        );
+        assert_eq!(tx.vout[0].value, 20_000);
+        assert_eq!((p.fee, p.change), (FEE_ZAT, 50_000 - 20_000 - FEE_ZAT));
+        assert_eq!(p.to, to);
+        for refused in [
+            "yr2VA5rANyC4wfgx6kmvLPy2LxuhHYitwJ8xazzFCdXa1gEZSXSRH",
+            "yr2UGYBxhHb8yzYYCjZ1HtJ8cNHP6tNJawkjC4L1wmRiGdFQVjNy5",
+            "sq4ekeYR7pAE7ByLpq428jfiHrrsVyMnSTs58MNJeFMXDFL63vTbT",
+        ] {
+            assert!(
+                build_yec_send(&w, refused, 20_000, false, 100, 1).is_err(),
+                "{refused}"
+            );
+        }
+        let e = build_yec_send(
+            &w,
+            "yr2VA5rANyC4wfgx6kmvLPy2LxuhHYitwJ8xazzFCdXa1gEZSXSRH",
+            20_000,
+            false,
+            100,
+            1,
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("ask for its sq… address"), "{e}");
     }
 
     #[test]

@@ -200,9 +200,8 @@ pub fn classify(
 }
 
 /// The class of a `TX_PQPKH` output: [`UtxoClass::PqOwned`] when `is_own_pq` claims its key id,
-/// else `Foreign`; `None` when `script` is not `TX_PQPKH` (use [`classify`]). PQPKH outputs are
-/// not address-indexed by the node (spec §2.2, `DestFromAddressHash`), so `GetAddressUtxos`
-/// never lists one: the wallet finds its own from the intents it tracks.
+/// else `Foreign`; `None` when `script` is not `TX_PQPKH` (use [`classify`]). The sync's rows
+/// for the `sq…` addresses use [`classify_pq_listed`], which adds the token marker.
 pub fn classify_pqpkh(
     script: &[u8],
     is_own_pq: impl Fn(&crate::pq::PqKeyId) -> bool,
@@ -213,6 +212,43 @@ pub fn classify_pqpkh(
     } else {
         UtxoClass::Foreign
     })
+}
+
+/// The classifier for an output `GetAddressUtxos` listed for one of the wallet's own
+/// post-quantum plain-YEC addresses (`sq…`/`tq…`/`rq…`: a Falcon holder or a vault owner;
+/// lightwalletd-dd q/pqaddr indexes `TX_PQPKH` under it). The token rule of [`classify`] holds
+/// here too, and more strictly, because a PQ token is spent only by the YED path through
+/// `GetAddressTokens`' own rows: an output listed in `tokens` (the wallet's `GetAddressTokens`
+/// answers) or of exactly `TOKEN_VALUE` → `Held` (never YEC, never spent here); any other
+/// `TX_PQPKH` to an own key → [`UtxoClass::PqOwned`] (YEC that only a post-quantum signature
+/// moves, outside every P2PKH path and both YEC balances); anything else → `Foreign`.
+pub fn classify_pq_listed(
+    outpoint: &OutPoint,
+    script: &[u8],
+    value: i64,
+    is_own_pq: impl Fn(&crate::pq::PqKeyId) -> bool,
+    tokens: &HashMap<OutPoint, u64>,
+) -> (UtxoClass, u64) {
+    match crate::pq::pqpkh_of(script) {
+        Some(id) if is_own_pq(&id) => {
+            if tokens.contains_key(outpoint) || value == TOKEN_VALUE {
+                (UtxoClass::Held, 0)
+            } else {
+                (UtxoClass::PqOwned, 0)
+            }
+        }
+        _ => (UtxoClass::Foreign, 0),
+    }
+}
+
+/// The YEC held at the wallet's own post-quantum keys (class [`UtxoClass::PqOwned`]), zat: in
+/// neither [`yec_balances`] number, since no P2PKH path spends it.
+pub fn pq_yec_balance(utxos: &[Utxo]) -> i64 {
+    utxos
+        .iter()
+        .filter(|u| u.class == UtxoClass::PqOwned)
+        .map(|u| u.value)
+        .sum()
 }
 
 /// `PreLock` (`wallet.cpp:410-427`): the outputs of `tx` — a transaction this wallet broadcast
@@ -478,6 +514,84 @@ mod tests {
         assert!(!UtxoClass::PendingToken.transfer_spendable());
         assert!(!UtxoClass::Held.transfer_spendable());
         assert!(!UtxoClass::Token.yec_spendable());
+    }
+
+    /// The outputs `GetAddressUtxos` lists for an own `sq…`/`rq…` address: YED is never YEC.
+    #[test]
+    fn pq_listed_outputs() {
+        let mine = crate::pq::PqKeyId {
+            scheme: 2,
+            hash: [5; 32],
+        };
+        let owner = crate::pq::PqKeyId {
+            scheme: 1,
+            hash: [6; 32],
+        };
+        let theirs = crate::pq::PqKeyId {
+            scheme: 2,
+            hash: [7; 32],
+        };
+        let is_own = |id: &crate::pq::PqKeyId| *id == mine || *id == owner;
+        let op = |n| OutPoint { txid: [3; 32], n };
+        let listed: HashMap<OutPoint, u64> = [(op(0), 2_500u64)].into_iter().collect();
+        let s = |id| crate::pq::pqpkh_script(&id).unwrap();
+        // a token GetAddressTokens listed, whatever its value: Held, never YEC
+        assert_eq!(
+            classify_pq_listed(&op(0), &s(mine), 77_777, is_own, &listed),
+            (UtxoClass::Held, 0)
+        );
+        // exactly TOKEN_VALUE but not listed (no Yellowback service, or not yet): Held
+        assert_eq!(
+            classify_pq_listed(&op(1), &s(mine), TOKEN_VALUE, is_own, &listed),
+            (UtxoClass::Held, 0)
+        );
+        // plain YEC to a Falcon holder or a vault owner: PqOwned, outside both YEC balances
+        assert_eq!(
+            classify_pq_listed(&op(2), &s(mine), 150_000_000, is_own, &listed),
+            (UtxoClass::PqOwned, 0)
+        );
+        assert_eq!(
+            classify_pq_listed(&op(3), &s(owner), 4_000_000, is_own, &listed),
+            (UtxoClass::PqOwned, 0)
+        );
+        assert_eq!(
+            classify_pq_listed(&op(4), &s(theirs), 4_000_000, is_own, &listed),
+            (UtxoClass::Foreign, 0)
+        );
+        // a P2PKH script is not this classifier's (the server answered something else)
+        assert_eq!(
+            classify_pq_listed(
+                &op(5),
+                &script::p2pkh_script(&[1; 20]),
+                9,
+                |_| true,
+                &listed
+            ),
+            (UtxoClass::Foreign, 0)
+        );
+        let rows: Vec<Utxo> = [
+            (2, 150_000_000, UtxoClass::PqOwned),
+            (3, 4_000_000, UtxoClass::PqOwned),
+            (0, 77_777, UtxoClass::Held),
+            (6, 1_000, UtxoClass::Yec),
+        ]
+        .into_iter()
+        .map(|(n, value, class)| Utxo {
+            outpoint: op(n),
+            address: String::new(),
+            script: Vec::new(),
+            value,
+            height: 1,
+            class,
+            cents: 0,
+        })
+        .collect();
+        assert_eq!(pq_yec_balance(&rows), 154_000_000);
+        assert_eq!(yec_balances(&rows), (1_000, 0));
+        assert_eq!(yed_balances(&rows), (0, 0));
+        assert!(!UtxoClass::PqOwned.counts_as_yec());
+        assert!(!UtxoClass::PqOwned.transfer_spendable());
+        assert!(!UtxoClass::PqOwned.mint_spendable());
     }
 
     #[test]
