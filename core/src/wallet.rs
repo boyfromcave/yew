@@ -97,6 +97,11 @@ pub struct Balances {
     pub yed_pending_cents: u64,
     /// `GetPrice.pMint` at the last sync, micro-USD per YEC, when defined.
     pub price_micro_usd: Option<i64>,
+    /// YEC at the wallet's own post-quantum keys (class `PQ_OWNED`), zat: in neither balance
+    /// above, moved one coin at a time (`build::release::build_pq_coin_move`).
+    pub yec_pq_zat: i64,
+    /// Those coins (unlocked), oldest first.
+    pub pq_coins: Vec<crate::tx::OutPoint>,
 }
 
 /// An open wallet.
@@ -724,7 +729,14 @@ impl Wallet {
             }
         }
         let price = self.store.meta_u64("price_micro_usd")?;
+        let mut pq: Vec<&Utxo> = spendable
+            .iter()
+            .filter(|u| u.class == coins::UtxoClass::PqOwned)
+            .collect();
+        pq.sort_by_key(|u| (u.height, u.outpoint.txid, u.outpoint.n));
         Ok(Balances {
+            yec_pq_zat: coins::pq_yec_balance(&spendable),
+            pq_coins: pq.iter().map(|u| u.outpoint).collect(),
             yec_zat,
             yec_reserved_zat,
             yec_pending_zat,
@@ -881,9 +893,20 @@ impl Wallet {
         tip: u64,
         branch_id: u32,
     ) -> Result<crate::build::release::ReleaseBuild, WalletError> {
-        let row = self.store.intent(intent)?.ok_or_else(|| {
-            WalletError::Other("intent-unknown: not an intent of this wallet".into())
-        })?;
+        let Some(row) = self.store.intent(intent)? else {
+            // Not an intent: an own post-quantum coin the sync found (`PQ_OWNED`) is moved the
+            // same way as a released residual's.
+            if self
+                .store
+                .utxo_class(intent)?
+                .is_some_and(|c| c == crate::coins::UtxoClass::PqOwned)
+            {
+                return crate::build::release::build_pq_coin_move(self, intent, tip, branch_id);
+            }
+            return Err(WalletError::Other(
+                "intent-unknown: not an intent of this wallet".into(),
+            ));
+        };
         crate::build::release::build_release(self, &row, tip, branch_id)
     }
 

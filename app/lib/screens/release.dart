@@ -67,8 +67,18 @@ class IntentTile extends StatelessWidget {
 }
 
 class ReleaseScreen extends StatefulWidget {
-  const ReleaseScreen({super.key, required this.intent});
-  final ClaimIntent intent;
+  const ReleaseScreen({super.key, required ClaimIntent this.intent}) : coin = null;
+
+  /// The move of one own post-quantum coin (`Balances.pqCoins`, `txid:n`): YEC the sync found at
+  /// one of the wallet's `sq…` addresses (a Falcon holder's, or a vault owner's residual released
+  /// by someone else), moved to the wallet like a released residual.
+  const ReleaseScreen.pqCoin({super.key, required String this.coin}) : intent = null;
+
+  final ClaimIntent? intent;
+  final String? coin;
+
+  String get _id => intent?.intent ?? coin!;
+  bool get _pqMove => coin != null || intent!.pqMove;
 
   @override
   State<ReleaseScreen> createState() => _ReleaseScreenState();
@@ -93,7 +103,7 @@ class _ReleaseScreenState extends State<ReleaseScreen> {
       _error = null;
     });
     try {
-      final p = await app.api.releasePreview(intent: widget.intent.intent);
+      final p = await app.api.releasePreview(intent: widget._id);
       setState(() => _preview = p);
     } catch (e) {
       setState(() => _error = messageOf(e));
@@ -123,15 +133,17 @@ class _ReleaseScreenState extends State<ReleaseScreen> {
     final p = _preview;
     final r = _result;
     return Scaffold(
-      appBar: AppBar(title: Text(widget.intent.pqMove ? 'Move to wallet' : 'Release')),
+      appBar: AppBar(title: Text(widget._pqMove ? 'Move to wallet' : 'Release')),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
           children: [
             Text(
-              widget.intent.pqMove
+              widget.coin != null
+                  ? 'YEC was paid to one of your post-quantum (sq…) addresses. Move it to your wallet: one post-quantum signature, its network fee paid out of the coin.'
+                  : widget.intent!.pqMove
                   ? 'The residual was released to your vault-owner (post-quantum) key. Move it to your wallet: one post-quantum signature (about 8 KB), its network fee paid out of the residual.'
-                  : widget.intent.role == 'residual'
+                  : widget.intent!.role == 'residual'
                   ? 'Your vault was claimed. The part of its collateral above the claim (the residual) waited out the claim delay and is yours to release.'
                   : 'The claim delay is over and no attestor cancelled the claim: release the collateral to this wallet.',
               style: t.bodyMedium?.copyWith(color: c.pending),
@@ -171,8 +183,13 @@ class _ReleaseScreenState extends State<ReleaseScreen> {
                     children: [
                       PreviewRow('You receive', '${formatYec(p.valueZat)} YEC', emphasis: true, color: c.yec),
                       PreviewRow('To', shorten(p.recipientAddress, head: 10, tail: 6)),
-                      PreviewRow('Network fee', p.kind == 'pq_move' ? '${formatYec(p.feeZat)} YEC (out of the residual, priced by size)' : '${formatYec(p.feeZat)} YEC (from your YEC)'),
-                      PreviewRow('Intent', shorten(p.intent)),
+                      PreviewRow(
+                        'Network fee',
+                        p.kind == 'pq_move'
+                            ? '${formatYec(p.feeZat)} YEC (out of the ${widget.coin != null ? 'coin' : 'residual'}, priced by size)'
+                            : '${formatYec(p.feeZat)} YEC (from your YEC)',
+                      ),
+                      PreviewRow(widget.coin != null ? 'Coin' : 'Intent', shorten(p.intent)),
                     ],
                   ),
                 ),

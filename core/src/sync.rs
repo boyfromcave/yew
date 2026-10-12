@@ -4,8 +4,9 @@
 
 //! Sync (plan §3.2): gap-limit address derivation, `GetTaddressTxids` per address for history
 //! (the yodl baseline streams the raw transactions with heights), `GetAddressUtxos` for the
-//! confirmed UTXO set, **`GetAddressTokens` for the YED token set** (the only source of the
-//! TOKEN class, D-W-8), classification (`coins`), the `PreLock` pending rule for the wallet's
+//! confirmed UTXO set — both also on the `sq…`/`tq…`/`rq…` form of every own post-quantum key
+//! (Falcon holders, vault owners; lightwalletd-dd q/pqaddr), whose YEC is `PQ_OWNED` —,
+//! **`GetAddressTokens` for the YED token set** (the only source of the TOKEN class, D-W-8), classification (`coins`), the `PreLock` pending rule for the wallet's
 //! own unconfirmed transactions, the fee reserve, lock release, `GetTxInfo` labels for every
 //! own transaction that carries a `"YB"` payload or spends an own token, and `GetPrice.pMint`.
 //!
@@ -80,6 +81,11 @@ pub struct SyncReport {
     pub vaults: usize,
     /// Claim intents paying this wallet whose state moved this run (the vault upgrade).
     pub intents: usize,
+    /// Own post-quantum plain-YEC addresses (`sq…`/`tq…`/`rq…`) asked about this run.
+    pub pq_addresses: usize,
+    /// The server refused a post-quantum address in the taddr methods (`INVALID_ARGUMENT`: a
+    /// lightwalletd before q/pqaddr): its `TX_PQPKH` outputs were not looked up this run.
+    pub pq_unindexed: bool,
 }
 
 /// Run one sync of `wallet` against `client`, and against `yellowback` for the YED steps when
@@ -151,13 +157,20 @@ pub async fn sync(
     }
     // TOK-PQ: once the server announces a Falcon height (mainnet and testnet: the vault
     // upgrade's first block), every HD key also has a Falcon YED holder; their tokens are found
-    // through `GetAddressTokens` on the 53-character addresses (PQ outputs are not
-    // address-indexed, so `GetTaddressTxids`/`GetAddressUtxos` never list them).
+    // through `GetAddressTokens` on the 53-character addresses (the only source of YED), their
+    // plain YEC and history through the taddr methods on the `sq…` form (below).
     let falcon_on = yellowback.is_some() && {
         let t = wallet.pq_terms();
         t.falcon_active || t.falcon_height.is_some()
     };
     let mut falcon_tokens: HashMap<OutPoint, crate::net::Token> = HashMap::new();
+    // The wallet's own post-quantum keys as plain-YEC addresses (D-Q-20; lightwalletd-dd
+    // q/pqaddr serves `TX_PQPKH` in the taddr methods): the Falcon holders once TOK-PQ is
+    // announced, and the vault owners whenever the server offers Yellowback (a claim residual
+    // released by another party pays `PQPKH(owner)`). Payments to them are found here like any
+    // own address's; YED at them only ever through `GetAddressTokens` (4a).
+    let vaults_on = yellowback.is_some();
+    let mut pq_indexed = true;
 
     // 1-3. Addresses and history, extending the gap until no address in the last GAP_LIMIT
     // of either chain turns out used. The last REORG_WINDOW blocks already scanned are read
@@ -180,6 +193,7 @@ pub async fn sync(
         } else {
             HashMap::new()
         };
+        let own_pq = own_pq_keys(wallet, &own_falcon, vaults_on)?;
         let mut any_new_use = false;
         if falcon_on {
             // The Falcon holders paired with this pass's addresses: a listed token marks the
@@ -202,6 +216,27 @@ pub async fn sync(
                 }
             }
         }
+        // This pass's post-quantum addresses: the sq… forms paired with its P2PKH addresses.
+        let pq_pending: Vec<(String, u64)> = if pq_indexed {
+            let by_hash: HashMap<[u8; 20], u64> = wallet
+                .addresses()?
+                .into_iter()
+                .filter_map(|r| {
+                    let from = pending.iter().find(|(a, _)| *a == r.address_s)?.1;
+                    Some((r.hash160, from))
+                })
+                .collect();
+            let mut v: Vec<(String, u64)> = own_pq
+                .iter()
+                .filter_map(|(id, h)| {
+                    Some((keys::encode_pq_yec(wallet.network, id)?, *by_hash.get(h)?))
+                })
+                .collect();
+            v.sort();
+            v
+        } else {
+            Vec::new()
+        };
         for (address, from) in pending.drain(..) {
             report.addresses += 1;
             // lightwalletd refuses a range starting at 0 ("Start and end are expected to be
@@ -215,8 +250,31 @@ pub async fn sync(
                 if !seen_txids.insert(txid) {
                     continue;
                 }
-                any_new_use |=
-                    record_transaction(wallet, &tx, &txid, raw.height, &own, &own_falcon)?;
+                any_new_use |= record_transaction(wallet, &tx, &txid, raw.height, &own, &own_pq)?;
+                report.transactions += 1;
+            }
+        }
+        for (address, from) in pq_pending {
+            let from = from.max(1);
+            if from > tip {
+                continue;
+            }
+            report.pq_addresses += 1;
+            let txs = match client.taddress_txs(&address, from, tip).await {
+                Ok(t) => t,
+                Err(e) if pq_refused(&e) => {
+                    pq_indexed = false;
+                    report.pq_unindexed = true;
+                    break;
+                }
+                Err(e) => return Err(e.into()),
+            };
+            for raw in txs {
+                let (tx, txid) = Transaction::parse(&raw.data)?;
+                if !seen_txids.insert(txid) {
+                    continue;
+                }
+                any_new_use |= record_transaction(wallet, &tx, &txid, raw.height, &own, &own_pq)?;
                 report.transactions += 1;
             }
         }
@@ -258,14 +316,36 @@ pub async fn sync(
         .map(|a| a.address_s)
         .collect();
     let mut tokens: HashMap<OutPoint, u64> = HashMap::new();
+    let own_falcon = if falcon_on {
+        wallet.own_falcon_holders()?
+    } else {
+        HashMap::new()
+    };
+    let own_pq = own_pq_keys(wallet, &own_falcon, vaults_on)?;
+    // Every token at an own post-quantum key, Falcon holder or not (a vault owner holds none
+    // by design, C-10, but its outputs must still never pass for YEC): the PQ classifier's
+    // token marker, beside the Falcon rows below.
+    let mut pq_tokens: HashMap<OutPoint, u64> =
+        falcon_tokens.iter().map(|(op, t)| (*op, t.cents)).collect();
     if let Some(yb) = yellowback.as_mut() {
         for t in yb.address_tokens(&addresses, 0).await? {
             wallet.store.insert_own_token(&t.outpoint, t.cents)?;
             tokens.insert(t.outpoint, t.cents);
         }
+        let owner_addrs: Vec<String> = own_pq
+            .keys()
+            .filter(|id| !own_falcon.contains_key(id))
+            .filter_map(|id| keys::encode_pq_yellowback(wallet.network, id))
+            .collect();
+        if !owner_addrs.is_empty() {
+            for t in yb.address_tokens(&owner_addrs, 0).await? {
+                pq_tokens.insert(t.outpoint, t.cents);
+            }
+        }
     }
-    // The Falcon holder tokens (TOK-PQ), as UTXO rows of class TOKEN: `GetAddressUtxos` never
-    // lists a `TX_PQPKH`, so the row is built from the token and the output's own script, read
+    // The Falcon holder tokens (TOK-PQ), as UTXO rows of class TOKEN: built from the token and
+    // the output's own script (`GetAddressUtxos` lists a `TX_PQPKH` only from lightwalletd-dd
+    // q/pqaddr on, and never says it is YED; step 2b skips these outpoints), read
     // from the transaction (a `TX_PQCHANNEL` client output is listed under the same address but
     // is not a wallet coin, D-Q-19: it is skipped).
     let falcon_rows = falcon_token_utxos(wallet, client, &falcon_tokens, tip).await?;
@@ -305,6 +385,49 @@ pub async fn sync(
             }
         })
         .collect();
+    // 2b. The own post-quantum addresses' UTXOs (lightwalletd-dd q/pqaddr). A Falcon token
+    // is already a TOKEN row (`falcon_rows`); any other listed token, or an output of exactly
+    // `TOKEN_VALUE`, is HELD; plain YEC is PQ_OWNED: shown, never in a P2PKH path's selection.
+    let falcon_ops: HashSet<OutPoint> = falcon_rows.iter().map(|u| u.outpoint).collect();
+    let mut pq_rows: Vec<Utxo> = Vec::new();
+    if pq_indexed && !own_pq.is_empty() {
+        let mut pq_addrs: Vec<String> = own_pq
+            .keys()
+            .filter_map(|id| keys::encode_pq_yec(wallet.network, id))
+            .collect();
+        pq_addrs.sort();
+        match client.address_utxos(&pq_addrs, birthday).await {
+            Ok(list) => {
+                for u in list {
+                    let outpoint = OutPoint {
+                        txid: u.txid,
+                        n: u.index,
+                    };
+                    if falcon_ops.contains(&outpoint) {
+                        continue;
+                    }
+                    let (class, cents) = coins::classify_pq_listed(
+                        &outpoint,
+                        &u.script,
+                        u.value_zat,
+                        |id| own_pq.contains_key(id),
+                        &pq_tokens,
+                    );
+                    pq_rows.push(Utxo {
+                        outpoint,
+                        address: u.address,
+                        script: u.script,
+                        value: u.value_zat,
+                        height: u.height,
+                        class,
+                        cents,
+                    });
+                }
+            }
+            Err(e) if pq_refused(&e) => report.pq_unindexed = true,
+            Err(e) => return Err(e.into()),
+        }
+    }
     utxos.extend(falcon_rows);
     coins::apply_fee_reserve(&mut utxos);
     for u in &utxos {
@@ -315,6 +438,13 @@ pub async fn sync(
             }
         }
     }
+    for u in &pq_rows {
+        if let Some(h) = crate::pq::pqpkh_of(&u.script).and_then(|id| own_pq.get(&id)) {
+            wallet.store.insert_own_output(&u.outpoint, u.value, h)?;
+            wallet.store.mark_used(h)?;
+        }
+    }
+    utxos.extend(pq_rows);
 
     // Locks: a spending transaction seen confirmed released its inputs in record_transaction;
     // here the expired ones lapse (nExpiryHeight passed and the spend never confirmed).
@@ -474,6 +604,28 @@ pub async fn sync(
         .store
         .set_meta("last_synced_height", &tip.to_string())?;
     Ok(report)
+}
+
+/// The wallet's own post-quantum key ids with the key hash each is paired with: the Falcon
+/// holders given (`falcon`, empty before TOK-PQ is announced) and, with `owners`, the SLH-DSA
+/// vault owners of the external keys (`Wallet::own_pq_owners`).
+fn own_pq_keys(
+    wallet: &Wallet,
+    falcon: &HashMap<crate::pq::PqKeyId, crate::store::AddressRow>,
+    owners: bool,
+) -> Result<HashMap<crate::pq::PqKeyId, [u8; 20]>, WalletError> {
+    let mut m: HashMap<crate::pq::PqKeyId, [u8; 20]> =
+        falcon.iter().map(|(id, r)| (*id, r.hash160)).collect();
+    if owners {
+        m.extend(wallet.own_pq_owners()?);
+    }
+    Ok(m)
+}
+
+/// The server refused a post-quantum address in a taddr method: a lightwalletd before q/pqaddr
+/// answers `INVALID_ARGUMENT` ("invalid address"). The sync goes on without the PQ lookups.
+fn pq_refused(e: &NetError) -> bool {
+    matches!(e, NetError::Status(s) if s.code() == tonic::Code::InvalidArgument)
 }
 
 /// The height a transaction was seen confirmed at, if the history scan saw it.
@@ -922,9 +1074,9 @@ pub async fn refresh_intents(
                     row.state = IntentState::Released;
                     row.note = if crate::pq::pqpkh_of(&row.recipient_script).is_some() {
                         // The coin is `PQPKH(owner)` in a transaction this wallet did not make:
-                        // post-quantum outputs are not address-indexed, so YEW cannot find it
-                        // (a recorded gap; the funds stay the owner key's, restorable from the seed).
-                        "released by another party to your vault-owner (post-quantum) key; this version of YEW cannot find that coin to move it".into()
+                        // the sync finds it on the owner's sq… form (lightwalletd-dd q/pqaddr) as
+                        // a PQ_OWNED row, moved from Home like any own post-quantum coin.
+                        "released by another party to your vault-owner (post-quantum) key; it shows on Home as YEC at your post-quantum addresses, to move into your wallet".into()
                     } else {
                         "released (by another party: a release needs no signature, U-15)".into()
                     };
@@ -950,7 +1102,7 @@ fn record_transaction(
     txid: &[u8; 32],
     height: u64,
     own: &HashSet<[u8; 20]>,
-    own_falcon: &HashMap<crate::pq::PqKeyId, crate::store::AddressRow>,
+    own_pq: &HashMap<crate::pq::PqKeyId, [u8; 20]>,
 ) -> Result<bool, WalletError> {
     let mut newly_used = false;
     let mut delta = 0i64;
@@ -959,13 +1111,14 @@ fn record_transaction(
         if script::is_op_return(&o.script_pubkey) {
             has_payload = true;
         }
-        // An own Falcon holder output counts like its paired key's (TOK-PQ).
+        // An own post-quantum output (a Falcon holder, TOK-PQ, or a vault owner's residual)
+        // counts like its paired key's.
         let h = script::p2pkh_hash(&o.script_pubkey)
             .filter(|h| own.contains(h))
             .or_else(|| {
                 crate::pq::pqpkh_of(&o.script_pubkey)
-                    .and_then(|id| own_falcon.get(&id))
-                    .map(|r| r.hash160)
+                    .and_then(|id| own_pq.get(&id))
+                    .copied()
             });
         if let Some(h) = h {
             delta += o.value;
@@ -1056,6 +1209,7 @@ async fn falcon_token_utxos(
     }
     let own = wallet.own_hashes()?;
     let own_falcon = wallet.own_falcon_holders()?;
+    let own_pq = own_pq_keys(wallet, &own_falcon, false)?;
     let known: HashMap<OutPoint, Vec<u8>> = wallet
         .store
         .utxos()?
@@ -1086,7 +1240,7 @@ async fn falcon_token_utxos(
                             height
                         };
                         if height <= tip {
-                            record_transaction(wallet, &tx, &txid, height, &own, &own_falcon)?;
+                            record_transaction(wallet, &tx, &txid, height, &own, &own_pq)?;
                         }
                         Some(tx)
                     }

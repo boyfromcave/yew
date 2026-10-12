@@ -338,6 +338,12 @@ pub struct Balances {
     pub shielded_scanned_height: i64,
     /// Scanned to the tip: private sending is available ("sending available at 100%").
     pub shielded_sendable: bool,
+    /// YEC at the wallet's own post-quantum keys (class `PQ_OWNED`: a payment to a Falcon
+    /// holder's `sq…` form, a vault owner's residual), zat. In neither YEC balance: no P2PKH
+    /// path spends it; [`release_preview`] of a coin in [`Balances::pq_coins`] moves it.
+    pub yec_pq_zat: i64,
+    /// The `PQ_OWNED` coins not already being moved, `txid:n`, oldest first.
+    pub pq_coins: Vec<String>,
 }
 
 /// Which receive address [`receive_address`] returns.
@@ -581,7 +587,10 @@ pub struct AddressCheck {
     /// `yregtestsapling1…`); for the 53-character post-quantum forms (rpcversion 7, D-Q-20):
     /// `pq` (a Falcon YED holder address: valid, it receives YED once Falcon is active),
     /// `pq_owner` (an SLH-DSA vault-owner address: never a payment address, C-10) and `pq_yec`
-    /// (`sq…`/`tq…`/`rq…`, recognised; YEW cannot send to it yet). Empty when unknown.
+    /// (`sq…`/`tq…`/`rq…`, D-Q-20: valid, it receives YEC and never YED). The kind is
+    /// asset-blind: a `pq` address is refused as a YEC destination and a `pq_yec` one as a YED
+    /// destination (the Send screen says so before the preview; the builders refuse too).
+    /// Empty when unknown.
     pub kind: String,
     /// The `yb…` form was given.
     pub yellowback_form: bool,
@@ -910,9 +919,10 @@ pub struct ClaimIntent {
 pub struct ReleasePreview {
     /// Pass to [`release_confirm`].
     pub preview_id: String,
-    /// `release`, or `pq_move` (a released residual's post-quantum coin into the wallet).
+    /// `release`, or `pq_move` (a released residual's post-quantum coin, or any own
+    /// post-quantum coin of [`Balances::pq_coins`], into the wallet).
     pub kind: String,
-    /// The intent released, `txid:n`.
+    /// The intent released (or the post-quantum coin moved), `txid:n`.
     pub intent: String,
     /// What the recipient receives, zat.
     pub value_zat: i64,
@@ -1415,10 +1425,10 @@ pub fn validate_address(network: NetworkId, address: String) -> AddressCheck {
     }
     if keys::parse_pq_yec_address(net, address.trim()).is_ok() {
         return AddressCheck {
-            valid: false,
+            valid: true,
             kind: "pq_yec".into(),
             yellowback_form: false,
-            message: keys::KeyError::PqYecAddress(address.trim().into()).to_string(),
+            message: String::new(),
         };
     }
     match keys::parse_address(net, address.trim()) {
@@ -1696,6 +1706,12 @@ pub fn balances() -> Result<Balances, YewError> {
             yec_shielded_pending_zat: (z.pending_change_zat + z.pending_incoming_zat) as i64,
             shielded_scanned_height: z.scanned_height as i64,
             shielded_sendable: z.sendable,
+            yec_pq_zat: b.yec_pq_zat,
+            pq_coins: b
+                .pq_coins
+                .iter()
+                .map(|op| format!("{}:{}", txid_hex(&op.txid), op.n))
+                .collect(),
         })
     })
 }
@@ -3739,7 +3755,24 @@ mod tests {
             NetworkId::Regtest,
             keys::encode_pq_yec(Network::Regtest, &id(1)).unwrap(),
         );
-        assert!(!q.valid && q.kind == "pq_yec" && q.message.contains("post-quantum YEC"));
+        assert!(q.valid && q.kind == "pq_yec" && q.message.is_empty());
+        // the node's regtest pair (lightwalletd-dd q/pqaddr pqPlainVectors): rq… is a YEC address
+        let n = validate_address(
+            NetworkId::Regtest,
+            "rq5MXCssfNHhhz8WuNL5bKAmUKc1k1Wx7TpG2fM8ks9Gz5cPeCqKa".into(),
+        );
+        assert!(n.valid && n.kind == "pq_yec" && !n.yellowback_form, "{n:?}");
+        let m = validate_address(
+            NetworkId::Mainnet,
+            "sq4ekeYR7pAE7ByLpq428jfiHrrsVyMnSTs58MNJeFMXDFL63vTbT".into(),
+        );
+        assert!(m.valid && m.kind == "pq_yec", "{m:?}");
+        assert!(validate_address(
+            NetworkId::Regtest,
+            "sq4ekeYR7pAE7ByLpq428jfiHrrsVyMnSTs58MNJeFMXDFL63vTbT".into()
+        )
+        .kind
+        .is_empty());
         // a mainnet PQ address on regtest is nothing
         assert!(validate_address(
             NetworkId::Regtest,

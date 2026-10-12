@@ -22,6 +22,8 @@ void main() {
       heldCount: 1,
       syncHeight: 484,
       yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false,
+      yecPqZat: 0,
+      pqCoins: [],
     );
     await h.pump(tester);
     // The lock screen auto-unlocks (no biometrics) and Home syncs once.
@@ -38,6 +40,37 @@ void main() {
     expect(find.textContaining('1 output held'), findsOneWidget);
     expect(find.text('1 YED = \$1.00 · mint price 1.92 YEC'), findsOneWidget);
     expect(find.text('synced to 484'), findsOneWidget);
+  });
+
+  testWidgets('YEC at an own post-quantum address shows apart from the balance and moves to the wallet', (tester) async {
+    final h = Harness(withWallet: true);
+    final coin = '${'c0' * 32}:0';
+    h.api.balancesAnswer = Balances(
+      yecZat: 100000,
+      yecReservedZat: 0,
+      yecPendingZat: 0,
+      yedCents: 0,
+      yedPendingCents: 0,
+      heldCount: 0,
+      syncHeight: 484,
+      yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false,
+      yecPqZat: 150000000,
+      pqCoins: [coin],
+    );
+    await h.pump(tester);
+    // Not in the public balance: no P2PKH path spends it.
+    expect(find.text('0.00100000 YEC'), findsOneWidget);
+    expect(find.text('1.50000000 YEC at your post-quantum addresses · tap to move it to your wallet'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('pq-yec')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('releasePreview $coin'));
+    expect(find.text('Move to wallet'), findsOneWidget);
+    expect(find.text('1.49997000 YEC'), findsOneWidget);
+    expect(find.text('0.00003000 YEC (out of the coin, priced by size)'), findsOneWidget);
+    expect(find.text('Coin'), findsOneWidget);
+    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('releaseConfirm rl-$coin'));
   });
 
   testWidgets('history tab lists verdict labels from the bridge', (tester) async {

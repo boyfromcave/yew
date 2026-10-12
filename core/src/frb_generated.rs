@@ -1655,6 +1655,8 @@ impl SseDecode for crate::api::Balances {
         let mut var_yecShieldedPendingZat = <i64>::sse_decode(deserializer);
         let mut var_shieldedScannedHeight = <i64>::sse_decode(deserializer);
         let mut var_shieldedSendable = <bool>::sse_decode(deserializer);
+        let mut var_yecPqZat = <i64>::sse_decode(deserializer);
+        let mut var_pqCoins = <Vec<String>>::sse_decode(deserializer);
         return crate::api::Balances {
             yec_zat: var_yecZat,
             yec_reserved_zat: var_yecReservedZat,
@@ -1670,6 +1672,8 @@ impl SseDecode for crate::api::Balances {
             yec_shielded_pending_zat: var_yecShieldedPendingZat,
             shielded_scanned_height: var_shieldedScannedHeight,
             shielded_sendable: var_shieldedSendable,
+            yec_pq_zat: var_yecPqZat,
+            pq_coins: var_pqCoins,
         };
     }
 }
@@ -2903,6 +2907,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::Balances {
             self.yec_shielded_pending_zat.into_into_dart().into_dart(),
             self.shielded_scanned_height.into_into_dart().into_dart(),
             self.shielded_sendable.into_into_dart().into_dart(),
+            self.yec_pq_zat.into_into_dart().into_dart(),
+            self.pq_coins.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -3802,6 +3808,8 @@ impl SseEncode for crate::api::Balances {
         <i64>::sse_encode(self.yec_shielded_pending_zat, serializer);
         <i64>::sse_encode(self.shielded_scanned_height, serializer);
         <bool>::sse_encode(self.shielded_sendable, serializer);
+        <i64>::sse_encode(self.yec_pq_zat, serializer);
+        <Vec<String>>::sse_encode(self.pq_coins, serializer);
     }
 }
 

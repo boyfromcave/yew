@@ -1682,8 +1682,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Balances dco_decode_balances(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 14)
-      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
+    if (arr.length != 16)
+      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
     return Balances(
       yecZat: dco_decode_i_64(arr[0]),
       yecReservedZat: dco_decode_i_64(arr[1]),
@@ -1699,6 +1699,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       yecShieldedPendingZat: dco_decode_i_64(arr[11]),
       shieldedScannedHeight: dco_decode_i_64(arr[12]),
       shieldedSendable: dco_decode_bool(arr[13]),
+      yecPqZat: dco_decode_i_64(arr[14]),
+      pqCoins: dco_decode_list_String(arr[15]),
     );
   }
 
@@ -2533,6 +2535,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_yecShieldedPendingZat = sse_decode_i_64(deserializer);
     var var_shieldedScannedHeight = sse_decode_i_64(deserializer);
     var var_shieldedSendable = sse_decode_bool(deserializer);
+    var var_yecPqZat = sse_decode_i_64(deserializer);
+    var var_pqCoins = sse_decode_list_String(deserializer);
     return Balances(
       yecZat: var_yecZat,
       yecReservedZat: var_yecReservedZat,
@@ -2548,6 +2552,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       yecShieldedPendingZat: var_yecShieldedPendingZat,
       shieldedScannedHeight: var_shieldedScannedHeight,
       shieldedSendable: var_shieldedSendable,
+      yecPqZat: var_yecPqZat,
+      pqCoins: var_pqCoins,
     );
   }
 
@@ -3650,6 +3656,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_64(self.yecShieldedPendingZat, serializer);
     sse_encode_i_64(self.shieldedScannedHeight, serializer);
     sse_encode_bool(self.shieldedSendable, serializer);
+    sse_encode_i_64(self.yecPqZat, serializer);
+    sse_encode_list_String(self.pqCoins, serializer);
   }
 
   @protected

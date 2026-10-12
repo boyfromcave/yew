@@ -62,6 +62,8 @@ class AppState extends ChangeNotifier {
     yecShieldedPendingZat: 0,
     shieldedScannedHeight: 0,
     shieldedSendable: false,
+    yecPqZat: 0,
+    pqCoins: [],
   );
   Status? status;
   List<HistoryItem> history = const [];

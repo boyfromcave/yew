@@ -117,9 +117,10 @@ impl Network {
     /// Post-quantum plain-YEC address version bytes (owner decision D-Q-20): the same 33-byte
     /// `scheme ‖ keyHash` payload and the same `TX_PQPKH` script as the post-quantum Yellowback
     /// form, rendered `sq…` / `tq…` / `rq…` (53 characters): main `{0x4D,0xD9}`, test
-    /// `{0x4F,0x61}`, regtest `{0x4C,0x51}`. The node's chain-wide `key_io` decoder for it is
-    /// built after the Q3–Q5 merge (plan §8.1 "SQ"); YEW recognises and renders the form but
-    /// does not send to it yet.
+    /// `{0x4F,0x61}`, regtest `{0x4C,0x51}` (the node's `key_io` `PlainPQAddressVersion`,
+    /// decoded chain-wide since the plan's §8.1 "SQ" step). YEW sends YEC to it
+    /// (`keys::parse_yec_destination`) and syncs its own keys' forms through lightwalletd's taddr
+    /// methods, which index `TX_PQPKH` under it.
     pub fn pq_yec_prefix(self) -> [u8; 2] {
         match self {
             Network::Mainnet => [0x4D, 0xD9],

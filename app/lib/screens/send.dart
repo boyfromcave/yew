@@ -4,7 +4,8 @@
 
 // Send (plan §5.1, §3.7 item 4): asset toggle YED/YEC, address (paste, scan), amount,
 // preview (fee in YEC, dry-run verdict for YED), slide to confirm, result. Every error the
-// core returns is shown verbatim; a gate refusal is the node's verdict. Private sending
+// core returns is shown verbatim; a gate refusal is the node's verdict. Post-quantum addresses
+// (D-Q-20/D-Q-21): YEC goes to `sq…`, YED to a 53-character `yb…`. Private sending
 // (yew-shielded plan §3): the YEC address field also takes `ys1…`, which shows an optional
 // message (memo) field; the core funds privacy first and the preview says when a payment
 // leaves the private balance; the first private send fetches the proving files once.
@@ -27,6 +28,20 @@ import '../widgets/send_result.dart';
 import '../widgets/slide_to_confirm.dart';
 
 enum Asset { yed, yec }
+
+/// Why a valid address of `kind` (`validateAddress`) is not a destination for `asset`, or null.
+/// The post-quantum forms are asset-bound (D-Q-20/D-Q-21): plain YEC goes to `sq…` (testnet
+/// `tq…`, regtest `rq…`), YED to the 53-character `yb…` Falcon holder (`yt…`, `yr…`); the core's
+/// builders refuse the other way round too, this says so before the preview.
+String? destinationMismatch(Asset asset, String kind) {
+  if (asset == Asset.yec && kind == 'pq') {
+    return 'This is a post-quantum YED address (yb…). To send YEC to the same wallet, ask for its sq… address.';
+  }
+  if (asset == Asset.yed && kind == 'pq_yec') {
+    return 'This is a post-quantum YEC address (sq…): it receives YEC, not YED. Ask for a yb… address.';
+  }
+  return null;
+}
 
 class SendScreen extends StatefulWidget {
   const SendScreen({super.key, this.asset = Asset.yed});
@@ -82,6 +97,11 @@ class _SendScreenState extends State<SendScreen> {
       final check = app.api.validateAddress(network: app.settings.network, address: to);
       if (!check.valid) {
         setState(() => _error = check.message.isEmpty ? 'Not a valid address' : check.message);
+        return;
+      }
+      final wrongAsset = destinationMismatch(_asset, check.kind);
+      if (wrongAsset != null) {
+        setState(() => _error = wrongAsset);
         return;
       }
     }
@@ -203,7 +223,7 @@ class _SendScreenState extends State<SendScreen> {
               onChanged: (_) => _reset(),
               decoration: InputDecoration(
                 labelText: 'To',
-                hintText: _asset == Asset.yed ? 'yb… address' : 'ys1…, s… or yb… address',
+                hintText: _asset == Asset.yed ? 'yb… address' : 'ys1…, s… or sq… address',
                 suffixIcon: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
