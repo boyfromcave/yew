@@ -50,7 +50,7 @@ message YellowbackAttestState {
 }
 message YellowbackClassParams {
   int64 baseRatioBps = 1; string class = 2; int64 maxBlocks = 3; int64 minBlocks = 4;
-  int64 earlyRedeemFeeBps = 5;                                        // rpcversion 6 (in-term IT-9): of the collateral, a redeem before lockHeight
+  int64 earlyRedeemFeeBps = 5;                                        // rpcversion 6 (in-term IT-9): of the debt at pMint (IT-9', D-Q-23), a redeem before lockHeight
 }
 message YellowbackAttestParams {
   int64 attestFeeBps = 1; int64 attestMaxAge = 2; int64 bondMaturity = 3; int64 bondMinLock = 4; int64 bondMinZat = 5;
