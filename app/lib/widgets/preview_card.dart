@@ -123,7 +123,8 @@ class YedPreviewCard extends StatelessWidget {
             if (p.recipients.length > 1) PreviewRow('Total', formatYed(p.totalCents), emphasis: true),
             PreviewRow('YED inputs', '${p.yedInputs} (${p.stage})'),
             if (p.changeCents > 0) PreviewRow('YED change', formatYed(p.changeCents)),
-            PreviewRow('Fee', '${formatYec(p.feeZat)} YEC (${p.yecInputs} YEC input${p.yecInputs == 1 ? '' : 's'})'),
+            // rpcversion 8: a YED transfer's network fee is dollars per KB at the attested price
+            PreviewRow('Fee', '${formatYec(p.feeZat)} YEC${p.feeUsdCents > 0 ? ' (about ${formatYed(p.feeUsdCents)})' : ''} (${p.yecInputs} YEC input${p.yecInputs == 1 ? '' : 's'})', key: const Key('yed-fee')),
             if (p.yecChangeZat > 0) PreviewRow('YEC change', '${formatYec(p.yecChangeZat)} YEC'),
             PreviewRow('Expires', 'height ${p.expiryHeight}'),
             const Divider(height: 20),

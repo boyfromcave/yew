@@ -7,6 +7,10 @@
 // only gives the Mint screen its picker and each class's shortest lock as the default.
 import 'api/wallet_api.dart';
 
+/// `MAX_MINT` (rpcversion 8, owner decision D-Q-24): $100,000 on every network, the core's
+/// `params::MAX_MINT_CENTS` (the estimate reports it as `maxMintCents`; the core refuses more).
+const int maxMintCents = 10000000;
+
 class TermClass {
   const TermClass(this.letter, this.title, this.minBlocks, this.maxBlocks);
   final String letter;

@@ -154,6 +154,14 @@ pub fn check_estimate(
             e.required_zat
         )));
     }
+    // rpcversion 8: the estimate's protocol fee (FEE-1′ of the debt at its pMint), when reported.
+    check_protocol_fee(
+        "EstimateCollateral",
+        cents,
+        e.p_mint,
+        e.protocol_fee_cents,
+        e.protocol_fee_zat,
+    )?;
     Ok(class)
 }
 
@@ -175,28 +183,47 @@ pub fn check_bundle_price(p_mint: i64, bundle: &[Attestation]) -> Result<(), Min
     Ok(())
 }
 
-/// The enforcement fee a server quotes for `collateral_zat` (audit G-2): FEE-0 (no payee) ⇒
-/// 0; otherwise exactly `feeZat(collateralZat)` — less and the node refuses the transaction
-/// (MINT-8 ⇒ VOID), more and the surplus is the server's to direct.
-pub fn check_fee(
-    network: Network,
-    collateral_zat: i64,
-    payee: &str,
-    fee_zat: i64,
-) -> Result<i64, MintError> {
+/// FEE-1′ (rpcversion 8, D-Q-23) computed locally (audit G-2): the protocol fee of a debt of
+/// `debt_cents` at the vault's mint price `p_mint`, 0 under FEE-0 (no payee). The server is never
+/// asked for the figure; a server-reported one (`protocolFeeZat`, `feeZat`) is compared with
+/// [`check_protocol_fee`].
+pub fn protocol_fee(debt_cents: u64, p_mint: i64, payee: &str) -> Result<i64, MintError> {
     if payee.is_empty() {
         return Ok(0);
     }
-    let local = params::fee_zat_for(network, collateral_zat);
-    if fee_zat != local {
-        return Err(inconsistent(format!(
-            "feeZat {fee_zat} for collateral {collateral_zat} (FEE-1 gives {local})"
-        )));
-    }
-    Ok(fee_zat)
+    params::protocol_fee_zat(debt_cents, p_mint).ok_or_else(|| {
+        inconsistent(format!(
+            "pMint {p_mint} undefined: no protocol fee can be priced"
+        ))
+    })
 }
 
-/// The attestor fee for an enforcement fee (AFEE-1), computed locally.
+/// A server's protocol-fee figure against FEE-1′ (audit G-2). `reported` 0 is "not reported".
+pub fn check_protocol_fee(
+    what: &str,
+    debt_cents: u64,
+    p_mint: i64,
+    reported_cents: i64,
+    reported_zat: i64,
+) -> Result<(), MintError> {
+    let cents = params::protocol_fee_cents(debt_cents);
+    if reported_cents != 0 && reported_cents != cents {
+        return Err(inconsistent(format!(
+            "{what}: protocolFeeCents {reported_cents} for a debt of {debt_cents} cents (FEE-1′ gives {cents})"
+        )));
+    }
+    if reported_zat != 0 {
+        let local = params::protocol_fee_zat(debt_cents, p_mint).unwrap_or(-1);
+        if reported_zat != local {
+            return Err(inconsistent(format!(
+                "{what}: protocolFeeZat {reported_zat} for a debt of {debt_cents} cents at pMint {p_mint} (FEE-1′ gives {local})"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The attestor fee for a protocol fee (AFEE-1′), computed locally.
 pub fn attest_fee(network: Network, fee_zat: i64, seqs: &[u16]) -> i64 {
     if seqs.is_empty() {
         0
@@ -444,6 +471,34 @@ pub fn check_vault(network: Network, v: &rpc::YedVault) -> Result<(), MintError>
             v.txid, v.lock_height, v.claim_height
         )));
     }
+    // rpcversion 8: the stored mint price every fee of the vault is struck at. MINT-5 put at least
+    // `mintedCents · baseRatio · COIN / pMint` in the vault, so pMint ≥ that over the collateral: a
+    // server reporting a lower price (a higher fee in YEC) is refused; a higher one only makes the
+    // fee short, which the node's own check refuses before anything is sent.
+    if v.status == "ACTIVE" || v.status == "CLAIMING" {
+        if v.p_mint <= 0 || v.p_mint > params::PRICE_MAX_MICRO_USD {
+            return Err(inconsistent(format!(
+                "vault {}: pMint {} out of range (rpcversion 8)",
+                v.txid, v.p_mint
+            )));
+        }
+        if let Some(c) = network
+            .term_classes()
+            .iter()
+            .find(|c| c.letter == v.term_class)
+        {
+            let floor = (v.minted_cents.max(0) as u128)
+                * (c.base_ratio_bps as u128)
+                * (params::COIN as u128)
+                / (v.collateral_zat.max(1) as u128);
+            if (v.p_mint as u128) < floor {
+                return Err(inconsistent(format!(
+                    "vault {}: pMint {} below what its collateral {} backs {} cents at in class {} ({floor})",
+                    v.txid, v.p_mint, v.collateral_zat, v.minted_cents, c.letter
+                )));
+            }
+        }
+    }
     if v.status == "ACTIVE" {
         let lock_blocks = v.lock_height - v.ref_height;
         let class = u32::try_from(lock_blocks)
@@ -462,15 +517,30 @@ pub fn check_vault(network: Network, v: &rpc::YedVault) -> Result<(), MintError>
     Ok(())
 }
 
-/// The post-quantum terms a server reports (`GetYellowbackInfo.params.pq` and
-/// `attest.mintPayloadVersion`, rpcversion 7; quantum spec §6.2, client survey C-5): the size
-/// fee rate and the Falcon activation. Unlike the rest of the parameter set these are the node's
-/// *operator* settings (`-pqfeerate`) and a height, so they are read, bounded and used, not
+/// The post-quantum and network-fee terms a server reports (`GetYellowbackInfo.params.pq`,
+/// `params.fees.network` and `attest.mintPayloadVersion`; rpcversion 7, 8; quantum spec §6.2, fees
+/// spec §3.1, client survey C-5): the size fee rates, the flat floor, the cap and the Falcon
+/// activation. Unlike the rest of the parameter set these are the node's *operator* settings
+/// (`-pqfeeusdperkb`, `-yellowbackfeeusdperkb`, `-pqfeerate`, `-yellowbackmaxtxfee`) at the attested
+/// tip price, and a height, so they are read, bounded and recomputed from their own inputs, not
 /// compared with a compiled value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PqTerms {
-    /// `pq.feeRateZatPerKB`, at least the relay floor.
+    /// The plain post-quantum rate, zat/KB (`fees.network.plain.zatPerKB` = `pq.feeRateZatPerKB`):
+    /// a move of a post-quantum YEC coin.
     pub fee_rate_zat_per_kb: i64,
+    /// The vault / Yellowback rate, zat/KB (`fees.network.yellowback.zatPerKB`): every transaction
+    /// the node's YED builder or a `vault_*` RPC would price (mint, redeem, claim, transfer, release).
+    pub yed_rate_zat_per_kb: i64,
+    /// The floor rate the owner path falls back to when the dollar-priced fee would take what the
+    /// vault has left (`YedFloorSizeFee`, review L-1): `max(floorZatPerKB, -pqfeerate)` with a price,
+    /// `-pqfeerate` without one.
+    pub floor_rate_zat_per_kb: i64,
+    /// The flat floor of one transaction (`fees.network.flatZat`, = `params.feeZat`).
+    pub flat_zat: i64,
+    /// The cap of a size-priced fee (`fees.network.yellowback.maxTxFeeZat`), never above
+    /// [`params::MAX_YED_TX_FEE_ZAT`].
+    pub max_fee_zat: i64,
     /// `pq.falconHeight` (`None` = no activation height; mainnet and testnet are `0` by the owner's
     /// decision of 2026-10-10, which `Wallet::pq_terms` enforces).
     pub falcon_height: Option<u64>,
@@ -479,11 +549,15 @@ pub struct PqTerms {
 }
 
 impl Default for PqTerms {
-    /// Before a server has answered: the relay floor, Falcon unknown (treated as inactive; the
-    /// node's dry run judges `TOK-PQ` before anything is sent).
+    /// Before a server has answered: the relay floor, the flat fee, the absolute cap, Falcon
+    /// unknown (treated as inactive; the node's dry run judges `TOK-PQ` before anything is sent).
     fn default() -> PqTerms {
         PqTerms {
             fee_rate_zat_per_kb: params::RELAY_FLOOR_ZAT_PER_KB,
+            yed_rate_zat_per_kb: params::RELAY_FLOOR_ZAT_PER_KB,
+            floor_rate_zat_per_kb: params::RELAY_FLOOR_ZAT_PER_KB,
+            flat_zat: params::FEE_ZAT,
+            max_fee_zat: params::MAX_YED_TX_FEE_ZAT,
             falcon_height: None,
             falcon_active: false,
         }
@@ -498,17 +572,38 @@ impl PqTerms {
         self.falcon_active || self.falcon_height.is_some_and(|h| height >= h)
     }
 
-    /// The network fee of a transaction of `size` bytes with a post-quantum input:
-    /// [`params::pq_size_fee`]`(FEE_ZAT, rate, size)`.
+    /// The network fee of a transaction of `size` bytes with a post-quantum input, at the plain
+    /// rate (`CWallet::CreateTransaction`: `min(max(DEFAULT_FEE, PQSizeFee), PQMaxTxFee())`).
     pub fn fee(&self, size: usize) -> i64 {
-        params::pq_size_fee(params::FEE_ZAT, self.fee_rate_zat_per_kb, size)
+        params::pq_size_fee(self.flat_zat, self.fee_rate_zat_per_kb, size)
+            .min(self.max_fee_zat)
+            .max(self.flat_zat)
+    }
+
+    /// The network fee of a Yellowback transaction of `size` bytes (`YedNetworkFee`:
+    /// `max(flat, min(YedSizeFee(flat, size), YedMaxTxFee()))`), `size` as the node estimates it
+    /// ([`params::yed_estimated_size`]).
+    pub fn yed_fee(&self, size: usize) -> i64 {
+        params::rate_fee(self.yed_rate_zat_per_kb, size)
+            .max(self.flat_zat)
+            .min(self.max_fee_zat)
+            .max(self.flat_zat)
+    }
+
+    /// The owner path's clamp (`YedFloorSizeFee`, review L-1): `max(flat, floor rate × size)`.
+    pub fn yed_floor_fee(&self, size: usize) -> i64 {
+        params::rate_fee(self.floor_rate_zat_per_kb, size).max(self.flat_zat)
     }
 }
 
-/// Read and bound `params.pq` (rpcversion 7). Refused: no `pq` block; a scheme list without
-/// SLH-DSA (1), or with Falcon (2) while Falcon is inactive, or naming an unknown scheme; a
-/// negative rate or one above [`params::MAX_PQ_FEE_RATE_ZAT_PER_KB`]; a MINT payload version
-/// other than this build's ([`crate::payload::MINT_VERSION`]).
+/// Read and bound `params.pq` (rpcversion 7) and `params.fees.network` (rpcversion 8). Refused: no
+/// `pq` or no `fees.network` block; a scheme list without SLH-DSA (1), or with Falcon (2) while
+/// Falcon is inactive, or naming an unknown scheme; a MINT payload version other than this build's
+/// ([`crate::payload::MINT_VERSION`]); a dollar target above [`params::MAX_USD_PER_KB_MICRO`], a
+/// floor above [`params::MAX_FEE_FLOOR_ZAT_PER_KB`], a fallback rate outside
+/// `0..=`[`params::MAX_PQ_FEE_RATE_ZAT_PER_KB`], a price outside `PRICE_MAX`, a flat fee below
+/// `FEE_ZAT`; and **a rate that is not its own inputs' `AttestedRateZatPerKB`** — so a server can
+/// report a high price target only in the open, never a padded zat figure.
 pub fn pq_terms(p: &rpc::YellowbackParams) -> Result<PqTerms, MintError> {
     let pq =
         p.pq.as_ref()
@@ -527,13 +622,6 @@ pub fn pq_terms(p: &rpc::YellowbackParams) -> Result<PqTerms, MintError> {
             pq.schemes, pq.falcon_active
         )));
     }
-    if pq.fee_rate_zat_per_kb < 0 || pq.fee_rate_zat_per_kb > params::MAX_PQ_FEE_RATE_ZAT_PER_KB {
-        return Err(inconsistent(format!(
-            "params.pq.feeRateZatPerKB {} (YEW accepts 0..={})",
-            pq.fee_rate_zat_per_kb,
-            params::MAX_PQ_FEE_RATE_ZAT_PER_KB
-        )));
-    }
     if let Some(a) = p.attest.as_ref() {
         if a.mint_payload_version != crate::payload::MINT_VERSION as i64 {
             return Err(inconsistent(format!(
@@ -543,11 +631,122 @@ pub fn pq_terms(p: &rpc::YellowbackParams) -> Result<PqTerms, MintError> {
             )));
         }
     }
+    let n = p
+        .fees
+        .as_ref()
+        .and_then(|f| f.network.as_ref())
+        .ok_or_else(|| inconsistent("params.fees.network missing (rpcversion 8)"))?;
+    let bad = |what: String| Err(inconsistent(format!("params.fees.network.{what}")));
+    if n.fallback_zat_per_kb < 0 || n.fallback_zat_per_kb > params::MAX_PQ_FEE_RATE_ZAT_PER_KB {
+        return bad(format!(
+            "fallbackZatPerKB {} (YEW accepts 0..={})",
+            n.fallback_zat_per_kb,
+            params::MAX_PQ_FEE_RATE_ZAT_PER_KB
+        ));
+    }
+    if n.floor_zat_per_kb < 0 || n.floor_zat_per_kb > params::MAX_FEE_FLOOR_ZAT_PER_KB {
+        return bad(format!(
+            "floorZatPerKB {} (YEW accepts 0..={})",
+            n.floor_zat_per_kb,
+            params::MAX_FEE_FLOOR_ZAT_PER_KB
+        ));
+    }
+    if n.price_micro_usd < 0 || n.price_micro_usd > params::PRICE_MAX_MICRO_USD {
+        return bad(format!("priceMicroUsd {}", n.price_micro_usd));
+    }
+    if n.flat_zat < params::FEE_ZAT || n.flat_zat > params::MAX_YED_TX_FEE_ZAT {
+        return bad(format!(
+            "flatZat {} (at least {})",
+            n.flat_zat,
+            params::FEE_ZAT
+        ));
+    }
+    let floor_eff = n.floor_zat_per_kb.max(n.fallback_zat_per_kb);
+    // AttestedRateZatPerKB, or the -pqfeerate fallback without a price or a target (policy.cpp
+    // PlainPQFeeRate / YedFeeRate)
+    let rate_of = |what: &str, r: Option<&rpc::YellowbackNetworkRate>| -> Result<i64, MintError> {
+        let r = r.ok_or_else(|| inconsistent(format!("params.fees.network.{what} missing")))?;
+        if r.usd_per_kb_micro < 0 || r.usd_per_kb_micro > params::MAX_USD_PER_KB_MICRO {
+            return Err(inconsistent(format!(
+                "params.fees.network.{what}.usdPerKBMicro {} (YEW accepts 0..={})",
+                r.usd_per_kb_micro,
+                params::MAX_USD_PER_KB_MICRO
+            )));
+        }
+        let want = if n.price_micro_usd > 0 && r.usd_per_kb_micro > 0 {
+            params::attested_rate_zat_per_kb(r.usd_per_kb_micro, n.price_micro_usd, floor_eff)
+        } else {
+            n.fallback_zat_per_kb
+        };
+        if r.zat_per_kb != want {
+            return Err(inconsistent(format!(
+                "params.fees.network.{what}.zatPerKB {} (${}.{:06}/KB at {} µUSD gives {want})",
+                r.zat_per_kb,
+                r.usd_per_kb_micro / 1_000_000,
+                r.usd_per_kb_micro % 1_000_000,
+                n.price_micro_usd
+            )));
+        }
+        Ok(want.max(params::RELAY_FLOOR_ZAT_PER_KB))
+    };
+    let plain = rate_of("plain", n.plain.as_ref())?;
+    let yed = rate_of("yellowback", n.yellowback.as_ref())?;
+    // rpcversion 8: pq.feeRateZatPerKB is the plain rate, so rpcversion-7 readers keep working
+    if pq.fee_rate_zat_per_kb.max(params::RELAY_FLOOR_ZAT_PER_KB) != plain {
+        return Err(inconsistent(format!(
+            "params.pq.feeRateZatPerKB {} is not params.fees.network.plain.zatPerKB {plain}",
+            pq.fee_rate_zat_per_kb
+        )));
+    }
+    let cap = n.yellowback.as_ref().map(|y| y.max_tx_fee_zat).unwrap_or(0);
+    if cap < n.flat_zat {
+        return bad(format!(
+            "yellowback.maxTxFeeZat {cap} (below flatZat {})",
+            n.flat_zat
+        ));
+    }
     Ok(PqTerms {
-        fee_rate_zat_per_kb: pq.fee_rate_zat_per_kb.max(params::RELAY_FLOOR_ZAT_PER_KB),
+        fee_rate_zat_per_kb: plain,
+        yed_rate_zat_per_kb: yed,
+        floor_rate_zat_per_kb: if n.price_micro_usd > 0 {
+            floor_eff
+        } else {
+            n.fallback_zat_per_kb
+        }
+        .max(params::RELAY_FLOOR_ZAT_PER_KB),
+        flat_zat: n.flat_zat,
+        max_fee_zat: cap.min(params::MAX_YED_TX_FEE_ZAT),
         falcon_height: u64::try_from(pq.falcon_height).ok(),
         falcon_active: pq.falcon_active,
     })
+}
+
+/// A `params.fees` block before any attested price (both size rates `-pqfeerate` = `rate`), for
+/// tests that feed `Wallet::note_server_params`.
+#[cfg(test)]
+pub(crate) fn fallback_fee_params(rate: i64) -> rpc::YellowbackFeeParams {
+    rpc::YellowbackFeeParams {
+        network: Some(rpc::YellowbackNetworkFee {
+            price_source: "fallback".into(),
+            plain: Some(rpc::YellowbackNetworkRate {
+                usd_per_kb_micro: 20_000,
+                zat_per_kb: rate,
+                ..Default::default()
+            }),
+            yellowback: Some(rpc::YellowbackNetworkRate {
+                usd_per_kb_micro: 50_000,
+                zat_per_kb: rate,
+                max_tx_fee_zat: 10_000_000,
+                ..Default::default()
+            }),
+            floor_zat_per_kb: params::ATTESTED_FEE_FLOOR_ZAT_PER_KB,
+            fallback_zat_per_kb: rate,
+            flat_zat: params::FEE_ZAT,
+            max_tx_fee_zat: 10_000_000,
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
 }
 
 /// The parameter set a server reports (`GetYellowbackInfo.params`) against the one this build
@@ -555,8 +754,9 @@ pub fn pq_terms(p: &rpc::YellowbackParams) -> Result<PqTerms, MintError> {
 /// height identities locally"). The wallet never prices a mint, a fee or a deadline from the
 /// server's figures; this check only refuses a server whose node runs another parameter set
 /// (a stale release, a hand-edited one, a lie), because every local check below would then
-/// disagree with the node that judges the transaction. Compared: `FEE_MIN`, `FEE_BPS`,
-/// `GRACE`, `REF_WINDOW`, `TOKEN_VALUE`, `ATTEST_FEE_BPS`, `RESIDUAL_MIN_ZAT` and each term
+/// disagree with the node that judges the transaction. Compared: the protocol fee's bands and
+/// floor (rpcversion 8, FEE-1′), `MAX_MINT`, `GRACE`, `REF_WINDOW`, `TOKEN_VALUE`, `ATTEST_FEE_BPS`,
+/// `RESIDUAL_MIN_ZAT`, the per-vault share (MINT-6b) and each term
 /// class's range and base ratio (a disabled class is reported with its empty range, H-5).
 /// Values a regtest flag sets (`startHeight`, `enforceUntilHeight`, `sigmaRefBps`,
 /// `supplyCapBps`) are not compared.
@@ -573,8 +773,56 @@ pub fn check_server_params(
         }
         Ok(())
     };
-    want("feeMinZat", p.fee_min_zat, params::FEE_MIN_ZAT)?;
-    want("feeBps", p.fee_bps, network.fee_bps())?;
+    // rpcversion 8 (D-Q-23, D-Q-24, D-Q-23a): FEE-1′'s bands and floor, maxMint, the vault share
+    want(
+        "maxMintCents",
+        p.max_mint_cents,
+        network.max_mint_cents() as i64,
+    )?;
+    let fees = p
+        .fees
+        .as_ref()
+        .ok_or_else(|| inconsistent("params.fees missing (rpcversion 8)"))?;
+    let protocol = fees
+        .protocol
+        .as_ref()
+        .ok_or_else(|| inconsistent("params.fees.protocol missing"))?;
+    let bands: Vec<(i64, i64)> = protocol
+        .bands
+        .iter()
+        .map(|b| (b.upto_cents, b.bps))
+        .collect();
+    let local_bands: Vec<(i64, i64)> = params::PROTOCOL_FEE_BANDS
+        .iter()
+        .map(|(u, b)| (*u as i64, *b))
+        .collect();
+    if bands != local_bands {
+        return Err(inconsistent(format!(
+            "params.fees.protocol.bands {bands:?} (this network's rule is {local_bands:?})"
+        )));
+    }
+    want(
+        "fees.protocol.floorCents",
+        protocol.floor_cents,
+        params::PROTOCOL_FEE_FLOOR_CENTS,
+    )?;
+    want(
+        "fees.protocol.attestFeeBps",
+        protocol.attest_fee_bps,
+        network.attest_fee_bps(),
+    )?;
+    if let Some(sc) = p.supply_cap.as_ref() {
+        want(
+            "supplyCap.maxVaultShareBps",
+            sc.max_vault_share_bps,
+            params::MAX_VAULT_SHARE_BPS,
+        )?;
+        want(
+            "supplyCap.vaultShareFloorCents",
+            sc.vault_share_floor_cents,
+            params::VAULT_SHARE_FLOOR_CENTS,
+        )?;
+    }
     want("grace", p.grace, network.grace() as i64)?;
     want("refWindow", p.ref_window, REF_WINDOW as i64)?;
     want("tokenValueZat", p.token_value_zat, params::TOKEN_VALUE)?;
@@ -605,6 +853,12 @@ pub fn check_server_params(
             p.early_redeem_fee_bps
         )));
     }
+    if fees.early_redeem_fee_bps != local {
+        return Err(inconsistent(format!(
+            "params.fees.earlyRedeemFeeBps {:?} (this network's rule is {local:?})",
+            fees.early_redeem_fee_bps
+        )));
+    }
     let a = p
         .attest
         .as_ref()
@@ -619,7 +873,8 @@ pub fn check_server_params(
         a.residual_min_zat,
         params::RESIDUAL_MIN_ZAT,
     )?;
-    // rpcversion 7: the post-quantum block must be present and sane (its values are read, not compared).
+    // rpcversion 7, 8: the post-quantum and network-fee blocks must be present and sane (read and
+    // recomputed from their own inputs, not compared).
     pq_terms(p)?;
     for c in network.term_classes() {
         let s = p
@@ -871,6 +1126,8 @@ mod tests {
             sigma_mult_bps: 10_000,
             source: "attest".into(),
             term_class: "A".into(),
+            protocol_fee_cents: params::protocol_fee_cents(10_000),
+            protocol_fee_zat: params::protocol_fee_zat(10_000, 520_000).unwrap(),
             x_mint: 530_000,
         }
     }
@@ -1063,21 +1320,24 @@ mod tests {
             Err(MintError::BadAmount { .. })
         ));
         assert!(check_cents(r, 10_000).is_ok());
-        assert!(check_cents(r, 1_000_000).is_ok());
+        assert!(check_cents(r, 10_000_000).is_ok());
         assert!(matches!(
-            check_cents(r, 1_000_001),
+            check_cents(r, 10_000_001),
             Err(MintError::BadAmount { .. })
         ));
         assert!(matches!(
             check_cents(r, u32::MAX as u64 + 1),
             Err(MintError::BadAmount { .. })
         ));
-        // H-12: $2,500 on mainnet and testnet.
+        // D-Q-24: $100,000 on every network (H-12's $2,500 guard reversed).
         for n in [Network::Mainnet, Network::Testnet] {
-            assert!(check_cents(n, 250_000).is_ok());
+            assert!(check_cents(n, 10_000_000).is_ok());
             assert!(matches!(
-                check_cents(n, 250_001),
-                Err(MintError::BadAmount { max: 250_000, .. })
+                check_cents(n, 10_000_001),
+                Err(MintError::BadAmount {
+                    max: 10_000_000,
+                    ..
+                })
             ));
         }
         // In-term D-IT-9: classes B and C are enabled on mainnet and testnet again (H-5 reversed).
@@ -1121,37 +1381,35 @@ mod tests {
         assert!(check_bundle_price(1, &[]).is_err());
     }
 
-    /// FEE-1 exactly, FEE-0 only with no payee (audit G-2).
+    /// FEE-1′ computed locally, FEE-0 only with no payee, a server's figure compared (audit G-2).
     #[test]
     fn hostile_fees_are_refused() {
         let payee = "s1payee";
+        // $1,000 at $1.99: 1 % = $10.00 = ⌈10⁷ · 10⁸ / 1,990,000⌉ zat.
+        assert_eq!(
+            protocol_fee(100_000, 1_990_000, payee).unwrap(),
+            502_512_563
+        );
+        // FEE-0: no payee, no fee.
+        assert_eq!(protocol_fee(100_000, 1_990_000, "").unwrap(), 0);
+        // an undefined price prices nothing
+        assert!(protocol_fee(100_000, 0, payee).is_err());
+        // a server's figure: right, or not reported (0), or refused
+        assert!(check_protocol_fee("t", 100_000, 1_990_000, 1_000, 502_512_563).is_ok());
+        assert!(check_protocol_fee("t", 100_000, 1_990_000, 0, 0).is_ok());
+        assert!(check_protocol_fee("t", 100_000, 1_990_000, 1_001, 502_512_563).is_err());
+        assert!(check_protocol_fee("t", 100_000, 1_990_000, 1_000, 502_512_564).is_err());
+        // the audit's scenario: most of the collateral as the fee
+        assert!(check_protocol_fee("t", 100_000, 1_990_000, 0, 250_000_000_000).is_err());
         let r = Network::Regtest;
-        assert_eq!(
-            check_fee(r, 1_000_000_000, payee, 50_000_000).unwrap(),
-            50_000_000
-        );
-        assert_eq!(
-            check_fee(r, 400_000_000_000, payee, 1_000_000_000).unwrap(),
-            1_000_000_000
-        );
-        // The audit's scenario: fee = collateral − 2,000 to the operator's pool.
-        assert!(check_fee(r, 1_000_000_000, payee, 999_998_000).is_err());
-        assert!(check_fee(r, 1_000_000_000, payee, 50_000_001).is_err());
-        assert!(check_fee(r, 1_000_000_000, payee, 49_999_999).is_err());
-        assert!(check_fee(r, 1_000_000_000, payee, 0).is_err());
-        // FEE-0: no payee, no fee, whatever number the server attached.
-        assert_eq!(check_fee(r, 1_000_000_000, "", 999_998_000).unwrap(), 0);
         assert_eq!(attest_fee(r, 50_000_000, &[0, 1]), 12_500_000);
         assert_eq!(attest_fee(r, 50_000_000, &[]), 0);
-        // H-4 on mainnet: 0.15 %, the attestor half. A server still quoting the v3 rate
-        // (0.25 %) is refused.
         let m = Network::Mainnet;
-        assert_eq!(
-            check_fee(m, 400_000_000_000, payee, 600_000_000).unwrap(),
-            600_000_000
-        );
-        assert!(check_fee(m, 400_000_000_000, payee, 1_000_000_000).is_err());
         assert_eq!(attest_fee(m, 600_000_000, &[0]), 300_000_000);
+        // an estimate whose protocol fee is not FEE-1′ at its own pMint is refused
+        let mut e = honest();
+        e.protocol_fee_zat += 1;
+        assert!(check_estimate(r, 484, 10_000, 48, &e).is_err());
     }
 
     /// `GetVault` with bent script terms (audit G-1, the sync side).
@@ -1164,9 +1422,20 @@ mod tests {
             ref_height: 480,
             lock_height: 528,
             claim_height: 552,
+            minted_cents: 10_000,
+            collateral_zat: 600_000_000_000,
+            p_mint: 50_000, // $100 at 300 % = 6,000 YEC at $0.05
             ..Default::default()
         };
         assert!(check_vault(Network::Regtest, &honest).is_ok());
+        // rpcversion 8: a stored mint price below what the collateral backs, or none, is refused
+        for p_mint in [0, 49_999] {
+            let v = rpc::YedVault {
+                p_mint,
+                ..honest.clone()
+            };
+            assert!(check_vault(Network::Regtest, &v).is_err(), "pMint {p_mint}");
+        }
         let void = rpc::YedVault {
             status: "VOID".into(),
             term_class: String::new(),
@@ -1209,8 +1478,6 @@ mod tests {
     /// The regtest parameter set as the node reports it (`yed_getinfo.params`).
     fn server_params(network: Network) -> rpc::YellowbackParams {
         rpc::YellowbackParams {
-            fee_min_zat: params::FEE_MIN_ZAT,
-            fee_bps: network.fee_bps(),
             grace: network.grace() as i64,
             ref_window: REF_WINDOW as i64,
             token_value_zat: params::TOKEN_VALUE,
@@ -1227,6 +1494,34 @@ mod tests {
                 falcon_active: false,
                 falcon_height: -1,
                 fee_rate_zat_per_kb: 100,
+            }),
+            // rpcversion 8 (fees spec §3.4): the bands, the floor, the early fee; no attested price
+            // yet (priceSource "fallback"), so both size rates are -pqfeerate
+            max_mint_cents: network.max_mint_cents() as i64,
+            fees: Some(rpc::YellowbackFeeParams {
+                early_redeem_fee_bps: network
+                    .term_classes()
+                    .iter()
+                    .map(|c| c.early_redeem_fee_bps)
+                    .collect(),
+                protocol: Some(rpc::YellowbackProtocolFee {
+                    attest_fee_bps: network.attest_fee_bps(),
+                    bands: params::PROTOCOL_FEE_BANDS
+                        .iter()
+                        .map(|(u, b)| rpc::YellowbackFeeBand {
+                            upto_cents: *u as i64,
+                            bps: *b,
+                        })
+                        .collect(),
+                    floor_cents: params::PROTOCOL_FEE_FLOOR_CENTS,
+                    price_source: "pMint".into(),
+                }),
+                network: Some(fallback_network()),
+            }),
+            supply_cap: Some(rpc::YellowbackSupplyCap {
+                max_vault_share_bps: params::MAX_VAULT_SHARE_BPS,
+                vault_share_floor_cents: params::VAULT_SHARE_FLOOR_CENTS,
+                ..Default::default()
             }),
             classes: network
                 .term_classes()
@@ -1252,33 +1547,111 @@ mod tests {
         }
     }
 
+    /// `params.fees.network` before any attested price: both rates are `-pqfeerate` (100).
+    fn fallback_network() -> rpc::YellowbackNetworkFee {
+        rpc::YellowbackNetworkFee {
+            price_micro_usd: 0,
+            price_source: "fallback".into(),
+            plain: Some(rpc::YellowbackNetworkRate {
+                usd_per_kb_micro: 20_000,
+                zat_per_kb: 100,
+                ..Default::default()
+            }),
+            yellowback: Some(rpc::YellowbackNetworkRate {
+                usd_per_kb_micro: 50_000,
+                zat_per_kb: 100,
+                max_tx_fee_usd_micro: 2_000_000,
+                max_tx_fee_ceiling_zat: 1_000_000_000,
+                max_tx_fee_zat: 10_000_000,
+            }),
+            floor_zat_per_kb: 5_000,
+            fallback_zat_per_kb: 100,
+            flat_zat: 1_000,
+            max_tx_fee_zat: 10_000_000,
+        }
+    }
+
+    /// `params.fees.network` at an attested $0.40 (the delta's example): $0.02/KB plain =
+    /// 5,000,000 zat/KB, $0.05/KB Yellowback = 12,500,000 zat/KB, the cap $2 = 5 YEC.
+    fn priced_network() -> rpc::YellowbackNetworkFee {
+        let mut n = fallback_network();
+        n.price_micro_usd = 400_000;
+        n.price_source = "tip".into();
+        n.plain.as_mut().unwrap().zat_per_kb = 5_000_000;
+        let y = n.yellowback.as_mut().unwrap();
+        y.zat_per_kb = 12_500_000;
+        y.max_tx_fee_zat = 500_000_000;
+        n
+    }
+
+    /// rpcversion 8: `params.fees.network` is read and recomputed from its own inputs; the size fees.
+    #[test]
+    fn network_fee_terms_are_recomputed() {
+        let mut p = server_params(Network::Regtest);
+        p.fees.as_mut().unwrap().network = Some(priced_network());
+        p.pq.as_mut().unwrap().fee_rate_zat_per_kb = 5_000_000;
+        let t = pq_terms(&p).unwrap();
+        assert_eq!(t.fee_rate_zat_per_kb, 5_000_000);
+        assert_eq!(t.yed_rate_zat_per_kb, 12_500_000);
+        assert_eq!(t.floor_rate_zat_per_kb, 5_000);
+        assert_eq!((t.flat_zat, t.max_fee_zat), (1_000, 500_000_000));
+        // a redeem: the SLH-DSA owner input (7,981 bytes) on the 1,000-byte base, $0.05/KB
+        let size = params::yed_estimated_size(0, &[1]);
+        assert_eq!(size, 8_981);
+        assert_eq!(t.yed_fee(size), 12_500_000 * 8_981 / 1000);
+        assert_eq!(t.yed_floor_fee(size), 5_000 * 8_981 / 1000);
+        // the cap, and the flat floor
+        assert_eq!(t.yed_fee(100_000), 500_000_000);
+        assert_eq!(t.yed_fee(0), 12_500_000, "CFeeRate: a 0 fee is the rate");
+        // a padded rate, a target out of bounds, a pq rate that is not the plain one: refused
+        let bent = |f: &dyn Fn(&mut rpc::YellowbackParams)| {
+            let mut q = p.clone();
+            f(&mut q);
+            pq_terms(&q).is_err()
+        };
+        fn net(q: &mut rpc::YellowbackParams) -> &mut rpc::YellowbackNetworkFee {
+            q.fees.as_mut().unwrap().network.as_mut().unwrap()
+        }
+        assert!(bent(
+            &|q| net(q).yellowback.as_mut().unwrap().zat_per_kb += 1
+        ));
+        assert!(bent(&|q| net(q).plain.as_mut().unwrap().zat_per_kb *= 2));
+        assert!(bent(&|q| net(q)
+            .yellowback
+            .as_mut()
+            .unwrap()
+            .usd_per_kb_micro = 2_000_000));
+        assert!(bent(&|q| net(q).floor_zat_per_kb = 1_000_000));
+        assert!(bent(&|q| net(q).flat_zat = 999));
+        assert!(bent(&|q| q.pq.as_mut().unwrap().fee_rate_zat_per_kb = 100));
+        assert!(bent(&|q| q.fees = None));
+        // the absolute ceiling: a server cap above 10 YEC is held at 10 YEC
+        let mut big = p.clone();
+        net(&mut big).yellowback.as_mut().unwrap().max_tx_fee_zat = 100 * params::COIN;
+        assert_eq!(
+            pq_terms(&big).unwrap().max_fee_zat,
+            params::MAX_YED_TX_FEE_ZAT
+        );
+    }
+
     /// rpcversion 7: `params.pq` is read and bounded; Falcon by height.
     #[test]
     fn pq_terms_are_read_and_bounded() {
         let base = server_params(Network::Regtest);
         let t = pq_terms(&base).unwrap();
-        assert_eq!(t, PqTerms::default());
+        assert_eq!(
+            t,
+            PqTerms {
+                max_fee_zat: 10_000_000, // the fallback block's cap
+                ..PqTerms::default()
+            }
+        );
         assert!(!t.falcon_at(1_000_000));
-        // the rate is floored at the relay floor and capped
         let with = |f: &dyn Fn(&mut rpc::YellowbackPqParams)| {
             let mut p = base.clone();
             f(p.pq.as_mut().unwrap());
             p
         };
-        assert_eq!(
-            pq_terms(&with(&|q| q.fee_rate_zat_per_kb = 0))
-                .unwrap()
-                .fee_rate_zat_per_kb,
-            100
-        );
-        assert_eq!(
-            pq_terms(&with(&|q| q.fee_rate_zat_per_kb = 500))
-                .unwrap()
-                .fee_rate_zat_per_kb,
-            500
-        );
-        assert!(pq_terms(&with(&|q| q.fee_rate_zat_per_kb = -1)).is_err());
-        assert!(pq_terms(&with(&|q| q.fee_rate_zat_per_kb = 10_001)).is_err());
         // schemes: SLH required, Falcon only when active, nothing unknown
         assert!(pq_terms(&with(&|q| q.schemes = vec![])).is_err());
         assert!(pq_terms(&with(&|q| q.schemes = vec![1, 2])).is_err());
@@ -1301,7 +1674,7 @@ mod tests {
         let mut p = base.clone();
         p.attest.as_mut().unwrap().mint_payload_version = 3;
         assert!(pq_terms(&p).is_err());
-        // the fee: max(1,000, rate × size), CFeeRate rounding
+        // the fee: max(1,000, rate × size), CFeeRate rounding, under the cap
         let t = PqTerms {
             fee_rate_zat_per_kb: 100,
             ..PqTerms::default()
@@ -1332,8 +1705,40 @@ mod tests {
             check_server_params(Network::Mainnet, Some(&server_params(Network::Regtest))).is_err()
         );
         let bends: Vec<Bend<rpc::YellowbackParams>> = vec![
-            Box::new(|p| p.fee_min_zat = 1),
-            Box::new(|p| p.fee_bps = 100),
+            // rpcversion 8: FEE-1′'s bands and floor, maxMint, the early fee, the vault share
+            Box::new(|p| p.max_mint_cents = 250_000),
+            Box::new(|p| p.fees = None),
+            Box::new(|p| p.fees.as_mut().unwrap().protocol.as_mut().unwrap().bands[0].bps = 150),
+            Box::new(|p| {
+                p.fees
+                    .as_mut()
+                    .unwrap()
+                    .protocol
+                    .as_mut()
+                    .unwrap()
+                    .bands
+                    .truncate(2)
+            }),
+            Box::new(|p| {
+                p.fees
+                    .as_mut()
+                    .unwrap()
+                    .protocol
+                    .as_mut()
+                    .unwrap()
+                    .floor_cents = 500
+            }),
+            Box::new(|p| {
+                p.fees
+                    .as_mut()
+                    .unwrap()
+                    .protocol
+                    .as_mut()
+                    .unwrap()
+                    .attest_fee_bps = 2_500
+            }),
+            Box::new(|p| p.fees.as_mut().unwrap().early_redeem_fee_bps = vec![500, 250, 50]),
+            Box::new(|p| p.supply_cap.as_mut().unwrap().max_vault_share_bps = 5_000),
             Box::new(|p| p.grace = 1),
             Box::new(|p| p.ref_window = 400),
             Box::new(|p| p.token_value_zat = 20_000),

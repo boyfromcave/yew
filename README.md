@@ -391,6 +391,18 @@ Everything below needs a device, an account, a public server or a decision:
    emulator; `pq_bench` there (Apple-silicon host, so near desktop speed, not a phone's): SLH-DSA
    keygen ~85 ms, sign ~0.75-0.8 s, verify 0.5 ms; Falcon keygen ~10 ms, sign ~3 ms. Signing
    runs on the bridge's worker thread: the UI kept drawing through the SLH-DSA redeem preview.
+8. **Fee structure (rpcversion 8, branch `q/fees`; the workspace's
+   `docs/plans/yellowback-quantum-fees-spec.md`, owner decisions D-Q-23..D-Q-26)**: the core
+   requires `rpcversion` 8 and computes every fee it signs locally — the protocol fee in dollars
+   of the debt in marginal bands (1 % to $1,000, 0.5 % to $10,000, 0.1 % above, $1 minimum) at
+   the vault's stored `pMint` (`params::protocol_fee_zat`), the early-redeem fee of the debt,
+   `maxMint` $100,000, and network fees at `params.fees.network`'s dollars-per-KB rates
+   (recomputed from their own price and target before use, capped at `maxTxFeeZat` and never
+   above 10 YEC; the node's `YedEstimatedSize` for Yellowback transactions). The screens show the
+   fees in dollars and YEC. Open: `proto/yellowback.proto` carries the rpcversion-8 fields ahead
+   of lightwalletd-dd (re-copy and reconcile the field numbers when its `q/fees` lands, then
+   `proto/PIN`); `core/tests/vectors` are still the quantum devnet's (rpcversion 7) until they are
+   regenerated on a fees-line devnet.
 
 ## Further reading
 

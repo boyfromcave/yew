@@ -533,8 +533,11 @@ pub struct YedPreview {
     pub change_cents: i64,
     /// Number of YEC inputs (fee).
     pub yec_inputs: u32,
-    /// The fee, zat.
+    /// The network fee, zat (rpcversion 8: the Yellowback size fee, dollars per KB at the attested
+    /// price).
     pub fee_zat: i64,
+    /// [`YedPreview::fee_zat`] in US cents at the last sync's price (0 when unknown).
+    pub fee_usd_cents: i64,
     /// YEC change, zat.
     pub yec_change_zat: i64,
     /// `nExpiryHeight`.
@@ -650,19 +653,26 @@ pub struct MintEstimate {
     pub required_zat: i64,
     /// The collateral the MINT will lock (rounded as `BuildMint` does).
     pub collateral_zat: i64,
-    /// The enforcement fee, zat (0 under FEE-0).
+    /// The protocol fee, zat (0 under FEE-0): FEE-1′ (rpcversion 8), the debt's dollars in marginal
+    /// bands (1 % to $1,000, 0.5 % to $10,000, 0.1 % above, at least $1) at `pMint`; a redeem of the
+    /// vault pays the same dollars again at the same price.
     pub fee_zat: i64,
+    /// The protocol fee in US cents (shown even under FEE-0, where it is not paid).
+    pub protocol_fee_cents: i64,
     /// The attestor fee, zat (0 under AFEE-0).
     pub attest_fee_zat: i64,
-    /// The enforcement fee payee (`s…`), empty under FEE-0. The amount is checked against
-    /// FEE-1 locally; the payee's eligibility is the node's to judge (audit G-2).
+    /// The protocol fee payee (`s…`), empty under FEE-0. The amount is computed locally (FEE-1′);
+    /// the payee's eligibility is the node's to judge (audit G-2).
     pub payee: String,
     /// `CARRIER_VALUE`, zat.
     pub carrier_zat: i64,
     /// `TOKEN_VALUE` for the new YED output, zat.
     pub token_zat: i64,
-    /// The two network fees, zat.
+    /// The two network fees, zat: the carrier's flat fee and the MINT's Yellowback size fee
+    /// (dollars per KB at the attested price, rpcversion 8).
     pub network_fee_zat: i64,
+    /// `MAX_MINT`, cents ($100,000 on every network, D-Q-24).
+    pub max_mint_cents: i64,
     /// Everything the two steps need from YEC, zat.
     pub total_zat: i64,
     /// Spendable `YEC` + `FEE_RESERVE`, zat.
@@ -782,16 +792,22 @@ pub struct VaultSummary {
     /// `ACTIVE` and the next block is below `lockHeight`: a redeem now pays the early-redeem fee
     /// (IT-9).
     pub early_redeem: bool,
-    /// The early-redeem fee a redeem now would pay, zat: `collateral · earlyRedeemFeeBps[class] /
-    /// 10⁴` while [`VaultSummary::early_redeem`], else 0 (the preview's figure is the one signed:
-    /// it is 0 under FEE-0, which this offline summary cannot know).
+    /// The early-redeem fee a redeem now would pay, zat: `earlyRedeemFeeBps[class]` of the debt at
+    /// the vault's `pMint` (IT-9′, rpcversion 8) while [`VaultSummary::early_redeem`], else 0 (the
+    /// preview's figure is the one signed: it is 0 under FEE-0, which this offline summary cannot know).
     pub early_redeem_fee_zat: i64,
-    /// [`VaultSummary::early_redeem_fee_zat`] in US cents at the last sync's price (0 when the
-    /// price is unknown): the fee is shown in dollars too, since the collateral's dollar value is
-    /// what an owner weighs it against.
+    /// The early-redeem fee in US cents: the debt's share, exact (it no longer moves with the price);
+    /// shown beside the debt, and gone at the end of the term (the lockup report's recommendation).
     pub early_redeem_fee_usd_cents: i64,
-    /// The class's early-redeem fee rate, bps of the collateral (500 / 250 / 100).
+    /// The class's early-redeem fee rate, bps of the debt (500 / 250 / 100).
     pub early_redeem_fee_bps: i64,
+    /// The vault's stored mint price, µUSD per YEC (0 until a sync has read it): every fee of the
+    /// vault is struck at it.
+    pub p_mint_micro_usd: i64,
+    /// The protocol fee a redeem pays, US cents (FEE-1′ of the debt; 0 for a vault that is not ACTIVE).
+    pub protocol_fee_cents: i64,
+    /// [`VaultSummary::protocol_fee_cents`] in zat at `pMint` (0 when the price is unknown).
+    pub protocol_fee_zat: i64,
     /// Claims are judged by the threshold at every height (in-term plan IT-2): always true on this
     /// build (the server's `inTermClaims` is checked at connect).
     pub in_term_claims: bool,
@@ -973,8 +989,12 @@ pub struct ClaimableItem {
     pub claim_path: String,
     /// `pClaim` at the node's tip, micro-USD per YEC.
     pub p_claim_micro_usd: i64,
-    /// The enforcement fee, zat.
+    /// The protocol fee, zat: FEE-1′ of the debt at the vault's `pMint` (rpcversion 8).
     pub fee_zat: i64,
+    /// The protocol fee, US cents.
+    pub protocol_fee_cents: i64,
+    /// The vault's stored mint price, µUSD per YEC.
+    pub p_mint_micro_usd: i64,
     /// The attestor fee, zat.
     pub attest_fee_zat: i64,
     /// RED-5's residual to the owner, zat.
@@ -1026,24 +1046,29 @@ pub struct RedeemPreview {
     pub change_cents: i64,
     /// YED inputs spent.
     pub yed_inputs: u32,
-    /// What the fee output pays, zat: the enforcement fee (FEE-1, checked locally) plus the
+    /// What the fee output pays, zat: the protocol fee (FEE-1′, computed locally) plus the
     /// early-redeem fee.
     pub fee_zat: i64,
-    /// The enforcement fee alone (FEE-1).
-    pub enforcement_fee_zat: i64,
-    /// The early-redeem fee within `fee_zat` (IT-9): due when the redeem confirms before
-    /// `lockHeight`, 0 otherwise and under FEE-0. Shown before the slider.
+    /// The protocol fee alone (FEE-1′ of the debt at the vault's `pMint`), zat.
+    pub protocol_fee_zat: i64,
+    /// The protocol fee, US cents (rpcversion 8: the same dollars the mint paid).
+    pub protocol_fee_cents: i64,
+    /// The vault's stored mint price, µUSD per YEC: the price both fees are struck at.
+    pub p_mint_micro_usd: i64,
+    /// The early-redeem fee within `fee_zat` (IT-9′, of the debt): due when the redeem confirms
+    /// before `lockHeight`, 0 otherwise and under FEE-0. Shown before the slider.
     pub early_redeem_fee_zat: i64,
-    /// [`RedeemPreview::early_redeem_fee_zat`] in US cents at the last sync's price (0 when the
-    /// price is unknown).
+    /// [`RedeemPreview::early_redeem_fee_zat`] in US cents: the debt's share, exact (0 when none).
     pub early_redeem_fee_usd_cents: i64,
     /// The vault's `lockHeight` (the end of the term).
     pub lock_height: i64,
     /// The enforcement fee payee (`s…`), empty under FEE-0.
     pub payee: String,
-    /// The network fee taken from the collateral, zat: `max(1,000, pqfeerate × size)` for the
-    /// ~8 KB post-quantum owner spend (quantum plan §4.5).
+    /// The network fee taken from the collateral, zat: the Yellowback size fee of the ~8 KB
+    /// post-quantum owner spend (dollars per KB at the attested price, rpcversion 8).
     pub network_fee_zat: i64,
+    /// [`RedeemPreview::network_fee_zat`] in US cents at the last sync's price (0 when unknown).
+    pub network_fee_usd_cents: i64,
     /// The collateral returned, zat.
     pub collateral_zat: i64,
     /// The own address it returns to.
@@ -1071,9 +1096,9 @@ pub struct RedeemResult {
     pub extra_burn_cents: i64,
     /// YED change, cents.
     pub change_cents: i64,
-    /// The enforcement fee, zat.
+    /// The protocol fee plus any early-redeem fee, zat (the fee output).
     pub fee_zat: i64,
-    /// The early-redeem fee within `fee_zat` (IT-9).
+    /// The early-redeem fee within `fee_zat` (IT-9′).
     pub early_redeem_fee_zat: i64,
     /// The enforcement fee payee (`s…`), empty under FEE-0.
     pub payee: String,
@@ -2247,6 +2272,10 @@ pub fn send_yed_preview(recipients: Vec<Recipient>) -> Result<YedPreview, YewErr
                 change_cents: p.change_cents as i64,
                 yec_inputs: p.yec_inputs.len() as u32,
                 fee_zat: p.fee,
+                fee_usd_cents: crate::params::zat_to_usd_cents(
+                    p.fee,
+                    r.price_micro_usd.unwrap_or(0),
+                ),
                 yec_change_zat: p.yec_change,
                 expiry_height: p.expiry_height,
                 txid: txid.clone(),
@@ -2625,19 +2654,27 @@ fn vault_summary(
         blocks_until_term_end: (v.lock_height as i64 - tip as i64).max(0),
         early_redeem: early,
         early_redeem_fee_zat: if early {
-            crate::params::early_redeem_fee_zat(v.collateral_zat, fee_bps)
+            crate::params::early_redeem_fee_zat(v.minted_cents, fee_bps, v.p_mint)
         } else {
             0
         },
         early_redeem_fee_usd_cents: if early {
-            crate::params::zat_to_usd_cents(
-                crate::params::early_redeem_fee_zat(v.collateral_zat, fee_bps),
-                p_claim,
-            )
+            crate::params::early_redeem_fee_cents(v.minted_cents, fee_bps)
         } else {
             0
         },
         early_redeem_fee_bps: fee_bps,
+        p_mint_micro_usd: v.p_mint,
+        protocol_fee_cents: if active {
+            crate::params::protocol_fee_cents(v.minted_cents)
+        } else {
+            0
+        },
+        protocol_fee_zat: if active {
+            crate::params::protocol_fee_zat(v.minted_cents, v.p_mint).unwrap_or(0)
+        } else {
+            0
+        },
         in_term_claims: true,
         claim_threshold_bps: crate::params::CLAIM_THRESHOLD_BPS,
         claim_price_micro_usd: p_claim,
@@ -2790,11 +2827,13 @@ pub fn mint_estimate(cents: i64, lock_blocks: u32) -> Result<MintEstimate, YewEr
                 required_zat: e.required_zat,
                 collateral_zat: e.collateral_zat,
                 fee_zat: e.fee_zat,
+                protocol_fee_cents: e.protocol_fee_cents,
                 attest_fee_zat: e.attest_fee_zat,
                 payee: e.payee.clone(),
                 carrier_zat: params::CARRIER_VALUE,
                 token_zat: params::TOKEN_VALUE,
-                network_fee_zat: 2 * params::FEE_ZAT,
+                network_fee_zat: e.network_fee_zat,
+                max_mint_cents: params::MAX_MINT_CENTS as i64,
                 total_zat: e.total_zat,
                 available_zat: e.available_zat,
                 affordable: e.affordable(),
@@ -2963,15 +3002,18 @@ pub fn redeem_preview(vault_txid: String) -> Result<RedeemPreview, YewError> {
                 change_cents: p.change_cents as i64,
                 yed_inputs: p.yed_inputs.len() as u32,
                 fee_zat: p.fee_zat,
-                enforcement_fee_zat: p.fee_zat - p.early_redeem_fee_zat,
+                protocol_fee_zat: p.fee_zat - p.early_redeem_fee_zat,
+                protocol_fee_cents: p.protocol_fee_cents,
+                p_mint_micro_usd: p.p_mint,
                 early_redeem_fee_zat: p.early_redeem_fee_zat,
-                early_redeem_fee_usd_cents: crate::params::zat_to_usd_cents(
-                    p.early_redeem_fee_zat,
-                    price_micro_usd,
-                ),
+                early_redeem_fee_usd_cents: p.early_redeem_fee_cents,
                 lock_height: p.lock_height as i64,
                 payee: p.payee.clone(),
                 network_fee_zat: p.network_fee_zat,
+                network_fee_usd_cents: crate::params::zat_to_usd_cents(
+                    p.network_fee_zat,
+                    price_micro_usd,
+                ),
                 collateral_zat: p.collateral_out,
                 collateral_address: p.collateral_address.clone(),
                 lock_time: p.lock_time as i64,
@@ -3114,6 +3156,8 @@ pub fn claimable() -> Result<Vec<ClaimableItem>, YewError> {
                     claim_path: c.claim_path,
                     p_claim_micro_usd: c.p_claim,
                     fee_zat: c.fee_zat,
+                    protocol_fee_cents: c.protocol_fee_cents,
+                    p_mint_micro_usd: c.p_mint,
                     attest_fee_zat: c.attest_fee_zat,
                     residual_zat: c.residual_zat,
                     claimant_zat: c.claimant_zat,
@@ -3542,6 +3586,7 @@ mod tests {
             updated_height: 510,
             owner_height: 499,
             app_height: 499,
+            p_mint: 520_000,
         };
         const NOW: i64 = 1_790_000_000;
         let v = vault_summary(&vault, 510, Some(520_000), Network::Regtest, &[], NOW);
@@ -3551,7 +3596,13 @@ mod tests {
         assert!(v.early_redeem && v.in_term_claims);
         assert_eq!(
             (v.early_redeem_fee_bps, v.early_redeem_fee_zat),
-            (500, 47_500_000)
+            (500, 2_403_846_154) // IT-9′: 5 % of the $250 debt at the vault's pMint $0.52
+        );
+        assert_eq!(v.early_redeem_fee_usd_cents, 1_250);
+        // FEE-1′ of the $250 debt: 1 % = $2.50, at $0.52
+        assert_eq!(
+            (v.protocol_fee_cents, v.protocol_fee_zat, v.p_mint_micro_usd),
+            (250, 480_769_231, 520_000)
         );
         assert_eq!(
             (v.claim_threshold_bps, v.claim_price_micro_usd),
@@ -3576,9 +3627,9 @@ mod tests {
         assert!(v.claimable && v.claim_warning && !v.near_threshold && v.underwater);
         // The block before lockHeight is the last early one: a redeem then confirms at lockHeight.
         let v = vault_summary(&vault, 516, Some(520_000), Network::Regtest, &[], NOW);
-        assert!(v.early_redeem && v.early_redeem_fee_zat == 47_500_000);
-        // shown in dollars too: 0.475 YEC at $0.52 = 24.7 cents, rounded down
-        assert_eq!(v.early_redeem_fee_usd_cents, 24);
+        assert!(v.early_redeem && v.early_redeem_fee_zat == 2_403_846_154);
+        // shown in dollars: the debt's share, exact (rpcversion 8), whatever the price now
+        assert_eq!(v.early_redeem_fee_usd_cents, 1_250);
         let v = vault_summary(&vault, 517, Some(520_000), Network::Regtest, &[], NOW);
         assert!(!v.early_redeem && v.early_redeem_fee_zat == 0 && !v.renewable);
         assert_eq!(v.early_redeem_fee_usd_cents, 0);
@@ -3625,7 +3676,7 @@ mod tests {
         let v = vault_summary(&closed, 540, Some(100_000), Network::Regtest, &[], NOW);
         assert!(!v.open && !v.redeemable && !v.underwater && v.close_height == 520);
         assert!(!v.renewable && !v.claim_warning && !v.claim_open);
-        // Mainnet, class B (91–180 d): the early-redeem fee is 2.5 % of the collateral.
+        // Mainnet, class B (91–180 d): the early-redeem fee is 2.5 % of the debt (IT-9′): $6.25 at $0.52.
         let main = VaultRow {
             term_class: "B".into(),
             lock_height: 1_100_000,
@@ -3640,8 +3691,12 @@ mod tests {
         let v = vault_summary(&main, 1_000_000, None, Network::Mainnet, &[], NOW);
         assert!(v.redeemable && v.early_redeem && !v.renewable && !v.claim_warning);
         assert_eq!(
-            (v.early_redeem_fee_bps, v.early_redeem_fee_zat),
-            (250, 23_750_000)
+            (
+                v.early_redeem_fee_bps,
+                v.early_redeem_fee_zat,
+                v.early_redeem_fee_usd_cents
+            ),
+            (250, 1_201_923_077, 625)
         );
         assert_eq!(v.renew_lock_blocks, 170_000);
     }

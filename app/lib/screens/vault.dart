@@ -100,7 +100,7 @@ class _VaultScreenState extends State<VaultScreen> {
     if (v.releasable) {
       status = 'VOID (${v.voidReason}): the collateral can be released';
     } else if (v.redeemable && v.earlyRedeem) {
-      status = 'Redeemable now, before the term ends at height ${v.lockHeight} (${v.blocksUntilTermEnd} block${v.blocksUntilTermEnd == 1 ? '' : 's'} to go): an early redeem also pays the early-redeem fee of ${formatBps(v.earlyRedeemFeeBps)} of the collateral (synced to ${v.tip})';
+      status = 'Redeemable now, before the term ends at height ${v.lockHeight} (${v.blocksUntilTermEnd} block${v.blocksUntilTermEnd == 1 ? '' : 's'} to go): an early redeem also pays the early-redeem fee of ${formatBps(v.earlyRedeemFeeBps)} of the debt (synced to ${v.tip})';
     } else if (v.redeemable) {
       status = 'Redeemable: the term ended at height ${v.lockHeight}, no early-redeem fee (synced to ${v.tip})';
     } else if (v.open) {
@@ -153,8 +153,12 @@ class _VaultScreenState extends State<VaultScreen> {
                     PreviewRow('Minted at', 'height ${v.mintHeight}'),
                     PreviewRow('Term ends', 'height ${v.lockHeight}'),
                     if (v.status == 'ACTIVE') PreviewRow('Term ends on', formatDate(v.lockTimeSecs), key: const Key('lock-date')),
+                    // rpcversion 8: the fees are dollars of the debt at the vault's stored mint price
+                    if (v.pMintMicroUsd > 0) PreviewRow('Mint price', formatUsdPerYec(v.pMintMicroUsd), key: const Key('mint-price')),
+                    if (v.status == 'ACTIVE' && v.protocolFeeCents > 0)
+                      PreviewRow('Protocol fee to redeem', '${formatYed(v.protocolFeeCents)}${v.protocolFeeZat > 0 ? ' · ${formatYec(v.protocolFeeZat)} YEC' : ''}', key: const Key('protocol-fee-redeem')),
                     if (v.status == 'ACTIVE' && v.earlyRedeem)
-                      PreviewRow('Early-redeem fee now', '${formatBps(v.earlyRedeemFeeBps)} · about ${formatYec(v.earlyRedeemFeeZat)} YEC${v.earlyRedeemFeeUsdCents > 0 ? ' (about ${formatYed(v.earlyRedeemFeeUsdCents)})' : ''}', key: const Key('early-fee-now')),
+                      PreviewRow('Early-redeem fee now', '${formatYed(v.earlyRedeemFeeUsdCents)} of the ${formatYed(v.cents)} debt (${formatBps(v.earlyRedeemFeeBps)}) · ${formatYec(v.earlyRedeemFeeZat)} YEC; none from height ${v.lockHeight}, the end of the term', key: const Key('early-fee-now')),
                     if (v.underwaterAtMicroUsd > 0)
                       PreviewRow('Claimable below', '${formatUsdPerYec(v.underwaterAtMicroUsd)} (under ${formatBps(v.claimThresholdBps)} of the debt)', key: const Key('claimable-at')),
                     if (v.claimPriceMicroUsd > 0) PreviewRow('Claim price now', formatUsdPerYec(v.claimPriceMicroUsd), key: const Key('claim-price')),
@@ -254,11 +258,13 @@ class _RedeemPreviewCard extends StatelessWidget {
             if (!released) PreviewRow('You burn', formatYed(p.burnCents), emphasis: true, color: c.yed),
             if (p.extraBurnCents > 0) PreviewRow('Of which remainder', formatYed(p.extraBurnCents)),
             if (p.changeCents > 0) PreviewRow('YED change', formatYed(p.changeCents)),
-            PreviewRow('Enforcement fee', p.enforcementFeeZat > 0 ? '${formatYec(p.enforcementFeeZat)} YEC' : 'none'),
+            // rpcversion 8: both fees are dollars of the debt, converted at the vault's mint price
+            PreviewRow('Protocol fee', p.protocolFeeZat > 0 ? '${formatYed(p.protocolFeeCents)} · ${formatYec(p.protocolFeeZat)} YEC' : 'none', key: const Key('protocol-fee')),
             if (p.earlyRedeemFeeZat > 0)
-              PreviewRow('Early-redeem fee', '${formatYec(p.earlyRedeemFeeZat)} YEC${p.earlyRedeemFeeUsdCents > 0 ? ' (about ${formatYed(p.earlyRedeemFeeUsdCents)})' : ''} (redeeming before the term ends at height ${p.lockHeight})', key: const Key('early-fee'), emphasis: true),
+              PreviewRow('Early-redeem fee', '${formatYed(p.earlyRedeemFeeUsdCents)} of the debt · ${formatYec(p.earlyRedeemFeeZat)} YEC (redeeming before the term ends at height ${p.lockHeight}; at or after it there is none)', key: const Key('early-fee'), emphasis: true),
+            if (p.pMintMicroUsd > 0) PreviewRow('Mint price', formatUsdPerYec(p.pMintMicroUsd)),
             if (p.payee.isNotEmpty) PreviewRow('Fees paid to', shorten(p.payee, head: 10, tail: 6)),
-            PreviewRow('Network fee', '${formatYec(p.networkFeeZat)} YEC (a post-quantum signature, ~8 KB)', key: const Key('network-fee')),
+            PreviewRow('Network fee', '${formatYec(p.networkFeeZat)} YEC${p.networkFeeUsdCents > 0 ? ' (about ${formatYed(p.networkFeeUsdCents)})' : ''} (a post-quantum signature, ~8 KB, dollars per KB)', key: const Key('network-fee')),
             PreviewRow('To', shorten(p.collateralAddress, head: 14, tail: 8)),
             PreviewRow('Expires', 'height ${p.expiryHeight}'),
           ],
@@ -308,7 +314,7 @@ class _RedeemedView extends StatelessWidget {
                     if (!released) PreviewRow('Burned', formatYed(r.burnCents), emphasis: true, color: c.yed),
                     if (r.extraBurnCents > 0) PreviewRow('Of which remainder', formatYed(r.extraBurnCents)),
                     if (r.changeCents > 0) PreviewRow('YED change', formatYed(r.changeCents)),
-                    if (r.feeZat > 0) PreviewRow('Enforcement fee', '${formatYec(r.feeZat - r.earlyRedeemFeeZat)} YEC'),
+                    if (r.feeZat > 0) PreviewRow('Protocol fee', '${formatYec(r.feeZat - r.earlyRedeemFeeZat)} YEC'),
                     if (r.earlyRedeemFeeZat > 0) PreviewRow('Early-redeem fee', '${formatYec(r.earlyRedeemFeeZat)} YEC'),
                     if (r.payee.isNotEmpty) PreviewRow('Fee paid to', shorten(r.payee, head: 10, tail: 6)),
                     PreviewRow('To', shorten(r.collateralAddress, head: 14, tail: 8)),

@@ -24,8 +24,9 @@ message YedTxid { string txid = 1; }                              // display ord
 message YedHex { string hex = 1; }
 message YedVaultFilter { string status = 1; uint32 count = 2; uint32 skip = 3; }
 message YedMintQuery { uint64 cents = 1; uint32 lockBlocks = 2; uint64 priceMicroUsd = 3; }
-message YedFeeQuery { int64 collateralZat = 1; }
-message YedPayeeQuery { uint32 refHeight = 1; int64 collateralZat = 2; string selectorHex = 3; }
+// rpcversion 8: yed_estimatefee <mintedCents> [priceMicroUsd] (the protocol fee of a debt); collateralZat is gone
+message YedFeeQuery { reserved 1; reserved "collateralZat"; uint64 mintedCents = 2; uint64 priceMicroUsd = 3; }
+message YedPayeeQuery { reserved 2; reserved "collateralZat"; uint32 refHeight = 1; string selectorHex = 3; }   // rpcversion 8: no collateral
 message YedBundleQuery { uint32 refHeight = 1; string selectorHex = 2; }
 // YED addresses (P2PKH or, rpcversion 7, the 53-character post-quantum form; mainnet yb, testnet yt, regtest yr) or
 // transparent forms; 1..100
@@ -63,10 +64,27 @@ message YellowbackAttestParams {
 message YellowbackPQParams {
   repeated int64 schemes = 1; bool falconActive = 2; int64 falconHeight = 3; int64 feeRateZatPerKB = 4;
 }
+// rpcversion 8 (the fee structure, fees spec section 3.4): params.fees, params.supplyCap. A JSON null
+// (the last band's uptoCents, an undefined price or cap) is 0 here.
+message YellowbackFeeBand { int64 bps = 1; int64 uptoCents = 2; }
+message YellowbackProtocolFee { int64 attestFeeBps = 1; repeated YellowbackFeeBand bands = 2; int64 floorCents = 3; string priceSource = 4; }
+message YellowbackNetworkRate {
+  int64 maxTxFeeCeilingZat = 1; int64 maxTxFeeUsdMicro = 2; int64 maxTxFeeZat = 3; int64 usdPerKBMicro = 4; int64 zatPerKB = 5;
+}
+message YellowbackNetworkFee {
+  int64 fallbackZatPerKB = 1; int64 flatZat = 2; int64 floorZatPerKB = 3; int64 maxTxFeeZat = 4; YellowbackNetworkRate plain = 5;
+  int64 priceMicroUsd = 6; string priceSource = 7; YellowbackNetworkRate yellowback = 8;
+}
+message YellowbackFeeParams { repeated int64 earlyRedeemFeeBps = 1; YellowbackNetworkFee network = 2; YellowbackProtocolFee protocol = 3; }
+message YellowbackSupplyCap {
+  int64 capCents = 1; int64 circulatingZat = 2; int64 issuedBeforeStartZat = 3; int64 maxVaultCents = 4; int64 maxVaultShareBps = 5;
+  int64 priceMicroUsd = 6; int64 vaultShareFloorCents = 7;
+}
 message YellowbackParams {
   reserved 1, 4; reserved "abandonBlocks", "enforceUntilHeight";      // rpcversion 5: retired (upgrade plan section 6)
+  reserved 5, 6; reserved "feeBps", "feeMinZat";                      // rpcversion 8: the flat collateral fee is gone
   YellowbackAttestParams attest = 2; repeated YellowbackClassParams classes = 3;
-  int64 feeBps = 5; int64 feeMinZat = 6; int64 feeZat = 7; int64 grace = 8;
+  int64 feeZat = 7; int64 grace = 8;
   int64 refLag = 9; int64 refWindow = 10; int64 startHeight = 11; int64 tokenValueZat = 12; int64 supplyCapBps = 13;
   int64 globalRatioHaltBps = 14; int64 recapRatioBps = 15; int64 sigmaRefBps = 16;
   string attestorSetId = 17; int64 claimDelay = 18;                   // rpcversion 5: the YED attestor set (a vault primitive set id), CLAIM_DELAY
@@ -74,6 +92,7 @@ message YellowbackParams {
   // (A, B, C), the sigma multiplier's cap (10000 = pinned at 1) and whether a claim is valid in term.
   int64 claimThresholdBps = 19; repeated int64 earlyRedeemFeeBps = 20; int64 sigmaMultMaxBps = 21; bool inTermClaims = 22;
   YellowbackPQParams pq = 23;                                         // rpcversion 7
+  YellowbackFeeParams fees = 24; int64 maxMintCents = 25; YellowbackSupplyCap supplyCap = 26;   // rpcversion 8
 }
 message YellowbackInfo {
   // rpcversion 5 (the vault upgrade, upgrade plan section 6): activation, enforcement, sunset, valve and abandonment are gone.
@@ -156,11 +175,13 @@ message YedVault {
   string txid = 21; bool unbacked = 22; int64 underwaterAt = 23; string voidReason = 24; uint32 vout = 25;
   string scriptPubKey = 26; repeated YedVaultIntent intents = 27;     // rpcversion 5: the V template (hex); intents while CLAIMING
   int64 ownerScheme = 28; string ownerHash = 29;                      // rpcversion 7: the post-quantum owner (scheme; 32-byte key hash, hex)
+  int64 pMint = 30;                                                   // rpcversion 8: the stored mint price (µUSD/YEC) every fee of the vault is struck at
 }
 message YedClaimable {
   int64 attestFeeZat = 1; int64 claimHeight = 2; string claimPath = 3; int64 collateralZat = 4; int64 emergencyOpenAt = 5;
   int64 feeZat = 6; int64 mintedCents = 7; int64 noticeHeight = 8; bool noticed = 9; string ownerAddress = 10; int64 pClaim = 11;
   int64 residualZat = 12; int64 underwaterAt = 13; string vault = 14;
+  int64 pMint = 17;                                                   // rpcversion 8: the vault's pMint; feeZat is FEE-1' of the debt at it
   // rpcversion 6 (in-term claims, IT-7): every ACTIVE vault whose claim branch is open is listed, in term
   // too; claimable is false while it is above theta, and underwaterAt is then the price at which it becomes so.
   bool claimable = 15; int64 lockHeight = 16;
@@ -176,12 +197,15 @@ message YedCollateralEstimate {
   int64 aMint = 1; bool armed = 2; int64 attestFeeZat = 3; int64 baseRatioBps = 4; repeated int64 bundleSeqs = 5;
   int64 claimHeight = 6; int64 divergenceBps = 7; int64 lockHeight = 8; int64 minRatioBps = 9; int64 pMint = 10;
   int64 refHeight = 11; int64 requiredZat = 12; int64 sigmaMultBps = 13; string source = 14; string termClass = 15; int64 xMint = 16;
+  int64 protocolFeeCents = 17; int64 protocolFeeZat = 18;             // rpcversion 8: FEE-1' of the debt at pMint
 }
-message YedFeeEstimate { int64 feeZat = 1; }
+// rpcversion 8: FEE-1' of the debt in cents, in zat at pMint (0 when undefined), and AFEE-1''s share
+message YedFeeEstimate { int64 feeZat = 1; int64 attestFeeZat = 2; int64 feeCents = 3; int64 pMint = 4; }
 message YedPayeeDefault { string payoutAddress = 1; int64 weight = 2; }
 message YedPayeePolicy { int64 accuracyWindow = 1; int64 penaltyBlocks = 2; int64 tiltBps = 3; }
 message YedPayee {
-  YedPayeeDefault default = 1; repeated string eligible = 2; int64 feeZat = 3; YedPayeePolicy policy = 4; string preferred = 5;
+  reserved 3; reserved "feeZat";                                      // rpcversion 8: the fee is the estimate RPCs'
+  YedPayeeDefault default = 1; repeated string eligible = 2; YedPayeePolicy policy = 4; string preferred = 5;
 }
 
 // ---- attestation ---------------------------------------------------------------------------

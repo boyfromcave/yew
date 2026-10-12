@@ -630,27 +630,42 @@ impl Wallet {
         let _ = self.store.set_meta(
             "pq_terms",
             &format!(
-                "{} {} {}",
+                "{} {} {} {} {} {} {}",
                 t.fee_rate_zat_per_kb,
                 t.falcon_height.map(|h| h as i64).unwrap_or(-1),
-                u8::from(t.falcon_active)
+                u8::from(t.falcon_active),
+                t.yed_rate_zat_per_kb,
+                t.floor_rate_zat_per_kb,
+                t.flat_zat,
+                t.max_fee_zat
             ),
         );
         Ok(t)
     }
 
-    /// The terms [`Wallet::note_server_params`] last remembered in the store, if any.
+    /// The terms [`Wallet::note_server_params`] last remembered in the store, if any. A value
+    /// written before rpcversion 8 (three fields) reads with the default rates for the rest.
     fn stored_pq_terms(store: &Store) -> Option<crate::build::terms::PqTerms> {
         let v = store.meta("pq_terms").ok()??;
         let mut it = v.split(' ');
         let rate: i64 = it.next()?.parse().ok()?;
         let height: i64 = it.next()?.parse().ok()?;
         let active: u8 = it.next()?.parse().ok()?;
+        let d = crate::build::terms::PqTerms::default();
+        let mut next =
+            |dflt: i64| -> i64 { it.next().and_then(|x| x.parse().ok()).unwrap_or(dflt) };
+        let floor = crate::params::RELAY_FLOOR_ZAT_PER_KB;
+        let yed = next(d.yed_rate_zat_per_kb).max(floor);
+        let floor_rate = next(d.floor_rate_zat_per_kb).max(floor);
+        let flat =
+            next(d.flat_zat).clamp(crate::params::FEE_ZAT, crate::params::MAX_YED_TX_FEE_ZAT);
+        let cap = next(d.max_fee_zat).clamp(flat, crate::params::MAX_YED_TX_FEE_ZAT);
         Some(crate::build::terms::PqTerms {
-            fee_rate_zat_per_kb: rate.clamp(
-                crate::params::RELAY_FLOOR_ZAT_PER_KB,
-                crate::params::MAX_PQ_FEE_RATE_ZAT_PER_KB,
-            ),
+            fee_rate_zat_per_kb: rate.max(floor),
+            yed_rate_zat_per_kb: yed,
+            floor_rate_zat_per_kb: floor_rate,
+            flat_zat: flat,
+            max_fee_zat: cap,
             falcon_height: u64::try_from(height).ok(),
             falcon_active: active != 0,
         })
@@ -1003,6 +1018,7 @@ mod tests {
                 falcon_height: 0,
                 fee_rate_zat_per_kb: 300,
             }),
+            fees: Some(crate::build::terms::fallback_fee_params(300)),
             ..Default::default()
         };
         w.note_server_params(Some(&p)).unwrap();
