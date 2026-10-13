@@ -865,6 +865,12 @@ pub const COIN: i64 = 100_000_000;
 /// `SIGHASH_ALL`, the only hash type YEW signs with.
 pub const SIGHASH_ALL: u32 = 1;
 
+/// `SIGHASH_ALL | SIGHASH_ANYONECANPAY` (`0x81`), the hash type every set signature is made over
+/// (`OP_CHECKSETSIG`, audit 01/V-2: a fee input added after the set signed does not break it).
+/// YEW never makes a set signature (sets sign through the node's `set_sign*` RPCs); the constant
+/// is here so the vector replay checks the node's set-signature digests.
+pub const SET_SIGHASH: u32 = SIGHASH_ALL | 0x80;
+
 #[cfg(test)]
 mod tests {
     use super::*;

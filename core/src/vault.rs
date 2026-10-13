@@ -777,8 +777,11 @@ mod tests {
         owner_spend_script_sig("V", SEL_UNLOCK, &[0u8; 7_857], &[0u8; 32]);
     }
 
-    /// The ZIP-243 sighash under the Vault branch id (`spends[]`): YEW's signer computes the
-    /// node's `SignatureHash(scriptCode = V or I, tx, nIn, SIGHASH_ALL, amount, 0x6d5b7a31)`.
+    /// The ZIP-243 sighash under the Vault branch id (`spends[]`): YEW's sighash computes the
+    /// node's `SignatureHash(scriptCode = V or I, tx, nIn, SIGHASH_ALL|SIGHASH_ANYONECANPAY,
+    /// amount, 0x6d5b7a31)`, the hash type set signatures are made over (01/V-2). YEW never
+    /// makes a set signature itself (sets sign through the node's `set_sign*` RPCs); the owner
+    /// spends above stay `SIGHASH_ALL`.
     #[test]
     fn spends_sighash_under_the_vault_branch_id() {
         let v = vectors();
@@ -796,11 +799,22 @@ mod tests {
                     e["nIn"].as_u64().unwrap() as usize,
                     &code,
                     e["amount"].as_i64().unwrap(),
-                    crate::params::SIGHASH_ALL,
+                    crate::params::SET_SIGHASH,
                     branch,
                 )
                 .unwrap();
             assert_eq!(got, h::<32>(&e["sighash"]), "{}", e["name"]);
+            // Under SIGHASH_ALL the digest differs: the node vector is not the pre-01/V-2 one.
+            let all = tx
+                .sighash(
+                    e["nIn"].as_u64().unwrap() as usize,
+                    &code,
+                    e["amount"].as_i64().unwrap(),
+                    crate::params::SIGHASH_ALL,
+                    branch,
+                )
+                .unwrap();
+            assert_ne!(all, h::<32>(&e["sighash"]), "{}", e["name"]);
             // And the scriptSig's selector parses for the template it spends.
             let kind = if parse_vault(&code).is_some() {
                 Kind::Vault
