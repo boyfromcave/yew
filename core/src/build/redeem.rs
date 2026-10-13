@@ -954,6 +954,7 @@ mod tests {
             owner_height: 498,
             app_height: 498,
             p_mint: 50_000,
+            cancel: Default::default(),
         };
         let r = crate::params::Network::Regtest;
         // IT-9′ (rpcversion 8): class B is 2.5 % of the $100 debt = $2.50, at the vault's pMint

@@ -128,7 +128,7 @@ class FakeWalletApi implements WalletApi {
 
   // In-term claims (rpcversion 6): the core's semantics — redeemable from the block after the mint,
   // the early-redeem fee (class A 5 %) before lockHeight, the warning within 25 % above underwaterAt.
-  VaultSummary vault({required String txid, String status = 'ACTIVE', int cents = 2500, int lockHeight = 528, int tip = 484, bool underwater = false, String voidReason = '', int grace = 20, int claimPrice = 520000}) => VaultSummary(
+  VaultSummary vault({required String txid, String status = 'ACTIVE', int cents = 2500, int lockHeight = 528, int tip = 484, bool underwater = false, String voidReason = '', int grace = 20, int claimPrice = 520000, int cancelCount = 0, int cancelQuietUntil = 0, int heldResiduals = 0}) => VaultSummary(
     vaultTxid: txid,
     status: status,
     ownerAddress: fakeOwnerPq,
@@ -171,9 +171,23 @@ class FakeWalletApi implements WalletApi {
     claimOpen: status == 'ACTIVE',
     claiming: status == 'CLAIMING',
     reopened: status == 'REOPENED',
+    // The per-vault cancel limit (CAN-2, CAN-3), the core's semantics: one more co-signer per recent
+    // cancel (at most 3 on regtest), the leftover held while inside the quiet period or claimable.
+    cancelCount: cancelCount,
+    cancelsRequired: (cancelQuietUntil > tip + 1 ? cancelCount + 1 : 1).clamp(1, 3),
+    cancelQuietUntil: cancelQuietUntil,
+    blocksUntilQuietEnd: cancelQuietUntil > tip + 1 ? cancelQuietUntil - (tip + 1) : 0,
+    heldResiduals: heldResiduals,
+    heldReason: heldResiduals == 0 || status == 'CLOSED' || status == 'CLAIMED'
+        ? ''
+        : cancelQuietUntil > tip + 1
+            ? 'held after a cancelled claim until height $cancelQuietUntil (the quiet period), and after that only while the vault cannot be claimed; redeeming the vault releases it'
+            : underwater
+                ? 'held while the vault can be claimed; it is released once the vault cannot be claimed, or once the vault is closed (redeem it)'
+                : '',
   );
 
-  ClaimIntent intent({required String txid, String role = 'claimant', String state = 'PENDING', int height = 480, int delay = 10, int tip = 484, int valueZat = 937499000, bool pqMove = false}) {
+  ClaimIntent intent({required String txid, String role = 'claimant', String state = 'PENDING', int height = 480, int delay = 10, int tip = 484, int valueZat = 937499000, bool pqMove = false, String heldReason = ''}) {
     final release = height == 0 ? 0 : height + delay;
     return ClaimIntent(
       intent: '$txid:0',
@@ -184,10 +198,12 @@ class FakeWalletApi implements WalletApi {
       height: height,
       releaseHeight: release,
       blocksUntilRelease: release == 0 ? 0 : (release - (tip + 1)).clamp(0, 1 << 30),
-      releasable: pqMove || (state == 'PENDING' && height > 0 && release <= tip + 1),
+      releasable: pqMove || (state == 'PENDING' && height > 0 && release <= tip + 1 && heldReason.isEmpty),
       pqMove: pqMove,
       cancelled: state == 'CANCELLED',
       releaseTimeSecs: nowSecs + (release - tip) * 75,
+      held: heldReason.isNotEmpty,
+      heldReason: heldReason,
       spendTxid: '',
       note: '',
     );
@@ -383,7 +399,7 @@ class FakeWalletApi implements WalletApi {
     intentsAnswer = [
       for (final x in intentsAnswer)
         if (x.intent == intent)
-          ClaimIntent(intent: x.intent, vaultTxid: x.vaultTxid, role: x.role, valueZat: x.valueZat, state: 'RELEASING', height: x.height, releaseHeight: x.releaseHeight, blocksUntilRelease: 0, releasable: false, pqMove: false, cancelled: false, releaseTimeSecs: x.releaseTimeSecs, spendTxid: 're' * 32, note: '')
+          ClaimIntent(intent: x.intent, vaultTxid: x.vaultTxid, role: x.role, valueZat: x.valueZat, state: 'RELEASING', height: x.height, releaseHeight: x.releaseHeight, blocksUntilRelease: 0, releasable: false, pqMove: false, cancelled: false, releaseTimeSecs: x.releaseTimeSecs, held: false, heldReason: '', spendTxid: 're' * 32, note: '')
         else
           x,
     ];

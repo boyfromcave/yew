@@ -1700,6 +1700,8 @@ impl SseDecode for crate::api::ClaimIntent {
         let mut var_pqMove = <bool>::sse_decode(deserializer);
         let mut var_cancelled = <bool>::sse_decode(deserializer);
         let mut var_releaseTimeSecs = <i64>::sse_decode(deserializer);
+        let mut var_held = <bool>::sse_decode(deserializer);
+        let mut var_heldReason = <String>::sse_decode(deserializer);
         let mut var_spendTxid = <String>::sse_decode(deserializer);
         let mut var_note = <String>::sse_decode(deserializer);
         return crate::api::ClaimIntent {
@@ -1715,6 +1717,8 @@ impl SseDecode for crate::api::ClaimIntent {
             pq_move: var_pqMove,
             cancelled: var_cancelled,
             release_time_secs: var_releaseTimeSecs,
+            held: var_held,
+            held_reason: var_heldReason,
             spend_txid: var_spendTxid,
             note: var_note,
         };
@@ -2599,6 +2603,12 @@ impl SseDecode for crate::api::VaultSummary {
         let mut var_claimOpen = <bool>::sse_decode(deserializer);
         let mut var_claiming = <bool>::sse_decode(deserializer);
         let mut var_reopened = <bool>::sse_decode(deserializer);
+        let mut var_cancelCount = <i64>::sse_decode(deserializer);
+        let mut var_cancelsRequired = <i64>::sse_decode(deserializer);
+        let mut var_cancelQuietUntil = <i64>::sse_decode(deserializer);
+        let mut var_blocksUntilQuietEnd = <i64>::sse_decode(deserializer);
+        let mut var_heldResiduals = <i64>::sse_decode(deserializer);
+        let mut var_heldReason = <String>::sse_decode(deserializer);
         return crate::api::VaultSummary {
             vault_txid: var_vaultTxid,
             status: var_status,
@@ -2641,6 +2651,12 @@ impl SseDecode for crate::api::VaultSummary {
             claim_open: var_claimOpen,
             claiming: var_claiming,
             reopened: var_reopened,
+            cancel_count: var_cancelCount,
+            cancels_required: var_cancelsRequired,
+            cancel_quiet_until: var_cancelQuietUntil,
+            blocks_until_quiet_end: var_blocksUntilQuietEnd,
+            held_residuals: var_heldResiduals,
+            held_reason: var_heldReason,
         };
     }
 }
@@ -2935,6 +2951,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::ClaimIntent {
             self.pq_move.into_into_dart().into_dart(),
             self.cancelled.into_into_dart().into_dart(),
             self.release_time_secs.into_into_dart().into_dart(),
+            self.held.into_into_dart().into_dart(),
+            self.held_reason.into_into_dart().into_dart(),
             self.spend_txid.into_into_dart().into_dart(),
             self.note.into_into_dart().into_dart(),
         ]
@@ -3599,6 +3617,12 @@ impl flutter_rust_bridge::IntoDart for crate::api::VaultSummary {
             self.claim_open.into_into_dart().into_dart(),
             self.claiming.into_into_dart().into_dart(),
             self.reopened.into_into_dart().into_dart(),
+            self.cancel_count.into_into_dart().into_dart(),
+            self.cancels_required.into_into_dart().into_dart(),
+            self.cancel_quiet_until.into_into_dart().into_dart(),
+            self.blocks_until_quiet_end.into_into_dart().into_dart(),
+            self.held_residuals.into_into_dart().into_dart(),
+            self.held_reason.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -3835,6 +3859,8 @@ impl SseEncode for crate::api::ClaimIntent {
         <bool>::sse_encode(self.pq_move, serializer);
         <bool>::sse_encode(self.cancelled, serializer);
         <i64>::sse_encode(self.release_time_secs, serializer);
+        <bool>::sse_encode(self.held, serializer);
+        <String>::sse_encode(self.held_reason, serializer);
         <String>::sse_encode(self.spend_txid, serializer);
         <String>::sse_encode(self.note, serializer);
     }
@@ -4474,6 +4500,12 @@ impl SseEncode for crate::api::VaultSummary {
         <bool>::sse_encode(self.claim_open, serializer);
         <bool>::sse_encode(self.claiming, serializer);
         <bool>::sse_encode(self.reopened, serializer);
+        <i64>::sse_encode(self.cancel_count, serializer);
+        <i64>::sse_encode(self.cancels_required, serializer);
+        <i64>::sse_encode(self.cancel_quiet_until, serializer);
+        <i64>::sse_encode(self.blocks_until_quiet_end, serializer);
+        <i64>::sse_encode(self.held_residuals, serializer);
+        <String>::sse_encode(self.held_reason, serializer);
     }
 }
 

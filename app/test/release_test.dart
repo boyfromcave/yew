@@ -79,4 +79,13 @@ void main() {
     expect(find.textContaining('being claimed'), findsOneWidget);
     expect(find.textContaining('claim cancelled by the attestor set: the vault continues at'), findsOneWidget);
   });
+
+  testWidgets('a leftover held by its vault after a cancelled claim is listed as held, with why, and not releasable', (tester) async {
+    final h = Harness(withWallet: true);
+    const why = 'held while the vault can be claimed; it is released once the vault cannot be claimed, or once the vault is closed (redeem it)';
+    h.api.intentsAnswer = [h.api.intent(txid: 'a6' * 32, role: 'residual', height: 470, valueZat: 300000, heldReason: why)];
+    await openYellowback(tester, h);
+    expect(find.text('your leftover from a cancelled claim · $why'), findsOneWidget);
+    expect(h.api.intentsAnswer.single.releasable, isFalse);
+  });
 }

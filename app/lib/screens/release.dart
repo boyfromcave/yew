@@ -22,6 +22,9 @@ String intentLabel(ClaimIntent i) {
   switch (i.state) {
     case 'PENDING':
       if (i.height == 0) return '$what · waiting for the claim to confirm';
+      // CAN-3: the leftover of a cancelled claim, held by the vault until it closes, or past its
+      // quiet period while it cannot be claimed.
+      if (i.held) return 'your leftover from a cancelled claim · ${i.heldReason}';
       if (i.releasable) return '$what · releasable now';
       return '$what · released from height ${i.releaseHeight} · ${i.blocksUntilRelease} block${i.blocksUntilRelease == 1 ? '' : 's'} to go (${formatDate(i.releaseTimeSecs)})';
     case 'RELEASING':

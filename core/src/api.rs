@@ -871,6 +871,24 @@ pub struct VaultSummary {
     /// `REOPENED`: an attestor cancelled the claim and the vault lives on at `closing_txid`
     /// (U-24), the same position at a new outpoint (shown there; this row is history).
     pub reopened: bool,
+    /// `cancelCount` (the per-vault cancel limit, CAN-2): the claims of this position the
+    /// attestor set cancelled that still count (0 at the mint; it survives every re-creation).
+    pub cancel_count: i64,
+    /// `cancelsRequired`: how many attestors must sign together to cancel a claim of this vault
+    /// that confirms in the next block (1, one more for each recent cancel, at most 4; regtest 3).
+    /// 0 = not yet synced.
+    pub cancels_required: i64,
+    /// `cancelQuietUntil`: from this height the count starts again from one; 0 when the vault was
+    /// never cancelled.
+    pub cancel_quiet_until: i64,
+    /// Blocks until `cancel_quiet_until` (0 once reached, or never cancelled).
+    pub blocks_until_quiet_end: i64,
+    /// `heldResiduals` (CAN-3): how many of the owner's leftovers (the residual intents of
+    /// cancelled claims) this vault holds.
+    pub held_residuals: i64,
+    /// Why those leftovers cannot be released now (empty when none is held, or when the release
+    /// may pass): release needs the vault closed, or past its quiet period and not claimable.
+    pub held_reason: String,
 }
 
 /// A claim intent paying this wallet (the vault upgrade, U-15, U-23, U-24): the claimant's
@@ -908,6 +926,11 @@ pub struct ClaimIntent {
     pub cancelled: bool,
     /// The release date estimate (Unix seconds; `now + (releaseHeight − tip) · 75`).
     pub release_time_secs: i64,
+    /// A residual of a cancelled claim that the vault now holds (CAN-3): the node refuses its
+    /// release until the vault is closed, or past its quiet period and not claimable.
+    pub held: bool,
+    /// Why it is held now (empty unless [`ClaimIntent::held`]); the text to show.
+    pub held_reason: String,
     /// The release (or the transaction that spent it), empty until known.
     pub spend_txid: String,
     /// What to tell the user.
@@ -2742,16 +2765,34 @@ fn vault_summary(
         claim_open: active && tip >= app_from,
         claiming: v.status == "CLAIMING",
         reopened: v.status == "REOPENED",
+        cancel_count: v.cancel.count,
+        cancels_required: v.cancel.required,
+        cancel_quiet_until: v.cancel.quiet_until as i64,
+        blocks_until_quiet_end: if v.cancel.quiet_until == 0 {
+            0
+        } else {
+            (v.cancel.quiet_until as i64 - (tip as i64 + 1)).max(0)
+        },
+        held_residuals: v.cancel.held_residuals.len() as i64,
+        held_reason: if v.cancel.held_residuals.is_empty() {
+            String::new()
+        } else {
+            crate::build::release::held_reason(v, tip)
+                .map(|w| w.trim_start_matches("intent-residual-held: ").to_string())
+                .unwrap_or_default()
+        },
     }
 }
 
 fn claim_intent_of(
     i: &crate::store::IntentRow,
+    vaults: &[crate::store::VaultRow],
     tip: u64,
     network: Network,
     now: i64,
 ) -> ClaimIntent {
     let rh = i.release_height().unwrap_or(0);
+    let held = crate::build::release::residual_held(i, vaults, tip);
     ClaimIntent {
         intent: format!("{}:{}", txid_hex(&i.outpoint.txid), i.outpoint.n),
         vault_txid: txid_hex(&i.vault_txid),
@@ -2765,7 +2806,7 @@ fn claim_intent_of(
         } else {
             (rh as i64 - (tip as i64 + 1)).max(0)
         },
-        releasable: crate::build::release::not_releasable(i, tip).is_none(),
+        releasable: crate::build::release::not_releasable(i, tip).is_none() && held.is_none(),
         pq_move: crate::build::release::pq_coin(i).is_some(),
         cancelled: i.state == crate::store::IntentState::Cancelled,
         release_time_secs: if rh == 0 {
@@ -2773,6 +2814,10 @@ fn claim_intent_of(
         } else {
             height_time(network, rh, tip, now)
         },
+        held: held.is_some(),
+        held_reason: held
+            .map(|w| w.trim_start_matches("intent-residual-held: ").to_string())
+            .unwrap_or_default(),
         spend_txid: hex_or_empty(&i.spend_txid),
         note: i.note.clone(),
     }
@@ -3118,10 +3163,11 @@ pub fn claim_intents() -> Result<Vec<ClaimIntent>, YewError> {
         let tip = synced_tip(o)?;
         let network = o.wallet.network;
         let now = now_secs();
+        let vaults = o.wallet.vaults()?;
         Ok(o.wallet
             .intents()?
             .iter()
-            .map(|i| claim_intent_of(i, tip, network, now))
+            .map(|i| claim_intent_of(i, &vaults, tip, network, now))
             .collect())
     })
 }
@@ -3632,6 +3678,7 @@ mod tests {
             owner_height: 499,
             app_height: 499,
             p_mint: 520_000,
+            cancel: Default::default(),
         };
         const NOW: i64 = 1_790_000_000;
         let v = vault_summary(&vault, 510, Some(520_000), Network::Regtest, &[], NOW);
@@ -3744,6 +3791,99 @@ mod tests {
             (250, 1_201_923_077, 625)
         );
         assert_eq!(v.renew_lock_blocks, 170_000);
+    }
+
+    /// The per-vault cancel limit (CAN-2, CAN-3) on the vault summary: the count, the co-signers a
+    /// cancel now needs, the end of the quiet period, and the held leftovers with why they wait.
+    #[test]
+    fn vault_summary_cancel_limit() {
+        use crate::store::{VaultCancel, VaultRow};
+        let base = VaultRow {
+            txid: [0xab; 32],
+            vout: 0,
+            status: "ACTIVE".into(),
+            owner_hash160: [2; 20],
+            owner: crate::pq::PqKeyId {
+                scheme: 1,
+                hash: [2; 32],
+            },
+            term_class: "A".into(),
+            lock_height: 900,
+            claim_height: 900,
+            collateral_zat: 1_000_000_000,
+            minted_cents: 10_000,
+            mint_height: 90,
+            claimable: false,
+            underwater_at: 0,
+            sweep_before: 0,
+            close_height: 0,
+            closing_txid: String::new(),
+            void_reason: String::new(),
+            updated_height: 150,
+            owner_height: 91,
+            app_height: 91,
+            p_mint: 520_000,
+            cancel: VaultCancel {
+                count: 0,
+                required: 1,
+                quiet_until: 0,
+                held_residuals: vec![],
+            },
+        };
+        const NOW: i64 = 1_790_000_000;
+        let never = vault_summary(&base, 150, None, Network::Regtest, &[], NOW);
+        assert_eq!(
+            (
+                never.cancel_count,
+                never.cancels_required,
+                never.cancel_quiet_until,
+                never.blocks_until_quiet_end
+            ),
+            (0, 1, 0, 0)
+        );
+        assert!(never.held_residuals == 0 && never.held_reason.is_empty());
+        let cancelled = VaultRow {
+            cancel: VaultCancel {
+                count: 2,
+                required: 3,
+                quiet_until: 190,
+                held_residuals: vec![crate::tx::OutPoint {
+                    txid: [5; 32],
+                    n: 1,
+                }],
+            },
+            ..base.clone()
+        };
+        let v = vault_summary(&cancelled, 150, None, Network::Regtest, &[], NOW);
+        assert_eq!(
+            (
+                v.cancel_count,
+                v.cancels_required,
+                v.cancel_quiet_until,
+                v.blocks_until_quiet_end,
+                v.held_residuals
+            ),
+            (2, 3, 190, 39, 1)
+        );
+        assert!(
+            v.held_reason.contains("190") && !v.held_reason.starts_with("intent-"),
+            "{}",
+            v.held_reason
+        );
+        // Past the quiet period and not claimable: the release may pass, no reason shown.
+        let v = vault_summary(&cancelled, 189, None, Network::Regtest, &[], NOW);
+        assert!(v.blocks_until_quiet_end == 0 && v.held_reason.is_empty());
+        // Claimable: still held.
+        let claimable = VaultRow {
+            claimable: true,
+            ..cancelled.clone()
+        };
+        let v = vault_summary(&claimable, 300, None, Network::Regtest, &[], NOW);
+        assert!(
+            v.held_reason.contains("can be claimed"),
+            "{}",
+            v.held_reason
+        );
     }
 
     #[test]

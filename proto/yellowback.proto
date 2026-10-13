@@ -179,6 +179,16 @@ message YedVault {
   string scriptPubKey = 26; repeated YedVaultIntent intents = 27;     // rpcversion 5: the V template (hex); intents while CLAIMING
   int64 ownerScheme = 28; string ownerHash = 29;                      // rpcversion 7: the post-quantum owner (scheme; 32-byte key hash, hex)
   int64 pMint = 30;                                                   // rpcversion 8: the stored mint price (µUSD/YEC) every fee of the vault is struck at
+  // The per-vault cancel limit (CAN-2, CAN-3; additive, rpcversion unchanged). cancelCount: the position's cancels
+  // counted by the escalation schedule (survives every re-creation, 0 at the mint). cancelsRequired: the distinct
+  // current attestor-set members whose co-signatures a cancel of its claim needs if it confirms in the next block
+  // (min(q + 1, CANCEL_SIGNERS_MAX); q = cancelCount inside the quiet period, else 0). cancelQuietUntil: the first
+  // height at which the schedule starts from one again (lastCancelHeight + CANCEL_QUIET); the node's null (never
+  // cancelled) is 0 here. heldResiduals: the residual intents of cancelled claims this position holds (empty when
+  // none); vault_release of one is refused (intent-residual-held) until the position is CLOSED or CLAIMED, or
+  // ACTIVE at or after cancelQuietUntil.
+  int64 cancelCount = 31; int64 cancelsRequired = 32; int64 cancelQuietUntil = 33;
+  repeated YedOutpoint heldResiduals = 34;
 }
 message YedClaimable {
   int64 attestFeeZat = 1; int64 claimHeight = 2; string claimPath = 3; int64 collateralZat = 4; int64 emergencyOpenAt = 5;
@@ -266,10 +276,17 @@ message VaultDbTip { string hash = 1; int64 height = 2; }
 message VaultInfo {
   string branchid = 1; int64 activationheight = 2; bool active = 3; int64 height = 4; VaultDbTip dbtip = 5;
   int64 sets = 6; int64 vaults = 7; int64 intents = 8; double lockedvalue = 9; string statehash = 10;
+  // audit 01/V-7: the set the registered module (YED) governs on this node ("" when the node
+  // answers null: it governs none) and whether it governs one. Two nodes whose attestorsetid
+  // differ compute different set state for the same blocks, so a client compares it.
+  string attestorsetid = 11; bool moduleactive = 12;
 }
 message VaultSetMember {
   string key = 1; string status = 2; bool current = 3; bool live = 4; int64 joinheight = 5; int64 lastact = 6;
   string bondoutpoint = 7; double bondvalue = 8; int64 bondlocktime = 9; bool bondfrozen = 10;
+  // The bond exit delay (node b22b8d6): present (non-zero) only while the member has left and its bond
+  // is still indexed; unlockheight = exitheight + the set's maturity, the first block the bond may be spent in.
+  int64 exitheight = 11; int64 unlockheight = 12;
 }
 message VaultSet {
   string setid = 1; int64 height = 2; int64 seats = 3; int64 unlockthreshold = 4; int64 cancelthreshold = 5;

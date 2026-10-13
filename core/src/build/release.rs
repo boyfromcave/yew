@@ -33,7 +33,7 @@ use crate::net::{CompactClient, Validation};
 use crate::params::{TOKEN_VALUE, TX_EXPIRY_DELTA};
 use crate::pq::PqKeyId;
 use crate::script;
-use crate::store::{HistoryRow, IntentRow, IntentState};
+use crate::store::{HistoryRow, IntentRow, IntentState, VaultRow};
 use crate::tx::{txid_hex, OutPoint, Transaction, TxIn, TxOut};
 use crate::vault;
 use crate::wallet::{Wallet, WalletError};
@@ -115,6 +115,49 @@ pub fn not_releasable(row: &IntentRow, tip: u64) -> Option<String> {
     }
 }
 
+/// The held residual (the per-vault cancel limit, CAN-3): when an attestor-set cancel re-created
+/// the owner's vault, the residual intent of that cancelled claim is held by the position (the
+/// vault's `heldResiduals`, as the last sync read it). The node releases it only once the position
+/// is CLOSED or CLAIMED, or ACTIVE from `cancelQuietUntil` while no claim on it could pass. Returns
+/// why `row` is held now (the text to show), or `None` when it is not held or the release may
+/// pass. The wallet judges "could not be claimed" by the node's `claimable` at the last sync; the
+/// node's own test reads every reference height a claim may cite, so its refusal
+/// (`intent-residual-held`) still stands where the two differ.
+pub fn residual_held(row: &IntentRow, vaults: &[VaultRow], tip: u64) -> Option<String> {
+    if pq_coin(row).is_some() || !row.state.open() {
+        return None;
+    }
+    let v = vaults
+        .iter()
+        .find(|v| v.cancel.held_residuals.contains(&row.outpoint))?;
+    held_reason(v, tip)
+}
+
+/// Why a residual held by vault `v` cannot be released in the next block (`None`: it may be).
+pub fn held_reason(v: &VaultRow, tip: u64) -> Option<String> {
+    let next = tip + 1;
+    match v.status.as_str() {
+        "CLOSED" | "CLAIMED" => None,
+        "ACTIVE" if next < v.cancel.quiet_until => Some(format!(
+            "intent-residual-held: held after a cancelled claim until height {} (the quiet period), \
+             and after that only while the vault cannot be claimed; redeeming the vault releases it",
+            v.cancel.quiet_until
+        )),
+        "ACTIVE" if v.claimable => Some(
+            "intent-residual-held: held while the vault can be claimed; it is released once the \
+             vault cannot be claimed, or once the vault is closed (redeem it)"
+                .into(),
+        ),
+        "ACTIVE" => None,
+        _ => Some(
+            "intent-residual-held: held while a claim of the vault is in progress; it is released \
+             once the vault is closed, or active again and past its quiet period while it cannot \
+             be claimed"
+                .into(),
+        ),
+    }
+}
+
 /// Build and sign the release of `row` for the next block (`branch_id` is the next block's, the
 /// Vault id after activation). Nothing is broadcast; [`broadcast`] sends the same bytes.
 pub fn build_release(
@@ -124,6 +167,9 @@ pub fn build_release(
     branch_id: u32,
 ) -> Result<ReleaseBuild, WalletError> {
     if let Some(why) = not_releasable(row, tip) {
+        return Err(WalletError::Other(why));
+    }
+    if let Some(why) = residual_held(row, &wallet.store.vaults()?, tip) {
         return Err(WalletError::Other(why));
     }
     if let Some((coin, owner)) = pq_coin(row) {
@@ -605,6 +651,72 @@ mod tests {
             pq_spend_txid: [0; 32],
             note: String::new(),
         }
+    }
+
+    fn holder(status: &str, quiet_until: u64, claimable: bool, held: Vec<OutPoint>) -> VaultRow {
+        VaultRow {
+            txid: [9; 32],
+            vout: 0,
+            status: status.into(),
+            owner_hash160: [2; 20],
+            owner: PqKeyId {
+                scheme: 1,
+                hash: [2; 32],
+            },
+            term_class: "A".into(),
+            lock_height: 900,
+            claim_height: 900,
+            collateral_zat: 1_000_000_000,
+            minted_cents: 10_000,
+            mint_height: 90,
+            claimable,
+            underwater_at: 0,
+            sweep_before: 0,
+            close_height: 0,
+            closing_txid: String::new(),
+            void_reason: String::new(),
+            updated_height: 0,
+            owner_height: 91,
+            app_height: 91,
+            p_mint: 520_000,
+            cancel: crate::store::VaultCancel {
+                count: 1,
+                required: 2,
+                quiet_until,
+                held_residuals: held,
+            },
+        }
+    }
+
+    /// CAN-3: a residual its position holds is not released before the quiet period ends, nor
+    /// while the vault is claimable or a claim of it is in progress; it is once the vault is
+    /// closed or claimed, or active, past the quiet period and not claimable.
+    #[test]
+    fn held_residual_waits_for_quiet_or_close() {
+        let mut r = row(100, IntentState::Pending);
+        r.role = crate::build::claim::ROLE_RESIDUAL.into();
+        let held = vec![r.outpoint];
+        // Not held by any vault: only the claim delay applies.
+        assert!(residual_held(&r, &[holder("ACTIVE", 200, false, vec![])], 150).is_none());
+        // Held, inside the quiet period (the release would be in block 199 < 200).
+        let why = residual_held(&r, &[holder("ACTIVE", 200, false, held.clone())], 198).unwrap();
+        assert!(
+            why.starts_with("intent-residual-held") && why.contains("200"),
+            "{why}"
+        );
+        // From the quiet period's end (block 200) while not claimable: may pass.
+        assert!(residual_held(&r, &[holder("ACTIVE", 200, false, held.clone())], 199).is_none());
+        // Past the quiet period but claimable: held.
+        assert!(residual_held(&r, &[holder("ACTIVE", 200, true, held.clone())], 300).is_some());
+        // A claim of the position in progress: held.
+        assert!(residual_held(&r, &[holder("CLAIMING", 200, false, held.clone())], 300).is_some());
+        // The position closed or claimed: released at once, inside the quiet period too.
+        for status in ["CLOSED", "CLAIMED"] {
+            assert!(residual_held(&r, &[holder(status, 200, true, held.clone())], 150).is_none());
+        }
+        // A released (or cancelled) row is not judged here.
+        r.state = IntentState::Released;
+        assert!(residual_held(&r, &[holder("ACTIVE", 200, true, held)], 150).is_none());
     }
 
     #[test]

@@ -577,6 +577,13 @@ class ClaimIntent {
   /// The release date estimate (Unix seconds; `now + (releaseHeight − tip) · 75`).
   final PlatformInt64 releaseTimeSecs;
 
+  /// A residual of a cancelled claim that the vault now holds (CAN-3): the node refuses its
+  /// release until the vault is closed, or past its quiet period and not claimable.
+  final bool held;
+
+  /// Why it is held now (empty unless [`ClaimIntent::held`]); the text to show.
+  final String heldReason;
+
   /// The release (or the transaction that spent it), empty until known.
   final String spendTxid;
 
@@ -596,6 +603,8 @@ class ClaimIntent {
     required this.pqMove,
     required this.cancelled,
     required this.releaseTimeSecs,
+    required this.held,
+    required this.heldReason,
     required this.spendTxid,
     required this.note,
   });
@@ -614,6 +623,8 @@ class ClaimIntent {
       pqMove.hashCode ^
       cancelled.hashCode ^
       releaseTimeSecs.hashCode ^
+      held.hashCode ^
+      heldReason.hashCode ^
       spendTxid.hashCode ^
       note.hashCode;
 
@@ -634,6 +645,8 @@ class ClaimIntent {
           pqMove == other.pqMove &&
           cancelled == other.cancelled &&
           releaseTimeSecs == other.releaseTimeSecs &&
+          held == other.held &&
+          heldReason == other.heldReason &&
           spendTxid == other.spendTxid &&
           note == other.note;
 }
@@ -2400,6 +2413,30 @@ class VaultSummary {
   /// (U-24), the same position at a new outpoint (shown there; this row is history).
   final bool reopened;
 
+  /// `cancelCount` (the per-vault cancel limit, CAN-2): the claims of this position the
+  /// attestor set cancelled that still count (0 at the mint; it survives every re-creation).
+  final PlatformInt64 cancelCount;
+
+  /// `cancelsRequired`: how many attestors must sign together to cancel a claim of this vault
+  /// that confirms in the next block (1, one more for each recent cancel, at most 4; regtest 3).
+  /// 0 = not yet synced.
+  final PlatformInt64 cancelsRequired;
+
+  /// `cancelQuietUntil`: from this height the count starts again from one; 0 when the vault was
+  /// never cancelled.
+  final PlatformInt64 cancelQuietUntil;
+
+  /// Blocks until `cancel_quiet_until` (0 once reached, or never cancelled).
+  final PlatformInt64 blocksUntilQuietEnd;
+
+  /// `heldResiduals` (CAN-3): how many of the owner's leftovers (the residual intents of
+  /// cancelled claims) this vault holds.
+  final PlatformInt64 heldResiduals;
+
+  /// Why those leftovers cannot be released now (empty when none is held, or when the release
+  /// may pass): release needs the vault closed, or past its quiet period and not claimable.
+  final String heldReason;
+
   const VaultSummary({
     required this.vaultTxid,
     required this.status,
@@ -2442,6 +2479,12 @@ class VaultSummary {
     required this.claimOpen,
     required this.claiming,
     required this.reopened,
+    required this.cancelCount,
+    required this.cancelsRequired,
+    required this.cancelQuietUntil,
+    required this.blocksUntilQuietEnd,
+    required this.heldResiduals,
+    required this.heldReason,
   });
 
   @override
@@ -2486,7 +2529,13 @@ class VaultSummary {
       claimWarning.hashCode ^
       claimOpen.hashCode ^
       claiming.hashCode ^
-      reopened.hashCode;
+      reopened.hashCode ^
+      cancelCount.hashCode ^
+      cancelsRequired.hashCode ^
+      cancelQuietUntil.hashCode ^
+      blocksUntilQuietEnd.hashCode ^
+      heldResiduals.hashCode ^
+      heldReason.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -2533,7 +2582,13 @@ class VaultSummary {
           claimWarning == other.claimWarning &&
           claimOpen == other.claimOpen &&
           claiming == other.claiming &&
-          reopened == other.reopened;
+          reopened == other.reopened &&
+          cancelCount == other.cancelCount &&
+          cancelsRequired == other.cancelsRequired &&
+          cancelQuietUntil == other.cancelQuietUntil &&
+          blocksUntilQuietEnd == other.blocksUntilQuietEnd &&
+          heldResiduals == other.heldResiduals &&
+          heldReason == other.heldReason;
 }
 
 /// [`export_wif`].

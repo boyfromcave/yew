@@ -1732,8 +1732,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ClaimIntent dco_decode_claim_intent(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 14)
-      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
+    if (arr.length != 16)
+      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
     return ClaimIntent(
       intent: dco_decode_String(arr[0]),
       vaultTxid: dco_decode_String(arr[1]),
@@ -1747,8 +1747,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       pqMove: dco_decode_bool(arr[9]),
       cancelled: dco_decode_bool(arr[10]),
       releaseTimeSecs: dco_decode_i_64(arr[11]),
-      spendTxid: dco_decode_String(arr[12]),
-      note: dco_decode_String(arr[13]),
+      held: dco_decode_bool(arr[12]),
+      heldReason: dco_decode_String(arr[13]),
+      spendTxid: dco_decode_String(arr[14]),
+      note: dco_decode_String(arr[15]),
     );
   }
 
@@ -2310,8 +2312,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   VaultSummary dco_decode_vault_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 41)
-      throw Exception('unexpected arr length: expect 41 but see ${arr.length}');
+    if (arr.length != 47)
+      throw Exception('unexpected arr length: expect 47 but see ${arr.length}');
     return VaultSummary(
       vaultTxid: dco_decode_String(arr[0]),
       status: dco_decode_String(arr[1]),
@@ -2354,6 +2356,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       claimOpen: dco_decode_bool(arr[38]),
       claiming: dco_decode_bool(arr[39]),
       reopened: dco_decode_bool(arr[40]),
+      cancelCount: dco_decode_i_64(arr[41]),
+      cancelsRequired: dco_decode_i_64(arr[42]),
+      cancelQuietUntil: dco_decode_i_64(arr[43]),
+      blocksUntilQuietEnd: dco_decode_i_64(arr[44]),
+      heldResiduals: dco_decode_i_64(arr[45]),
+      heldReason: dco_decode_String(arr[46]),
     );
   }
 
@@ -2596,6 +2604,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_pqMove = sse_decode_bool(deserializer);
     var var_cancelled = sse_decode_bool(deserializer);
     var var_releaseTimeSecs = sse_decode_i_64(deserializer);
+    var var_held = sse_decode_bool(deserializer);
+    var var_heldReason = sse_decode_String(deserializer);
     var var_spendTxid = sse_decode_String(deserializer);
     var var_note = sse_decode_String(deserializer);
     return ClaimIntent(
@@ -2611,6 +2621,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       pqMove: var_pqMove,
       cancelled: var_cancelled,
       releaseTimeSecs: var_releaseTimeSecs,
+      held: var_held,
+      heldReason: var_heldReason,
       spendTxid: var_spendTxid,
       note: var_note,
     );
@@ -3404,6 +3416,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_claimOpen = sse_decode_bool(deserializer);
     var var_claiming = sse_decode_bool(deserializer);
     var var_reopened = sse_decode_bool(deserializer);
+    var var_cancelCount = sse_decode_i_64(deserializer);
+    var var_cancelsRequired = sse_decode_i_64(deserializer);
+    var var_cancelQuietUntil = sse_decode_i_64(deserializer);
+    var var_blocksUntilQuietEnd = sse_decode_i_64(deserializer);
+    var var_heldResiduals = sse_decode_i_64(deserializer);
+    var var_heldReason = sse_decode_String(deserializer);
     return VaultSummary(
       vaultTxid: var_vaultTxid,
       status: var_status,
@@ -3446,6 +3464,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       claimOpen: var_claimOpen,
       claiming: var_claiming,
       reopened: var_reopened,
+      cancelCount: var_cancelCount,
+      cancelsRequired: var_cancelsRequired,
+      cancelQuietUntil: var_cancelQuietUntil,
+      blocksUntilQuietEnd: var_blocksUntilQuietEnd,
+      heldResiduals: var_heldResiduals,
+      heldReason: var_heldReason,
     );
   }
 
@@ -3708,6 +3732,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.pqMove, serializer);
     sse_encode_bool(self.cancelled, serializer);
     sse_encode_i_64(self.releaseTimeSecs, serializer);
+    sse_encode_bool(self.held, serializer);
+    sse_encode_String(self.heldReason, serializer);
     sse_encode_String(self.spendTxid, serializer);
     sse_encode_String(self.note, serializer);
   }
@@ -4281,6 +4307,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.claimOpen, serializer);
     sse_encode_bool(self.claiming, serializer);
     sse_encode_bool(self.reopened, serializer);
+    sse_encode_i_64(self.cancelCount, serializer);
+    sse_encode_i_64(self.cancelsRequired, serializer);
+    sse_encode_i_64(self.cancelQuietUntil, serializer);
+    sse_encode_i_64(self.blocksUntilQuietEnd, serializer);
+    sse_encode_i_64(self.heldResiduals, serializer);
+    sse_encode_String(self.heldReason, serializer);
   }
 
   @protected
