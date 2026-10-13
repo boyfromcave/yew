@@ -13,8 +13,9 @@
 //! contract of `wt/BRIEFING-quantum.md`), `src/pqkey.{h,cpp}` (`DerivePQSeed`, branch
 //! `q/wallet`), `src/script/standard.cpp` (`TX_PQPKH`, `GetScriptForDestination(CPQKeyID)`) and
 //! `src/script/sign.cpp` (the PQPKH `SignStep`). Byte identity is proved against the node's
-//! golden vectors: `tests/vectors/pq_vectors.json` (a byte copy of the node's
-//! `src/test/data/pq_vectors.json`), and the owner spend of `tests/vectors/vault_vectors.json`.
+//! golden vectors: `tests/vectors/pq_vectors.json` and `pq_wallet_vectors.json` (copies of the
+//! node's `src/test/data/` files at the commits `tests/vectors/PIN` records, compared in CI by
+//! `scripts/check-node-vectors.sh`), and the owner spends of `tests/vectors/vault_vectors.json`.
 //!
 //! **Scheme 1, SLH-DSA-SHA2-128s:** FIPS 205 *pure* SLH-DSA with an empty context string
 //! (`M' = 0x00 ‖ 0x00 ‖ msg`), deterministic signing (`opt_rand = PK.seed`), key generation from
@@ -988,36 +989,81 @@ mod tests {
         );
     }
 
-    /// `pq_wallet_tests.cpp` `derivation_vector` (ycash-dd `q/wallet`): HD seed 0x00..0x1f.
+    /// The node's A-12 derivation vector, `tests/vectors/pq_wallet_vectors.json` (a copy of the
+    /// node's `src/test/data/pq_wallet_vectors.json` at `tests/vectors/PIN`, written by
+    /// `gen_pq_wallet_vectors.py` and replayed by both lines' `pq_wallet_tests`): HKDF-SHA256 over
+    /// the IKM, info `"Ycash PQ key" ‖ scheme ‖ index_be32`, 48 bytes, then KeyGen. `hdSeed` is the
+    /// ycash-dd wallet's IKM (its 32-byte HD seed); `mnemonic` is ycash6's and YEW's (the 64-byte
+    /// BIP39 seed of a 24-word English phrase, empty passphrase), so YEW's own path — phrase →
+    /// [`crate::keys::seed_from_mnemonic`] → [`PqSeedRoot::from_seed`] — is checked against it.
     #[test]
     fn derivation_reproduces_the_node_wallet_vector() {
-        let raw: Vec<u8> = (0u8..32).collect();
-        let root = PqSeedRoot::from_seed(&raw);
+        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/vectors/pq_wallet_vectors.json");
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(p).expect("pq_wallet_vectors.json"))
+                .unwrap();
+        assert_eq!(v["format"], "ycash-pq-wallet-vectors-1");
+        assert_eq!(v["info"].as_str().unwrap().as_bytes(), DERIVE_INFO);
+        let hd: Vec<u8> = (0u8..32).collect();
+        assert_eq!(b(&v["hdSeed"]["ikm"]), hd);
+
+        // YEW's path from the words: the phrase is the BIP39 encoding of the entropy, and its seed
+        // (empty passphrase) is the mnemonic section's IKM.
+        let m = &v["mnemonic"];
+        let phrase = m["phrase"].as_str().unwrap();
+        let words = bip39::Mnemonic::from_entropy(&b(&m["entropy"])).unwrap();
+        assert_eq!(words.to_string(), phrase);
         assert_eq!(
-            hex(&root.derive(1, 0)),
-            "335a7ef8fa0ab4fc9faeff290ce40ea4fce101b983c70cc23ac4893354fbda10d5fcce4ade352f727cfa37db588a9e1f"
+            crate::keys::seed_from_mnemonic(phrase, "")
+                .unwrap()
+                .to_vec(),
+            b(&m["ikm"])
         );
-        assert_eq!(
-            hex(&root.derive(1, 1)),
-            "b4e9e97fedc3632dec77709ed522bab4fbc8d65f6ebf6359418d4d2f854b02c7d01ca11d6fdc81b91cddd1ada728fccf"
-        );
-        assert_eq!(
-            hex(&root.derive(2, 0)),
-            "16f91ba800e9d23d547e5e45f588464fa5102f3caa75fcb0dd3fd8cad5aa608f8368b05457b73d98aff51f5725c998b3"
-        );
-        let mut seed = [0u8; 48];
-        hkdf_sha256(&[], &raw, b"Ycash PQ key\x01\x00\x00\x00\x00", &mut seed);
-        assert_eq!(seed, root.derive(1, 0));
-        let k = root.slh_key(0);
-        assert_eq!(
-            hex(k.public_key()),
-            "d5fcce4ade352f727cfa37db588a9e1f3803cb0b132b60db35f26e8343f0500a"
-        );
-        assert_eq!(
-            hex(&k.id().hash),
-            "73efa99cd22fe553222b1db6a6a021b3cba29dafd4fb4dfb50be69abcfcf9364"
-        );
-        assert_eq!(k.scheme(), 1);
-        assert_ne!(root.slh_key(1).id(), k.id());
+
+        let mut n = 0;
+        for section in ["hdSeed", "mnemonic"] {
+            let s = &v[section];
+            let ikm = b(&s["ikm"]);
+            let root = PqSeedRoot::from_seed(&ikm);
+            for d in s["derive"].as_array().unwrap() {
+                let scheme = d["scheme"].as_u64().unwrap() as u8;
+                let index = d["index"].as_u64().unwrap() as u32;
+                let seed = root.derive(scheme, index);
+                assert_eq!(
+                    hex(&seed),
+                    d["seed"].as_str().unwrap(),
+                    "{section} {scheme}/{index}"
+                );
+                // the RFC 5869 HKDF of the same inputs
+                let mut info = DERIVE_INFO.to_vec();
+                info.push(scheme);
+                info.extend_from_slice(&index.to_be_bytes());
+                let mut out = [0u8; SEED_SIZE];
+                hkdf_sha256(&[], &ikm, &info, &mut out);
+                assert_eq!(out, seed);
+                let key = match scheme {
+                    SCHEME_SLH_DSA_SHA2_128S => root.slh_key(index),
+                    _ => root.falcon_key(index),
+                };
+                assert_eq!(key.id(), PqKey::from_seed(scheme, &seed).unwrap().id());
+                n += 1;
+            }
+            let slh = &s["slh"];
+            let k = root.slh_key(slh["index"].as_u64().unwrap() as u32);
+            assert_eq!(
+                hex(k.public_key()),
+                slh["pk"].as_str().unwrap(),
+                "{section}"
+            );
+            assert_eq!(
+                hex(&k.id().hash),
+                slh["keyhash"].as_str().unwrap(),
+                "{section}"
+            );
+            assert_eq!(k.scheme(), 1);
+            assert_ne!(root.slh_key(1).id(), k.id());
+        }
+        assert_eq!(n, 8, "a silently shrunk file fails");
     }
 }

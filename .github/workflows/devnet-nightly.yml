@@ -1,0 +1,107 @@
+# YEW devnet acceptance, nightly (remedial report LOW-06-Y-1, audit 06/Y-5; the node's nightly-tier
+# model). The suites core/tests/devnet.rs runs only with YEW_DEVNET=1 (W1, W2, W4, the Falcon
+# holders q_falcon_*, the post-quantum addresses q_pqaddr_*) need the whole workspace devnet: an
+# ARMED devnet built from ycash-dd, lightwalletd-dd serving --yellowback, the Python test framework.
+# That is more than 60 min from cold on a hosted runner, so this first form runs on the owner's
+# machine registered as a self-hosted runner with the label `yb-devnet`, where the workspace is
+# already built. (Target state, a separate change: a hosted job that builds ycash-dd at the commit
+# core/tests/vectors/PIN names and lightwalletd-dd at proto/PIN, cached, and runs the q_falcon_* /
+# q_pqaddr_* subset in at most 60 min.)
+#
+# Non-gating by construction: schedule and manual dispatch only, never pull_request (a
+# self-hosted runner must not run workflow code from a fork or an unmerged branch), and only on
+# upgrade/vault. A failure opens (or comments on) one issue labelled `devnet-nightly`.
+#
+# Runner prerequisites (owner, once): the runner's environment sets YB_WORKSPACE to the workspace
+# checkout (with .venv, ycash-dd built: ycashd, the attest agent; lightwalletd-dd built), and
+# BITCOIND / YELLOWBACK_ATTEST_BIN / YELLOWBACK_LWD_BIN if the devnet tool's defaults do not find
+# them. The suites run from a detached worktree of the workspace's yew clone at this commit
+# ($YB_WORKSPACE/wt/ci-yew-nightly), so the owner's own trees are never checked out or changed.
+name: devnet-nightly
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: devnet-nightly
+  cancel-in-progress: false
+
+jobs:
+  devnet:
+    if: github.ref == 'refs/heads/upgrade/vault'
+    runs-on: [self-hosted, yb-devnet]
+    timeout-minutes: 360
+    env:
+      YEW_DEVNET_TOOL: ${{ vars.YEW_DEVNET_TOOL }}
+    steps:
+      - name: worktree of this commit in the workspace
+        run: |
+          set -euo pipefail
+          : "${YB_WORKSPACE:?the runner must set YB_WORKSPACE}"
+          wt="$YB_WORKSPACE/wt/ci-yew-nightly"
+          git -C "$YB_WORKSPACE/yew" fetch --quiet origin "$GITHUB_SHA"
+          git -C "$YB_WORKSPACE/yew" worktree remove --force "$wt" 2>/dev/null || true
+          git -C "$YB_WORKSPACE/yew" worktree add --force --detach "$wt" "$GITHUB_SHA"
+          echo "YEW_WT=$wt" >> "$GITHUB_ENV"
+          # The quantum suites default to the old q-dd worktree's tool; upgrade/vault carries it.
+          echo "YEW_DEVNET_TOOL=${YEW_DEVNET_TOOL:-$YB_WORKSPACE/ycash-dd/contrib/yellowback/devnet/yellowback-devnet}" >> "$GITHUB_ENV"
+      - name: node vectors (scripts/check-node-vectors.sh)
+        run: cd "$YEW_WT" && scripts/check-node-vectors.sh
+      - name: W1 (YEC round trip and restore)
+        if: ${{ !cancelled() }}
+        run: |
+          cd "$YEW_WT"
+          trap 'scripts/devnet-w1.sh down || true' EXIT
+          scripts/devnet-w1.sh up && scripts/devnet-w1.sh test
+      - name: W2 (YED transfer, the gate, mint/redeem/claim)
+        if: ${{ !cancelled() }}
+        run: |
+          cd "$YEW_WT"
+          trap 'scripts/devnet-w2.sh down || true' EXIT
+          scripts/devnet-w2.sh up && scripts/devnet-w2.sh test
+      - name: W4
+        if: ${{ !cancelled() }}
+        run: |
+          cd "$YEW_WT"
+          trap 'scripts/devnet-w4.sh down || true' EXIT
+          scripts/devnet-w4.sh up && scripts/devnet-w4.sh test
+      - name: Falcon YED holders (q_falcon_*)
+        if: ${{ !cancelled() }}
+        run: |
+          cd "$YEW_WT"
+          trap 'scripts/devnet-falcon.sh down || true' EXIT
+          scripts/devnet-falcon.sh up && scripts/devnet-falcon.sh test
+      - name: post-quantum addresses (q_pqaddr_*)
+        if: ${{ !cancelled() }}
+        run: |
+          cd "$YEW_WT"
+          trap 'scripts/devnet-pqaddr.sh down || true' EXIT
+          scripts/devnet-pqaddr.sh up && scripts/devnet-pqaddr.sh test
+      - name: remove the worktree
+        if: ${{ always() }}
+        run: |
+          [ -n "${YEW_WT:-}" ] && git -C "$YB_WORKSPACE/yew" worktree remove --force "$YEW_WT" || true
+      - name: open or update the devnet-nightly issue
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          run="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          auth=(-H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json")
+          num="$(curl -fsSL "${auth[@]}" "$api/issues?state=open&labels=devnet-nightly&per_page=1" |
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[0]["number"] if d else "")')"
+          body="$(python3 -c 'import json,sys; print(json.dumps({"body": "devnet-nightly failed at " + sys.argv[1] + ": " + sys.argv[2]}))' "$GITHUB_SHA" "$run")"
+          if [ -n "$num" ]; then
+            curl -fsSL "${auth[@]}" -X POST "$api/issues/$num/comments" -d "$body" >/dev/null
+          else
+            title="$(python3 -c 'import json,sys; b=json.loads(sys.argv[1]); b.update(title="devnet-nightly: the YEW devnet acceptance suites failed", labels=["devnet-nightly"]); print(json.dumps(b))' "$body")"
+            curl -fsSL "${auth[@]}" -X POST "$api/issues" -d "$title" >/dev/null
+          fi

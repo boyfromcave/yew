@@ -14,7 +14,11 @@ set -euo pipefail
 # Distributed under the MIT software license, see the accompanying
 # file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ws="$(cd "$here/.." && pwd)"
+# The workspace is the first directory above with repos.yaml (a wt/ worktree too: the nightly
+# devnet workflow runs from one).
+ws="$here"
+while [[ ! -f "$ws/repos.yaml" && "$ws" != "/" ]]; do ws="$(dirname "$ws")"; done
+[[ -f "$ws/repos.yaml" ]] || { echo "devnet-w1: no workspace (repos.yaml) above $here" >&2; exit 2; }
 export YELLOWBACK_DEVNET_DIR="${YELLOWBACK_DEVNET_DIR:-$HOME/yb-devnet-w1}"
 export YELLOWBACK_DEVNET_PORTSEED="${YELLOWBACK_DEVNET_PORTSEED:-57}"
 lwd_port="${YEW_LWD_PORT:-9167}"
