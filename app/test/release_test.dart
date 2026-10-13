@@ -27,11 +27,11 @@ void main() {
     ];
     await openYellowback(tester, h);
     expect(find.text('Claims and releases'), findsOneWidget);
-    expect(find.textContaining('claim · released from height 490 · 5 blocks to go'), findsOneWidget);
-    expect(find.text('claim · releasable now'), findsOneWidget);
+    expect(find.textContaining('· released from height 490 · 5 blocks to go'), findsOneWidget);
+    expect(find.textContaining('claim · releasable now'), findsOneWidget);
     expect(find.text('residual of your claimed vault · releasable now'), findsOneWidget);
     expect(find.textContaining('claim cancelled by the attestor set'), findsOneWidget);
-    expect(find.textContaining('the YED you burned is not refunded'), findsOneWidget);
+    expect(find.textContaining('the YED you burned came back to the address it came from; the YEC fees are not returned'), findsOneWidget);
     expect(find.text('claim · waiting for the claim to confirm'), findsOneWidget);
   });
 
@@ -87,5 +87,17 @@ void main() {
     await openYellowback(tester, h);
     expect(find.text('your leftover from a cancelled claim · $why'), findsOneWidget);
     expect(h.api.intentsAnswer.single.releasable, isFalse);
+  });
+
+  testWidgets('CAN-1: a pending claim names where its burn returns if cancelled; a cancelled one says it came back', (tester) async {
+    final h = Harness(withWallet: true);
+    const to = 'yr2SfdhqKtnRSY3HebfoY5vXSPc781t1HrBi2JcZ26k4EXLCMboLq';
+    h.api.intentsAnswer = [
+      h.api.intent(txid: 'b1' * 32, height: 480, refundCents: 1000, refundAddress: to, refundOwn: true),
+      h.api.intent(txid: 'b2' * 32, state: 'CANCELLED', height: 460, refundCents: 1000, refundAddress: to, refundOwn: true),
+    ];
+    await openYellowback(tester, h);
+    expect(find.textContaining('claim · if this claim is cancelled, \$10.00 returns to your address yr2SfdhqKt…CMboLq'), findsOneWidget);
+    expect(find.textContaining('\$10.00 came back to your address yr2SfdhqKt…CMboLq; the YEC fees are not returned'), findsOneWidget);
   });
 }
