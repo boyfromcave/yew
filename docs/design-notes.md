@@ -453,14 +453,14 @@ line); `pq_owners`; `claim_intents.pq_spend_txid`; intent state `SWEPT`.
 100 zat/kB relay floor, refused above 100×). The size is priced before signing: the SLH-DSA
 scriptSig is exact (7,938 bytes, 7,939 with a V selector), each ECDSA input is bounded at 108
 bytes. Every scriptSig is checked against the relay limits (9,000 PQ, 1,650 other) before a
-broadcast. At the default 1× rate an owner spend still pays 1,000 zat (client survey C-5).
-*Per node line:* ycash-dd's wallet charges `max(DEFAULT_FEE, pqfeerate × size)`; ycash6's adds
-its ZIP-317 conventional fee as a third `max` argument. That term is ycash6's own wallet funding
-policy (`zip317.h`: `FeePolicy` is node-local; the ZIP-317 unpaid-action relay limits are
-`SIZE_MAX` by default), not something either line's relay demands, and YEW cannot tell the lines
-apart through lightwalletd, so YEW pays the ycash-dd formula on both. A node operator who enables
-ZIP-317 relay (`-txunpaidactionlimit=0`) would refuse an 8 KB owner spend at this fee (~55 logical
-actions): not priced, recorded here.
+broadcast. Since audit 04/N-1 the fee is also never below the 6.20.0 line's ZIP-317 conventional
+fee, `500 · max(2, max(⌈vin bytes/150⌉, ⌈vout bytes/34⌉))` (`params::zip317_conventional_fee`;
+the YED builders use the node's pre-signing `YedConventionalFeeEstimate`,
+`params::yed_conventional_fee_estimate`), outside the cap, as both node lines' wallets and
+builders now pay: a ycash6 relay that opts into ZIP-317 (`-txunpaidactionlimit=0`) refuses a
+transaction paying less, and every ycash6 node's ZIP-401 limiter ranks it first for eviction.
+At the default 1× rate an SLH-DSA owner spend therefore pays 27,000 zat (54 actions), not the
+1,000 of client survey C-5, and a Falcon input 5,500 (11 actions).
 
 **TOK-PQ: Falcon YED holders.** Owner decision 2026-10-10: Falcon goes live with the vault
 upgrade, `pqFalconHeight = 0` on mainnet and testnet, so every YED holder there is a Falcon key
@@ -489,8 +489,11 @@ Falcon. From the Falcon height (judged for the block the transaction can first b
   owner, C-10; a Falcon address is non-standard until activation: `falcon-not-active`);
 - *prices*: a transaction with a Falcon input pays `max(FEE_ZAT, pqfeerate × size)` like an
   owner spend (transfer: re-selected until the YEC inputs cover it; redeem: per-input scriptSig
-  bounds; claim: signed, measured, re-priced). At the default 1× a Falcon transfer (~1.9 kB)
-  still pays 1,000 zat.
+  bounds; claim: signed, measured, re-priced), and never less than the 6.20.0 line's ZIP-317
+  conventional fee (audit 04/N-1, as both node lines' wallets and builders: a Falcon input is
+  ~11 logical actions, an SLH-DSA one ~54; `params::zip317_conventional_fee`,
+  `yed_conventional_fee_estimate`), so a ycash6 relay started with `-txunpaidactionlimit=0`
+  accepts it and the ZIP-401 limiter does not evict it first. A Falcon transfer pays ~5,500 zat.
 
 **Falcon implementation.** `core/pq-c/falcon` is a byte copy of the node's
 `src/crypto/pq/falcon` (ycash-dd = ycash6: PQClean `falcon-padded-512/clean` at `0586a824`, the

@@ -520,6 +520,35 @@ impl Transaction {
         Ok(t.serialize()?.len())
     }
 
+    /// The 6.20.0 line's ZIP-317 conventional fee of this transaction with input `i`'s scriptSig
+    /// `script_sig_sizes[i]` bytes long ([`crate::params::zip317_conventional_fee`], the node's
+    /// `Zip317ConventionalFee(const CTransaction&)`): what a post-quantum spend pays at least.
+    pub fn zip317_conventional_fee(&self, script_sig_sizes: &[usize]) -> Result<i64, TxError> {
+        if script_sig_sizes.len() != self.vin.len() {
+            return Err(TxError::InputIndex(script_sig_sizes.len()));
+        }
+        let compact = |n: usize| match n {
+            0..=252 => 1,
+            253..=0xffff => 3,
+            0x1_0000..=0xffff_ffff => 5,
+            _ => 9,
+        };
+        let in_bytes: usize = script_sig_sizes
+            .iter()
+            .map(|n| 36 + compact(*n) + n + 4)
+            .sum();
+        let out_bytes: usize = self
+            .vout
+            .iter()
+            .map(|o| 8 + compact(o.script_pubkey.len()) + o.script_pubkey.len())
+            .sum();
+        let sh = &self.shielded;
+        let shielded = 2 * sh.joinsplits + sh.spends.max(sh.outputs);
+        Ok(crate::params::zip317_conventional_fee(
+            in_bytes, out_bytes, shielded,
+        ))
+    }
+
     /// The relay limits on scriptSig sizes, checked before anything is broadcast (quantum spec
     /// §2.3): an input whose scriptSig is a post-quantum spend (it parses as the chunked
     /// `<sig…> <s> <pk…> <p>`, optionally followed by a template selector) may use up to

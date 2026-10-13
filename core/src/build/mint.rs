@@ -273,9 +273,7 @@ pub fn mint_network_fee(wallet: &Wallet, funding: &[Utxo]) -> i64 {
         .filter_map(|u| crate::pq::pqpkh_of(&u.script).map(|id| id.scheme))
         .collect();
     let other = funding.len() - pq.len();
-    wallet
-        .pq_terms()
-        .yed_fee(crate::params::yed_estimated_size(other, &pq))
+    wallet.pq_terms().yed_network_fee(other, &pq)
 }
 
 /// The seated set for bundle verification: `seq → attestorPubKey` from `ListAttestors`.

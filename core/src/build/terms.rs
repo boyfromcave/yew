@@ -604,6 +604,19 @@ impl PqTerms {
             .max(self.flat_zat)
     }
 
+    /// The network fee of a Yellowback transaction with `other_inputs` non-PQ inputs and the
+    /// post-quantum inputs `pq_schemes` (`YedNetworkFee`): [`PqTerms::yed_fee`] at
+    /// [`params::yed_estimated_size`], never below [`params::yed_conventional_fee_estimate`] (the
+    /// 6.20.0 line's ZIP-317 conventional fee, audit 04/N-1; 0 without a PQ input), which, as on
+    /// the node, stands outside the cap.
+    pub fn yed_network_fee(&self, other_inputs: usize, pq_schemes: &[u8]) -> i64 {
+        self.yed_fee(params::yed_estimated_size(other_inputs, pq_schemes))
+            .max(params::yed_conventional_fee_estimate(
+                other_inputs,
+                pq_schemes,
+            ))
+    }
+
     /// The owner path's clamp (`YedFloorSizeFee`, review L-1): `max(flat, floor rate × size)`.
     pub fn yed_floor_fee(&self, size: usize) -> i64 {
         params::rate_fee(self.floor_rate_zat_per_kb, size).max(self.flat_zat)

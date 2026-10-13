@@ -708,15 +708,10 @@ pub const MAX_PQ_FEE_RATE_ZAT_PER_KB: i64 = 100 * RELAY_FLOOR_ZAT_PER_KB;
 /// (`ycash-dd/src/amount.cpp:27-35`: `rate · size / 1000`, and the rate itself when that is 0),
 /// exactly the node's `PQSizeFee` (`ycash-dd/src/policy/policy.cpp` `PQSizeFee`, upgrade/quantum-vaults).
 ///
-/// **Per node line** (quantum briefing "Fee rules for Q5"): ycash-dd's wallet charges
-/// `max(DEFAULT_FEE, pqfeerate × size)`; ycash6's charges `max(-yellowbackfee, ZIP-317
-/// conventional, pqfeerate × size)`. The ZIP-317 term is ycash6's *own wallet's* funding choice
-/// (`ycash6/src/zip317.h`: `FeePolicy` is node-local, and the ZIP-317 unpaid-action relay limits
-/// are `SIZE_MAX`, i.e. off, by default); neither line's relay or mempool demands it. YEW cannot
-/// tell the lines apart through lightwalletd and pays what both relay: this formula, with `rate`
-/// the server's `params.pq.feeRateZatPerKB` (at least [`RELAY_FLOOR_ZAT_PER_KB`]). An operator
-/// who turns ZIP-317 relay on (`-txunpaidactionlimit=0`) would refuse an 8 KB owner spend at
-/// this fee (≈55 logical actions); that is recorded in `docs/design-notes.md`, not priced.
+/// `rate` is the server's `params.pq.feeRateZatPerKB` (at least [`RELAY_FLOOR_ZAT_PER_KB`]).
+/// Callers also take the max with [`zip317_conventional_fee`] (audit 04/N-1: both node lines'
+/// wallets pay the 6.20.0 conventional fee for a post-quantum input, which a ycash6 relay that
+/// opts into ZIP-317 demands and every ycash6 limiter's eviction order rewards).
 pub fn pq_size_fee(floor: i64, rate_zat_per_kb: i64, size: usize) -> i64 {
     let rate = rate_zat_per_kb.max(RELAY_FLOOR_ZAT_PER_KB);
     let mut f = rate.saturating_mul(size as i64) / 1000;
@@ -783,6 +778,53 @@ pub fn yed_estimated_size(other_inputs: usize, pq_schemes: &[u8]) -> usize {
             .iter()
             .map(|s| pq_spend_input_size(*s))
             .sum::<usize>()
+}
+
+/// `ZIP317_MARGINAL_FEE` (`ycash-dd/src/policy/policy.h`, ycash6 `src/zip317.h` `MARGINAL_FEE`):
+/// zat per ZIP-317 logical action.
+pub const ZIP317_MARGINAL_FEE: i64 = 500;
+/// `ZIP317_GRACE_ACTIONS`: the fewest actions a transaction is charged.
+pub const ZIP317_GRACE_ACTIONS: usize = 2;
+/// `ZIP317_INPUT_SIZE` (`P2PKH_STANDARD_INPUT_SIZE`): transparent input bytes per action.
+pub const ZIP317_INPUT_SIZE: usize = 150;
+/// `ZIP317_OUTPUT_SIZE` (`P2PKH_STANDARD_OUTPUT_SIZE`): transparent output bytes per action.
+pub const ZIP317_OUTPUT_SIZE: usize = 34;
+
+/// `Zip317ConventionalFee(txInBytes, txOutBytes, shieldedActions)` (`ycash-dd/src/policy/policy.cpp`,
+/// audit 04/N-1): the 6.20.0 line's ZIP-317 conventional fee,
+/// `500 · max(2, max(⌈in/150⌉, ⌈out/34⌉) + shielded)`. `in_bytes` / `out_bytes` are the serialized
+/// `vin` / `vout` without their count prefixes. A post-quantum input counts by its bytes (SLH-DSA
+/// ~54 actions, Falcon ~11): a ycash6 node started with `-txunpaidactionlimit=0` refuses a
+/// transaction paying less, and every ycash6 node's ZIP-401 limiter ranks it first for eviction,
+/// so YEW pays at least this for every transaction with a post-quantum input (as both node lines'
+/// wallets and builders do).
+pub fn zip317_conventional_fee(in_bytes: usize, out_bytes: usize, shielded_actions: usize) -> i64 {
+    let actions = in_bytes
+        .div_ceil(ZIP317_INPUT_SIZE)
+        .max(out_bytes.div_ceil(ZIP317_OUTPUT_SIZE))
+        + shielded_actions;
+    ZIP317_MARGINAL_FEE.saturating_mul(actions.max(ZIP317_GRACE_ACTIONS) as i64)
+}
+
+/// `YED_OUTPUT_BYTES_ESTIMATE` (`ycash-dd/src/yellowback/txbuilder.h`): the `vout` bytes the YED
+/// builders' conventional-fee estimate assumes, above any YED transaction's outputs.
+pub const YED_OUTPUT_BYTES_ESTIMATE: usize = 600;
+
+/// `YedConventionalFeeEstimate` (`ycash-dd/src/yellowback/txbuilder.cpp`, audit 04/N-1): the
+/// ZIP-317 conventional fee a YED transaction with these inputs pays at least, estimated before
+/// signing — each post-quantum input at [`pq_spend_input_size`], 150 bytes per other input plus
+/// one the caller may not list (the V on the claim path, a carrier), the outputs at
+/// [`YED_OUTPUT_BYTES_ESTIMATE`]. 0 without a post-quantum input (the flat and size fees stand).
+pub fn yed_conventional_fee_estimate(other_inputs: usize, pq_schemes: &[u8]) -> i64 {
+    if pq_schemes.is_empty() {
+        return 0;
+    }
+    let in_bytes = 150 * (other_inputs + 1)
+        + pq_schemes
+            .iter()
+            .map(|s| pq_spend_input_size(*s))
+            .sum::<usize>();
+    zip317_conventional_fee(in_bytes, YED_OUTPUT_BYTES_ESTIMATE, 0)
 }
 
 /// The floor of the YEC fee reserve (plan §3.7, "Fee reserve" item 1):
@@ -874,6 +916,34 @@ pub const SET_SIGHASH: u32 = SIGHASH_ALL | 0x80;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// audit 04/N-1: the 6.20.0 conventional fee (`pq_conventional_fee` in the node's
+    /// `pq_wallet_tests.cpp`): the grace floor, bytes per action on either side, shielded actions
+    /// added, and the YED builders' estimate is 0 without a PQ input.
+    #[test]
+    fn zip317_conventional_fee_matches_the_node() {
+        assert_eq!(zip317_conventional_fee(0, 0, 0), 1_000);
+        assert_eq!(zip317_conventional_fee(150, 34, 0), 1_000);
+        assert_eq!(zip317_conventional_fee(451, 34, 0), 2_000);
+        assert_eq!(zip317_conventional_fee(150, 35 * 34, 0), 17_500);
+        assert_eq!(zip317_conventional_fee(150, 34, 3), 2_000);
+        // an SLH-DSA input (7,981 bytes) is 54 actions; a Falcon one (1,620) 11
+        assert_eq!(
+            zip317_conventional_fee(pq_spend_input_size(1), 34, 0),
+            27_000
+        );
+        assert_eq!(
+            zip317_conventional_fee(pq_spend_input_size(2), 34, 0),
+            5_500
+        );
+        assert_eq!(yed_conventional_fee_estimate(3, &[]), 0);
+        // one SLH-DSA owner + one Falcon holder + 2 P2PKH (+1 unlisted): 7,981 + 1,620 + 450
+        assert_eq!(
+            yed_conventional_fee_estimate(2, &[1, 2]),
+            500 * (7_981 + 1_620 + 450usize).div_ceil(150) as i64
+        );
+        assert_eq!(SET_SIGHASH, 0x81);
+    }
 
     #[test]
     fn reserve_is_five_transfers() {

@@ -464,7 +464,7 @@ pub fn claim_network_fee(t: &super::terms::PqTerms, yed_inputs: &[Utxo], funding
             None => other += 1,
         }
     }
-    t.yed_fee(crate::params::yed_estimated_size(other, &pq))
+    t.yed_network_fee(other, &pq)
 }
 
 /// YEC the fee side of a claim needs from the claimant's own coins (U-23): the network fee, the
