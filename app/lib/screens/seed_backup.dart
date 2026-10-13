@@ -9,6 +9,12 @@ import 'package:flutter/material.dart';
 import '../state/screen_privacy.dart';
 import '../theme.dart';
 
+/// Shown with the words and on the restore step: vaults and YED are held by post-quantum keys
+/// that only YEW is sure to re-derive from the phrase.
+const String seedRestoresYewOnly =
+    'Vaults and YED are held by post-quantum keys that YEW makes from these words. Restore this phrase in YEW to '
+    'recover them: other wallets (Ywallet and YecWallet included) are not sure to derive the same keys.';
+
 class SeedBackupScreen extends StatefulWidget {
   const SeedBackupScreen({super.key, required this.words, this.firstTime = false});
 
@@ -71,6 +77,14 @@ class _SeedBackupScreenState extends State<SeedBackupScreen> {
             ),
             const SizedBox(height: 16),
             Text('Restores in Ywallet too (same address at m/44\'/347\'/0\'/0/0).', style: t.bodySmall),
+            const SizedBox(height: 8),
+            // LOW-06-Y-4 (V6-N2): the post-quantum keys are YEW's derivation of these words; no
+            // other wallet is known to re-derive all of them (docs/trust.md, paragraph 3).
+            Text(
+              seedRestoresYewOnly,
+              key: const Key('seed-restores-yew-only'),
+              style: t.bodySmall,
+            ),
             if (widget.firstTime) ...[
               const SizedBox(height: 16),
               CheckboxListTile(

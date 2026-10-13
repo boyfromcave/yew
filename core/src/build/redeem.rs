@@ -501,9 +501,12 @@ pub fn owner_spend_network_fee(
         }
     }
     let size = crate::params::yed_estimated_size(other, &pq);
-    let fee = t.yed_fee(size);
+    // audit 04/N-1: the 6.20.0 ZIP-317 conventional fee is a floor of both the priced fee and
+    // the small-vault clamp, as on the node (`YedNetworkFee`, `BuildVaultSpend`).
+    let conventional = crate::params::yed_conventional_fee_estimate(other, &pq);
+    let fee = t.yed_fee(size).max(conventional);
     if fee >= spendable_before_fee {
-        t.yed_floor_fee(size)
+        t.yed_floor_fee(size).max(conventional)
     } else {
         fee
     }

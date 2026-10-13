@@ -194,9 +194,7 @@ pub fn assemble(
                 None => other += 1,
             }
         }
-        wallet
-            .pq_terms()
-            .yed_fee(crate::params::yed_estimated_size(other, &pq))
+        wallet.pq_terms().yed_network_fee(other, &pq)
     };
     let mut base_fee = priced_for(&[]);
     let (yec_inputs, mut fee, mut yec_change) = loop {
@@ -714,8 +712,14 @@ mod tests {
         assert!(tx.vin[1].script_sig.len() <= crate::tx::MAX_P2PKH_SCRIPT_SIG);
         tx.check_script_sig_sizes().unwrap();
         // rpcversion 8: the Yellowback size fee at the node's estimated size (1,000 bytes, 150 per
-        // P2PKH input, the Falcon input at its spend size): at 1× (100 zat/kB) still FEE_ZAT.
-        assert_eq!(p.fee, FEE_ZAT);
+        // P2PKH input, the Falcon input at its spend size): at 1× (100 zat/kB) under FEE_ZAT; the
+        // Falcon input raises it to the 6.20.0 conventional-fee estimate (04/N-1,
+        // `YedConventionalFeeEstimate`: 600 vout bytes are 18 actions), 9,000 zat.
+        assert_eq!(
+            p.fee,
+            crate::params::yed_conventional_fee_estimate(p.yec_inputs.len(), &[2])
+        );
+        assert_eq!(p.fee, 9_000);
         let rich = crate::net::rpc::YellowbackParams {
             pq: Some(crate::net::rpc::YellowbackPqParams {
                 schemes: vec![1],

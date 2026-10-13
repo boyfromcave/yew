@@ -308,14 +308,23 @@ and Falcon keygen/sign/verify on the device itself (`xcrun simctl spawn booted �
 | Level | Where | Runs |
 |---|---|---|
 | Unit | `core/src/**` `#[test]` | `cargo test`; includes property tests that no YEC-path transaction ever spends a token, vault or carrier input, on thousands of random coin sets |
-| Node vectors | `core/tests/vectors.rs` | `cargo test`; twelve node-signed transactions, addresses, templates reproduced byte for byte |
+| Node vectors | `core/tests/vectors.rs`; `core/src/vault.rs`, `pq.rs` | `cargo test`; twelve node-signed transactions, addresses, templates reproduced byte for byte; the node's golden `vault_vectors.json` (both owner schemes: SLH-DSA and Falcon owner spends), `pq_vectors.json` and `pq_wallet_vectors.json` (the A-12 derivation, also from a BIP39 phrase) replayed. `scripts/check-node-vectors.sh` (CI, `core-linux`) compares the copies with both node lines at `core/tests/vectors/PIN`; it fails, never skips |
 | Widget | `app/test/` | `flutter test`; 29 tests over the fake bridge |
-| Devnet acceptance | `core/tests/devnet.rs` | `scripts/devnet-w1.sh test`, `devnet-w2.sh test`, `devnet-w4.sh test`; YEC round trip and restore, YED transfer and gate refusal, mint/redeem/claim/lapse/resume; `devnet-it.sh test [it|w4]` on the in-term line (early redeem in term, the in-term claim, listed-not-claimable refusal); `devnet-falcon.sh up && devnet-falcon.sh test` on the quantum line (Falcon YED holders across `-pqfalconheight`); `devnet-pqaddr.sh up && devnet-pqaddr.sh test` (`sq…` receive, send and move); nightly, not CI |
+| Devnet acceptance | `core/tests/devnet.rs` | `scripts/devnet-w1.sh test`, `devnet-w2.sh test`, `devnet-w4.sh test`; YEC round trip and restore, YED transfer and gate refusal, mint/redeem/claim/lapse/resume; `devnet-it.sh test [it|w4]` on the in-term line (early redeem in term, the in-term claim, listed-not-claimable refusal); `devnet-falcon.sh up && devnet-falcon.sh test` on the quantum line (Falcon YED holders across `-pqfalconheight`); `devnet-pqaddr.sh up && devnet-pqaddr.sh test` (`sq…` receive, send and move); nightly, non-gating: `.github/workflows/devnet-nightly.yml` on the owner's machine as a self-hosted runner (label `yb-devnet`), an issue on failure |
 | Shielded devnet | `core/tests/devnet.rs` `s2_` | `scripts/devnet-s2.sh dd <seed>` and `scripts/devnet-s2.sh 6 <seed>` (the 4.5.0 and 6.21.0 node lines; builds lightwalletd-dd 0b3448e+, needs the Sapling parameters on the machine): restore with a memo, z→z with a memo confirmed by `z_listreceivedbyaddress`, z→t with `revealsShielded`, transparent fallback, transparent YEC and YED regressions, no spending key in any file; `s4_`: move 1 YEC to private, 0.5 YEC to public, all to private, the mint shortfall to public and the mint, with YED and the fee reserve untouched and balances exact; `s5_`: restore with a birthday (at, after and without one), reorgs under a synced wallet (re-mined, dropped and re-mined, a send dropped past its expiry) with lightwalletd-dd following, an interrupted sync (future dropped, process killed) resuming to the same state |
 | Device integration | `app/integration_test/` | `scripts/run-ios.sh --test m1`, `run-android.sh --test m1`; `--test q` on the quantum line (Falcon receive/send, SLH-DSA mint and redeem, restore; unattended with `scripts/devnet-operator.py`) |
 
 `ywallet_derivation_vector` is `#[ignore]`d until `core/tests/vectors/ywallet.json` is filled
 from a Ywallet desktop build.
+
+**Re-pinning the node vectors.** The node declares the vectors; YEW copies them. After a node change
+to `src/test/data/{vault,pq,pq_wallet}_vectors.json` lands on both lines (they must be identical),
+fetch the sibling clones and run
+`scripts/resync-node-vectors.sh` (both at `origin/upgrade/vault`; or
+`scripts/resync-node-vectors.sh <ycash-dd rev> <ycash6 rev>`), then `cargo test --locked -p yew-core`
+and `scripts/check-node-vectors.sh`, and commit the copies with `core/tests/vectors/PIN`. A new
+owner-spend shape in the vector fails `owner_spend_is_signed_byte_for_byte` until it is added
+there deliberately.
 
 ## `yew-cli`
 
@@ -355,8 +364,18 @@ claim and vault term is checked against the network's rules (`core/src/build/ter
 a redeem is previewed (fee and payee on screen) before it is confirmed, the server's
 `consensusBranchId` must be a Ycash epoch, server streams are bounded, the Mozilla root bundle
 backs TLS on iOS, a certificate can be pinned from Settings, and "device unlock" binds the seed
-to the platform's presence check. What is still not checked locally is the fee **payee**: the
+to the platform's presence check. On mainnet and testnet the Falcon (`TOK-PQ`) activation is
+compiled in (`params.rs` `PQ_FALCON_HEIGHT_*`, `pqFalconHeight = 0` on both node lines): a server
+reporting another one is refused and YED is hidden, never silently overridden. What is still not checked locally is the fee **payee**: the
 node, not the wallet, knows which miners are eligible (`docs/trust.md`).
+
+**Restore.** The post-quantum keys (vault owners, Falcon YED holders) are HKDF-SHA256 of the
+64-byte BIP39 seed of the words and the passphrase (`core/src/pq.rs`, quantum spec A-12). Restore
+the phrase in YEW to recover vaults and YED: Ywallet restores only the ordinary addresses, and
+YecWallet / ycashd 4.5 derive their PQ keys from another seed. ycashd 6.x derives the same keys
+from the same 24 English words without a passphrase (`pq_wallet_vectors.json`, section
+`mnemonic`), but its restore scans its own index ranges, so it is not a recovery path YEW
+promises (`docs/trust.md`, the seed screens).
 
 Shielded YEC: the Sapling spending key is derived at unlock and never written by YEW; the
 private store holds the account's viewing key, notes and memos (privacy, not funds); the

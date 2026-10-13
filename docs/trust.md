@@ -16,13 +16,16 @@ address shows its amount on the chain.
 Your keys never leave this device. The seed is kept in the phone's secure keystore, and every
 signature is made in the wallet's own core. No server can spend your YEC or your YED.
 
-Your vaults are owned by a post-quantum key (SLH-DSA), made from your seed on this phone. It
-protects who can spend a vault: the owner's signature is designed to resist a quantum computer.
-It does not make the rest of the wallet post-quantum: public YEC and YED are held by ordinary
-keys, and private (Sapling) YEC is not post-quantum either. A vault-owner key cannot be kept on
-a hardware wallet, watched from another wallet, or shared as an extended public key (xpub): only
-your seed, in a wallet that knows post-quantum keys, can spend a vault. A vault-owner address
-(53 characters) names a vault; it is never an address to receive YED or YEC.
+Your vaults are owned by a post-quantum key (SLH-DSA), and your YED is held by post-quantum
+keys (Falcon), all made from your seed on this phone. They protect who can spend a vault or
+your YED: those signatures are designed to resist a quantum computer. They do not make the rest
+of the wallet post-quantum: public YEC is held by ordinary keys, and private (Sapling) YEC is
+not post-quantum either. A post-quantum key cannot be kept on a hardware wallet, watched from
+another wallet, or shared as an extended public key (xpub): only your seed, restored into YEW,
+can spend a vault or your YED. Other wallets do not reliably derive the same post-quantum keys
+from these words (YecWallet and ycashd 4.5 do not at all), so do not count on another wallet to
+recover a vault or YED. A vault-owner address (53 characters) names a vault; it is never an
+address to receive YED or YEC. YED is received on a Falcon address of the same length.
 
 For what it knows about the chain, YEW trusts one light-client server: the one named in
 Settings. That server tells the wallet which coins exist, which of them are YED, the current

@@ -86,6 +86,10 @@ pub struct SyncReport {
     /// The server refused a post-quantum address in the taddr methods (`INVALID_ARGUMENT`: a
     /// lightwalletd before q/pqaddr): its `TX_PQPKH` outputs were not looked up this run.
     pub pq_unindexed: bool,
+    /// The server's Yellowback service was refused for this run, and why: on mainnet and testnet
+    /// its Falcon activation is not this build's (`terms::check_falcon_activation`). The YED steps
+    /// did not run (`yellowback` is false) and the wallet kept its own terms.
+    pub yellowback_refused: Option<String>,
 }
 
 /// Run one sync of `wallet` against `client`, and against `yellowback` for the YED steps when
@@ -149,10 +153,29 @@ pub async fn sync(
     };
 
     // rpcversion 7: the post-quantum terms (fee rate, Falcon activation) for this sync and the
-    // builders after it. A bad `params.pq` is not fatal here (the builders re-read and refuse).
+    // builders after it. A bad `params.pq` is not fatal here (the builders re-read and refuse),
+    // except a Falcon activation that is not this build's (mainnet, testnet): then the server's
+    // YED is not believed at all — the YED steps are skipped, as for a server without the
+    // service, and the report says why (the wallet keeps its compiled terms).
     if let Some(yb) = yellowback.as_mut() {
         if let Ok(info) = yb.info().await {
-            let _ = wallet.note_server_params(info.params.as_ref());
+            let refused = info
+                .params
+                .as_ref()
+                .and_then(|p| p.pq.as_ref())
+                .and_then(|pq| {
+                    crate::build::terms::check_falcon_activation(wallet.network, pq).err()
+                });
+            match refused {
+                Some(e) => {
+                    report.yellowback = false;
+                    report.yellowback_refused = Some(e.to_string());
+                    yellowback = None;
+                }
+                None => {
+                    let _ = wallet.note_server_params(info.params.as_ref());
+                }
+            }
         }
     }
     // TOK-PQ: once the server announces a Falcon height (mainnet and testnet: the vault

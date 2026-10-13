@@ -182,6 +182,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               Text('Recovery phrase', style: t.headlineSmall),
               const SizedBox(height: 8),
               Text('12 or 24 words. A Ywallet phrase restores the same address.', style: t.bodyMedium),
+              const SizedBox(height: 8),
+              Text(seedRestoresYewOnly, key: const Key('restore-yew-only'), style: t.bodySmall),
               const SizedBox(height: 16),
               TextField(
                 key: const Key('words'),

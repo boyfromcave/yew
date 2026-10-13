@@ -340,7 +340,12 @@ fn pq_move(
     });
     let ss = crate::pq::pq_sig_pushes_size(owner.scheme)
         .ok_or_else(|| WalletError::Other("the key's scheme is not registered".into()))?;
-    let fee = wallet.pq_terms().fee(tx.size_with_script_sigs(&[ss])?);
+    // At least the 6.20.0 line's ZIP-317 conventional fee (audit 04/N-1; as `CreateTransaction`
+    // on both node lines, outside the cap).
+    let fee = wallet
+        .pq_terms()
+        .fee(tx.size_with_script_sigs(&[ss])?)
+        .max(tx.zip317_conventional_fee(&[ss])?);
     let mut value = value_in - fee;
     if value == TOKEN_VALUE {
         value -= 1; // never a YEC output that looks like a token
@@ -659,8 +664,10 @@ mod tests {
         assert_eq!(tx.vin[0].prevout.txid, [0xab; 32]);
         assert_eq!(tx.vin[0].script_sig.len(), 7_938);
         assert_eq!(b.fee, 5_000_000 - tx.vout[0].value);
-        // 1x the relay floor: the 8 KB spend still pays the flat 1,000 (C-5).
-        assert_eq!(b.fee, FEE_ZAT);
+        // 1x the relay floor: the size fee is under the flat 1,000 (C-5), but the 7,981 vin bytes
+        // are 54 ZIP-317 actions, so the 6.20.0 conventional fee, 27,000, is paid (04/N-1).
+        assert_eq!(b.fee, 27_000);
+        assert_eq!(b.fee, tx.zip317_conventional_fee(&[7_938]).unwrap());
         assert!(b.raw.len() > 8_000);
         assert!(b.recipient_address.starts_with("sm"));
         // In flight, released by another party (no txid), or another wallet's owner: no move.
@@ -765,7 +772,11 @@ mod tests {
         assert_eq!(tx.vin[0].script_sig.len(), 1_577);
         assert_eq!(tx.vout.len(), 1);
         assert_eq!(f.value + f.fee, 150_000_000);
-        assert_eq!(f.fee, w.pq_terms().fee(f.raw.len()));
+        // audit 04/N-1: a Falcon input is 1,620 vin bytes, 11 ZIP-317 actions, so the
+        // conventional 5,500 zat is the fee (above the 1,000 flat and the relay-rate size fee).
+        assert_eq!(tx.zip317_conventional_fee(&[1_577]).unwrap(), 5_500);
+        assert!(w.pq_terms().fee(f.raw.len()) < 5_500);
+        assert_eq!(f.fee, 5_500);
         let to = script::p2pkh_hash(&tx.vout[0].script_pubkey).unwrap();
         assert!(w.own_hashes().unwrap().contains(&to));
         assert!(gate::check(gate::Path::PqSweep(op(0)), &f.raw, |_| None).is_ok());

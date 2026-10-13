@@ -16,7 +16,9 @@
 //! pushes; parsers accept only those shapes (parse the fields, rebuild, compare bytes), so a
 //! non-minimal or out-of-range field is not a template. The golden vector
 //! `src/test/data/vault_vectors.json` (byte-identical on both node lines) is replayed in the
-//! tests below from `core/tests/vectors/vault_vectors.json`, a byte-identical copy.
+//! tests below from `core/tests/vectors/vault_vectors.json`, a copy of the node's file at the
+//! commits `core/tests/vectors/PIN` records (one per node line); `scripts/check-node-vectors.sh`
+//! compares the copy with the node's file at those commits in CI and fails on any difference.
 //!
 //! **Post-quantum owner (quantum spec §1, `upgrade/quantum-vaults`).** The owner slot of V (twice)
 //! and I is `<ownerHash:32> <scheme> OP_CHECKPQSIG` (`20 <32> 51|52 c2`, 35 bytes like the
@@ -24,8 +26,8 @@
 //! and no dual parser. V has 45 tokens (owner hash o[22], scheme o[23], second copy o[34]/o[35],
 //! appHeight o[40]); I has 32 (owner o[27]/o[28]). The owner's scriptSigs push the chunked
 //! signature and key ([`crate::pq::pq_sig_pushes`]) before the selector (§1.5). Translation source
-//! for this part: ycash-dd `src/vault/template.{h,cpp}` on branch `q/tmpl`, whose
-//! `src/test/data/vault_vectors.json` is copied byte for byte to `tests/vectors/`.
+//! for this part: ycash-dd `src/vault/template.{h,cpp}` (`upgrade/vault`), whose
+//! `src/test/data/vault_vectors.json` is copied to `tests/vectors/` at the pinned commit (above).
 
 use crate::keys::sha256;
 use crate::pq::{self, PqKeyId, OP_CHECKPQSIG};
@@ -611,6 +613,10 @@ mod tests {
             let spk = unhex(e["script"].as_str().unwrap()).unwrap();
             assert_eq!(parse_intent(&spk), None, "{}", e["name"]);
         }
+        // The node's file at the pin (core/tests/vectors/PIN): four intents (one with a Falcon
+        // owner) and eleven invalid ones (the owner-scheme and owner-hash cases among them).
+        assert_eq!(v["intents"].as_array().unwrap().len(), 4);
+        assert_eq!(v["intentsInvalid"].as_array().unwrap().len(), 11);
     }
 
     #[test]
@@ -662,30 +668,65 @@ mod tests {
         );
     }
 
-    /// `ownerSpends[]`: the node's own V selector-2 spend, signed by the vector's PQ owner
-    /// (`pqOwner`: seed → pk → owner id). YEW computes the same ZIP-243 sighash under the Vault
-    /// branch id over the V, signs it with SLH-DSA (deterministic), and writes the node's
+    /// The owner scriptSig of an `ownerSpends[]` entry's `(kind, selector)`: V 2 (OWNER), V 3 and
+    /// I 3 (OWNER-RELEASED). Any other shape is a test failure: a shape the node adds to the vector
+    /// must be added here deliberately, never pass silently.
+    fn owner_spend_script_sig(kind: &str, sel: u8, sig: &[u8], pk: &[u8]) -> Vec<u8> {
+        match (kind, sel) {
+            ("V", SEL_OWNER) => vault_owner_script_sig(sig, pk).unwrap(),
+            ("V", SEL_RELEASED) => vault_owner_released_script_sig(sig, pk).unwrap(),
+            ("I", SEL_RELEASED) => intent_owner_released_script_sig(sig, pk).unwrap(),
+            _ => panic!("unreachable shape: ownerSpends kind {kind} selector {sel}"),
+        }
+    }
+
+    /// `ownerSpends[]`: the node's owner spends of V (selectors 2 and 3) and I (selector 3), by
+    /// both owners of the vector (`pqOwner`, SLH-DSA; `falconOwner`, Falcon). Per entry the
+    /// scriptCode is parsed by `kind`, its owner picks the key by scheme, and YEW computes the same
+    /// ZIP-243 sighash under the Vault branch id, signs it (SLH-DSA deterministic; Falcon with the
+    /// entry's 88-byte `falconEntropy`, the node's `pq::SignWithEntropy`), and writes the node's
     /// scriptSig byte for byte; the transaction with that scriptSig re-serializes to the node's.
     #[test]
     fn owner_spend_is_signed_byte_for_byte() {
         let v = vectors();
-        let o = &v["pqOwner"];
-        let key = pq::PqKey::from_seed(1, &unhex(o["seed"].as_str().unwrap()).unwrap()).unwrap();
-        assert_eq!(
-            key.public_key(),
-            &unhex(o["pk"].as_str().unwrap()).unwrap()[..]
-        );
-        assert_eq!(key.id(), owner_json(&o["owner"]));
-        let spends = v["ownerSpends"].as_array().unwrap();
-        assert!(!spends.is_empty());
-        for e in spends {
+        let owner_key = |o: &Value, scheme: u8| {
+            let key =
+                pq::PqKey::from_seed(scheme, &unhex(o["seed"].as_str().unwrap()).unwrap()).unwrap();
+            assert_eq!(
+                key.public_key(),
+                &unhex(o["pk"].as_str().unwrap()).unwrap()[..]
+            );
+            assert_eq!(key.id(), owner_json(&o["owner"]));
+            key
+        };
+        let slh = owner_key(&v["pqOwner"], pq::SCHEME_SLH_DSA_SHA2_128S);
+        let falcon = owner_key(&v["falconOwner"], pq::SCHEME_FN_DSA_512);
+        let (mut n_slh, mut n_falcon, mut n_v, mut n_i) = (0, 0, 0, 0);
+        for e in v["ownerSpends"].as_array().unwrap() {
+            let name = e["name"].as_str().unwrap();
             let raw = unhex(e["tx"].as_str().unwrap()).unwrap();
             let (mut tx, _) = Transaction::parse(&raw).unwrap();
             assert_eq!(tx.serialize().unwrap(), raw);
             let n = e["nIn"].as_u64().unwrap() as usize;
             let code = unhex(e["scriptCode"].as_str().unwrap()).unwrap();
-            let vp = parse_vault(&code).expect("the spent V parses");
-            assert_eq!(vp.owner, key.id());
+            let kind = e["kind"].as_str().unwrap();
+            let owner = match kind {
+                "V" => {
+                    n_v += 1;
+                    parse_vault(&code).expect("the spent V parses").owner
+                }
+                "I" => {
+                    n_i += 1;
+                    parse_intent(&code).expect("the spent I parses").owner
+                }
+                k => panic!("unreachable shape: ownerSpends kind {k} ({name})"),
+            };
+            let key = match owner.scheme {
+                pq::SCHEME_SLH_DSA_SHA2_128S => &slh,
+                pq::SCHEME_FN_DSA_512 => &falcon,
+                s => panic!("unknown owner scheme {s} ({name})"),
+            };
+            assert_eq!(key.id(), owner, "{name}");
             let branch = e["branchId"].as_u64().unwrap() as u32;
             assert_eq!(branch, crate::params::VAULT_BRANCH_ID);
             let digest = tx
@@ -697,28 +738,50 @@ mod tests {
                     branch,
                 )
                 .unwrap();
-            assert_eq!(digest, h::<32>(&e["sighash"]), "{}", e["name"]);
-            let mut sig = key.sign(&digest);
-            assert!(pq::verify(1, key.public_key(), &sig, &digest));
+            assert_eq!(digest, h::<32>(&e["sighash"]), "{name}");
+            let mut sig = if owner.scheme == pq::SCHEME_FN_DSA_512 {
+                n_falcon += 1;
+                let entropy = h::<{ pq::FALCON_SIGN_ENTROPY_SIZE }>(&e["falconEntropy"]);
+                key.sign_with_entropy(&digest, &entropy)
+                    .expect("a Falcon key signs")
+            } else {
+                n_slh += 1;
+                assert!(
+                    e.get("falconEntropy").is_none(),
+                    "{name}: SLH-DSA is deterministic"
+                );
+                key.sign(&digest)
+            };
+            assert!(pq::verify(owner.scheme, key.public_key(), &sig, &digest));
             sig.push(crate::params::SIGHASH_ALL as u8);
             let sel = e["selector"].as_u64().unwrap() as u8;
-            let ss = match sel {
-                SEL_OWNER => vault_owner_script_sig(&sig, key.public_key()).unwrap(),
-                _ => vault_owner_released_script_sig(&sig, key.public_key()).unwrap(),
-            };
+            let ss = owner_spend_script_sig(kind, sel, &sig, key.public_key());
             assert_eq!(
                 crate::keys::hex(&ss),
                 e["scriptSig"].as_str().unwrap(),
-                "{}",
-                e["name"]
+                "{name}"
             );
             tx.vin[n].script_sig = ss;
             assert_eq!(tx.serialize().unwrap(), raw);
         }
+        // A silently shrunk (or grown) file fails: the node's 055d9c2 vector has three SLH-DSA
+        // spends (V 2, V 3, I 3) and one Falcon spend (V 2).
+        assert_eq!((n_slh, n_falcon, n_v, n_i), (3, 1, 3, 1));
     }
 
-    /// The ZIP-243 sighash under the Vault branch id (`spends[]`): YEW's signer computes the
-    /// node's `SignatureHash(scriptCode = V or I, tx, nIn, SIGHASH_ALL, amount, 0x6d5b7a31)`.
+    /// A shape the vector does not hold (V selector 1, the set's UNLOCK) is not an owner spend:
+    /// the dispatch above refuses it rather than writing some scriptSig.
+    #[test]
+    #[should_panic(expected = "unreachable shape")]
+    fn owner_spend_dispatch_refuses_a_new_shape() {
+        owner_spend_script_sig("V", SEL_UNLOCK, &[0u8; 7_857], &[0u8; 32]);
+    }
+
+    /// The ZIP-243 sighash under the Vault branch id (`spends[]`): YEW's sighash computes the
+    /// node's `SignatureHash(scriptCode = V or I, tx, nIn, SIGHASH_ALL|SIGHASH_ANYONECANPAY,
+    /// amount, 0x6d5b7a31)`, the hash type set signatures are made over (01/V-2). YEW never
+    /// makes a set signature itself (sets sign through the node's `set_sign*` RPCs); the owner
+    /// spends above stay `SIGHASH_ALL`.
     #[test]
     fn spends_sighash_under_the_vault_branch_id() {
         let v = vectors();
@@ -736,11 +799,22 @@ mod tests {
                     e["nIn"].as_u64().unwrap() as usize,
                     &code,
                     e["amount"].as_i64().unwrap(),
-                    crate::params::SIGHASH_ALL,
+                    crate::params::SET_SIGHASH,
                     branch,
                 )
                 .unwrap();
             assert_eq!(got, h::<32>(&e["sighash"]), "{}", e["name"]);
+            // Under SIGHASH_ALL the digest differs: the node vector is not the pre-01/V-2 one.
+            let all = tx
+                .sighash(
+                    e["nIn"].as_u64().unwrap() as usize,
+                    &code,
+                    e["amount"].as_i64().unwrap(),
+                    crate::params::SIGHASH_ALL,
+                    branch,
+                )
+                .unwrap();
+            assert_ne!(all, h::<32>(&e["sighash"]), "{}", e["name"]);
             // And the scriptSig's selector parses for the template it spends.
             let kind = if parse_vault(&code).is_some() {
                 Kind::Vault

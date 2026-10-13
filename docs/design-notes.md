@@ -453,14 +453,14 @@ line); `pq_owners`; `claim_intents.pq_spend_txid`; intent state `SWEPT`.
 100 zat/kB relay floor, refused above 100×). The size is priced before signing: the SLH-DSA
 scriptSig is exact (7,938 bytes, 7,939 with a V selector), each ECDSA input is bounded at 108
 bytes. Every scriptSig is checked against the relay limits (9,000 PQ, 1,650 other) before a
-broadcast. At the default 1× rate an owner spend still pays 1,000 zat (client survey C-5).
-*Per node line:* ycash-dd's wallet charges `max(DEFAULT_FEE, pqfeerate × size)`; ycash6's adds
-its ZIP-317 conventional fee as a third `max` argument. That term is ycash6's own wallet funding
-policy (`zip317.h`: `FeePolicy` is node-local; the ZIP-317 unpaid-action relay limits are
-`SIZE_MAX` by default), not something either line's relay demands, and YEW cannot tell the lines
-apart through lightwalletd, so YEW pays the ycash-dd formula on both. A node operator who enables
-ZIP-317 relay (`-txunpaidactionlimit=0`) would refuse an 8 KB owner spend at this fee (~55 logical
-actions): not priced, recorded here.
+broadcast. Since audit 04/N-1 the fee is also never below the 6.20.0 line's ZIP-317 conventional
+fee, `500 · max(2, max(⌈vin bytes/150⌉, ⌈vout bytes/34⌉))` (`params::zip317_conventional_fee`;
+the YED builders use the node's pre-signing `YedConventionalFeeEstimate`,
+`params::yed_conventional_fee_estimate`), outside the cap, as both node lines' wallets and
+builders now pay: a ycash6 relay that opts into ZIP-317 (`-txunpaidactionlimit=0`) refuses a
+transaction paying less, and every ycash6 node's ZIP-401 limiter ranks it first for eviction.
+At the default 1× rate an SLH-DSA owner spend therefore pays 27,000 zat (54 actions), not the
+1,000 of client survey C-5, and a Falcon input 5,500 (11 actions).
 
 **TOK-PQ: Falcon YED holders.** Owner decision 2026-10-10: Falcon goes live with the vault
 upgrade, `pqFalconHeight = 0` on mainnet and testnet, so every YED holder there is a Falcon key
@@ -489,8 +489,11 @@ Falcon. From the Falcon height (judged for the block the transaction can first b
   owner, C-10; a Falcon address is non-standard until activation: `falcon-not-active`);
 - *prices*: a transaction with a Falcon input pays `max(FEE_ZAT, pqfeerate × size)` like an
   owner spend (transfer: re-selected until the YEC inputs cover it; redeem: per-input scriptSig
-  bounds; claim: signed, measured, re-priced). At the default 1× a Falcon transfer (~1.9 kB)
-  still pays 1,000 zat.
+  bounds; claim: signed, measured, re-priced), and never less than the 6.20.0 line's ZIP-317
+  conventional fee (audit 04/N-1, as both node lines' wallets and builders: a Falcon input is
+  ~11 logical actions, an SLH-DSA one ~54; `params::zip317_conventional_fee`,
+  `yed_conventional_fee_estimate`), so a ycash6 relay started with `-txunpaidactionlimit=0`
+  accepts it and the ZIP-401 limiter does not evict it first. A Falcon transfer pays ~5,500 zat.
 
 **Falcon implementation.** `core/pq-c/falcon` is a byte copy of the node's
 `src/crypto/pq/falcon` (ycash-dd = ycash6: PQClean `falcon-padded-512/clean` at `0586a824`, the
@@ -523,6 +526,16 @@ are not listed and PQ outputs are not address-indexed); its P2PKH pair usually c
 change of the same transaction, so the gap scan normally still sees it, but a run of more than
 `GAP_LIMIT` such keys would stop a restore early. A Falcon key is not seed-portable to other
 implementations (plan §4.6): only this code (and the node's) re-derives it.
+
+**The PQ IKM (audit 06/Y-3, LOW-06-Y-4).** YEW's input keying material is the 64-byte BIP39 seed
+of the words and the passphrase; ycash-dd's wallet uses its 32-byte HD seed and ycash6's the
+64-byte seed of its own 24-word phrase (empty passphrase). So the same 24 English words without a
+passphrase give the same PQ keys in YEW and in ycashd 6.x, and different ones in ycashd 4.5 /
+YecWallet: the node's `pq_wallet_vectors.json` carries both IKMs (`hdSeed`, `mnemonic`) and
+`pq.rs` `derivation_reproduces_the_node_wallet_vector` replays both, from the phrase. YEW does
+not promise any other wallet as a recovery path (the index ranges differ: Falcon holders follow
+the HD address indices, change at `0x8000_0000 + i`): the trust statement and the seed screens
+say "restore in YEW".
 
 **The residual (spec F-3).** A claimed vault's RED-5 residual intent pays `PQPKH(owner)`. YEW
 releases it like a claimant intent (recipient shown as the 53-character owner address), and once
@@ -573,6 +586,14 @@ the plain `sq…` form and maps a 53-character PQ `yb…` to it).**
   (1,577-byte Falcon scriptSig, verdict `ok`, burned 0); a restore from the seed agrees (52 s).
 - *Not done.* YEW still hands out `s…` for YEC (no `sq…` receive address), and a YEC send does not
   spend `PQ_OWNED` coins directly (they are moved first).
+
+**Node vector pin (audit 06/Y-1, Y-2, Y-5; LOW-06-Y-1).** `core/tests/vectors/{vault,pq,pq_wallet}_vectors.json`
+are copies of the node's `src/test/data/` files at the two commits `core/tests/vectors/PIN` names
+(ycash-dd and ycash6; the files are identical on both lines). `scripts/check-node-vectors.sh`
+compares them in CI and fails, never skips; `scripts/resync-node-vectors.sh` re-copies and
+re-pins. The owner-spend replay is scheme-aware (SLH-DSA and Falcon owners, V and I, every
+selector the vector holds; an unknown shape fails) and counts the entries. The devnet suites run
+nightly in `.github/workflows/devnet-nightly.yml` (self-hosted, non-gating).
 
 **Vectors and devnet (2026-10-10, ycash-dd `aa0fd3812`, lightwalletd-dd `ef70570`, portseed
 1860).** `transparent/addresses/params/templates.json` regenerated with `yellowback-devnet vectors
