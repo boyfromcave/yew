@@ -189,6 +189,10 @@ message YedVault {
   // ACTIVE at or after cancelQuietUntil.
   int64 cancelCount = 31; int64 cancelsRequired = 32; int64 cancelQuietUntil = 33;
   repeated YedOutpoint heldResiduals = 34;
+  // CAN-1 (a cancelled claim refunds its burn): on a CLAIMING vault, the scriptPubKey (hex) the claim's burned YED came
+  // from -- the token spent at the claim's lowest-index YED input -- which a cancel re-issues the whole burn to as one
+  // YED token (burnedCents); "" otherwise (the node omits the key).
+  string refundHolder = 35;
 }
 message YedClaimable {
   int64 attestFeeZat = 1; int64 claimHeight = 2; string claimPath = 3; int64 collateralZat = 4; int64 emergencyOpenAt = 5;
@@ -198,6 +202,10 @@ message YedClaimable {
   // rpcversion 6 (in-term claims, IT-7): every ACTIVE vault whose claim branch is open is listed, in term
   // too; claimable is false while it is above theta, and underwaterAt is then the price at which it becomes so.
   bool claimable = 15; int64 lockHeight = 16;
+  // The per-vault cancel limit (CAN-2; additive, rpcversion unchanged), as YedVault carries it: what a claim of this
+  // vault faces -- its counted cancels, the co-signers a cancel needs if it confirms in the next block, and the quiet
+  // period's end (the node's null, never cancelled, is 0 here).
+  int64 cancelCount = 18; int64 cancelsRequired = 19; int64 cancelQuietUntil = 20;
 }
 message YedNotice {
   int64 emergencyOpenAt = 1; int64 expiresAt = 2; bool found = 3; int64 height = 4; int64 pEmerg = 5; int64 refHeight = 6;
