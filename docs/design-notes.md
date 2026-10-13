@@ -524,6 +524,16 @@ change of the same transaction, so the gap scan normally still sees it, but a ru
 `GAP_LIMIT` such keys would stop a restore early. A Falcon key is not seed-portable to other
 implementations (plan §4.6): only this code (and the node's) re-derives it.
 
+**The PQ IKM (audit 06/Y-3, LOW-06-Y-4).** YEW's input keying material is the 64-byte BIP39 seed
+of the words and the passphrase; ycash-dd's wallet uses its 32-byte HD seed and ycash6's the
+64-byte seed of its own 24-word phrase (empty passphrase). So the same 24 English words without a
+passphrase give the same PQ keys in YEW and in ycashd 6.x, and different ones in ycashd 4.5 /
+YecWallet: the node's `pq_wallet_vectors.json` carries both IKMs (`hdSeed`, `mnemonic`) and
+`pq.rs` `derivation_reproduces_the_node_wallet_vector` replays both, from the phrase. YEW does
+not promise any other wallet as a recovery path (the index ranges differ: Falcon holders follow
+the HD address indices, change at `0x8000_0000 + i`): the trust statement and the seed screens
+say "restore in YEW".
+
 **The residual (spec F-3).** A claimed vault's RED-5 residual intent pays `PQPKH(owner)`. YEW
 releases it like a claimant intent (recipient shown as the 53-character owner address), and once
 that release confirms the same intent row offers the move of the coin (`release txid:0`) into a
@@ -573,6 +583,14 @@ the plain `sq…` form and maps a 53-character PQ `yb…` to it).**
   (1,577-byte Falcon scriptSig, verdict `ok`, burned 0); a restore from the seed agrees (52 s).
 - *Not done.* YEW still hands out `s…` for YEC (no `sq…` receive address), and a YEC send does not
   spend `PQ_OWNED` coins directly (they are moved first).
+
+**Node vector pin (audit 06/Y-1, Y-2, Y-5; LOW-06-Y-1).** `core/tests/vectors/{vault,pq,pq_wallet}_vectors.json`
+are copies of the node's `src/test/data/` files at the two commits `core/tests/vectors/PIN` names
+(ycash-dd and ycash6; the files are identical on both lines). `scripts/check-node-vectors.sh`
+compares them in CI and fails, never skips; `scripts/resync-node-vectors.sh` re-copies and
+re-pins. The owner-spend replay is scheme-aware (SLH-DSA and Falcon owners, V and I, every
+selector the vector holds; an unknown shape fails) and counts the entries. The devnet suites run
+nightly in `.github/workflows/devnet-nightly.yml` (self-hosted, non-gating).
 
 **Vectors and devnet (2026-10-10, ycash-dd `aa0fd3812`, lightwalletd-dd `ef70570`, portseed
 1860).** `transparent/addresses/params/templates.json` regenerated with `yellowback-devnet vectors
