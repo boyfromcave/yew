@@ -321,6 +321,56 @@ pub struct VaultRow {
     /// struck at — FEE-1′ on the redeem, IT-9′'s early fee. 0 = not yet refreshed (column
     /// `vaults.p_mint`, additive: no schema version change).
     pub p_mint: i64,
+    /// The per-vault cancel limit as `GetVault` last reported it (CAN-2, CAN-3; columns
+    /// `vaults.cancel_count`, `cancels_required`, `cancel_quiet_until`, `held_residuals`, additive:
+    /// no schema version change; the next sync fills them).
+    pub cancel: VaultCancel,
+}
+
+/// The per-vault cancel limit of one vault (CAN-2, CAN-3), as `yed_getvault` answers it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VaultCancel {
+    /// `cancelCount`: the position's cancels counted by the escalation schedule (0 at the mint;
+    /// it survives every re-creation).
+    pub count: i64,
+    /// `cancelsRequired`: how many distinct attestor-set members must co-sign a cancel of a claim
+    /// on it that confirms in the block after the last refresh (1 for a vault never cancelled).
+    /// 0 = not yet refreshed.
+    pub required: i64,
+    /// `cancelQuietUntil`: the first height at which the schedule starts from one again; 0 when
+    /// the vault was never cancelled (the node's `null`).
+    pub quiet_until: u64,
+    /// `heldResiduals`: the residual intents of cancelled claims this position holds (CAN-3).
+    /// Their release is refused (`intent-residual-held`) until the position is CLOSED or CLAIMED,
+    /// or ACTIVE from `quiet_until` while no claim on it could pass.
+    pub held_residuals: Vec<OutPoint>,
+}
+
+impl VaultCancel {
+    /// `held_residuals` as stored: `txid:n` (display hex), comma-separated.
+    fn held_text(&self) -> String {
+        self.held_residuals
+            .iter()
+            .map(|o| format!("{}:{}", crate::tx::txid_hex(&o.txid), o.n))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn parse_held(text: &str) -> Result<Vec<OutPoint>, StoreError> {
+        let mut out = Vec::new();
+        for item in text.split(',').filter(|s| !s.is_empty()) {
+            let (t, n) = item
+                .rsplit_once(':')
+                .ok_or_else(|| StoreError::Corrupt(format!("held residual {item}")))?;
+            let txid = crate::tx::txid_from_hex(t)
+                .map_err(|e| StoreError::Corrupt(format!("held residual {item}: {e}")))?;
+            let n = n
+                .parse()
+                .map_err(|_| StoreError::Corrupt(format!("held residual {item}")))?;
+            out.push(OutPoint { txid, n });
+        }
+        Ok(out)
+    }
 }
 
 /// The state of a claim intent this wallet is paid by (the vault upgrade, U-23).
@@ -475,7 +525,9 @@ CREATE TABLE IF NOT EXISTS vaults (
   void_reason TEXT NOT NULL, updated_height INTEGER NOT NULL,
   owner_height INTEGER NOT NULL DEFAULT 0, app_height INTEGER NOT NULL DEFAULT 0,
   owner_scheme INTEGER NOT NULL DEFAULT 0, owner_hash BLOB NOT NULL DEFAULT x'',
-  p_mint INTEGER NOT NULL DEFAULT 0);
+  p_mint INTEGER NOT NULL DEFAULT 0,
+  cancel_count INTEGER NOT NULL DEFAULT 0, cancels_required INTEGER NOT NULL DEFAULT 0,
+  cancel_quiet_until INTEGER NOT NULL DEFAULT 0, held_residuals TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS pq_owners (idx INTEGER PRIMARY KEY, scheme INTEGER NOT NULL, hash BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS pq_holders (idx INTEGER PRIMARY KEY, scheme INTEGER NOT NULL, hash BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS claim_bounds (
@@ -614,6 +666,20 @@ impl Store {
             .exists([])?;
         if !has_p_mint {
             conn.execute_batch("ALTER TABLE vaults ADD COLUMN p_mint INTEGER NOT NULL DEFAULT 0;")?;
+        }
+        // The per-vault cancel limit (CAN-2, CAN-3): additive like `p_mint`; the next sync fills them.
+        for (column, decl) in [
+            ("cancel_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("cancels_required", "INTEGER NOT NULL DEFAULT 0"),
+            ("cancel_quiet_until", "INTEGER NOT NULL DEFAULT 0"),
+            ("held_residuals", "TEXT NOT NULL DEFAULT ''"),
+        ] {
+            let has: bool = conn
+                .prepare("SELECT 1 FROM pragma_table_info('vaults') WHERE name = ?1")?
+                .exists([column])?;
+            if !has {
+                conn.execute_batch(&format!("ALTER TABLE vaults ADD COLUMN {column} {decl};"))?;
+            }
         }
         // v2 → v3 (W4) is the two new tables SCHEMA just created; v3 → v4 and v4 → v5 the
         // columns above; v5's `pq_owners` comes from SCHEMA.
@@ -1481,14 +1547,17 @@ impl Store {
         self.conn.execute(
             "INSERT OR REPLACE INTO vaults (txid, vout, status, owner_hash160, owner_scheme, owner_hash, term_class, lock_height,
                claim_height, collateral_zat, minted_cents, mint_height, claimable, underwater_at, sweep_before, close_height,
-               closing_txid, void_reason, updated_height, owner_height, app_height, p_mint)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+               closing_txid, void_reason, updated_height, owner_height, app_height, p_mint,
+               cancel_count, cancels_required, cancel_quiet_until, held_residuals)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22,
+               ?23, ?24, ?25, ?26)",
             params![
                 v.txid.as_slice(), v.vout, v.status, v.owner_hash160.as_slice(), v.owner.scheme as i64,
                 v.owner.hash.as_slice(), v.term_class, v.lock_height, v.claim_height, v.collateral_zat,
                 v.minted_cents as i64, v.mint_height as i64, v.claimable as i64, v.underwater_at,
                 v.sweep_before as i64, v.close_height as i64, v.closing_txid, v.void_reason,
-                v.updated_height as i64, v.owner_height, v.app_height, v.p_mint
+                v.updated_height as i64, v.owner_height, v.app_height, v.p_mint,
+                v.cancel.count, v.cancel.required, v.cancel.quiet_until as i64, v.cancel.held_text()
             ],
         )?;
         Ok(())
@@ -1504,7 +1573,8 @@ impl Store {
         let mut st = self.conn.prepare(
             "SELECT txid, vout, status, owner_hash160, owner_hash, term_class, lock_height, claim_height, collateral_zat,
                minted_cents, mint_height, claimable, underwater_at, sweep_before, close_height, closing_txid, void_reason,
-               updated_height, owner_height, app_height, owner_scheme, p_mint FROM vaults ORDER BY mint_height, txid",
+               updated_height, owner_height, app_height, owner_scheme, p_mint, cancel_count, cancels_required,
+               cancel_quiet_until, held_residuals FROM vaults ORDER BY mint_height, txid",
         )?;
         let rows = st.query_map([], |r| {
             Ok((
@@ -1530,6 +1600,12 @@ impl Store {
                 r.get::<_, u32>(19)?,
                 r.get::<_, i64>(20)?,
                 r.get::<_, i64>(21)?,
+                (
+                    r.get::<_, i64>(22)?,
+                    r.get::<_, i64>(23)?,
+                    r.get::<_, i64>(24)?,
+                    r.get::<_, String>(25)?,
+                ),
             ))
         })?;
         let mut out = Vec::new();
@@ -1557,6 +1633,7 @@ impl Store {
                 app_height,
                 owner_scheme,
                 p_mint,
+                (cancel_count, cancels_required, cancel_quiet_until, held),
             ) = row?;
             let owner = owner_of(owner_scheme, &opk)?
                 .ok_or_else(|| StoreError::Corrupt("vault without an owner".into()))?;
@@ -1582,6 +1659,12 @@ impl Store {
                 owner_height,
                 app_height,
                 p_mint,
+                cancel: VaultCancel {
+                    count: cancel_count,
+                    required: cancels_required,
+                    quiet_until: cancel_quiet_until.max(0) as u64,
+                    held_residuals: VaultCancel::parse_held(&held)?,
+                },
             });
         }
         Ok(out)
@@ -2034,6 +2117,21 @@ mod tests {
             owner_height: 479,
             app_height: 479,
             p_mint: 520_000,
+            cancel: VaultCancel {
+                count: 2,
+                required: 3,
+                quiet_until: 8_554,
+                held_residuals: vec![
+                    OutPoint {
+                        txid: [7; 32],
+                        n: 1,
+                    },
+                    OutPoint {
+                        txid: [8; 32],
+                        n: 2,
+                    },
+                ],
+            },
         };
         s.upsert_vault(&v).unwrap();
         assert_eq!(s.vault(&[6; 32]).unwrap(), Some(v.clone()));

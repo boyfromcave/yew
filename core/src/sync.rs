@@ -40,7 +40,7 @@ use crate::net::rpc::YedTxInfo;
 use crate::net::{CompactClient, NetError, YellowbackClient};
 use crate::params::{self, CARRIER_VALUE, GAP_LIMIT};
 use crate::script;
-use crate::store::{HistoryRow, IntentRow, IntentState, MintState, VaultRow};
+use crate::store::{HistoryRow, IntentRow, IntentState, MintState, VaultCancel, VaultRow};
 use crate::tx::{txid_from_hex, txid_hex, OutPoint, Transaction};
 use crate::wallet::{dollars, Wallet, WalletError};
 
@@ -859,6 +859,7 @@ pub async fn refresh_vaults(
             owner_height: yv.owner_height(),
             app_height: yv.app_height(),
             p_mint: v.p_mint,
+            cancel: cancel_of(&v),
         })?;
         n += 1;
         if v.status == "CLAIMING" {
@@ -903,6 +904,7 @@ pub async fn refresh_vaults(
                 closing_txid: String::new(),
                 updated_height: tip,
                 p_mint: v.p_mint,
+                cancel: cancel_of(&v),
                 ..row.clone()
             })?;
             found = Some(t);
@@ -921,6 +923,26 @@ pub async fn refresh_vaults(
         })?;
     }
     Ok((n, Some(vt)))
+}
+
+/// The per-vault cancel limit of a `GetVault` answer (CAN-2, CAN-3), as the store keeps it: the
+/// node's `null` `cancelQuietUntil` arrives as 0; a held residual whose txid does not parse is
+/// skipped (it cannot match an intent of this wallet).
+fn cancel_of(v: &crate::net::rpc::YedVault) -> VaultCancel {
+    VaultCancel {
+        count: v.cancel_count,
+        required: v.cancels_required,
+        quiet_until: v.cancel_quiet_until.max(0) as u64,
+        held_residuals: v
+            .held_residuals
+            .iter()
+            .filter_map(|o| {
+                txid_from_hex(&o.txid)
+                    .ok()
+                    .map(|txid| OutPoint { txid, n: o.vout })
+            })
+            .collect(),
+    }
 }
 
 /// The owner's RED-5 residual intent of an own `CLAIMING` vault (`yed_getvault.intents`, role
