@@ -1732,8 +1732,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ClaimIntent dco_decode_claim_intent(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 16)
-      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
+    if (arr.length != 19)
+      throw Exception('unexpected arr length: expect 19 but see ${arr.length}');
     return ClaimIntent(
       intent: dco_decode_String(arr[0]),
       vaultTxid: dco_decode_String(arr[1]),
@@ -1746,11 +1746,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       releasable: dco_decode_bool(arr[8]),
       pqMove: dco_decode_bool(arr[9]),
       cancelled: dco_decode_bool(arr[10]),
-      releaseTimeSecs: dco_decode_i_64(arr[11]),
-      held: dco_decode_bool(arr[12]),
-      heldReason: dco_decode_String(arr[13]),
-      spendTxid: dco_decode_String(arr[14]),
-      note: dco_decode_String(arr[15]),
+      refundCents: dco_decode_i_64(arr[11]),
+      refundAddress: dco_decode_String(arr[12]),
+      refundOwn: dco_decode_bool(arr[13]),
+      releaseTimeSecs: dco_decode_i_64(arr[14]),
+      held: dco_decode_bool(arr[15]),
+      heldReason: dco_decode_String(arr[16]),
+      spendTxid: dco_decode_String(arr[17]),
+      note: dco_decode_String(arr[18]),
     );
   }
 
@@ -1770,8 +1773,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ClaimableItem dco_decode_claimable_item(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 18)
-      throw Exception('unexpected arr length: expect 18 but see ${arr.length}');
+    if (arr.length != 21)
+      throw Exception('unexpected arr length: expect 21 but see ${arr.length}');
     return ClaimableItem(
       vaultTxid: dco_decode_String(arr[0]),
       ownerAddress: dco_decode_String(arr[1]),
@@ -1791,6 +1794,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       underwaterAtMicroUsd: dco_decode_i_64(arr[15]),
       lockHeight: dco_decode_i_64(arr[16]),
       inTerm: dco_decode_bool(arr[17]),
+      cancelsRequired: dco_decode_i_64(arr[18]),
+      cancelCount: dco_decode_i_64(arr[19]),
+      cancelQuietUntil: dco_decode_i_64(arr[20]),
     );
   }
 
@@ -2603,6 +2609,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_releasable = sse_decode_bool(deserializer);
     var var_pqMove = sse_decode_bool(deserializer);
     var var_cancelled = sse_decode_bool(deserializer);
+    var var_refundCents = sse_decode_i_64(deserializer);
+    var var_refundAddress = sse_decode_String(deserializer);
+    var var_refundOwn = sse_decode_bool(deserializer);
     var var_releaseTimeSecs = sse_decode_i_64(deserializer);
     var var_held = sse_decode_bool(deserializer);
     var var_heldReason = sse_decode_String(deserializer);
@@ -2620,6 +2629,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       releasable: var_releasable,
       pqMove: var_pqMove,
       cancelled: var_cancelled,
+      refundCents: var_refundCents,
+      refundAddress: var_refundAddress,
+      refundOwn: var_refundOwn,
       releaseTimeSecs: var_releaseTimeSecs,
       held: var_held,
       heldReason: var_heldReason,
@@ -2657,6 +2669,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_underwaterAtMicroUsd = sse_decode_i_64(deserializer);
     var var_lockHeight = sse_decode_i_64(deserializer);
     var var_inTerm = sse_decode_bool(deserializer);
+    var var_cancelsRequired = sse_decode_i_64(deserializer);
+    var var_cancelCount = sse_decode_i_64(deserializer);
+    var var_cancelQuietUntil = sse_decode_i_64(deserializer);
     return ClaimableItem(
       vaultTxid: var_vaultTxid,
       ownerAddress: var_ownerAddress,
@@ -2676,6 +2691,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       underwaterAtMicroUsd: var_underwaterAtMicroUsd,
       lockHeight: var_lockHeight,
       inTerm: var_inTerm,
+      cancelsRequired: var_cancelsRequired,
+      cancelCount: var_cancelCount,
+      cancelQuietUntil: var_cancelQuietUntil,
     );
   }
 
@@ -3731,6 +3749,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.releasable, serializer);
     sse_encode_bool(self.pqMove, serializer);
     sse_encode_bool(self.cancelled, serializer);
+    sse_encode_i_64(self.refundCents, serializer);
+    sse_encode_String(self.refundAddress, serializer);
+    sse_encode_bool(self.refundOwn, serializer);
     sse_encode_i_64(self.releaseTimeSecs, serializer);
     sse_encode_bool(self.held, serializer);
     sse_encode_String(self.heldReason, serializer);
@@ -3766,6 +3787,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_64(self.underwaterAtMicroUsd, serializer);
     sse_encode_i_64(self.lockHeight, serializer);
     sse_encode_bool(self.inTerm, serializer);
+    sse_encode_i_64(self.cancelsRequired, serializer);
+    sse_encode_i_64(self.cancelCount, serializer);
+    sse_encode_i_64(self.cancelQuietUntil, serializer);
   }
 
   @protected

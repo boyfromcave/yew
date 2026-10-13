@@ -650,6 +650,7 @@ mod tests {
             spend_txid: [0; 32],
             pq_spend_txid: [0; 32],
             note: String::new(),
+            refund: Default::default(),
         }
     }
 

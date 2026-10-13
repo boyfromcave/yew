@@ -571,8 +571,20 @@ class ClaimIntent {
   final bool pqMove;
 
   /// The attestor set cancelled the claim: the collateral went back into the vault and the
-  /// claim's burn is not refunded (U-24).
+  /// claim's burn came back as YED to [`ClaimIntent::refund_address`] (CAN-1, U-24 revised); the
+  /// claim's YEC fees did not.
   final bool cancelled;
+
+  /// CAN-1, a claim this wallet made: the YED a cancel re-issues, cents (the claim's whole burn;
+  /// 0 when unknown or for a residual).
+  final PlatformInt64 refundCents;
+
+  /// Where it goes: the YED address (P2PKH `y…` or 53-character Falcon holder) of the token the
+  /// claim spent at its lowest-index YED input — the node's `refundHolder`. Empty when unknown.
+  final String refundAddress;
+
+  /// [`ClaimIntent::refund_address`] is one of this wallet's own addresses.
+  final bool refundOwn;
 
   /// The release date estimate (Unix seconds; `now + (releaseHeight − tip) · 75`).
   final PlatformInt64 releaseTimeSecs;
@@ -602,6 +614,9 @@ class ClaimIntent {
     required this.releasable,
     required this.pqMove,
     required this.cancelled,
+    required this.refundCents,
+    required this.refundAddress,
+    required this.refundOwn,
     required this.releaseTimeSecs,
     required this.held,
     required this.heldReason,
@@ -622,6 +637,9 @@ class ClaimIntent {
       releasable.hashCode ^
       pqMove.hashCode ^
       cancelled.hashCode ^
+      refundCents.hashCode ^
+      refundAddress.hashCode ^
+      refundOwn.hashCode ^
       releaseTimeSecs.hashCode ^
       held.hashCode ^
       heldReason.hashCode ^
@@ -644,6 +662,9 @@ class ClaimIntent {
           releasable == other.releasable &&
           pqMove == other.pqMove &&
           cancelled == other.cancelled &&
+          refundCents == other.refundCents &&
+          refundAddress == other.refundAddress &&
+          refundOwn == other.refundOwn &&
           releaseTimeSecs == other.releaseTimeSecs &&
           held == other.held &&
           heldReason == other.heldReason &&
@@ -733,6 +754,17 @@ class ClaimableItem {
   /// The vault is still in its term (a claim now is a claim in term).
   final bool inTerm;
 
+  /// CAN-2 (`yed_listclaimable`): how many attestors must sign together to cancel a claim of
+  /// this vault confirmed in the next block (1 for a vault not cancelled lately; 0 from a node
+  /// that does not say).
+  final PlatformInt64 cancelsRequired;
+
+  /// The vault's recent (counted) cancels.
+  final PlatformInt64 cancelCount;
+
+  /// From this height a cancel needs one attestor again; 0 when never cancelled.
+  final PlatformInt64 cancelQuietUntil;
+
   const ClaimableItem({
     required this.vaultTxid,
     required this.ownerAddress,
@@ -752,6 +784,9 @@ class ClaimableItem {
     required this.underwaterAtMicroUsd,
     required this.lockHeight,
     required this.inTerm,
+    required this.cancelsRequired,
+    required this.cancelCount,
+    required this.cancelQuietUntil,
   });
 
   @override
@@ -773,7 +808,10 @@ class ClaimableItem {
       claimable.hashCode ^
       underwaterAtMicroUsd.hashCode ^
       lockHeight.hashCode ^
-      inTerm.hashCode;
+      inTerm.hashCode ^
+      cancelsRequired.hashCode ^
+      cancelCount.hashCode ^
+      cancelQuietUntil.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -797,7 +835,10 @@ class ClaimableItem {
           claimable == other.claimable &&
           underwaterAtMicroUsd == other.underwaterAtMicroUsd &&
           lockHeight == other.lockHeight &&
-          inTerm == other.inTerm;
+          inTerm == other.inTerm &&
+          cancelsRequired == other.cancelsRequired &&
+          cancelCount == other.cancelCount &&
+          cancelQuietUntil == other.cancelQuietUntil;
 }
 
 /// The result of [`create_wallet`].

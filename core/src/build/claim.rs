@@ -13,8 +13,12 @@
 //! own YED inputs covering `mintedCents` (BURN stage allowed), YEC fee inputs, the carrier at
 //! `vin[last]`, and outputs claimant intent → fee → YED change → attestor fee → the owner's
 //! residual intent (RED-5) → payload → fee change, in the node's slot order ([`plan_claim`]).
-//! The claimant's intent is released after `CLAIM_DELAY` (`build::release`) unless one attestor
-//! cancels it first (then the burn is not refunded, U-24).
+//! The claimant's intent is released after `CLAIM_DELAY` (`build::release`) unless the attestor
+//! set cancels it first (CAN-2: one attestor for a vault's first cancel, more after recent ones).
+//! A cancel refunds the claim's whole burn (CAN-1, audit 03/H-1, U-24 revised) as one YED token to
+//! the holder of the token spent at the claim's lowest-index YED input; the claim's YEC fees are not
+//! returned. [`refund_holder_first`] orders the YED inputs so that holder is one of this wallet's
+//! Falcon (post-quantum) holders whenever it spends one.
 //!
 //! Translation source (plan §3.6): `ycash-dd/src/yellowback/txbuilder.cpp` — `BuildClaim`
 //! `:1301-1330`, `ClaimAt` `:845-884` (the residual; the client takes `residualZat`,
@@ -31,7 +35,9 @@ use crate::net::{CompactClient, YellowbackClient};
 use crate::params::{Network, CARRIER_VALUE, FEE_ZAT, SEQUENCE_LOCKTIME, TOKEN_VALUE};
 use crate::payload::{self, Assignment, Payload, FEE_VOUT_NONE};
 use crate::script;
-use crate::store::{HistoryRow, IntentRow, IntentState, MintKind, MintRow, MintState};
+use crate::store::{
+    HistoryRow, IntentRefund, IntentRow, IntentState, MintKind, MintRow, MintState,
+};
 use crate::tx::{txid_hex, OutPoint, Transaction, TxIn, TxOut};
 use crate::wallet::{dollars, Wallet, WalletError};
 
@@ -39,6 +45,36 @@ use super::mint::{self, Finished, MintError};
 use super::redeem;
 use super::terms;
 use super::yec_send::MIN_CHANGE;
+
+/// CAN-1: a cancel of the claim refunds its burn to the holder of the token at the claim's
+/// lowest-index YED input (the claim spends the vault at `vin[0]` and its YED inputs right after,
+/// so that is the first of `inputs`). Put a Falcon (post-quantum) holder token first when the claim
+/// spends one, so a refund comes back to one of this wallet's post-quantum holders (TOK-PQ) rather
+/// than re-creating a P2PKH holding; the order is otherwise kept (a stable sort).
+pub fn refund_holder_first(inputs: &mut [Utxo]) {
+    inputs.sort_by_key(|u| crate::pq::pqpkh_of(&u.script).is_none());
+}
+
+/// This wallet's YED holders (P2PKH key hashes and Falcon holder ids), to tell an own refund holder.
+#[derive(Default)]
+pub(crate) struct OwnHolders {
+    pub(crate) p2pkh: std::collections::HashSet<[u8; 20]>,
+    pub(crate) falcon: std::collections::HashSet<crate::pq::PqKeyId>,
+}
+
+/// CAN-1: the YED address of a refund holder's script, and whether it is this wallet's.
+pub(crate) fn refund_address(script: &[u8], own: &OwnHolders, network: Network) -> (String, bool) {
+    if let Some(h) = crate::script::p2pkh_hash(script) {
+        (keys::encode_yellowback(network, &h), own.p2pkh.contains(&h))
+    } else if let Some(id) = crate::pq::pqpkh_of(script) {
+        (
+            keys::encode_pq_yellowback(network, &id).unwrap_or_default(),
+            own.falcon.contains(&id),
+        )
+    } else {
+        (String::new(), false)
+    }
+}
 
 /// One entry of `ListClaimable` as the Claimable screen shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +116,12 @@ pub struct Claimable {
     pub claimant_zat: i64,
     /// The protocol fee payee for `(R, vault)` (`s…`), empty under FEE-0 (audit G-2).
     pub payee: String,
+    /// The per-vault cancel limit (CAN-2; `yed_listclaimable`, additive): the vault's counted
+    /// cancels, the attestors a cancel of a claim confirmed in the next block needs, and the quiet
+    /// period's end (0 when never cancelled). `cancels_required` is 0 from a node without it.
+    pub cancel_count: i64,
+    pub cancels_required: i64,
+    pub cancel_quiet_until: i64,
 }
 
 /// `claimable` (plan §3.4): `ListClaimable` mapped for the screen. The fee is FEE-1′ of the debt at
@@ -130,6 +172,9 @@ pub async fn claimable(
                 residual_zat: 0,
                 claimant_zat: 0,
                 payee: String::new(),
+                cancel_count: c.cancel_count,
+                cancels_required: c.cancels_required,
+                cancel_quiet_until: c.cancel_quiet_until,
             });
             continue;
         }
@@ -185,6 +230,9 @@ pub async fn claimable(
                 residual_zat,
             ),
             payee,
+            cancel_count: c.cancel_count,
+            cancels_required: c.cancels_required,
+            cancel_quiet_until: c.cancel_quiet_until,
         });
     }
     Ok(out)
@@ -710,7 +758,9 @@ pub async fn finish(
         n: 0,
     };
     let (carrier_op, redeem_script, carrier_key) = mint::carrier_of(wallet, m)?;
-    let (yed_inputs, change_cents, extra_burn, _stage) = redeem::select_yed_burn(wallet, m.cents)?;
+    let (mut yed_inputs, change_cents, extra_burn, _stage) =
+        redeem::select_yed_burn(wallet, m.cents)?;
+    refund_holder_first(&mut yed_inputs);
     let yed_value: i64 = yed_inputs.iter().map(|u| u.value).sum();
     // TOK-PQ (quantum spec F-7): from the Falcon height the YED change goes to a Falcon holder.
     let falcon = wallet.pq_terms().falcon_at(m.ref_height as u64 + 1);
@@ -895,10 +945,16 @@ pub async fn finish(
         spend_txid: [0; 32],
         pq_spend_txid: [0; 32],
         note: format!(
-            "claim of vault {}: released {} blocks after it confirms unless an attestor cancels it",
+            "claim of vault {}: released {} blocks after it confirms unless the attestor set cancels it (then the YED you burned comes back)",
             &txid_hex(&m.vault_txid)[..8],
             vault.delay
         ),
+        // CAN-1: what a cancel would re-issue, and to whom (the sync replaces it with the node's
+        // `refundHolder` / `burnedCents` once the claim confirms).
+        refund: IntentRefund {
+            script: yed_inputs.first().map(|u| u.script.clone()).unwrap_or_default(),
+            cents: plan.burn_cents.max(0) as u64,
+        },
     })?;
     let yed_spent: i64 = yed_inputs.iter().map(|u| u.value).sum();
     let fund_spent: i64 = funding.iter().map(|u| u.value).sum();
@@ -1148,5 +1204,57 @@ mod tests {
         let mut s = shape(0, true, false, 0, 100_000_000);
         s.vault_script.push(0x51);
         assert!(plan_claim(&s).is_err());
+    }
+
+    /// CAN-1: the refund of a cancelled claim goes to the holder of its first YED input, so a
+    /// Falcon (post-quantum) holder token is put first; the rest keep their order.
+    #[test]
+    fn refund_holder_is_a_falcon_holder_when_one_is_spent() {
+        let falcon = |n: u8| {
+            let mut u = utxo(n, TOKEN_VALUE, 100, UtxoClass::Token);
+            u.script = crate::pq::pqpkh_script(&crate::pq::PqKeyId {
+                scheme: 2,
+                hash: [n; 32],
+            })
+            .unwrap();
+            u
+        };
+        let mut inputs = vec![
+            utxo(1, TOKEN_VALUE, 100, UtxoClass::Token),
+            utxo(2, TOKEN_VALUE, 200, UtxoClass::Token),
+            falcon(3),
+            falcon(4),
+        ];
+        refund_holder_first(&mut inputs);
+        let order: Vec<u8> = inputs.iter().map(|u| u.outpoint.txid[0]).collect();
+        assert_eq!(order, vec![3, 4, 1, 2]);
+        assert!(crate::pq::pqpkh_of(&inputs[0].script).is_some());
+        // Only P2PKH tokens: unchanged.
+        let mut plain = vec![
+            utxo(1, TOKEN_VALUE, 100, UtxoClass::Token),
+            utxo(2, TOKEN_VALUE, 200, UtxoClass::Token),
+        ];
+        refund_holder_first(&mut plain);
+        assert_eq!(plain[0].outpoint.txid[0], 1);
+    }
+
+    /// CAN-1: a refund holder's script as the YED address the screen names, and whether it is own.
+    #[test]
+    fn refund_address_names_the_holder() {
+        let id = crate::pq::PqKeyId {
+            scheme: 2,
+            hash: [7; 32],
+        };
+        let mut own = OwnHolders::default();
+        own.p2pkh.insert([5; 20]);
+        own.falcon.insert(id);
+        let n = Network::Regtest;
+        let (a, mine) = refund_address(&script::p2pkh_script(&[5; 20]), &own, n);
+        assert!(mine && a == keys::encode_yellowback(n, &[5; 20]));
+        let (a, mine) = refund_address(&crate::pq::pqpkh_script(&id).unwrap(), &own, n);
+        assert!(mine && a.len() == 53 && Some(a) == keys::encode_pq_yellowback(n, &id));
+        let (a, mine) = refund_address(&script::p2pkh_script(&[6; 20]), &own, n);
+        assert!(!mine && !a.is_empty());
+        assert_eq!(refund_address(&[], &own, n), (String::new(), false));
     }
 }
