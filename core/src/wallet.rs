@@ -261,7 +261,7 @@ impl Wallet {
             m.update(seed);
             WrapSecret(m.finalize().into_bytes().into())
         };
-        let stored_terms = Wallet::stored_pq_terms(&store).unwrap_or_default();
+        let stored_terms = Wallet::stored_pq_terms(&store, network);
         let w = Wallet {
             network,
             store,
@@ -594,21 +594,21 @@ impl Wallet {
         crate::pq::pqpkh_of(script).is_some_and(|id| falcon.contains_key(&id))
     }
 
-    /// The server's post-quantum terms as last read ([`Wallet::note_server_params`]); the
-    /// default (relay floor, Falcon inactive) before any server has answered.
+    /// The server's post-quantum terms as last read and accepted ([`Wallet::note_server_params`]);
+    /// before any server has answered, [`PqTerms::default_for`] the network.
     ///
     /// **Mainnet and testnet: Falcon from day one** (owner decision 2026-10-10: `pqFalconHeight
-    /// = 0`, Falcon goes live with the vault upgrade). Off regtest the terms always say Falcon is
-    /// active, whatever a server or the offline default says, so a YED holder there is a Falcon
-    /// key from the first block (receive address, change, mint tokens). Regtest follows the
-    /// server (`-pqfalconheight`), so the P2PKH holder paths stay testable before Falcon.
+    /// = 0`, [`crate::params::PQ_FALCON_HEIGHT_MAINNET`]). The expectation is compiled in and
+    /// *checked*, not asserted over the server's answer: the offline default already says Falcon
+    /// is active (so a YED holder is a Falcon key from the first block: receive address, change,
+    /// mint tokens), and a server reporting another activation is refused
+    /// ([`crate::build::terms::check_falcon_activation`]), leaving these terms unchanged. Regtest
+    /// follows the server (`-pqfalconheight`), so the P2PKH holder paths stay testable before
+    /// Falcon.
+    ///
+    /// [`PqTerms::default_for`]: crate::build::terms::PqTerms::default_for
     pub fn pq_terms(&self) -> crate::build::terms::PqTerms {
-        let mut t = *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner());
-        if self.network != Network::Regtest {
-            t.falcon_active = true;
-            t.falcon_height = Some(0);
-        }
-        t
+        *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// TOK-PQ is in force for the next block as far as this wallet knows (the last synced tip
@@ -619,16 +619,18 @@ impl Wallet {
     }
 
     /// Remember the post-quantum terms of a `GetYellowbackInfo.params` (rpcversion 7); refused
-    /// (and nothing remembered) when they are missing or out of bounds.
+    /// (and nothing remembered) when they are missing or out of bounds, or (mainnet, testnet) when
+    /// the Falcon activation is not this build's.
     pub fn note_server_params(
         &self,
         p: Option<&crate::net::rpc::YellowbackParams>,
     ) -> Result<crate::build::terms::PqTerms, crate::build::mint::MintError> {
-        let t = crate::build::terms::pq_terms(p.ok_or_else(|| {
-            crate::build::mint::MintError::Inconsistent {
+        let t = crate::build::terms::pq_terms(
+            p.ok_or_else(|| crate::build::mint::MintError::Inconsistent {
                 what: "GetYellowbackInfo carries no params".into(),
-            }
-        })?)?;
+            })?,
+            self.network,
+        )?;
         *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner()) = t;
         // Remembered for an offline open (the receive address, the CLI): a failed write only
         // costs the default until the next server answer.
@@ -648,9 +650,27 @@ impl Wallet {
         Ok(t)
     }
 
-    /// The terms [`Wallet::note_server_params`] last remembered in the store, if any. A value
-    /// written before rpcversion 8 (three fields) reads with the default rates for the rest.
-    fn stored_pq_terms(store: &Store) -> Option<crate::build::terms::PqTerms> {
+    /// The terms [`Wallet::note_server_params`] last remembered in the store, else
+    /// [`crate::build::terms::PqTerms::default_for`] the network. On mainnet and testnet the
+    /// Falcon activation is always the compiled one (a value an older build stored from a server
+    /// it did not check is not believed).
+    fn stored_pq_terms(store: &Store, network: Network) -> crate::build::terms::PqTerms {
+        let dflt = crate::build::terms::PqTerms::default_for(network);
+        let Some(mut t) = Wallet::stored_pq_terms_raw(store) else {
+            return dflt;
+        };
+        if network.pq_falcon_height().is_some()
+            && (t.falcon_height, t.falcon_active) != (dflt.falcon_height, dflt.falcon_active)
+        {
+            t.falcon_height = dflt.falcon_height;
+            t.falcon_active = dflt.falcon_active;
+        }
+        t
+    }
+
+    /// The stored terms as written. A value written before rpcversion 8 (three fields) reads
+    /// with the default rates for the rest.
+    fn stored_pq_terms_raw(store: &Store) -> Option<crate::build::terms::PqTerms> {
         let v = store.meta("pq_terms").ok()??;
         let mut it = v.split(' ');
         let rate: i64 = it.next()?.parse().ok()?;
@@ -1028,7 +1048,8 @@ mod tests {
     }
 
     /// The server's terms survive an offline reopen; mainnet and testnet are Falcon from day one
-    /// whatever the terms say (owner decision 2026-10-10), regtest follows the server.
+    /// (owner decision 2026-10-10) by the compiled default, and a server that disagrees is refused
+    /// (LOW-06-Y-4), not overridden; regtest follows the server.
     #[test]
     fn pq_terms_persist_and_mainnet_is_falcon_from_day_one() {
         let seed = keys::seed_from_mnemonic(PHRASE, "").unwrap();
@@ -1052,7 +1073,40 @@ mod tests {
         assert!(w2.falcon_now());
         for net in [Network::Mainnet, Network::Testnet] {
             let m = Wallet::from_parts(Store::open_in_memory().unwrap(), net, &seed, None).unwrap();
-            assert!(m.falcon_now() && m.pq_terms().falcon_at(1));
+            // offline: the compiled default, Falcon from height 0; the YED holder is a Falcon key
+            assert!(m.falcon_now() && m.pq_terms().falcon_at(0) && m.pq_terms().falcon_at(1));
+            assert_eq!(m.pq_terms(), crate::build::terms::PqTerms::default_for(net));
+            let primary = m.receive_address(false).unwrap();
+            let falcon = m.falcon_holder_id(&primary).unwrap();
+            assert_eq!(
+                m.yed_holder_script(&primary, m.falcon_now()).unwrap(),
+                crate::pq::pqpkh_script(&falcon).unwrap()
+            );
+            // a server reporting Falcon inactive with scheme 2 absent (what the old override
+            // masked): refused, and the wallet's terms do not change
+            let err = m.note_server_params(Some(&p)).unwrap_err();
+            assert!(
+                matches!(err, crate::build::mint::MintError::Inconsistent { .. }),
+                "{err}"
+            );
+            assert_eq!(m.pq_terms(), crate::build::terms::PqTerms::default_for(net));
+            assert!(m.falcon_now());
+            // a server reporting the compiled activation: accepted, its rates taken
+            let mut good = p.clone();
+            let q = good.pq.as_mut().unwrap();
+            q.schemes = vec![1, 2];
+            q.falcon_active = true;
+            m.note_server_params(Some(&good)).unwrap();
+            assert_eq!(m.pq_terms().fee_rate_zat_per_kb, 300);
+            assert!(m.falcon_now());
+            // a value an older build stored unchecked is not believed on reopen
+            m.store
+                .set_meta("pq_terms", "300 -1 0 300 300 1000 10000000")
+                .unwrap();
+            let store = m.store;
+            let r = Wallet::from_parts(store, net, &seed, None).unwrap();
+            assert!(r.falcon_now() && r.pq_terms().falcon_at(0));
+            assert_eq!(r.pq_terms().fee_rate_zat_per_kb, 300);
         }
     }
 

@@ -1210,7 +1210,26 @@ fn wallet_id(w: &Wallet) -> Result<String, YewError> {
     Ok(format!("yew-{}", &h[..h.len().min(16)]))
 }
 
-fn yellowback_status(a: &Availability) -> YellowbackStatus {
+/// Why a present Yellowback service is not believed on `network`, if it is not: its Falcon
+/// activation (`params.pq`) is not the one compiled into this build (mainnet, testnet;
+/// `terms::check_falcon_activation`). YED is then hidden as for a server without the service.
+fn yellowback_refusal(a: &Availability, network: Network) -> Option<String> {
+    let Availability::Present { info, .. } = a else {
+        return None;
+    };
+    let pq = info.params.as_ref()?.pq.as_ref()?;
+    crate::build::terms::check_falcon_activation(network, pq)
+        .err()
+        .map(|e| e.to_string())
+}
+
+/// YED may be shown and used: the service is usable ([`Availability::usable`]) and not refused
+/// ([`yellowback_refusal`]).
+fn yellowback_usable(a: &Availability, network: Network) -> bool {
+    a.usable() && yellowback_refusal(a, network).is_none()
+}
+
+fn yellowback_status(a: &Availability, network: Network) -> YellowbackStatus {
     match a {
         Availability::Absent => YellowbackStatus {
             present: false,
@@ -1227,7 +1246,7 @@ fn yellowback_status(a: &Availability) -> YellowbackStatus {
             active,
         } => YellowbackStatus {
             present: true,
-            usable: a.usable(),
+            usable: yellowback_usable(a, network),
             rpcversion: info.rpcversion,
             enabled: *enabled,
             active: *active,
@@ -1490,7 +1509,7 @@ pub fn probe_server(
             chain_name: c.chain_name,
             tip: c.tip as i64,
             taddr_support: true,
-            yellowback: yellowback_status(&c.availability),
+            yellowback: yellowback_status(&c.availability, network),
         })
     })
 }
@@ -1663,7 +1682,7 @@ pub fn status() -> Result<Status, YewError> {
                 birthday: birthday as i64,
                 sync_height: sync_height as i64,
                 addresses: addresses as i64,
-                yellowback: yellowback_status(&c.availability),
+                yellowback: yellowback_status(&c.availability, network),
                 core_version: crate::VERSION.to_string(),
             })
         })
@@ -2427,18 +2446,23 @@ pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
             if o.conn.is_none() {
                 o.conn = Some(connect(&o.server, network).await?);
             }
-            let (tip, usable) = {
+            let (tip, usable, refused) = {
                 let c = o.conn.as_ref().expect("set above");
-                (c.tip as i64, c.availability.usable())
+                let refused = yellowback_refusal(&c.availability, network);
+                (
+                    c.tip as i64,
+                    c.availability.usable() && refused.is_none(),
+                    refused,
+                )
             };
             emit(SyncEvent {
                 yellowback_usable: usable,
                 ..event(
                     SyncStage::Probing,
-                    if usable {
-                        "Yellowback service present".into()
-                    } else {
-                        "No usable Yellowback service: YED hidden".into()
+                    match refused {
+                        Some(why) => format!("Yellowback service refused, YED hidden: {why}"),
+                        None if usable => "Yellowback service present".into(),
+                        None => "No usable Yellowback service: YED hidden".into(),
                     },
                     tip,
                     2,
@@ -2505,10 +2529,15 @@ pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
                 ),
                 Err(e) => (0, false, e.message.clone(), ", private sync failed".into()),
             };
+            let refused = r
+                .yellowback_refused
+                .as_ref()
+                .map(|why| format!("; Yellowback service refused, YED hidden: {why}"))
+                .unwrap_or_default();
             emit(SyncEvent {
                 stage: SyncStage::Done,
                 message: format!(
-                    "Synced to {}: {} transactions, {} outputs, {} tokens{extra}",
+                    "Synced to {}: {} transactions, {} outputs, {} tokens{extra}{refused}",
                     r.tip, r.transactions, r.utxos, r.tokens
                 ),
                 tip: r.tip as i64,

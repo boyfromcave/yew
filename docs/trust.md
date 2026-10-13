@@ -21,8 +21,10 @@ protects who can spend a vault: the owner's signature is designed to resist a qu
 It does not make the rest of the wallet post-quantum: public YEC and YED are held by ordinary
 keys, and private (Sapling) YEC is not post-quantum either. A vault-owner key cannot be kept on
 a hardware wallet, watched from another wallet, or shared as an extended public key (xpub): only
-your seed, in a wallet that knows post-quantum keys, can spend a vault. A vault-owner address
-(53 characters) names a vault; it is never an address to receive YED or YEC.
+your seed, restored into YEW, can spend a vault. Other wallets do not reliably derive the same
+post-quantum keys from these words (YecWallet and ycashd 4.5 do not at all), so do not count on
+another wallet to recover a vault or YED. A vault-owner address (53 characters) names a vault; it
+is never an address to receive YED or YEC.
 
 For what it knows about the chain, YEW trusts one light-client server: the one named in
 Settings. That server tells the wallet which coins exist, which of them are YED, the current

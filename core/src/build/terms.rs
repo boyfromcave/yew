@@ -541,8 +541,9 @@ pub struct PqTerms {
     /// The cap of a size-priced fee (`fees.network.yellowback.maxTxFeeZat`), never above
     /// [`params::MAX_YED_TX_FEE_ZAT`].
     pub max_fee_zat: i64,
-    /// `pq.falconHeight` (`None` = no activation height; mainnet and testnet are `0` by the owner's
-    /// decision of 2026-10-10, which `Wallet::pq_terms` enforces).
+    /// `pq.falconHeight` (`None` = no activation height). Mainnet and testnet must report the
+    /// height compiled into this build ([`Network::pq_falcon_height`], `0` by the owner's decision
+    /// of 2026-10-10); [`pq_terms`] refuses a server that reports another.
     pub falcon_height: Option<u64>,
     /// `pq.falconActive` as the node judged it (at its next block).
     pub falcon_active: bool,
@@ -565,6 +566,19 @@ impl Default for PqTerms {
 }
 
 impl PqTerms {
+    /// The terms before any server has answered on `network`: [`PqTerms::default`] with the
+    /// network's compiled Falcon activation ([`Network::pq_falcon_height`]; mainnet and testnet
+    /// active from height 0, so an offline wallet's YED holder is a Falcon key from the start).
+    /// Regtest: Falcon unknown (inactive) until the server says otherwise.
+    pub fn default_for(network: Network) -> PqTerms {
+        let mut t = PqTerms::default();
+        if let Some(h) = network.pq_falcon_height() {
+            t.falcon_height = Some(h);
+            t.falcon_active = h == 0;
+        }
+        t
+    }
+
     /// Falcon (scheme 2) and `TOK-PQ` apply to a transaction mined at `height`
     /// (`IsPQFalconActive(params, nHeight)`: `nHeight >= pqFalconHeight`; R-A2), or the node
     /// already said so.
@@ -602,12 +616,14 @@ impl PqTerms {
 /// ([`crate::payload::MINT_VERSION`]); a dollar target above [`params::MAX_USD_PER_KB_MICRO`], a
 /// floor above [`params::MAX_FEE_FLOOR_ZAT_PER_KB`], a fallback rate outside
 /// `0..=`[`params::MAX_PQ_FEE_RATE_ZAT_PER_KB`], a price outside `PRICE_MAX`, a flat fee below
-/// `FEE_ZAT`; and **a rate that is not its own inputs' `AttestedRateZatPerKB`** — so a server can
-/// report a high price target only in the open, never a padded zat figure.
-pub fn pq_terms(p: &rpc::YellowbackParams) -> Result<PqTerms, MintError> {
+/// `FEE_ZAT`; **a rate that is not its own inputs' `AttestedRateZatPerKB`** — so a server can
+/// report a high price target only in the open, never a padded zat figure; and on mainnet and
+/// testnet **a Falcon activation other than this build's** ([`check_falcon_activation`]).
+pub fn pq_terms(p: &rpc::YellowbackParams, network: Network) -> Result<PqTerms, MintError> {
     let pq =
         p.pq.as_ref()
             .ok_or_else(|| inconsistent("params.pq missing (rpcversion 7)"))?;
+    check_falcon_activation(network, pq)?;
     if !pq
         .schemes
         .contains(&(crate::pq::SCHEME_SLH_DSA_SHA2_128S as i64))
@@ -719,6 +735,32 @@ pub fn pq_terms(p: &rpc::YellowbackParams) -> Result<PqTerms, MintError> {
         falcon_height: u64::try_from(pq.falcon_height).ok(),
         falcon_active: pq.falcon_active,
     })
+}
+
+/// The server's Falcon activation (`params.pq.falconHeight` / `falconActive`) against the height
+/// compiled into this build ([`Network::pq_falcon_height`]; ycash-dd and ycash6
+/// `chainparams.cpp` `pqFalconHeight`). Mainnet and testnet: the height must be the compiled one,
+/// and at height 0 Falcon must be active; anything else is [`MintError::Inconsistent`] — the
+/// wallet refuses the server's YED terms rather than override them (a server whose node does not
+/// enforce `TOK-PQ` would otherwise be handed Falcon holder shapes it does not accept, or the
+/// reverse). Regtest follows the server (`-pqfalconheight`).
+pub fn check_falcon_activation(
+    network: Network,
+    pq: &rpc::YellowbackPqParams,
+) -> Result<(), MintError> {
+    let Some(expected) = network.pq_falcon_height() else {
+        return Ok(());
+    };
+    let height = u64::try_from(pq.falcon_height).ok();
+    if height != Some(expected) || (expected == 0 && !pq.falcon_active) {
+        return Err(inconsistent(format!(
+            "params.pq.falconHeight {} / falconActive {} (this build expects {expected} / active on {})",
+            pq.falcon_height,
+            pq.falcon_active,
+            network.chain_name()
+        )));
+    }
+    Ok(())
 }
 
 /// A `params.fees` block before any attested price (both size rates `-pqfeerate` = `rate`), for
@@ -875,7 +917,7 @@ pub fn check_server_params(
     )?;
     // rpcversion 7, 8: the post-quantum and network-fee blocks must be present and sane (read and
     // recomputed from their own inputs, not compared).
-    pq_terms(p)?;
+    pq_terms(p, network)?;
     for c in network.term_classes() {
         let s = p
             .classes
@@ -1489,11 +1531,20 @@ mod tests {
                 ..Default::default()
             }),
             // rpcversion 7 (quantum spec §6.2)
-            pq: Some(rpc::YellowbackPqParams {
-                schemes: vec![1],
-                falcon_active: false,
-                falcon_height: -1,
-                fee_rate_zat_per_kb: 100,
+            // (mainnet and testnet: Falcon from height 0, as both node lines' chainparams)
+            pq: Some(match network.pq_falcon_height() {
+                Some(h) => rpc::YellowbackPqParams {
+                    schemes: vec![1, 2],
+                    falcon_active: true,
+                    falcon_height: h as i64,
+                    fee_rate_zat_per_kb: 100,
+                },
+                None => rpc::YellowbackPqParams {
+                    schemes: vec![1],
+                    falcon_active: false,
+                    falcon_height: -1,
+                    fee_rate_zat_per_kb: 100,
+                },
             }),
             // rpcversion 8 (fees spec §3.4): the bands, the floor, the early fee; no attested price
             // yet (priceSource "fallback"), so both size rates are -pqfeerate
@@ -1590,7 +1641,7 @@ mod tests {
         let mut p = server_params(Network::Regtest);
         p.fees.as_mut().unwrap().network = Some(priced_network());
         p.pq.as_mut().unwrap().fee_rate_zat_per_kb = 5_000_000;
-        let t = pq_terms(&p).unwrap();
+        let t = pq_terms(&p, Network::Regtest).unwrap();
         assert_eq!(t.fee_rate_zat_per_kb, 5_000_000);
         assert_eq!(t.yed_rate_zat_per_kb, 12_500_000);
         assert_eq!(t.floor_rate_zat_per_kb, 5_000);
@@ -1607,7 +1658,7 @@ mod tests {
         let bent = |f: &dyn Fn(&mut rpc::YellowbackParams)| {
             let mut q = p.clone();
             f(&mut q);
-            pq_terms(&q).is_err()
+            pq_terms(&q, Network::Regtest).is_err()
         };
         fn net(q: &mut rpc::YellowbackParams) -> &mut rpc::YellowbackNetworkFee {
             q.fees.as_mut().unwrap().network.as_mut().unwrap()
@@ -1629,7 +1680,7 @@ mod tests {
         let mut big = p.clone();
         net(&mut big).yellowback.as_mut().unwrap().max_tx_fee_zat = 100 * params::COIN;
         assert_eq!(
-            pq_terms(&big).unwrap().max_fee_zat,
+            pq_terms(&big, Network::Regtest).unwrap().max_fee_zat,
             params::MAX_YED_TX_FEE_ZAT
         );
     }
@@ -1638,7 +1689,7 @@ mod tests {
     #[test]
     fn pq_terms_are_read_and_bounded() {
         let base = server_params(Network::Regtest);
-        let t = pq_terms(&base).unwrap();
+        let t = pq_terms(&base, Network::Regtest).unwrap();
         assert_eq!(
             t,
             PqTerms {
@@ -1653,27 +1704,30 @@ mod tests {
             p
         };
         // schemes: SLH required, Falcon only when active, nothing unknown
-        assert!(pq_terms(&with(&|q| q.schemes = vec![])).is_err());
-        assert!(pq_terms(&with(&|q| q.schemes = vec![1, 2])).is_err());
-        assert!(pq_terms(&with(&|q| q.schemes = vec![1, 3])).is_err());
-        let f = pq_terms(&with(&|q| {
-            q.schemes = vec![1, 2];
-            q.falcon_active = true;
-            q.falcon_height = 200;
-        }))
+        assert!(pq_terms(&with(&|q| q.schemes = vec![]), Network::Regtest).is_err());
+        assert!(pq_terms(&with(&|q| q.schemes = vec![1, 2]), Network::Regtest).is_err());
+        assert!(pq_terms(&with(&|q| q.schemes = vec![1, 3]), Network::Regtest).is_err());
+        let f = pq_terms(
+            &with(&|q| {
+                q.schemes = vec![1, 2];
+                q.falcon_active = true;
+                q.falcon_height = 200;
+            }),
+            Network::Regtest,
+        )
         .unwrap();
         assert!(f.falcon_active && f.falcon_at(0));
-        let h = pq_terms(&with(&|q| q.falcon_height = 300)).unwrap();
+        let h = pq_terms(&with(&|q| q.falcon_height = 300), Network::Regtest).unwrap();
         assert_eq!(h.falcon_height, Some(300));
         assert!(!h.falcon_at(299) && h.falcon_at(300));
         // no pq block, or another MINT payload version: refused (and so is the parameter set)
         let mut p = base.clone();
         p.pq = None;
-        assert!(pq_terms(&p).is_err());
+        assert!(pq_terms(&p, Network::Regtest).is_err());
         assert!(check_server_params(Network::Regtest, Some(&p)).is_err());
         let mut p = base.clone();
         p.attest.as_mut().unwrap().mint_payload_version = 3;
-        assert!(pq_terms(&p).is_err());
+        assert!(pq_terms(&p, Network::Regtest).is_err());
         // the fee: max(1,000, rate × size), CFeeRate rounding, under the cap
         let t = PqTerms {
             fee_rate_zat_per_kb: 100,
@@ -1691,6 +1745,60 @@ mod tests {
             "integer division, as CFeeRate::GetFee"
         );
         assert_eq!(params::pq_size_fee(0, 100, 0), 100, "a 0 fee is the rate");
+    }
+
+    /// LOW-06-Y-4: mainnet and testnet compile Falcon from height 0 (`pqFalconHeight = 0` on both
+    /// node lines) and refuse a server that says otherwise; regtest follows the server.
+    #[test]
+    fn falcon_activation_is_checked_not_overridden() {
+        for n in [Network::Mainnet, Network::Testnet] {
+            let base = server_params(n);
+            let t = pq_terms(&base, n).unwrap();
+            assert_eq!((t.falcon_height, t.falcon_active), (Some(0), true));
+            let with = |f: &dyn Fn(&mut rpc::YellowbackPqParams)| {
+                let mut p = base.clone();
+                f(p.pq.as_mut().unwrap());
+                p
+            };
+            // another height
+            let moved = with(&|q| {
+                q.falcon_height = 300;
+                q.falcon_active = false;
+                q.schemes = vec![1];
+            });
+            assert!(matches!(
+                pq_terms(&moved, n),
+                Err(MintError::Inconsistent { .. })
+            ));
+            assert!(check_server_params(n, Some(&moved)).is_err());
+            // the case the old override masked: Falcon inactive, scheme 2 absent, height kept
+            let inactive = with(&|q| {
+                q.falcon_active = false;
+                q.schemes = vec![1];
+            });
+            let e = pq_terms(&inactive, n).unwrap_err().to_string();
+            assert!(e.contains("falconActive false"), "{e}");
+            // no activation height at all
+            assert!(pq_terms(&with(&|q| q.falcon_height = -1), n).is_err());
+            assert!(check_falcon_activation(n, base.pq.as_ref().unwrap()).is_ok());
+        }
+        // regtest: the server's height, whatever it is
+        let mut p = server_params(Network::Regtest);
+        p.pq.as_mut().unwrap().falcon_height = 300;
+        let t = pq_terms(&p, Network::Regtest).unwrap();
+        assert!(!t.falcon_at(299) && t.falcon_at(300));
+        // the offline defaults
+        for n in [Network::Mainnet, Network::Testnet] {
+            let d = PqTerms::default_for(n);
+            assert!(d.falcon_at(0) && d.falcon_active);
+            assert_eq!(
+                d.fee_rate_zat_per_kb,
+                PqTerms::default().fee_rate_zat_per_kb
+            );
+        }
+        assert_eq!(PqTerms::default_for(Network::Regtest), PqTerms::default());
+        assert_eq!(params::PQ_FALCON_HEIGHT_MAINNET, 0);
+        assert_eq!(params::PQ_FALCON_HEIGHT_TESTNET, 0);
     }
 
     /// H-9.3: the server's parameter set must be the network's.

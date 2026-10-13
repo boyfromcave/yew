@@ -25,6 +25,13 @@
 //! 125 %, the σ multiplier pinned at 1, `CLAIM_DELAY` 12 h, the early-redeem fee per class). The server's own `GetYellowbackInfo.params` is compared against them
 //! (`build::terms::check_server_params`) and never used in their place (audit G-1, G-2).
 
+/// `pqFalconHeight` on mainnet: Falcon holders (`TOK-PQ`) from day one, owner decision D-Q-2
+/// (2026-10-10). ycash-dd `src/chainparams.cpp:148`, ycash6 `src/chainparams.cpp:159`.
+pub const PQ_FALCON_HEIGHT_MAINNET: u64 = 0;
+/// `pqFalconHeight` on testnet (D-Q-2). ycash-dd `src/chainparams.cpp:414`, ycash6
+/// `src/chainparams.cpp:463`.
+pub const PQ_FALCON_HEIGHT_TESTNET: u64 = 0;
+
 /// The three Ycash networks. The chain name is what `GetLightdInfo.chainName` reports
 /// (`"main"`, `"test"`, `"regtest"`) and what `yellowback::Params::network` holds
 /// (`ycash-dd/src/yellowback/params.cpp:140,154,186`).
@@ -367,6 +374,20 @@ impl Network {
     /// True when this network takes the vault activation height from the server (regtest only).
     pub fn vault_activation_from_server(self) -> bool {
         self == Network::Regtest
+    }
+
+    /// The Falcon (`TOK-PQ`, scheme 2) activation height compiled into this build
+    /// (`Consensus::Params::pqFalconHeight`): [`PQ_FALCON_HEIGHT_MAINNET`] /
+    /// [`PQ_FALCON_HEIGHT_TESTNET`]; `None` on regtest, which follows the server
+    /// (`-pqfalconheight`). A server reporting another height on mainnet or testnet is refused
+    /// (`build::terms::pq_terms`), never silently overridden: if a release ever moves the height,
+    /// YEW ships the new constant before connecting to such a node (`docs/release.md`).
+    pub fn pq_falcon_height(self) -> Option<u64> {
+        match self {
+            Network::Mainnet => Some(PQ_FALCON_HEIGHT_MAINNET),
+            Network::Testnet => Some(PQ_FALCON_HEIGHT_TESTNET),
+            Network::Regtest => None,
+        }
     }
 
     /// The network's YED attestor set (U-22, `Params::attestorSetId`): unset on mainnet and
