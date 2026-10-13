@@ -387,7 +387,8 @@ pub enum IntentState {
     /// A residual's post-quantum coin was moved to an own P2PKH key, confirmed (schema v5).
     Swept,
     /// The attestor set cancelled the claim (I-2): the collateral went back into the vault and
-    /// the claim's burn is not refunded (U-24).
+    /// the claim's burn came back as one YED token to [`IntentRow::refund`]'s holder (CAN-1,
+    /// U-24 revised); the claim's YEC fees did not.
     Cancelled,
 }
 
@@ -451,6 +452,20 @@ pub struct IntentRow {
     pub pq_spend_txid: [u8; 32],
     /// What the screen says about it.
     pub note: String,
+    /// CAN-1 (a claimant intent): where a cancel of the claim re-issues its burn, and how much
+    /// (columns `claim_intents.refund_script`, `refund_cents`, additive: no schema version change).
+    pub refund: IntentRefund,
+}
+
+/// The refund of a cancelled claim (CAN-1, audit 03/H-1): an attestor-set cancel re-issues the
+/// claim's whole burn as one YED token to the holder of the token the claim spent at its
+/// lowest-index YED input (the node's `refundHolder` on the CLAIMING vault, `burnedCents`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IntentRefund {
+    /// The holder's scriptPubKey; empty when unknown (a residual, or an unsynced row).
+    pub script: Vec<u8>,
+    /// The YED it re-issues, cents.
+    pub cents: u64,
 }
 
 impl IntentRow {
@@ -536,7 +551,8 @@ CREATE TABLE IF NOT EXISTS claim_intents (
   txid BLOB NOT NULL, n INTEGER NOT NULL, vault_txid BLOB NOT NULL, role TEXT NOT NULL,
   value INTEGER NOT NULL, recipient_script BLOB NOT NULL, intent_script BLOB NOT NULL,
   delay INTEGER NOT NULL, height INTEGER NOT NULL, state TEXT NOT NULL, spend_txid BLOB NOT NULL,
-  note TEXT NOT NULL DEFAULT '', pq_spend_txid BLOB NOT NULL DEFAULT x'', PRIMARY KEY (txid, n));
+  note TEXT NOT NULL DEFAULT '', pq_spend_txid BLOB NOT NULL DEFAULT x'',
+  refund_script BLOB NOT NULL DEFAULT x'', refund_cents INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (txid, n));
 ";
 
 /// The additive v1 → v2 migration (W2).
@@ -666,6 +682,20 @@ impl Store {
             .exists([])?;
         if !has_p_mint {
             conn.execute_batch("ALTER TABLE vaults ADD COLUMN p_mint INTEGER NOT NULL DEFAULT 0;")?;
+        }
+        // CAN-1 (a cancelled claim refunds its burn): additive like `pq_spend_txid`.
+        for (column, decl) in [
+            ("refund_script", "BLOB NOT NULL DEFAULT x''"),
+            ("refund_cents", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            let has: bool = conn
+                .prepare("SELECT 1 FROM pragma_table_info('claim_intents') WHERE name = ?1")?
+                .exists([column])?;
+            if !has {
+                conn.execute_batch(&format!(
+                    "ALTER TABLE claim_intents ADD COLUMN {column} {decl};"
+                ))?;
+            }
         }
         // The per-vault cancel limit (CAN-2, CAN-3): additive like `p_mint`; the next sync fills them.
         for (column, decl) in [
@@ -1472,11 +1502,13 @@ impl Store {
     pub fn upsert_intent(&self, i: &IntentRow) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT OR REPLACE INTO claim_intents (txid, n, vault_txid, role, value, recipient_script, intent_script, delay,
-               height, state, spend_txid, note, pq_spend_txid) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+               height, state, spend_txid, note, pq_spend_txid, refund_script, refund_cents)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 i.outpoint.txid.as_slice(), i.outpoint.n, i.vault_txid.as_slice(), i.role, i.value, i.recipient_script,
                 i.intent_script, i.delay, i.height as i64, i.state.as_str(), i.spend_txid.as_slice(), i.note,
-                if i.pq_spend_txid == [0; 32] { &[][..] } else { i.pq_spend_txid.as_slice() }
+                if i.pq_spend_txid == [0; 32] { &[][..] } else { i.pq_spend_txid.as_slice() },
+                i.refund.script, i.refund.cents as i64
             ],
         )?;
         Ok(())
@@ -1486,7 +1518,7 @@ impl Store {
     pub fn intents(&self) -> Result<Vec<IntentRow>, StoreError> {
         let mut st = self.conn.prepare(
             "SELECT txid, n, vault_txid, role, value, recipient_script, intent_script, delay, height, state, spend_txid, note,
-               pq_spend_txid FROM claim_intents ORDER BY height DESC, txid, n",
+               pq_spend_txid, refund_script, refund_cents FROM claim_intents ORDER BY height DESC, txid, n",
         )?;
         let rows = st.query_map([], |r| {
             Ok((
@@ -1503,12 +1535,27 @@ impl Store {
                 r.get::<_, Vec<u8>>(10)?,
                 r.get::<_, String>(11)?,
                 r.get::<_, Vec<u8>>(12)?,
+                (r.get::<_, Vec<u8>>(13)?, r.get::<_, i64>(14)?),
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (txid, n, vault, role, value, rs, is, delay, height, state, spend, note, pq_spend) =
-                row?;
+            let (
+                txid,
+                n,
+                vault,
+                role,
+                value,
+                rs,
+                is,
+                delay,
+                height,
+                state,
+                spend,
+                note,
+                pq_spend,
+                (refund_script, refund_cents),
+            ) = row?;
             out.push(IntentRow {
                 outpoint: OutPoint {
                     txid: arr32(&txid)?,
@@ -1530,6 +1577,10 @@ impl Store {
                     arr32(&pq_spend)?
                 },
                 note,
+                refund: IntentRefund {
+                    script: refund_script,
+                    cents: refund_cents.max(0) as u64,
+                },
             });
         }
         Ok(out)

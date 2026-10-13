@@ -27,6 +27,9 @@ const claimable1 = ClaimableItem(
   underwaterAtMicroUsd: 120000,
   lockHeight: 500,
   inTerm: true,
+  cancelsRequired: 1,
+  cancelCount: 0,
+  cancelQuietUntil: 0,
 );
 
 /// rpcversion 6: listed because its claim branch is open, but above θ — shown, not offered.
@@ -49,6 +52,9 @@ const listed1 = ClaimableItem(
   underwaterAtMicroUsd: 131578,
   lockHeight: 500,
   inTerm: true,
+  cancelsRequired: 1,
+  cancelCount: 0,
+  cancelQuietUntil: 0,
 );
 
 Future<void> openClaimable(WidgetTester tester, Harness h) async {
@@ -128,5 +134,40 @@ void main() {
     await tester.longPress(find.byKey(const Key('slide-to-confirm')));
     await tester.pumpAndSettle();
     expect(find.text(refusal), findsOneWidget);
+  });
+
+  testWidgets('the cancel limit (CAN-2) per row and in the picked claim; a cancel returns the burn (CAN-1)', (tester) async {
+    final h = Harness(withWallet: true);
+    final twice = ClaimableItem(
+      vaultTxid: 'd2' * 32,
+      ownerAddress: claimable1.ownerAddress,
+      cents: claimable1.cents,
+      collateralZat: claimable1.collateralZat,
+      claimHeight: claimable1.claimHeight,
+      claimPath: 'b',
+      pClaimMicroUsd: claimable1.pClaimMicroUsd,
+      feeZat: claimable1.feeZat,
+      protocolFeeCents: claimable1.protocolFeeCents,
+      pMintMicroUsd: claimable1.pMintMicroUsd,
+      attestFeeZat: 0,
+      residualZat: 0,
+      claimantZat: claimable1.claimantZat,
+      payee: claimable1.payee,
+      claimable: true,
+      underwaterAtMicroUsd: claimable1.underwaterAtMicroUsd,
+      lockHeight: claimable1.lockHeight,
+      inTerm: true,
+      cancelsRequired: 2,
+      cancelCount: 1,
+      cancelQuietUntil: 600,
+    );
+    h.api.claimableAnswer = [claimable1, twice];
+    await openClaimable(tester, h);
+    expect(find.textContaining('one attestor can cancel a claim'), findsOneWidget);
+    expect(find.textContaining('2 attestors signing together can cancel a claim (1 recent cancel; one attestor again from height 600)'), findsOneWidget);
+    await tester.tap(find.byKey(Key('claimable-${twice.vaultTxid}')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('claim-cancels-required')), findsOneWidget);
+    expect(find.text('the \$10.00 you burn comes back to you as YED; the fees do not'), findsOneWidget);
   });
 }

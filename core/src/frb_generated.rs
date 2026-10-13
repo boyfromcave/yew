@@ -1699,6 +1699,9 @@ impl SseDecode for crate::api::ClaimIntent {
         let mut var_releasable = <bool>::sse_decode(deserializer);
         let mut var_pqMove = <bool>::sse_decode(deserializer);
         let mut var_cancelled = <bool>::sse_decode(deserializer);
+        let mut var_refundCents = <i64>::sse_decode(deserializer);
+        let mut var_refundAddress = <String>::sse_decode(deserializer);
+        let mut var_refundOwn = <bool>::sse_decode(deserializer);
         let mut var_releaseTimeSecs = <i64>::sse_decode(deserializer);
         let mut var_held = <bool>::sse_decode(deserializer);
         let mut var_heldReason = <String>::sse_decode(deserializer);
@@ -1716,6 +1719,9 @@ impl SseDecode for crate::api::ClaimIntent {
             releasable: var_releasable,
             pq_move: var_pqMove,
             cancelled: var_cancelled,
+            refund_cents: var_refundCents,
+            refund_address: var_refundAddress,
+            refund_own: var_refundOwn,
             release_time_secs: var_releaseTimeSecs,
             held: var_held,
             held_reason: var_heldReason,
@@ -1758,6 +1764,9 @@ impl SseDecode for crate::api::ClaimableItem {
         let mut var_underwaterAtMicroUsd = <i64>::sse_decode(deserializer);
         let mut var_lockHeight = <i64>::sse_decode(deserializer);
         let mut var_inTerm = <bool>::sse_decode(deserializer);
+        let mut var_cancelsRequired = <i64>::sse_decode(deserializer);
+        let mut var_cancelCount = <i64>::sse_decode(deserializer);
+        let mut var_cancelQuietUntil = <i64>::sse_decode(deserializer);
         return crate::api::ClaimableItem {
             vault_txid: var_vaultTxid,
             owner_address: var_ownerAddress,
@@ -1777,6 +1786,9 @@ impl SseDecode for crate::api::ClaimableItem {
             underwater_at_micro_usd: var_underwaterAtMicroUsd,
             lock_height: var_lockHeight,
             in_term: var_inTerm,
+            cancels_required: var_cancelsRequired,
+            cancel_count: var_cancelCount,
+            cancel_quiet_until: var_cancelQuietUntil,
         };
     }
 }
@@ -2950,6 +2962,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::ClaimIntent {
             self.releasable.into_into_dart().into_dart(),
             self.pq_move.into_into_dart().into_dart(),
             self.cancelled.into_into_dart().into_dart(),
+            self.refund_cents.into_into_dart().into_dart(),
+            self.refund_address.into_into_dart().into_dart(),
+            self.refund_own.into_into_dart().into_dart(),
             self.release_time_secs.into_into_dart().into_dart(),
             self.held.into_into_dart().into_dart(),
             self.held_reason.into_into_dart().into_dart(),
@@ -3003,6 +3018,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::ClaimableItem {
             self.underwater_at_micro_usd.into_into_dart().into_dart(),
             self.lock_height.into_into_dart().into_dart(),
             self.in_term.into_into_dart().into_dart(),
+            self.cancels_required.into_into_dart().into_dart(),
+            self.cancel_count.into_into_dart().into_dart(),
+            self.cancel_quiet_until.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -3858,6 +3876,9 @@ impl SseEncode for crate::api::ClaimIntent {
         <bool>::sse_encode(self.releasable, serializer);
         <bool>::sse_encode(self.pq_move, serializer);
         <bool>::sse_encode(self.cancelled, serializer);
+        <i64>::sse_encode(self.refund_cents, serializer);
+        <String>::sse_encode(self.refund_address, serializer);
+        <bool>::sse_encode(self.refund_own, serializer);
         <i64>::sse_encode(self.release_time_secs, serializer);
         <bool>::sse_encode(self.held, serializer);
         <String>::sse_encode(self.held_reason, serializer);
@@ -3895,6 +3916,9 @@ impl SseEncode for crate::api::ClaimableItem {
         <i64>::sse_encode(self.underwater_at_micro_usd, serializer);
         <i64>::sse_encode(self.lock_height, serializer);
         <bool>::sse_encode(self.in_term, serializer);
+        <i64>::sse_encode(self.cancels_required, serializer);
+        <i64>::sse_encode(self.cancel_count, serializer);
+        <i64>::sse_encode(self.cancel_quiet_until, serializer);
     }
 }
 

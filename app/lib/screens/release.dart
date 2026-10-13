@@ -5,8 +5,9 @@
 // Claims and their release (the vault upgrade, upgrade plan U-15, U-23, U-24): a claim moves
 // the vault's collateral into a claim intent; after the claim delay the wallet releases it to
 // itself (the release needs no signature on the intent, so the wallet just does it first). Until
-// then one attestor may cancel a wrong-price claim: the collateral goes back into the vault and
-// the claim's burn is not refunded. An own vault's RED-5 residual is an intent of the same kind.
+// then the attestor set may cancel a wrong-price claim: the collateral goes back into the vault and
+// the claim's burn comes back as YED to the holder of the claim's first YED input (CAN-1; the YEC
+// fees do not). An own vault's RED-5 residual is an intent of the same kind.
 import 'package:flutter/material.dart';
 
 import '../api/wallet_api.dart';
@@ -15,6 +16,15 @@ import '../state/app_scope.dart';
 import '../theme.dart';
 import '../widgets/preview_card.dart';
 import '../widgets/slide_to_confirm.dart';
+
+/// CAN-1: where the YED a claim burned goes if the attestor set cancels the claim.
+String refundText(ClaimIntent i, {bool done = false}) {
+  final amount = i.refundCents > 0 ? formatYed(i.refundCents) : 'the YED you burned';
+  final verb = done ? 'came back' : 'returns';
+  if (i.refundAddress.isEmpty) return '$amount $verb to the address it came from';
+  final to = i.refundOwn ? 'your address ${shorten(i.refundAddress, head: 10, tail: 6)}' : shorten(i.refundAddress, head: 10, tail: 6);
+  return '$amount $verb to $to';
+}
 
 /// One line per intent state.
 String intentLabel(ClaimIntent i) {
@@ -25,8 +35,10 @@ String intentLabel(ClaimIntent i) {
       // CAN-3: the leftover of a cancelled claim, held by the vault until it closes, or past its
       // quiet period while it cannot be claimed.
       if (i.held) return 'your leftover from a cancelled claim · ${i.heldReason}';
-      if (i.releasable) return '$what · releasable now';
-      return '$what · released from height ${i.releaseHeight} · ${i.blocksUntilRelease} block${i.blocksUntilRelease == 1 ? '' : 's'} to go (${formatDate(i.releaseTimeSecs)})';
+      // CAN-1: a claim this wallet made says where its burn returns if the attestor set cancels it.
+      final ifCancelled = i.role == 'claimant' ? ' · if this claim is cancelled, ${refundText(i)}' : '';
+      if (i.releasable) return '$what · releasable now$ifCancelled';
+      return '$what$ifCancelled · released from height ${i.releaseHeight} · ${i.blocksUntilRelease} block${i.blocksUntilRelease == 1 ? '' : 's'} to go (${formatDate(i.releaseTimeSecs)})';
     case 'RELEASING':
       return '$what · release sent → waiting for 1 confirmation';
     case 'RELEASED':
@@ -35,7 +47,7 @@ String intentLabel(ClaimIntent i) {
     case 'SWEPT':
       return '$what · released and moved to your wallet';
     case 'CANCELLED':
-      return 'claim cancelled by the attestor set: the collateral went back into the vault; the YED you burned is not refunded';
+      return 'claim cancelled by the attestor set: the collateral went back into the vault; ${refundText(i, done: true)}; the YEC fees are not returned';
   }
   return i.state;
 }

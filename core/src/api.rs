@@ -922,8 +922,17 @@ pub struct ClaimIntent {
     /// post-quantum spend; its size-priced fee comes out of the coin).
     pub pq_move: bool,
     /// The attestor set cancelled the claim: the collateral went back into the vault and the
-    /// claim's burn is not refunded (U-24).
+    /// claim's burn came back as YED to [`ClaimIntent::refund_address`] (CAN-1, U-24 revised); the
+    /// claim's YEC fees did not.
     pub cancelled: bool,
+    /// CAN-1, a claim this wallet made: the YED a cancel re-issues, cents (the claim's whole burn;
+    /// 0 when unknown or for a residual).
+    pub refund_cents: i64,
+    /// Where it goes: the YED address (P2PKH `y…` or 53-character Falcon holder) of the token the
+    /// claim spent at its lowest-index YED input — the node's `refundHolder`. Empty when unknown.
+    pub refund_address: String,
+    /// [`ClaimIntent::refund_address`] is one of this wallet's own addresses.
+    pub refund_own: bool,
     /// The release date estimate (Unix seconds; `now + (releaseHeight − tip) · 75`).
     pub release_time_secs: i64,
     /// A residual of a cancelled claim that the vault now holds (CAN-3): the node refuses its
@@ -1045,6 +1054,14 @@ pub struct ClaimableItem {
     pub lock_height: i64,
     /// The vault is still in its term (a claim now is a claim in term).
     pub in_term: bool,
+    /// CAN-2 (`yed_listclaimable`): how many attestors must sign together to cancel a claim of
+    /// this vault confirmed in the next block (1 for a vault not cancelled lately; 0 from a node
+    /// that does not say).
+    pub cancels_required: i64,
+    /// The vault's recent (counted) cancels.
+    pub cancel_count: i64,
+    /// From this height a cancel needs one attestor again; 0 when never cancelled.
+    pub cancel_quiet_until: i64,
 }
 
 /// The terms of a [`MintEstimate`] the user confirmed, passed back to [`mint_start`] so the
@@ -2787,10 +2804,13 @@ fn vault_summary(
 fn claim_intent_of(
     i: &crate::store::IntentRow,
     vaults: &[crate::store::VaultRow],
+    own: &crate::build::claim::OwnHolders,
     tip: u64,
     network: Network,
     now: i64,
 ) -> ClaimIntent {
+    let (refund_addr, refund_own) =
+        crate::build::claim::refund_address(&i.refund.script, own, network);
     let rh = i.release_height().unwrap_or(0);
     let held = crate::build::release::residual_held(i, vaults, tip);
     ClaimIntent {
@@ -2809,6 +2829,9 @@ fn claim_intent_of(
         releasable: crate::build::release::not_releasable(i, tip).is_none() && held.is_none(),
         pq_move: crate::build::release::pq_coin(i).is_some(),
         cancelled: i.state == crate::store::IntentState::Cancelled,
+        refund_cents: i.refund.cents as i64,
+        refund_address: refund_addr,
+        refund_own,
         release_time_secs: if rh == 0 {
             0
         } else {
@@ -3164,10 +3187,14 @@ pub fn claim_intents() -> Result<Vec<ClaimIntent>, YewError> {
         let network = o.wallet.network;
         let now = now_secs();
         let vaults = o.wallet.vaults()?;
+        let own = crate::build::claim::OwnHolders {
+            p2pkh: o.wallet.own_hashes()?,
+            falcon: o.wallet.own_falcon_holders()?.into_keys().collect(),
+        };
         Ok(o.wallet
             .intents()?
             .iter()
-            .map(|i| claim_intent_of(i, &vaults, tip, network, now))
+            .map(|i| claim_intent_of(i, &vaults, &own, tip, network, now))
             .collect())
     })
 }
@@ -3257,6 +3284,9 @@ pub fn claimable() -> Result<Vec<ClaimableItem>, YewError> {
                     underwater_at_micro_usd: c.underwater_at,
                     lock_height: c.lock_height as i64,
                     in_term: c.in_term,
+                    cancels_required: c.cancels_required,
+                    cancel_count: c.cancel_count,
+                    cancel_quiet_until: c.cancel_quiet_until,
                 })
                 .collect())
         })

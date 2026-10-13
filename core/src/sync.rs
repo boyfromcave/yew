@@ -1006,6 +1006,7 @@ async fn record_residual_intents(
                 "your vault {} was claimed: the RED-5 residual is yours after the claim delay",
                 &txid_hex(&vault_txid)[..8]
             ),
+            refund: Default::default(),
         })?;
     }
     Ok(())
@@ -1020,7 +1021,10 @@ fn terms_inconsistent(what: String) -> WalletError {
 /// it); a release seen confirmed ⇒ `Released`, a release that expired ⇒ back to `Pending`; a
 /// confirmed intent no longer among the live template outputs ⇒ `Released` when the vault is
 /// `CLAIMED` (or it is the owner's residual), `Cancelled` when the attestor set re-created the
-/// vault (the claim's burn is not refunded). Returns the rows that moved.
+/// vault (CAN-1: the claim's burn came back as a YED token to the refund holder, which the token
+/// sync finds like any own token; the YEC fees did not). While the vault is CLAIMING a claimant
+/// row takes the node's `refundHolder` / `burnedCents` (what a cancel would re-issue, to whom).
+/// Returns the rows that moved.
 pub async fn refresh_intents(
     wallet: &Wallet,
     yb: &mut YellowbackClient,
@@ -1085,6 +1089,17 @@ pub async fn refresh_intents(
             // Only an intent it no longer lists needs the (heavy) template-output scan.
             let (status, listed) = match yb.vault(&txid_hex(&row.vault_txid)).await {
                 Ok(v) => {
+                    if row.role == crate::build::claim::ROLE_CLAIMANT
+                        && v.status == "CLAIMING"
+                        && !v.refund_holder.is_empty()
+                    {
+                        if let Ok(script) = keys::unhex(&v.refund_holder) {
+                            row.refund = crate::store::IntentRefund {
+                                script,
+                                cents: v.burned_cents.max(0) as u64,
+                            };
+                        }
+                    }
                     let listed = v.intents.iter().any(|x| {
                         x.vout == row.outpoint.n
                             && txid_from_hex(&x.txid).ok() == Some(row.outpoint.txid)
@@ -1127,7 +1142,7 @@ pub async fn refresh_intents(
                     };
                 } else {
                     row.state = IntentState::Cancelled;
-                    row.note = "cancelled by the attestor set: the collateral went back into the vault and the claim's burn is not refunded (U-24)".into();
+                    row.note = "cancelled by the attestor set: the collateral went back into the vault and the YED you burned came back to you as a token (CAN-1); the claim's YEC fees did not".into();
                 }
             }
         }

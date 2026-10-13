@@ -187,7 +187,7 @@ class FakeWalletApi implements WalletApi {
                 : '',
   );
 
-  ClaimIntent intent({required String txid, String role = 'claimant', String state = 'PENDING', int height = 480, int delay = 10, int tip = 484, int valueZat = 937499000, bool pqMove = false, String heldReason = ''}) {
+  ClaimIntent intent({required String txid, String role = 'claimant', String state = 'PENDING', int height = 480, int delay = 10, int tip = 484, int valueZat = 937499000, bool pqMove = false, String heldReason = '', int refundCents = 0, String refundAddress = '', bool refundOwn = false}) {
     final release = height == 0 ? 0 : height + delay;
     return ClaimIntent(
       intent: '$txid:0',
@@ -201,6 +201,9 @@ class FakeWalletApi implements WalletApi {
       releasable: pqMove || (state == 'PENDING' && height > 0 && release <= tip + 1 && heldReason.isEmpty),
       pqMove: pqMove,
       cancelled: state == 'CANCELLED',
+      refundCents: refundCents,
+      refundAddress: refundAddress,
+      refundOwn: refundOwn,
       releaseTimeSecs: nowSecs + (release - tip) * 75,
       held: heldReason.isNotEmpty,
       heldReason: heldReason,
@@ -399,7 +402,7 @@ class FakeWalletApi implements WalletApi {
     intentsAnswer = [
       for (final x in intentsAnswer)
         if (x.intent == intent)
-          ClaimIntent(intent: x.intent, vaultTxid: x.vaultTxid, role: x.role, valueZat: x.valueZat, state: 'RELEASING', height: x.height, releaseHeight: x.releaseHeight, blocksUntilRelease: 0, releasable: false, pqMove: false, cancelled: false, releaseTimeSecs: x.releaseTimeSecs, held: false, heldReason: '', spendTxid: 're' * 32, note: '')
+          ClaimIntent(intent: x.intent, vaultTxid: x.vaultTxid, role: x.role, valueZat: x.valueZat, state: 'RELEASING', height: x.height, releaseHeight: x.releaseHeight, blocksUntilRelease: 0, releasable: false, pqMove: false, cancelled: false, refundCents: x.refundCents, refundAddress: x.refundAddress, refundOwn: x.refundOwn, releaseTimeSecs: x.releaseTimeSecs, held: false, heldReason: '', spendTxid: 're' * 32, note: '')
         else
           x,
     ];
