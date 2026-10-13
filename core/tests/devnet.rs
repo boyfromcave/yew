@@ -1661,11 +1661,21 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The vault upgrade (U-24): a claim an attestor cancels during the claim delay. YEW claims a
-/// fresh vault of node 0 after a −80 % shock; attestor node 5 cancels the claimant intent
-/// (`vault_buildcancel` → `set_signcancel` → `vault_send`); YEW's sync marks the intent
-/// `CANCELLED` (the burn is not refunded), refuses a release, and the node re-created the vault
-/// as ACTIVE at the cancel's output 0. Needs the vault-upgrade devnet (`scripts/devnet-w4.sh`).
+/// The vault upgrade (U-24) with CAN-1 / CAN-2 / C4b (the cancel-limit design): a claim one
+/// attestor says was made at a wrong price, cancelled during the claim delay, and the claimant's
+/// burn coming back.
+///
+/// Node 0 mints a $100 vault. The first attestor goes offline (an aClaim is the bundle's highest
+/// price, so while it attests a higher price no claim passes); the pools and the other attestors
+/// move to a price at which the vault is at 120 % of its debt (under θ). Once its last attestation
+/// has aged out of the bundle, YEW claims the vault by path (a), burning $100 from two tokens at its
+/// Falcon holder (TOK-PQ: the devnet mirrors mainnet, so YED is held by Falcon holders only); the
+/// node's `refundHolder` is that holder. The offline attestor, which never attested the claim's
+/// `refHeight`, co-signs a cancel with a price statement 12 % higher, where the vault is above θ
+/// ("not claimable", C4b): `yed_signcancelcosign`, `yed_buildcancel`, `set_signcancel`,
+/// `vault_send`. YEW's sync then marks the intent `CANCELLED`, refuses a release, and finds the
+/// refund: its YED balance is back to what it was before the claim, the refund token at its Falcon
+/// holder. Needs the vault-upgrade devnet (`scripts/devnet-w4.sh`).
 #[tokio::test]
 #[ignore = "needs the ARMED vault-upgrade regtest devnet (scripts/devnet-w4.sh) and YEW_DEVNET=1"]
 async fn w4_claim_cancelled_by_the_attestor_set() {
@@ -1686,7 +1696,34 @@ async fn w4_claim_cancelled_by_the_attestor_set() {
     let dir = std::env::temp_dir().join(format!("yew-devnet-w4c-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (mut b, _) = fresh_wallet(&dir, "b", info.block_height.saturating_sub(1));
-    // A fresh $100 vault of node 0 (the target), and $100 of YED for B to burn.
+    let attestors: Vec<usize> = {
+        let st: Value = serde_json::from_str(
+            &std::fs::read_to_string(format!("{}/devnet.json", dn.dir)).unwrap(),
+        )
+        .unwrap();
+        st["attestors"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_u64())
+                    .map(|x| x as usize)
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![5, 6, 7])
+    };
+    assert!(!attestors.is_empty(), "an ARMED devnet has attestors");
+    // Pools at `pool`, every attestor at `attested`, then one pool block (no `price` in between:
+    // `price` also rewrites every automated attestor's mock price).
+    let dissenter = attestors[0];
+    // The pools and the running attestors at `pool`, then one pool block.
+    let mine_split = |pool: &str, _attested: &str| -> u64 {
+        dn.run(&["price", pool]);
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let p = 2 + NEXT.fetch_add(1, Ordering::SeqCst) % 3;
+        let out = dn.run(&["mine", "1", &p.to_string()]);
+        out.rsplit("-> ").next().unwrap().trim().parse().unwrap()
+    };
+    // A fresh $100 vault of node 0 (the target), and $120 of YED for B in two tokens.
     let active = |dn: &Devnet| -> Vec<String> {
         dn.node_json(0, &["yed_listvaults", "ACTIVE"])
             .as_array()
@@ -1695,56 +1732,84 @@ async fn w4_claim_cancelled_by_the_attestor_set() {
             .map(|x| x["txid"].as_str().unwrap().to_string())
             .collect()
     };
-    let before = active(&dn);
-    let m = dn.node_json(0, &["yed_mint", "10000", "48", "", "", "false"]);
-    println!("target mint: {m}");
-    let start = Instant::now();
-    let target = loop {
-        let h = dn.mine_pool();
-        wait_for_height(&mut c, h).await;
-        if let Some(t) = active(&dn).into_iter().find(|t| !before.contains(t)) {
-            break t;
+    // The dissenter's YEC is its bond: give it fee money for the cancel's carrier and fee.
+    let fee_addr = dn.node(dissenter, &["getnewaddress"]);
+    dn.node(0, &["sendtoaddress", &fee_addr, "1"]);
+    // Node 0 mints twice: $100 of YED to fund B (with what is left of the target's), then the target.
+    let mint_new = |cents: &str| {
+        let before = active(&dn);
+        let m = dn.node_json(0, &["yed_mint", cents, "48", "", "", "false"]);
+        println!("mint {cents}: {m}");
+        let start = Instant::now();
+        loop {
+            let h = dn.mine_pool();
+            if let Some(t) = active(&dn).into_iter().find(|t| !before.contains(t)) {
+                break (t, h);
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(300),
+                "the mint never confirmed"
+            );
         }
-        assert!(
-            start.elapsed() < Duration::from_secs(300),
-            "the target mint never confirmed"
-        );
     };
+    mint_new("10000");
+    let (target, h) = mint_new("10000");
+    wait_for_height(&mut c, h).await;
     let tv = dn.node_json(0, &["yed_getvault", &target]);
-    let claim_height = tv["claimHeight"].as_u64().unwrap();
+    let coll_yec = tv["collateralZat"].as_f64().unwrap() / 1e8;
+    let debt_usd = tv["mintedCents"].as_f64().unwrap() / 100.0;
+    // The price at which the vault's collateral is `ratio` × its debt.
+    let price_at = |ratio: f64| format!("{:.6}", ratio * debt_usd / coll_yec);
+    let (pool_px, attested_px) = (price_at(1.20), price_at(1.20 * 1.12));
+    println!("vault {target}: {coll_yec} YEC against ${debt_usd}; pools and two attestors ${pool_px} (120 %), node{dissenter} ${attested_px} (134 %)");
     let addr = b.receive_address(true).unwrap();
     for amount in ["5", "3", "2"] {
         dn.node(fund_node(), &["sendtoaddress", &addr.address_s, amount]);
     }
-    let y = dn.node_json(0, &["yed_send", &addr.address_ye, "10000"]);
-    confirm(&dn, &mut c, y["txid"].as_str().unwrap()).await;
+    let falcon = b
+        .falcon_holder_id(&addr)
+        .expect("a Falcon holder (the devnet mirrors mainnet)");
+    let holder = keys::encode_pq_yellowback(Network::Regtest, &falcon).unwrap();
+    // TOK-PQ: from the Falcon height YED is held by Falcon holders only (bad-yed-holder for a P2PKH
+    // address), so both tokens are at the wallet's Falcon holder and so is the refund.
+    let y1 = dn.node_json(0, &["yed_send", &holder, "6000"]);
+    confirm(&dn, &mut c, y1["txid"].as_str().unwrap()).await;
+    let y2 = dn.node_json(0, &["yed_send", &holder, "6000"]);
+    confirm(&dn, &mut c, y2["txid"].as_str().unwrap()).await;
     let mut r = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
-    assert!(r.yed.0 >= 10_000, "{r:?}");
-    dn.run(&["price", "--shock=-80%"]);
-    *dn.price.borrow_mut() = "10".into();
+    assert!(r.yed.0 >= 12_000, "{r:?}");
+    let yed_before_claim = r.yed.0;
+
+    // The dissenting attestor goes offline; the price falls until the vault is claimable at the
+    // claim price (the windows follow, and the dissenter's last attestation ages out).
+    dn.run(&["attestor", &dissenter.to_string(), "stop"]);
     let start = Instant::now();
     let entry = loop {
         assert!(
             start.elapsed() < Duration::from_secs(1200),
             "the target never became claimable"
         );
-        let h = dn.mine_pool();
+        let h = mine_split(&pool_px, &attested_px);
         wait_for_height(&mut c, h).await;
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         r = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
-        if r.tip < claim_height {
-            continue;
-        }
         if let Some(e) = b
             .claimable(&mut v)
             .await
             .unwrap()
             .into_iter()
-            .find(|x| x.vault_txid == target)
+            .find(|x| x.vault_txid == target && x.claimable)
         {
             break e;
         }
     };
+    assert_eq!(entry.claim_path, "a", "{entry:?}");
+    // CAN-2 on yed_listclaimable (node fix/cancel-fields-2): a vault never cancelled needs one.
+    assert_eq!(
+        (entry.cancels_required, entry.cancel_count),
+        (1, 0),
+        "{entry:?}"
+    );
     let target_id = txid_from_hex(&target).unwrap();
     let bounds = yew_core::build::terms::ClaimBounds {
         max_burn_cents: entry.minted_cents,
@@ -1769,29 +1834,82 @@ async fn w4_claim_cancelled_by_the_attestor_set() {
         .await
         .unwrap();
     assert_eq!(fc.validation.verdict, "ok");
-    confirm(&dn, &mut c, &fc.txid).await;
+    dn.wait_mempool(&fc.txid);
+    let h = mine_split(&pool_px, &attested_px);
+    wait_for_height(&mut c, h).await;
     let r = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
-    let yed_after_claim = r.yed.0;
     let intent = OutPoint {
         txid: txid_from_hex(&fc.txid).unwrap(),
         n: 0,
     };
+    // CAN-1: the node's refundHolder is the claim's first YED input, YEW's Falcon holder.
+    let claiming = dn.node_json(0, &["yed_getvault", &target]);
+    assert_eq!(claiming["status"].as_str(), Some("CLAIMING"), "{claiming}");
+    let holder_hex = claiming["refundHolder"]
+        .as_str()
+        .expect("a CLAIMING vault's refundHolder");
+    let holder_script = keys::unhex(holder_hex).unwrap();
     assert_eq!(
-        b.store.intent(&intent).unwrap().unwrap().state,
-        yew_core::store::IntentState::Pending
+        yew_core::pq::pqpkh_of(&holder_script),
+        Some(falcon),
+        "the refund goes to the wallet's Falcon holder"
     );
-    // Attestor node 5 cancels the claim within the delay.
+    let row = b.store.intent(&intent).unwrap().unwrap();
+    assert_eq!(row.state, yew_core::store::IntentState::Pending);
+    assert_eq!(row.refund.script, holder_script, "{row:?}");
+    let burned = claiming["burnedCents"].as_u64().unwrap();
+    assert_eq!(row.refund.cents, burned);
+    assert_eq!(
+        yed_before_claim - r.yed.0,
+        burned,
+        "the claim burned {burned}"
+    );
+
+    // The dissenting attestor cancels the claim within CLAIM_DELAY.
     let ip = format!("{}:0", fc.txid);
-    let built = dn.node_json(5, &["vault_buildcancel", &ip]);
-    println!("vault_buildcancel: {built}");
-    let signed = dn.node(5, &["set_signcancel", built["hex"].as_str().unwrap()]);
-    let signed_hex = serde_json::from_str::<Value>(&signed)
-        .ok()
-        .and_then(|j| j["hex"].as_str().map(String::from))
-        .unwrap_or(signed);
-    let cancel = dn.node(5, &["vault_send", &signed_hex]);
-    println!("cancel {cancel}");
-    confirm(&dn, &mut c, &cancel).await;
+    // A cancel re-creates the vault at the cancel's output 0, so the claimed outpoint is gone.
+    let cancelled = |dn: &Devnet| {
+        let out = dn.node_try(0, &["yed_getvault", &target]);
+        out.contains("vault-not-found")
+            || serde_json::from_str::<Value>(&out).is_ok_and(|j| j["status"] != "CLAIMING")
+    };
+    let mut cancel = String::new();
+    if !cancelled(&dn) {
+        // C4b: a member with no attestation at the claim's refHeight states its price there.
+        let micro = ((attested_px.parse::<f64>().unwrap()) * 1e6).round() as u64;
+        let micro = micro.to_string();
+        let mut cosig = None;
+        for a in [dissenter] {
+            let out = dn.node_try(a, &["yed_signcancelcosign", &ip, &micro]);
+            match serde_json::from_str::<Value>(&out) {
+                Ok(j) if j["cosig"].is_string() => {
+                    cosig = Some((a, j["cosig"].as_str().unwrap().to_string()));
+                    break;
+                }
+                _ => println!("node{a} yed_signcancelcosign: {out}"),
+            }
+        }
+        let (a, cos) = cosig.expect("an attestor whose attested price says not claimable co-signs");
+        let built = dn.node_json(a, &["yed_buildcancel", &ip, &format!("[\"{cos}\"]")]);
+        println!("yed_buildcancel: {built}");
+        if built["carrierTxid"].is_string() {
+            dn.wait_mempool(built["carrierTxid"].as_str().unwrap());
+        }
+        let signed = dn.node_json(
+            a,
+            &[
+                "set_signcancel",
+                built["hex"].as_str().unwrap(),
+                r#"{"acknowledgerestore":true}"#,
+            ],
+        );
+        cancel = dn.node(a, &["vault_send", signed["hex"].as_str().unwrap()]);
+        dn.wait_mempool(&cancel);
+        let h = mine_split(&pool_px, &attested_px);
+        wait_for_height(&mut c, h).await;
+    }
+    assert!(cancelled(&dn), "the claim was not cancelled");
+    tokio::time::sleep(Duration::from_secs(2)).await;
     let r = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
     let row = b.store.intent(&intent).unwrap().unwrap();
     assert_eq!(
@@ -1799,17 +1917,38 @@ async fn w4_claim_cancelled_by_the_attestor_set() {
         yew_core::store::IntentState::Cancelled,
         "{row:?}"
     );
-    assert!(row.note.contains("not refunded"), "{row:?}");
+    assert!(row.note.contains("came back"), "{row:?}");
     assert!(b.release_preview(&intent, r.tip, r.branch_id).is_err());
-    assert_eq!(r.yed.0, yed_after_claim, "the burn is not refunded (U-24)");
-    let reopened = dn.node_json(0, &["yed_getvault", &cancel]);
+    // CAN-1: the whole burn is back, as one token at the Falcon holder.
+    assert_eq!(
+        r.yed.0, yed_before_claim,
+        "the burn is refunded (CAN-1): {r:?}"
+    );
+    let tokens = dn.node_json(0, &["yed_listtokens", &format!("[\"{holder}\"]")]);
+    let refund = tokens
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| {
+            t["cents"].as_u64() == Some(burned)
+                && t["txid"].as_str() != y1["txid"].as_str()
+                && t["txid"].as_str() != y2["txid"].as_str()
+        })
+        .unwrap_or_else(|| panic!("no refund token of {burned} cents at {holder}: {tokens}"));
+    let cancel_txid = refund["txid"].as_str().unwrap().to_string();
+    if !cancel.is_empty() {
+        assert_eq!(cancel_txid, cancel);
+    }
+    let reopened = dn.node_json(0, &["yed_getvault", &cancel_txid]);
     assert_eq!(reopened["status"].as_str().unwrap(), "ACTIVE", "{reopened}");
-    let ti = v.client_mut().unwrap().tx_info(&cancel).await.unwrap();
+    assert_eq!(reopened["cancelCount"].as_u64(), Some(1), "{reopened}");
+    let ti = v.client_mut().unwrap().tx_info(&cancel_txid).await.unwrap();
     assert_eq!(ti.r#type, "claim_cancel");
     println!(
-        "W4 cancel acceptance ok: claim {} cancelled by {cancel}; the vault lives on at {cancel}:0",
+        "W4 cancel acceptance ok: claim {} cancelled by {cancel_txid}; {burned} cents refunded to the Falcon holder {holder}; the vault lives on at {cancel_txid}:0",
         fc.txid
     );
+    dn.run(&["attestor", &dissenter.to_string(), "start"]);
     dn.run(&["price", "50"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
