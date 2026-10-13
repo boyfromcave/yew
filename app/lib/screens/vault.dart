@@ -142,6 +142,16 @@ class _VaultScreenState extends State<VaultScreen> {
                 ),
               ),
             ],
+            if (heldLeftoverText(v).isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Card(
+                color: c.pending.withValues(alpha: 0.08),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(heldLeftoverText(v), key: const Key('held-leftover'), style: t.bodyMedium),
+                ),
+              ),
+            ],
             const SizedBox(height: 16),
             Card(
               child: Padding(
@@ -163,6 +173,10 @@ class _VaultScreenState extends State<VaultScreen> {
                       PreviewRow('Claimable below', '${formatUsdPerYec(v.underwaterAtMicroUsd)} (under ${formatBps(v.claimThresholdBps)} of the debt)', key: const Key('claimable-at')),
                     if (v.claimPriceMicroUsd > 0) PreviewRow('Claim price now', formatUsdPerYec(v.claimPriceMicroUsd), key: const Key('claim-price')),
                     PreviewRow('Claimable now', v.claimable ? 'YES: redeem to stop it' : (v.nearThreshold ? 'no, but within ${formatBps(2500)} of it' : 'no'), key: const Key('claimable-state')),
+                    // The per-vault cancel limit (CAN-2): who can stop a claim now, and the quiet period.
+                    if ((v.status == 'ACTIVE' || v.claiming) && cancelNeedsText(v).isNotEmpty)
+                      PreviewRow('To cancel a claim', cancelNeedsText(v), key: const Key('cancels-required')),
+                    if (cancelQuietText(v).isNotEmpty) PreviewRow('Cancelled claims', cancelQuietText(v), key: const Key('cancel-quiet')),
                     PreviewRow('Vault owner (post-quantum)', shorten(v.ownerAddress, head: 14, tail: 8), key: const Key('owner-pq')),
                     PreviewRow('Vault', shorten(v.vaultTxid)),
                     if (v.closingTxid.isNotEmpty) PreviewRow('Closed by', shorten(v.closingTxid)),

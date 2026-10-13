@@ -148,6 +148,7 @@ void main() {
     await tester.tap(find.byKey(const Key('preview')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('renew-step')), findsNothing);
+    await tester.scrollUntilVisible(find.byKey(const Key('slide-to-confirm')), 200, scrollable: find.byType(Scrollable).first); // below the cancel-limit rows
     await tester.longPress(find.byKey(const Key('slide-to-confirm')));
     await tester.pumpAndSettle();
     expect(find.text('Vault redeemed'), findsOneWidget);

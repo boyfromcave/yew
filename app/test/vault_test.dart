@@ -97,6 +97,7 @@ void main() {
     expect(find.text('Fees paid to'), findsOneWidget);
     expect(find.byKey(const Key('early-fee')), findsNothing);
     expect(find.text('8.99999000 YEC'), findsOneWidget); // collateral back
+    await tester.scrollUntilVisible(find.byKey(const Key('slide-to-confirm')), 200, scrollable: find.byType(Scrollable).first); // below the cancel-limit rows
     expect(find.text('Slide to redeem: burn \$30.00, pay 0.50000000 YEC fee'), findsOneWidget);
     await tester.longPress(find.byKey(const Key('slide-to-confirm')));
     await tester.pumpAndSettle();
@@ -148,5 +149,32 @@ void main() {
     expect(find.text('Redeeming burns \$99.00 of YED; this wallet holds \$50.00.'), findsOneWidget);
     expect(tester.widget<FilledButton>(find.byKey(const Key('preview'))).onPressed, isNull);
     expect(h.api.calls.where((c) => c.startsWith('redeem')), isEmpty);
+  });
+
+  testWidgets('the per-vault cancel limit: who can cancel a claim, the quiet period, the held leftover and why', (tester) async {
+    final h = Harness(withWallet: true);
+    final txid = 'vc' * 32;
+    // Never cancelled: one attestor can cancel a wrong-price claim; no quiet period, nothing held.
+    h.api.vaultsAnswer = [h.api.vault(txid: txid, lockHeight: 528)];
+    await openVault(tester, h, txid);
+    expect(find.text('one attestor can cancel a wrong-price claim'), findsOneWidget);
+    expect(find.byKey(const Key('cancel-quiet')), findsNothing);
+    expect(find.byKey(const Key('held-leftover')), findsNothing);
+    // Cancelled twice, inside the quiet period (until 520; synced to 484), one leftover held.
+    h.api.vaultsAnswer = [h.api.vault(txid: txid, lockHeight: 528, cancelCount: 2, cancelQuietUntil: 520, heldResiduals: 1)];
+    await h.state.refresh();
+    await tester.pumpAndSettle();
+    expect(find.text('3 attestors must sign together to cancel a claim'), findsOneWidget);
+    expect(find.text('2 cancelled claims; back to one attestor from height 520 (35 blocks to go)'), findsOneWidget);
+    expect(find.byKey(const Key('held-leftover')), findsOneWidget);
+    expect(find.textContaining('Your leftover from a cancelled claim is held: held after a cancelled claim until height 520'), findsOneWidget);
+    expect(find.textContaining('Release needs the vault closed, or past its quiet period and not claimable.'), findsOneWidget);
+    // Past the quiet period and not claimable: back to one attestor, the leftover can be released.
+    h.api.vaultsAnswer = [h.api.vault(txid: txid, lockHeight: 528, tip: 530, cancelCount: 2, cancelQuietUntil: 520, heldResiduals: 1)];
+    await h.state.refresh();
+    await tester.pumpAndSettle();
+    expect(find.text('one attestor can cancel a wrong-price claim'), findsOneWidget);
+    expect(find.text('the quiet period after a cancelled claim ended at height 520'), findsOneWidget);
+    expect(find.textContaining('no longer held: you can release it now'), findsOneWidget);
   });
 }
