@@ -139,7 +139,14 @@ class _ClaimableScreenState extends State<ClaimableScreen> {
                       if (p.feeZat > 0) PreviewRow('Protocol fee', '${formatYed(p.protocolFeeCents)} · ${formatYec(p.feeZat)} YEC (at the vault\'s mint price${p.pMintMicroUsd > 0 ? ' ${formatUsdPerYec(p.pMintMicroUsd)}' : ''})', key: const Key('claim-protocol-fee')),
                       if (p.payee.isNotEmpty) PreviewRow('Fee paid to', shorten(p.payee, head: 10, tail: 6)),
                       if (p.attestFeeZat > 0) PreviewRow('Attestor fee', '${formatYec(p.attestFeeZat)} YEC'),
-                      if (p.residualZat > 0) PreviewRow('Residual to owner', '${formatYec(p.residualZat)} YEC'),
+                      if (p.residualZat > 0) ...[
+                        PreviewRow('Residual to owner', '${formatYec(p.residualZat)} YEC'),
+                        const PreviewRow(
+                          'If the claim is cancelled',
+                          'that residual stays held until the vault closes. After the quiet period it can be released only once the position is no longer claimable',
+                          key: Key('claim-residual-held'),
+                        ),
+                      ],
                       PreviewRow('You keep', '${formatYec(p.claimantZat)} YEC', emphasis: true),
                       // CAN-2 / CAN-1: who can stop this claim, and what comes back if it is stopped.
                       if (cancelLimitText(p).isNotEmpty) PreviewRow('Can be cancelled by', cancelLimitText(p), key: const Key('claim-cancels-required')),

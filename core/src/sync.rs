@@ -1003,7 +1003,7 @@ async fn record_residual_intents(
             spend_txid: [0; 32],
             pq_spend_txid: [0; 32],
             note: format!(
-                "your vault {} was claimed: the RED-5 residual is yours after the claim delay",
+                "your vault {} was claimed: the RED-5 residual is yours after the claim delay. If the claim is cancelled, it stays held until the vault closes. After the quiet period it can be released only once the position is no longer claimable",
                 &txid_hex(&vault_txid)[..8]
             ),
             refund: Default::default(),

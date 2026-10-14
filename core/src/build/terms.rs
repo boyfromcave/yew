@@ -1044,12 +1044,18 @@ pub fn mint_gate(
     })
 }
 
-/// A `ListClaimable` row's RED-5 residual against the vault's terms and the row's own `pClaim`
-/// (audit G-2; `ClaimAt`): a server inflating the residual moves the claimant's YEC to the
-/// owner. Returns the residual the CLAIM pays: the node builder's (`ClaimAt` drops a residual
-/// below `RESIDUAL_MIN_ZAT`; `yed_listclaimable` reports it unfloored, so both are accepted).
-/// Under clause (a) the vault must also be underwater at that `pClaim` (`IsUnderwater`).
-pub fn check_claimable(c: &rpc::YedClaimable) -> Result<i64, MintError> {
+/// A `ListClaimable` row's RED-5 residual against the vault's terms (audit G-2; `ClaimAt`): a
+/// server inflating the residual moves the claimant's YEC to the owner. Returns the residual the
+/// CLAIM pays: the node builder's (`ClaimAt` drops a residual below `RESIDUAL_MIN_ZAT`;
+/// `yed_listclaimable` reports it unfloored, so both are accepted).
+///
+/// Clause `"a"` sizes the claimant cap at the row's `pClaim` with `claimThresholdBps`, and the
+/// vault must also be underwater at that `pClaim` (`IsUnderwater`). Clause `"b"` sizes it at
+/// `p_emerg` (`min(xClaim, aClaim)`, RED-5b A1) with margin `10⁴` and does **not** cross-check
+/// the residual at `pClaim` — that figure rejects every honest path-(b) claim. `p_emerg` is
+/// `None` when the row carries neither `pEmerg` nor both inputs; the path-(b) build is then
+/// refused.
+pub fn check_claimable(c: &rpc::YedClaimable, p_emerg: Option<i64>) -> Result<i64, MintError> {
     // rpcversion 6 (in-term IT-7): a row above θ is listed with `claimable: false`, no claim path
     // and no residual; it is shown, never claimed, so nothing in it is relied on.
     if !c.claimable {
@@ -1068,8 +1074,30 @@ pub fn check_claimable(c: &rpc::YedClaimable) -> Result<i64, MintError> {
         )));
     }
     let cents = c.minted_cents as u64;
-    let floored = params::residual_zat_for(c.collateral_zat, cents, c.p_claim, &c.claim_path)
-        .ok_or_else(|| inconsistent(format!("pClaim undefined for vault {}", c.vault)))?;
+    // RED-5b (A1): path (b) at pEmerg. The ListClaimable row does not carry pEmerg, xClaim or
+    // aClaim; the caller passes pEmerg computed as min(xClaim, aClaim) when those exist.
+    let price = if c.claim_path == "b" {
+        p_emerg.filter(|p| *p > 0).ok_or_else(|| {
+            inconsistent(format!(
+                "pEmerg unknown for vault {}: path (b) sizes the claimant cap at the emergency price min(xClaim, aClaim), not at pClaim, and that price cannot be known",
+                c.vault
+            ))
+        })?
+    } else {
+        c.p_claim
+    };
+    let floored = params::residual_zat_for(c.collateral_zat, cents, price, &c.claim_path)
+        .ok_or_else(|| {
+            inconsistent(format!(
+                "{} undefined for vault {}",
+                if c.claim_path == "b" {
+                    "pEmerg"
+                } else {
+                    "pClaim"
+                },
+                c.vault
+            ))
+        })?;
     let raw = if floored > 0 {
         floored
     } else {
@@ -1080,17 +1108,22 @@ pub fn check_claimable(c: &rpc::YedClaimable) -> Result<i64, MintError> {
             params::BPS
         };
         let num = (cents as u128) * (margin as u128) * (params::COIN as u128);
-        let max = num.div_ceil(c.p_claim as u128);
+        let max = num.div_ceil(price as u128);
         i64::try_from(max)
             .ok()
             .filter(|m| c.collateral_zat > *m)
             .map(|m| c.collateral_zat - m)
             .unwrap_or(0)
     };
+    let price_name = if c.claim_path == "b" {
+        "pEmerg"
+    } else {
+        "pClaim"
+    };
     if c.residual_zat != floored && c.residual_zat != raw {
         return Err(inconsistent(format!(
-            "residualZat {} for vault {} (RED-5 at pClaim {} gives {floored})",
-            c.residual_zat, c.vault, c.p_claim
+            "residualZat {} for vault {} (RED-5 at {price_name} {price} gives {floored})",
+            c.residual_zat, c.vault
         )));
     }
     if c.claim_path == "a" {
@@ -1988,11 +2021,12 @@ mod tests {
         assert!(g.blocked.is_none(), "Falcon holders are built, not refused");
     }
 
-    /// RED-5 recomputed from `pClaim`, and the claim bounds (H-9.3).
+    /// RED-5 recomputed from `pClaim` on path (a) and from `pEmerg` on path (b), and the claim
+    /// bounds (H-9.3, RED-5b A1).
     #[test]
     fn claimable_residual_and_bounds() {
-        // $100 debt at pClaim $0.10/YEC: claimantMax = ⌈10⁴ · margin · 10⁸ / 10⁵⌉ — 1.25·10¹¹
-        // under clause (a) (θ 125 %, in-term D-IT-2), 10¹¹ under (b).
+        // $100 debt at $0.10/YEC: claimantMax = ⌈10⁴ · margin · 10⁸ / 10⁵⌉ — 1.25·10¹¹
+        // under clause (a) (θ 125 %, in-term D-IT-2), 10¹¹ under (b) at the same price.
         let (cm_a, cm_b) = (125_000_000_000i64, 100_000_000_000i64);
         let row = |path: &str, collateral: i64, residual: i64| rpc::YedClaimable {
             vault: format!("{}:0", "ab".repeat(32)),
@@ -2005,25 +2039,35 @@ mod tests {
             ..Default::default()
         };
         // Clause (a): underwater means collateral < claimantMax, so the residual is 0.
-        assert_eq!(check_claimable(&row("a", cm_a - 1_000, 0)).unwrap(), 0);
-        // An invented residual under (a): refused.
-        assert!(check_claimable(&row("a", cm_a - 1_000, 50_000_000)).is_err());
-        // Not underwater at the row's own pClaim: refused even with a matching residual.
-        assert!(check_claimable(&row("a", cm_a + 50_000_000, 50_000_000)).is_err());
-        // Clause (b): no margin; the residual is RED-5's.
         assert_eq!(
-            check_claimable(&row("b", cm_b + 70_000_000, 70_000_000)).unwrap(),
+            check_claimable(&row("a", cm_a - 1_000, 0), None).unwrap(),
+            0
+        );
+        // An invented residual under (a): refused.
+        assert!(check_claimable(&row("a", cm_a - 1_000, 50_000_000), None).is_err());
+        // Not underwater at the row's own pClaim: refused even with a matching residual.
+        assert!(check_claimable(&row("a", cm_a + 50_000_000, 50_000_000), None).is_err());
+        // Clause (b) at a known pEmerg (equal to the row's pClaim here): margin 10⁴, not θ.
+        let emerg = Some(100_000);
+        assert_eq!(
+            check_claimable(&row("b", cm_b + 70_000_000, 70_000_000), emerg).unwrap(),
             70_000_000
         );
-        assert!(check_claimable(&row("b", cm_b + 70_000_000, 80_000_000)).is_err());
-        assert!(check_claimable(&row("b", cm_b + 70_000_000, 60_000_000)).is_err());
+        assert!(check_claimable(&row("b", cm_b + 70_000_000, 80_000_000), emerg).is_err());
+        assert!(check_claimable(&row("b", cm_b + 70_000_000, 60_000_000), emerg).is_err());
         // A dust residual: the RPC's unfloored figure and 0 are both accepted; 0 is paid.
-        assert_eq!(check_claimable(&row("b", cm_b + 5_000, 5_000)).unwrap(), 0);
-        assert_eq!(check_claimable(&row("b", cm_b + 5_000, 0)).unwrap(), 0);
-        assert!(check_claimable(&row("c", cm_a - 1, 0)).is_err());
+        assert_eq!(
+            check_claimable(&row("b", cm_b + 5_000, 5_000), emerg).unwrap(),
+            0
+        );
+        assert_eq!(
+            check_claimable(&row("b", cm_b + 5_000, 0), emerg).unwrap(),
+            0
+        );
+        assert!(check_claimable(&row("c", cm_a - 1, 0), None).is_err());
         let mut undefined = row("a", cm_a - 1, 0);
         undefined.p_claim = 0;
-        assert!(check_claimable(&undefined).is_err());
+        assert!(check_claimable(&undefined, None).is_err());
         // rpcversion 6: a row listed above θ (claimable false, no path, pClaim maybe null) is
         // shown, not claimed: nothing in it is checked or relied on.
         let listed = rpc::YedClaimable {
@@ -2032,7 +2076,31 @@ mod tests {
             p_claim: 0,
             ..row("a", cm_a * 2, 0)
         };
-        assert_eq!(check_claimable(&listed).unwrap(), 0);
+        assert_eq!(check_claimable(&listed, None).unwrap(), 0);
+
+        // RED-5b (A1): path (b) at pEmerg 0.349, not at pClaim 0.42. $100,000 over 300,000 YEC.
+        let collateral = 300_000 * params::COIN;
+        let at_emerg = 1_346_704_871_060i64;
+        let at_claim = 6_190_476_190_476i64;
+        let mut a1 = row("b", collateral, at_emerg);
+        a1.minted_cents = 10_000_000;
+        a1.p_claim = 420_000;
+        assert_eq!(check_claimable(&a1, Some(349_000)).unwrap(), at_emerg);
+        // The pre-A1 residual (sized at pClaim) is inconsistent once path (b) uses pEmerg.
+        let mut sized_at_claim = a1.clone();
+        sized_at_claim.residual_zat = at_claim;
+        assert!(check_claimable(&sized_at_claim, Some(349_000)).is_err());
+        // No fallback to pClaim when pEmerg cannot be known.
+        match check_claimable(&a1, None) {
+            Err(MintError::Inconsistent { what }) => {
+                assert!(what.contains("pEmerg unknown"), "{what}")
+            }
+            other => panic!("expected pEmerg unknown, got {other:?}"),
+        }
+        assert!(check_claimable(&a1, Some(0)).is_err());
+        // pClaim on the row is not the sizing price: an undefined pClaim still passes at pEmerg.
+        a1.p_claim = 0;
+        assert_eq!(check_claimable(&a1, Some(349_000)).unwrap(), at_emerg);
 
         let take = claimant_take(10_000_000_000, 50_000_000, 12_500_000, 0);
         assert_eq!(

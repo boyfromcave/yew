@@ -604,19 +604,30 @@ pub fn near_threshold(p_claim: i64, underwater_at: i64) -> bool {
 /// `RESIDUAL_MIN_ZAT`: 0.001 YEC (`params.cpp:92`, RED-5): a smaller residual is not paid.
 pub const RESIDUAL_MIN_ZAT: i64 = 100_000;
 
-/// **RED-5**: the residual a CLAIM returns to the owner, from the vault's terms and `pClaim`
-/// (`ycash-dd/src/yellowback/txbuilder.cpp` `ClaimAt` `:917-919`, `math.h` `ClaimantMaxZat`,
-/// `ResidualZat`): `claimantMax = ⌈cents · margin · COIN / pClaim⌉` with `margin` =
-/// `CLAIM_THRESHOLD_BPS` under clause `"a"` and `10⁴` under `"b"` (R1: no margin under the
-/// emergency clause); `residual = collateral − claimantMax` when positive and at least
-/// `RESIDUAL_MIN_ZAT`, else 0. `None` when `pClaim` is undefined (the claim is refused).
+/// **RED-5b (A1)**: `pEmerg = min(xClaim, aClaim)`, the node's `PriceCombine` when both
+/// prices are defined. `None` when either is undefined (≤ 0). Path (b) sizes the claimant cap
+/// at this price; it is not `pClaim`.
+pub fn emergency_price(x_claim: i64, a_claim: i64) -> Option<i64> {
+    if x_claim <= 0 || a_claim <= 0 {
+        return None;
+    }
+    Some(x_claim.min(a_claim))
+}
+
+/// **RED-5**: the residual a CLAIM returns to the owner (`math.h` `ClaimantMaxZat`,
+/// `ResidualZat`). `claimantMax = ⌈cents · margin · COIN / price⌉` with `margin` =
+/// `CLAIM_THRESHOLD_BPS` under clause `"a"` and `10⁴` under `"b"` (no extra margin).
+/// **RED-5b (A1):** `price` is `pClaim` under `"a"` and `pEmerg` ([`emergency_price`]) under
+/// `"b"` — the same margin as before, the emergency price instead of `pClaim`.
+/// `residual = collateral − claimantMax` when positive and at least `RESIDUAL_MIN_ZAT`, else 0.
+/// `None` when the sizing price is undefined (the claim is refused).
 pub fn residual_zat_for(
     collateral_zat: i64,
     minted_cents: u64,
-    p_claim: i64,
+    price: i64,
     claim_path: &str,
 ) -> Option<i64> {
-    if p_claim <= 0 || minted_cents == 0 {
+    if price <= 0 || minted_cents == 0 {
         return None;
     }
     let margin = if claim_path == "a" {
@@ -625,7 +636,7 @@ pub fn residual_zat_for(
         BPS
     };
     let num = (minted_cents as u128) * (margin as u128) * (COIN as u128);
-    let claimant_max = num.div_ceil(p_claim as u128);
+    let claimant_max = num.div_ceil(price as u128);
     let residual = match i64::try_from(claimant_max) {
         Ok(m) if collateral_zat > m => collateral_zat - m,
         _ => 0,
@@ -1033,11 +1044,28 @@ mod tests {
         assert_eq!(residual_zat_for(cm + 99_999, 10_000, 520_000, "a"), Some(0));
         assert_eq!(residual_zat_for(cm - 1, 10_000, 520_000, "a"), Some(0));
         let cb = (10_000u128 * 10_000 * 100_000_000).div_ceil(520_000) as i64;
+        // Path (b) at a known pEmerg (here equal to the figure passed in): margin stays 10⁴.
         assert_eq!(
             residual_zat_for(cb + 500_000, 10_000, 520_000, "b"),
             Some(500_000)
         );
         assert_eq!(residual_zat_for(cb, 10_000, 0, "a"), None);
+        assert_eq!(emergency_price(420_000, 349_000), Some(349_000));
+        assert_eq!(emergency_price(349_000, 420_000), Some(349_000));
+        assert_eq!(emergency_price(420_000, 0), None);
+        assert_eq!(emergency_price(0, 349_000), None);
+        // RED-5b A1 worked example: $100,000, 300,000 YEC, pClaim 0.42, pEmerg 0.349.
+        // Path (b) residual is 13,467.0487106 YEC. Sizing that row at pClaim is 61,904.76190476 YEC.
+        let collateral = 300_000 * COIN;
+        let cents = 10_000_000u64;
+        assert_eq!(
+            residual_zat_for(collateral, cents, 349_000, "b"),
+            Some(1_346_704_871_060)
+        );
+        assert_eq!(
+            residual_zat_for(collateral, cents, 420_000, "b"),
+            Some(6_190_476_190_476)
+        );
         // The spec's worked example: $100 at 300 % and $0.05/YEC = 6,000 YEC.
         assert_eq!(required_zat(10_000, 30_000, 50_000), Some(600_000_000_000));
         assert_eq!(required_zat(10_000, 30_000, 0), None);
