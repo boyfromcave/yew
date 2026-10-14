@@ -187,9 +187,12 @@ pub fn classify(
     }
     match script::p2pkh_hash(script) {
         Some(h) if is_own_key(&h) => {
-            if let Some(&cents) = tokens.get(outpoint) {
-                (UtxoClass::Token, cents)
-            } else if value == TOKEN_VALUE {
+            if value == TOKEN_VALUE {
+                match tokens.get(outpoint) {
+                    Some(&cents) => (UtxoClass::Token, cents),
+                    None => (UtxoClass::Held, 0),
+                }
+            } else if tokens.contains_key(outpoint) {
                 (UtxoClass::Held, 0)
             } else {
                 (UtxoClass::Yec, 0)
@@ -401,8 +404,8 @@ pub fn yed_balances(utxos: &[Utxo]) -> (u64, u64) {
     let mut pending = 0;
     for u in utxos {
         match u.class {
-            UtxoClass::Token => cents += u.cents,
-            UtxoClass::PendingToken => pending += u.cents,
+            UtxoClass::Token => cents = u64::saturating_add(cents, u.cents),
+            UtxoClass::PendingToken => pending = u64::saturating_add(pending, u.cents),
             _ => {}
         }
     }
@@ -451,10 +454,15 @@ mod tests {
             classify(&op, &p2pkh, TOKEN_VALUE, is_own, &listed),
             (UtxoClass::Token, 500)
         );
-        // The server's word wins even over an odd value.
+        // A listed outpoint is a token only at exactly TOKEN_VALUE; otherwise it is held, never
+        // spent as a token (whose value the builder assumes) nor as YEC.
         assert_eq!(
             classify(&op, &p2pkh, 12_345, is_own, &listed),
-            (UtxoClass::Token, 500)
+            (UtxoClass::Held, 0)
+        );
+        assert_eq!(
+            classify(&op, &p2pkh, 5_000_000_000, is_own, &listed),
+            (UtxoClass::Held, 0)
         );
         let other = OutPoint {
             txid: [9; 32],

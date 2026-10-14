@@ -38,7 +38,7 @@ use crate::coins::{self, Utxo, UtxoClass};
 use crate::keys;
 use crate::net::rpc::YedTxInfo;
 use crate::net::{CompactClient, NetError, YellowbackClient};
-use crate::params::{self, CARRIER_VALUE, GAP_LIMIT};
+use crate::params::{self, CARRIER_VALUE, GAP_LIMIT, TOKEN_VALUE};
 use crate::script;
 use crate::store::{HistoryRow, IntentRow, IntentState, MintState, VaultCancel, VaultRow};
 use crate::tx::{txid_from_hex, txid_hex, OutPoint, Transaction};
@@ -1287,6 +1287,9 @@ async fn falcon_token_utxos(
             continue;
         }
         let want = crate::pq::pqpkh_script(&id).unwrap_or_default();
+        if t.value_zat != TOKEN_VALUE {
+            continue;
+        }
         let script = if let Some(s) = known.get(op).filter(|s| **s == want) {
             s.clone()
         } else {
@@ -1313,7 +1316,7 @@ async fn falcon_token_utxos(
                 .and_then(|t| t.as_ref())
                 .and_then(|tx| tx.vout.get(op.n as usize))
             {
-                Some(o) if o.script_pubkey == want => want.clone(),
+                Some(o) if o.script_pubkey == want && o.value == TOKEN_VALUE => want.clone(),
                 _ => continue, // a channel output, or a transaction the server cannot serve
             }
         };
@@ -1321,7 +1324,7 @@ async fn falcon_token_utxos(
             outpoint: *op,
             address: t.address.clone(),
             script,
-            value: t.value_zat,
+            value: TOKEN_VALUE,
             height: t.height.max(0) as u64,
             class: UtxoClass::Token,
             cents: t.cents,

@@ -81,6 +81,11 @@ pub enum TransferError {
     /// The payload could not be encoded.
     #[error("cannot encode the transfer payload")]
     Payload,
+    /// `non-standard-token`: a YED input whose coin is not worth exactly `TOKEN_VALUE`.
+    #[error(
+        "non-standard-token: a YED input is not a standard token carrier; refusing to spend it"
+    )]
+    NonStandardToken,
     /// `TOK-PQ` (quantum spec F-7): Falcon is active, so every output that receives YED must be a
     /// Falcon (scheme 2) post-quantum key: a P2PKH or SLH-DSA recipient is refused (YEW's own
     /// change goes to its Falcon holder keys).
@@ -159,6 +164,9 @@ pub fn assemble(
         .collect();
     let payload_bytes = payload::encode(&Payload::Transfer { assignments })
         .ok_or(WalletError::Transfer(TransferError::Payload))?;
+    if yed_inputs.iter().any(|u| u.value != TOKEN_VALUE) {
+        return Err(WalletError::Transfer(TransferError::NonStandardToken));
+    }
 
     let mut tx = Transaction::new_v4();
     tx.expiry_height = (tip as u32).saturating_add(TX_EXPIRY_DELTA);
@@ -866,6 +874,17 @@ mod tests {
             build_yed_transfer(&poor, &[(dest(), 10_000)], 100, 1).unwrap_err(),
             WalletError::Coins(_)
         ));
+    }
+
+    #[test]
+    fn mis_listed_coin_is_refused_not_burned_as_fee() {
+        let w = wallet_with(&[
+            (5_000_000_000, UtxoClass::Token, 50),
+            (TOKEN_VALUE, UtxoClass::Token, 500),
+            (1_000_000, UtxoClass::Yec, 0),
+        ]);
+        let e = build_yed_transfer(&w, &[(dest(), 450)], 100, 1).unwrap_err();
+        assert!(e.to_string().starts_with("non-standard-token"), "{e}");
     }
 
     #[test]
