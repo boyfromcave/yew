@@ -176,7 +176,13 @@ class _MintProgressScreenState extends State<MintProgressScreen> {
                     if (m.payee.isNotEmpty) PreviewRow('Fee paid to', shorten(m.payee, head: 10, tail: 6)),
                     if (m.attestFeeZat > 0) PreviewRow('Attestor fee', '${formatYec(m.attestFeeZat)} YEC'),
                     if (m.attestPayee.isNotEmpty) PreviewRow('Attestor paid', shorten(m.attestPayee, head: 10, tail: 6)),
-                    if (m.residualZat > 0) PreviewRow('Residual to owner', '${formatYec(m.residualZat)} YEC'),
+                    if (m.residualZat > 0) ...[
+                      PreviewRow('Residual to owner', '${formatYec(m.residualZat)} YEC'),
+                      const PreviewRow(
+                        'If the claim is cancelled',
+                        'that residual stays held until the vault closes, and after the quiet period only while the position is no longer claimable',
+                      ),
+                    ],
                     PreviewRow('Reference height', '${m.refHeight} · window closes at ${m.expiryHeight}'),
                     PreviewRow('Carrier', shorten(m.carrierTxid)),
                     if (m.mainTxid.isNotEmpty) PreviewRow(m.kind == 'claim' ? 'Claim' : 'Mint', shorten(m.mainTxid)),

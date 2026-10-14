@@ -159,7 +159,7 @@ class _ReleaseScreenState extends State<ReleaseScreen> {
                   : widget.intent!.pqMove
                   ? 'The residual was released to your vault-owner (post-quantum) key. Move it to your wallet: one post-quantum signature (about 8 KB), its network fee paid out of the residual.'
                   : widget.intent!.role == 'residual'
-                  ? 'Your vault was claimed. The part of its collateral above the claim (the residual) waited out the claim delay and is yours to release.'
+                  ? 'Your vault was claimed. The part of its collateral above the claim (the residual) waited out the claim delay and is yours to release. If the claim is cancelled, the residual stays held until the vault closes, and after the quiet period only while the position is no longer claimable.'
                   : 'The claim delay is over and no attestor cancelled the claim: release the collateral to this wallet.',
               style: t.bodyMedium?.copyWith(color: c.pending),
             ),

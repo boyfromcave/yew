@@ -128,8 +128,11 @@ pub struct Claimable {
 /// the row's `pMint`, computed locally (rpcversion 8), and the attestor fee AFEE-1′ (audit G-2): a
 /// server quoting another figure is
 /// refused; the payee comes from `GetFeePayee` for the vault's selector at the index tip. The
-/// residual is RED-5 recomputed from the row's `pClaim` (`terms::check_claimable`, H-9.3),
-/// and the server's parameter set must be the network's (`terms::check_server_params`).
+/// residual is RED-5 recomputed from the row's `pClaim` on path (a) and from `pEmerg` on path
+/// (b) (`terms::check_claimable`, H-9.3, RED-5b A1). The `ListClaimable` row does not carry
+/// `pEmerg`; path (b) takes `min(GetPrice.xClaim, BuildBundle.aClaim)`, the node's
+/// `PriceCombine`, and is refused when that price cannot be known. The server's parameter set
+/// must be the network's (`terms::check_server_params`).
 pub async fn claimable(
     network: Network,
     yb: &mut YellowbackClient,
@@ -138,6 +141,9 @@ pub async fn claimable(
     terms::check_server_params(network, info.params.as_ref())?;
     let r = info.height as u32;
     let mut out = Vec::new();
+    // Path (b) sizes at pEmerg. The claimable row has neither pEmerg nor xClaim/aClaim; those
+    // come from GetPrice and the bundle the node would build for the vault (EstimateClaim).
+    let mut x_claim: Option<i64> = None;
     for c in yb.list_claimable().await? {
         let vault_txid = c.vault.split(':').next().unwrap_or("").to_string();
         let txid = crate::tx::txid_from_hex(&vault_txid)
@@ -178,7 +184,29 @@ pub async fn claimable(
             });
             continue;
         }
-        let residual_zat = terms::check_claimable(&c)?;
+        let p_emerg = if c.claim_path == "b" {
+            if x_claim.is_none() {
+                let price = yb.price(r).await.map_err(|e| {
+                    WalletError::Other(format!(
+                        "pEmerg unknown: path (b) sizes the claimant cap at min(xClaim, aClaim), and GetPrice failed ({e})"
+                    ))
+                })?;
+                x_claim = Some(price.x_claim);
+            }
+            let built = yb
+                .build_bundle(r, &keys::hex(&selector))
+                .await
+                .map_err(|e| {
+                    WalletError::Other(format!(
+                        "pEmerg unknown for vault {}: path (b) needs aClaim from BuildBundle ({e})",
+                        c.vault
+                    ))
+                })?;
+            crate::params::emergency_price(x_claim.unwrap_or(0), built.a_claim)
+        } else {
+            None
+        };
+        let residual_zat = terms::check_claimable(&c, p_emerg)?;
         let payee = mint::fee_payee(yb, r, &selector).await?;
         let debt = c.minted_cents.max(0) as u64;
         let fee_zat = terms::protocol_fee(debt, c.p_mint, &payee)?;
