@@ -180,7 +180,7 @@ class _MintProgressScreenState extends State<MintProgressScreen> {
                       PreviewRow('Residual to owner', '${formatYec(m.residualZat)} YEC'),
                       const PreviewRow(
                         'If the claim is cancelled',
-                        'that residual stays held until the vault closes, and after the quiet period only while the position is no longer claimable',
+                        'that residual stays held until the vault closes. After the quiet period it can be released only once the position is no longer claimable',
                       ),
                     ],
                     PreviewRow('Reference height', '${m.refHeight} · window closes at ${m.expiryHeight}'),

@@ -143,7 +143,7 @@ class _ClaimableScreenState extends State<ClaimableScreen> {
                         PreviewRow('Residual to owner', '${formatYec(p.residualZat)} YEC'),
                         const PreviewRow(
                           'If the claim is cancelled',
-                          'that residual stays held until the vault closes, and after the quiet period only while the position is no longer claimable',
+                          'that residual stays held until the vault closes. After the quiet period it can be released only once the position is no longer claimable',
                           key: Key('claim-residual-held'),
                         ),
                       ],
