@@ -38,7 +38,7 @@ use crate::coins::{self, Utxo, UtxoClass};
 use crate::keys;
 use crate::net::rpc::YedTxInfo;
 use crate::net::{CompactClient, NetError, YellowbackClient};
-use crate::params::{self, CARRIER_VALUE, GAP_LIMIT};
+use crate::params::{self, CARRIER_VALUE, GAP_LIMIT, TOKEN_VALUE};
 use crate::script;
 use crate::store::{HistoryRow, IntentRow, IntentState, MintState, VaultCancel, VaultRow};
 use crate::tx::{txid_from_hex, txid_hex, OutPoint, Transaction};
@@ -1270,12 +1270,12 @@ async fn falcon_token_utxos(
     let own = wallet.own_hashes()?;
     let own_falcon = wallet.own_falcon_holders()?;
     let own_pq = own_pq_keys(wallet, &own_falcon, false)?;
-    let known: HashMap<OutPoint, Vec<u8>> = wallet
+    let known: HashMap<OutPoint, (Vec<u8>, i64)> = wallet
         .store
         .utxos()?
         .into_iter()
         .filter(|u| crate::pq::pqpkh_of(&u.script).is_some())
-        .map(|u| (u.outpoint, u.script))
+        .map(|u| (u.outpoint, (u.script, u.value)))
         .collect();
     let mut fetched: HashMap<[u8; 32], Option<Transaction>> = HashMap::new();
     let mut out = Vec::new();
@@ -1287,7 +1287,15 @@ async fn falcon_token_utxos(
             continue;
         }
         let want = crate::pq::pqpkh_script(&id).unwrap_or_default();
-        let script = if let Some(s) = known.get(op).filter(|s| **s == want) {
+        if t.value_zat != TOKEN_VALUE {
+            continue;
+        }
+        // A stored row is trusted for its script, and its value (a `GetAddressUtxos` row's, or
+        // TOKEN_VALUE checked when the row was built) must be the carrier's too.
+        let script = if let Some((s, v)) = known.get(op).filter(|(s, _)| *s == want) {
+            if *v != TOKEN_VALUE {
+                continue;
+            }
             s.clone()
         } else {
             if let std::collections::hash_map::Entry::Vacant(slot) = fetched.entry(op.txid) {
@@ -1313,7 +1321,7 @@ async fn falcon_token_utxos(
                 .and_then(|t| t.as_ref())
                 .and_then(|tx| tx.vout.get(op.n as usize))
             {
-                Some(o) if o.script_pubkey == want => want.clone(),
+                Some(o) if o.script_pubkey == want && o.value == TOKEN_VALUE => want.clone(),
                 _ => continue, // a channel output, or a transaction the server cannot serve
             }
         };
@@ -1321,7 +1329,7 @@ async fn falcon_token_utxos(
             outpoint: *op,
             address: t.address.clone(),
             script,
-            value: t.value_zat,
+            value: TOKEN_VALUE,
             height: t.height.max(0) as u64,
             class: UtxoClass::Token,
             cents: t.cents,
