@@ -1,0 +1,152 @@
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file COPYING or https://www.opensource.org/licenses/mit-license.php .
+#
+# YEW-specific Semgrep rules, scanned beside the pinned rule packs (contrib/semgrep/README.md). YEW holds
+# the user's seed and every key derived from it, and signs vault spends on the phone; these rules guard
+# the invariants that make that safe. Each rule has a test file beside it (yew.rs), run with
+#   semgrep --test --config contrib/semgrep/rules contrib/semgrep/rules
+# (secops.yml `semgrep-rules` runs it on every PR). metadata.bucket pins a rule's bucket.
+rules:
+  # Seeds, mnemonics, key material, signing nonces and entropy must come from the OS CSPRNG
+  # (rand::rngs::OsRng, getrandom). A seedable or small RNG in shipped code is one refactor away from
+  # deriving a key from a guessable state.
+  - id: yew.keys.non-crypto-rng
+    languages: [rust]
+    paths:
+      include: ["core/src/**", "core/cli/src/**"]
+      exclude: ["core/src/frb_generated.rs"]
+    patterns:
+      - pattern-either:
+          - pattern: SmallRng::$F(...)
+          - pattern: rand::rngs::SmallRng::$F(...)
+          - pattern: $R::seed_from_u64(...)
+          - pattern: StdRng::from_seed(...)
+          - pattern: rand::rngs::StdRng::from_seed(...)
+          - pattern: ChaCha20Rng::from_seed(...)
+          - pattern: ChaCha8Rng::from_seed(...)
+          - pattern: ChaCha12Rng::from_seed(...)
+          - pattern: fastrand::$F(...)
+          - pattern: oorandom::$T::new(...)
+          - pattern: rand::rngs::mock::StepRng::new(...)
+          - pattern: StepRng::new(...)
+      # Every #[cfg(test)] module in core/ is `mod tests` (Semgrep's Rust matcher does not match on
+      # the attribute itself).
+      - pattern-not-inside: |
+          mod tests { ... }
+    message: >-
+      A seedable or non-cryptographic RNG in YEW's shipped code. Seeds, mnemonics, keys, signing entropy
+      and anything derived from them must come from the OS CSPRNG (rand::rngs::OsRng / getrandom), as
+      pq::PqKey::sign and the bip39 mnemonic generation do. Deterministic RNGs belong in #[cfg(test)] only.
+    severity: ERROR
+    metadata:
+      category: security
+      bucket: critical
+      impact: HIGH
+      likelihood: MEDIUM
+      confidence: HIGH
+      cwe: ["CWE-338: Use of Cryptographically Weak Pseudo-Random Number Generator (PRNG)"]
+      references: ["core/src/pq.rs (PqKey::sign)", "docs/security-review.md"]
+
+  # A type that holds secret material must not get a derived Debug or any Display: a `{:?}` in a log
+  # line, a panic message or an error string then prints the key. keys.rs, pq.rs and shielded_keys.rs
+  # write a redacting Debug by hand; this keeps new secret types on that pattern.
+  - id: yew.keys.secret-type-derives-debug
+    languages: [generic]
+    paths:
+      include: ["core/src/**/*.rs", "core/cli/src/**/*.rs"]
+      exclude: ["core/src/frb_generated.rs"]
+    options:
+      generic_ellipsis_max_span: 0
+    pattern-regex: >-
+      #\[derive\([^)]*\bDebug\b[^)]*\)\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum)\s+\w*(?:Secret|Seed|Mnemonic|Priv|Private|Spending|Signing|Wif|Entropy|Passphrase)\w*
+    message: >-
+      A type whose name says it holds secret material derives Debug, so `{:?}` (logs, panics, error
+      chains, the bridge) prints the secret. Write a redacting `impl std::fmt::Debug` instead, as
+      keys::SecretString, keys::ExtendedPrivKey, pq::PqSeedRoot and shielded_keys::SaplingAccount do.
+    severity: ERROR
+    metadata:
+      category: security
+      bucket: high
+      impact: HIGH
+      likelihood: LOW
+      confidence: MEDIUM
+      cwe: ["CWE-532: Insertion of Sensitive Information into Log File"]
+
+  - id: yew.keys.secret-type-implements-display
+    # A regex, not a Rust pattern: Semgrep's Rust matcher does not tell `impl Display` from `impl Debug`.
+    languages: [generic]
+    paths:
+      include: ["core/src/**/*.rs", "core/cli/src/**/*.rs"]
+      exclude: ["core/src/frb_generated.rs"]
+    pattern-regex: >-
+      \bimpl(?:<[^>]*>)?\s+(?:std::)?(?:fmt::)?Display\s+for\s+\w*(?i:secret|seed|mnemonic|priv|spending|signing|wif|entropy|passphrase)\w*
+    message: >-
+      Display is implemented for a type that holds secret material, so any `{}` prints it. Expose the
+      secret through an explicit, greppable method (e.g. keys::AddressKey::wif, SecretString::expose)
+      used only where the user asked to see or export it.
+    severity: ERROR
+    metadata:
+      category: security
+      bucket: high
+      impact: HIGH
+      likelihood: LOW
+      confidence: MEDIUM
+      cwe: ["CWE-532: Insertion of Sensitive Information into Log File"]
+
+  - id: yew.keys.secret-logged
+    languages: [rust]
+    paths:
+      include: ["core/src/**", "core/cli/src/**"]
+      exclude: ["core/src/frb_generated.rs"]
+    patterns:
+      # A regex over the macro call: Semgrep does not match inside Rust macro arguments.
+      # A regex over the macro call: Semgrep does not match inside Rust macro arguments. The name must
+      # be an argument (`, seed`, `, &key.wif()`) or an inline capture (`{seed}`, `{seed:?}`), not a
+      # word inside the format string's text.
+      - pattern-regex: >-
+          \b(?:println|eprintln|print|eprint|dbg|panic|trace|debug|info|warn|error)!\s*\([^;]*?(?:[(,]\s*[&*]*(?:[A-Za-z_][\w]*\.)*|\{)(?:seed|seed_bytes|mnemonic|phrase|secret|secret_key|privkey|private_key|xprv|spending_key|extsk|wif|entropy|passphrase)\b
+      - pattern-not-inside: |
+          mod tests { ... }
+    message: >-
+      A value that looks like secret material (seed, mnemonic, private/spending key, WIF, entropy,
+      passphrase) is printed, logged or put into a panic message. Mobile logs are readable by crash
+      reporters and other apps on some platforms; never log secrets.
+    severity: ERROR
+    metadata:
+      category: security
+      bucket: high
+      impact: HIGH
+      likelihood: MEDIUM
+      confidence: MEDIUM
+      cwe: ["CWE-532: Insertion of Sensitive Information into Log File"]
+
+  # The core trusts one light-client server for its view of the chain (docs/trust.md); it must not
+  # trust it to be well-formed. A malformed or hostile lightwalletd reply has to become an error the
+  # app shows, never a panic that takes the wallet (and on iOS the whole app) down mid-sync or
+  # mid-send. The gRPC clients (net/), the sync and the shielded light-client path handle replies.
+  - id: yew.net.unwrap-on-server-response
+    languages: [rust]
+    paths:
+      include: ["core/src/net/**", "core/src/sync.rs", "core/src/shielded.rs", "core/src/gate.rs", "core/src/wallet.rs"]
+    patterns:
+      - pattern-either:
+          - pattern: $X.unwrap()
+          - pattern: $X.expect(...)
+      # Every #[cfg(test)] module in core/ is `mod tests` (Semgrep's Rust matcher does not match on
+      # the attribute itself).
+      - pattern-not-inside: |
+          mod tests { ... }
+    message: >-
+      unwrap()/expect() in the code that handles lightwalletd replies (net/, sync, shielded, gate,
+      wallet). A malformed or hostile server reply must become an error (net::NetError and friends),
+      not a panic. If the value cannot fail (a constant, an invariant the code just established), say
+      why in accepted.json or restructure so the compiler proves it.
+    severity: WARNING
+    metadata:
+      category: security
+      bucket: medium
+      impact: MEDIUM
+      likelihood: MEDIUM
+      confidence: MEDIUM
+      cwe: ["CWE-248: Uncaught Exception", "CWE-20: Improper Input Validation"]

@@ -1,0 +1,43 @@
+# Dependabot: security updates only, one grouped PR per ecosystem (SECURITY-CI.md). Version updates are
+# suppressed (open-pull-requests-limit: 0): every dependency here is exact-pinned and moved by hand
+# with its reason (core/Cargo.toml, scripts/check-deps.sh, app/pubspec.yaml; the Sapling crates are git
+# revisions Dependabot cannot move). A security PR still has to pass ci.yml (the allow-list, the
+# licence listing, the node vectors) before it can merge; an exact pin in a manifest is bumped there by
+# hand in the same PR when the lockfile alone cannot take the fix.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    cooldown:
+      default-days: 7  # version updates only; security updates are never delayed
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: pub
+    directory: /app
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    cooldown:
+      default-days: 7  # version updates only; security updates are never delayed
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    cooldown:
+      default-days: 7  # version updates only; security updates are never delayed
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]

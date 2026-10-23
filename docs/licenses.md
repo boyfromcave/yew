@@ -227,7 +227,7 @@ and its platform packages (BSD-3-Clause), `local_auth` (BSD-3-Clause), `qr_flutt
 | `rustls` | 0.23.45 | Apache-2.0 OR ISC OR MIT |
 | `rustls-native-certs` | 0.8.4 | Apache-2.0 OR ISC OR MIT |
 | `rustls-pki-types` | 1.15.1 | MIT OR Apache-2.0 |
-| `rustls-webpki` | 0.103.15 | ISC |
+| `rustls-webpki` | 0.103.16 | ISC |
 | `rustversion` | 1.0.23 | MIT OR Apache-2.0 |
 | `sapling-crypto` | 0.7.0 | MIT OR Apache-2.0 |
 | `schannel` | 0.1.29 | MIT |
@@ -302,7 +302,7 @@ and its platform packages (BSD-3-Clause), `local_auth` (BSD-3-Clause), `qr_flutt
 | `wasm-bindgen-macro-support` | 0.2.128 | MIT OR Apache-2.0 |
 | `wasm-bindgen-shared` | 0.2.128 | MIT OR Apache-2.0 |
 | `web-sys` | 0.3.105 | MIT OR Apache-2.0 |
-| `webpki-roots` | 1.0.9 | CDLA-Permissive-2.0 |
+| `webpki-roots` | 1.0.10 | CDLA-Permissive-2.0 |
 | `windows-link` | 0.2.1 | MIT OR Apache-2.0 |
 | `windows-sys` | 0.52.0 | MIT OR Apache-2.0 |
 | `windows-sys` | 0.61.2 | MIT OR Apache-2.0 |

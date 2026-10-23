@@ -1,0 +1,57 @@
+# gitleaks findings accepted with a reason (SECURITY-CI.md, "Secrets"). One fingerprint per line
+# (commit:path:rule:line, from `gitleaks git --report-format json`); a new leak anywhere still fails.
+#
+# core/tests/vectors/*.json: the node's golden test vectors (vault_vectors.json, pq_vectors.json,
+# pq_wallet_vectors.json), byte copies of ycash-dd/ycash6 src/test/data at the commits
+# core/tests/vectors/PIN records (scripts/check-node-vectors.sh). Their "secret"/"seed"/"keyhash"
+# fields are fixed regtest test keys published in the node repositories, never funded on any network.
+# Checked 2026-10-23 (49 hits, all generic-api-key, all in these three files).
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:1002
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:101
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:1010
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:1018
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:1026
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:114
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:127
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:13
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:140
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:153
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:166
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:179
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:18
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:192
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:23
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:28
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:297
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:312
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:327
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:33
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:363
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:369
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:375
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:38
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:43
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:48
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:484
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:510
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:526
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:553
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:583
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:605
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:62
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:631
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:75
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:88
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:970
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:978
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:986
+97e6992420b5b2c807bf1c8494f7d8396906a9c6:core/tests/vectors/vault_vectors.json:generic-api-key:994
+a0a124865c325a36e7c452d66f81dc0604194b19:core/tests/vectors/pq_wallet_vectors.json:generic-api-key:32
+a0a124865c325a36e7c452d66f81dc0604194b19:core/tests/vectors/pq_wallet_vectors.json:generic-api-key:64
+a0a124865c325a36e7c452d66f81dc0604194b19:core/tests/vectors/vault_vectors.json:generic-api-key:1119
+a0a124865c325a36e7c452d66f81dc0604194b19:core/tests/vectors/vault_vectors.json:generic-api-key:18
+ca3961f241413119b4a41a7ffd48fc429eadc427:core/tests/vectors/pq_vectors.json:generic-api-key:11
+ca3961f241413119b4a41a7ffd48fc429eadc427:core/tests/vectors/pq_vectors.json:generic-api-key:22
+ca3961f241413119b4a41a7ffd48fc429eadc427:core/tests/vectors/pq_vectors.json:generic-api-key:33
+ca3961f241413119b4a41a7ffd48fc429eadc427:core/tests/vectors/pq_vectors.json:generic-api-key:44
+ca3961f241413119b4a41a7ffd48fc429eadc427:core/tests/vectors/pq_vectors.json:generic-api-key:55

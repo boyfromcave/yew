@@ -1,0 +1,59 @@
+# CodeQL (SECURITY-CI.md). Results go to GitHub code scanning only (category codeql/<language>); this
+# workflow never opens PRs or issues and never fails a PR on an alert that already exists on the base.
+#
+#   rust     the core (core/), the CLI (core/cli/) and the bridge surface, build-mode none (no Sapling
+#            proving build, no protoc): CodeQL extracts the sources directly.
+#   actions  every workflow under .github/workflows.
+#
+# Not scanned by CodeQL: Dart (app/) — CodeQL has no Dart extractor. The app is covered by flutter
+# analyze (ci.yml), OSV-Scanner over app/pubspec.lock (secops.yml) and review. Not c-cpp either: the
+# only C is core/pq-c/falcon, a byte copy of the node's PQClean Falcon pinned by SHA256SUMS
+# (core/pq-c/README.md), scanned in the node lines.
+#
+# Third-party actions are pinned by commit; the comment carries the tag (bump both).
+name: codeql
+
+on:
+  push:
+    branches: [upgrade/vault]
+  pull_request:
+  schedule:
+    - cron: '29 4 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: codeql-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [rust, actions]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+          config: |
+            paths-ignore:
+              - core/src/frb_generated.rs
+              - app/lib/src/rust
+              - core/pq-c
+              - core/tests/vectors
+      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          category: codeql/${{ matrix.language }}

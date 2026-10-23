@@ -564,8 +564,10 @@ pub struct SendResult {
     pub verdict: String,
 }
 
+// Debug is written by hand below and redacts `wif` (a private key), so a `{:?}` in a log line or a
+// panic never prints it (contrib/semgrep/rules/yew.yaml `yew.keys.secret-type-derives-debug`).
 /// [`export_wif`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WifExport {
     /// The key's P2PKH address, `yb…` form (35 characters). Once Falcon is in force YED is
     /// received at the key's Falcon holder instead, which has no WIF.
@@ -576,6 +578,17 @@ pub struct WifExport {
     pub wif: String,
     /// `false` for an imported key.
     pub covered_by_seed: bool,
+}
+
+impl std::fmt::Debug for WifExport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WifExport")
+            .field("address_ye", &self.address_ye)
+            .field("address_s", &self.address_s)
+            .field("wif", &"<redacted>")
+            .field("covered_by_seed", &self.covered_by_seed)
+            .finish()
+    }
 }
 
 /// [`validate_address`].

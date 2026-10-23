@@ -35,7 +35,7 @@ bs58 = "=0.5.1"
 # failed the handshake. `webpki-roots` is pinned here as a direct dependency so its version is
 # exact (plan §3.3 allow-list: scripts/allowed-deps.txt).
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "channel", "tls-ring", "tls-native-roots", "tls-webpki-roots"] }
-webpki-roots = "=1.0.9"
+webpki-roots = "=1.0.10"
 tonic-prost = "=0.14.6"
 prost = "=0.14.4"
 tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
