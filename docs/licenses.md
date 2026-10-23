@@ -268,7 +268,7 @@ and its platform packages (BSD-3-Clause), `local_auth` (BSD-3-Clause), `qr_flutt
 | `thiserror-impl` | 2.0.21 | MIT OR Apache-2.0 |
 | `threadpool` | 1.8.1 | MIT/Apache-2.0 |
 | `tinyvec` | 1.13.3 | Zlib OR Apache-2.0 OR MIT |
-| `tokio` | 1.53.1 | MIT |
+| `tokio` | 1.53.3 | MIT |
 | `tokio-macros` | 2.7.2 | MIT |
 | `tokio-rustls` | 0.26.5 | MIT OR Apache-2.0 |
 | `tokio-stream` | 0.1.19 | MIT |
