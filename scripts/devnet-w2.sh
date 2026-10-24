@@ -51,7 +51,7 @@ case "${1:-}" in
     ;;
   down)
     dn lightwalletd stop || true
-    dn down "${2:-}"
+    dn down ${2:+"$2"}
     ;;
   *)
     sed -n '2,14p' "$0"

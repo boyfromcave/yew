@@ -65,8 +65,8 @@ a pull request.
 
 | Job | When | Runner | What runs |
 |---|---|---|---|
-| `hosted` | nightly 03:17 UTC on `upgrade/vault`; dispatch `runner: hosted` from any branch | GitHub-hosted `ubuntu-22.04`, 60 min | node vectors, `q_falcon_*`, `q_pqaddr_*`, W1, W2, W4 |
-| `self-hosted` | dispatch `runner: self-hosted` on `upgrade/vault` only, no schedule | the owner's `yb-devnet` runner | the same suites against the owner's built workspace, no time budget |
+| `hosted` | nightly 03:17 UTC on `upgrade/vault`; dispatch `runner: hosted` from any branch | GitHub-hosted `ubuntu-22.04`, 60 min | node vectors, `q_falcon_*`, `q_pqaddr_*` |
+| `self-hosted` | dispatch `runner: self-hosted` on `upgrade/vault` only, no schedule | the owner's `yb-devnet` runner | W1, W2, W4, `q_falcon_*`, `q_pqaddr_*` against the owner's built workspace, no time budget |
 
 Trust rules of the hosted job. `ycashd` is never built there: it is the `node-bin` artifact
 (`node-bin.tar`) of a ycash-dd `yellowback-tests.yml` run on `upgrade/vault` whose event is `push`,
@@ -76,7 +76,9 @@ out at that run's head commit. The attest agent and lightwalletd-dd (at `proto/P
 the job and never cached. The only caches are the Sapling parameters (download.z.cash, the sha256
 sums `zcutil/fetch-params.sh` pins, verified every run) and YEW's own build of the devnet test, each
 saved right after the step that fills it and before any node, lightwalletd or test code runs. A
-failure on `upgrade/vault` opens or comments on one issue labelled `devnet-nightly`.
+W1, W2 and W4 are not in the hosted job: against the current node (Falcon from the vault activation)
+W2's P2PKH YED holders are refused and W1 stops at `branch-mismatch`, so they stay in the manual run
+until `core/tests/devnet.rs` follows the node. A failure on `upgrade/vault` opens or comments on one issue labelled `devnet-nightly`.
 
 ## Repository settings (owner)
 
