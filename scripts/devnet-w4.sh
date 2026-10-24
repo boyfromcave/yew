@@ -7,6 +7,8 @@
 #
 #   scripts/devnet-w4.sh up | lwd | test | status | down [--wipe]
 #
+# The test funds its wallets from node 0 (YEW_DEVNET_FUND_NODE, default 0 here): a fresh devnet's
+# pool nodes hold too few mature coinbases.
 # Works from a git worktree too: the workspace is found by walking up to repos.yaml.
 # Copyright (c) 2026 The Ycash developers
 # Distributed under the MIT software license, see the accompanying
@@ -36,7 +38,7 @@ case "${1:-}" in
     ;;
   test)
     cd "$here"
-    YEW_DEVNET=1 YEW_DEVNET_SERVER="127.0.0.1:$lwd_port" YEW_DEVNET_PYTHON="$py" YEW_DEVNET_TOOL="$tool" \
+    YEW_DEVNET=1 YEW_DEVNET_FUND_NODE="${YEW_DEVNET_FUND_NODE:-0}" YEW_DEVNET_SERVER="127.0.0.1:$lwd_port" YEW_DEVNET_PYTHON="$py" YEW_DEVNET_TOOL="$tool" \
       cargo test -p yew-core --test devnet -- --ignored --nocapture --test-threads=1 w4_
     ;;
   status)

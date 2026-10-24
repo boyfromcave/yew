@@ -315,8 +315,10 @@ async fn w1_yec_round_trip_and_restore() {
     let (avail, _) = coins::yec_balances(&w.spendable_utxos().unwrap());
     assert!(avail < funded - send, "locked inputs are not spendable");
     dn.wait_mempool(&txid.to_string());
-    dn.run(&["mine", "1"]);
+    // The height before the block: read after `mine`, lightwalletd may already hold the new
+    // block and `h + 1` would never come.
     let h = c.latest_height().await.unwrap();
+    dn.run(&["mine", "1"]);
     wait_for_height(&mut c, h + 1).await;
     let r = sync(&mut w, &mut c, v.client_mut()).await.unwrap();
     let expected = funded - send - FEE_ZAT;
@@ -686,10 +688,10 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
     let b_falcon = b.falcon_holder_address(&b_addr).unwrap();
     let p = yed_transfer::build_yed_transfer(&a, &[(b_falcon.clone(), 1_234)], r.tip, r.branch_id)
         .unwrap();
-    assert_eq!(
-        (p.change_cents, p.yed_inputs.len(), p.fee),
-        (3_766, 1, FEE_ZAT)
-    );
+    assert_eq!((p.change_cents, p.yed_inputs.len()), (3_766, 1));
+    // A Falcon token input is spent with a 1,577-byte scriptSig: the size-rated fee is above
+    // the FEE_ZAT floor (`max(FEE_ZAT, rate x size)`).
+    assert!(p.fee >= FEE_ZAT, "fee {}", p.fee);
     assert!(p.yec_inputs.iter().all(|u| u.class.yec_spendable()));
     let (txid, val) = yed_transfer::broadcast(&a, &mut c, &mut v, &p)
         .await
