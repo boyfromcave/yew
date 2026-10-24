@@ -13,9 +13,10 @@ the same shape in every Yellowback repository:
 | Secrets | `secops.yml` `gitleaks` | PR: the PR's commits; nightly, dispatch, push to `upgrade/vault`: the whole history | fails on a leak not in `.gitleaksignore` | run summary, code scanning (`gitleaks`, redacted) |
 | Dependency vulnerabilities | `secops.yml` `osv-scanner` | `Cargo.lock` and `app/pubspec.lock` | fails on a known vulnerability not in `osv-scanner.toml` | run summary, code scanning (`osv-scanner`) |
 | Rust advisories | `ci.yml` `audit` (cargo-audit, `scripts/audit.sh`) | `Cargo.lock` | fails on an advisory with a reachable fix | run log |
+| Code-scanning triage | `code-scanning.yml` (`contrib/secops/code-scanning-triage.py`) | the open code-scanning alerts | dismisses the alerts listed in `contrib/secops/code-scanning-dismissals.json`; never fails on an open one | run summary (alerts left open), artifact `code-scanning-alerts` |
 | Dependency updates | `.github/dependabot.yml` | cargo, pub, github-actions | security updates only, one grouped PR per ecosystem; version updates off | Dependabot PRs |
 
-Nightly: Semgrep 02:17 UTC, secops 03:43 UTC, CodeQL weekly (Monday 04:29 UTC). Only Semgrep's `sync`
+Nightly: Semgrep 02:17 UTC, code-scanning triage 03:53 UTC, secops 03:43 UTC, CodeQL weekly (Monday 04:29 UTC). Only Semgrep's `sync`
 and Dependabot open PRs; everything else reports to code scanning and the run summary.
 
 **Not covered, and why.** Dart (`app/`): Semgrep's Dart support is experimental with no maintained
@@ -51,7 +52,11 @@ reason a reviewer can check, in the file for that tool:
   90 days out. cargo-audit's exceptions are `scripts/audit-exceptions.txt`; keep the two in step.
 - **zizmor**: fix the workflow; an inline `# zizmor: ignore[<audit>]` with a reason only when the
   pattern is intended.
-- **CodeQL**: dismiss the alert in Security → Code scanning with a reason.
+- **Code scanning (CodeQL and every SARIF upload)**: an entry in
+  `contrib/secops/code-scanning-dismissals.json` (tool, rule, path glob, reason `false positive` /
+  `won't fix` / `used in tests`, and a comment of at most 280 characters with the argument);
+  `code-scanning.yml` dismisses the matching alerts on a push to `upgrade/vault` that changes the
+  file and nightly, so the decision is in the history rather than only in the web UI.
 
 ## Repository settings (owner)
 

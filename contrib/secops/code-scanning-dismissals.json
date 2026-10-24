@@ -1,0 +1,75 @@
+{
+  "_comment": "Code-scanning alerts dismissed by .github/workflows/code-scanning.yml (contrib/secops/code-scanning-triage.py). One entry per tool + rule + path glob: reason is one of 'false positive', 'won't fix', 'used in tests'; comment is the argument a reviewer can check (280 characters reach GitHub). A real finding is fixed in code, never listed here.",
+  "dismissals": [
+    {
+      "tool": "CodeQL",
+      "rule": "rust/cleartext-logging",
+      "path": "core/cli/src/main.rs",
+      "reason": "won't fix",
+      "comment": "yew-cli (developer/devnet driver) prints to its own stdout: addresses, txids, heights, birthday, amounts, derivation paths; key types have redacting Debug. The one secret, `export-wif <addr>`, prints the WIF because that is the command (as dumpprivkey). No log file."
+    },
+    {
+      "tool": "CodeQL",
+      "rule": "rust/cleartext-logging",
+      "path": "core/tests/devnet.rs",
+      "reason": "used in tests",
+      "comment": "Regtest devnet integration test: println/assert/panic messages print txids, addresses, heights, amounts and Debug of sync reports and plans of throwaway wallets made from fresh generate_mnemonic seeds; no mnemonic or key is printed. Never shipped."
+    },
+    {
+      "tool": "CodeQL",
+      "rule": "rust/cleartext-logging",
+      "path": "core/src/build/yec_move.rs",
+      "reason": "used in tests",
+      "comment": "Line 408 is a panic message in #[cfg(test)] mod tests (from line 358): Debug of a Funding plan (amounts, fees, inputs), no key material. yew-core has no logging in production code."
+    },
+    {
+      "tool": "CodeQL",
+      "rule": "rust/cleartext-logging",
+      "path": "core/src/build/yed_transfer.rs",
+      "reason": "used in tests",
+      "comment": "Line 757 is an assert message in #[cfg(test)] mod tests (from line 527): it prints the fee and size of a regtest quote, no key material. yew-core has no logging in production code."
+    },
+    {
+      "tool": "CodeQL",
+      "rule": "rust/hard-coded-cryptographic-value",
+      "path": "core/src/keys.rs",
+      "reason": "false positive",
+      "comment": "183: b\"Bitcoin seed\" is the BIP32 master-key HMAC key fixed by the spec (the secret is the seed, the data). 216: chain_code = [0u8; 32] is a buffer initializer overwritten by the HMAC-SHA512 output on the next line."
+    },
+    {
+      "tool": "CodeQL",
+      "rule": "rust/hard-coded-cryptographic-value",
+      "path": "core/src/wallet.rs",
+      "reason": "false positive",
+      "comment": "260: b\"yew-wrap\" is a domain-separation label used as the HMAC key; the keying material is the BIP39 seed passed as the data (WrapSecret = HMAC-SHA256(\"yew-wrap\", seed)). No secret is hard-coded."
+    },
+    {
+      "tool": "CodeQL",
+      "rule": "rust/hard-coded-cryptographic-value",
+      "path": "core/src/script.rs",
+      "reason": "false positive",
+      "comment": "251: h = [0u8; 20] in p2pkh_hash is a buffer overwritten by copy_from_slice from the script; the hash160 later reaches wrap_key's nonce parameter as a per-key nonce, never as the zero constant."
+    },
+    {
+      "tool": "CodeQL",
+      "rule": "rust/hard-coded-cryptographic-value",
+      "path": "core/src/shielded.rs",
+      "reason": "false positive",
+      "comment": "790/797: Ok(false)/Ok(true) is set_vault_activation's \"parameters changed\" flag; it is not used as a key."
+    },
+    {
+      "tool": "CodeQL",
+      "rule": "rust/hard-coded-cryptographic-value",
+      "path": "core/src/store.rs",
+      "reason": "used in tests",
+      "comment": "1962-1966: wrap_key(b\"k\", b\"n1\", ..) in #[cfg(test)] wrap_is_symmetric_and_nonce_bound (the production callers in wallet.rs pass the seed-derived WrapSecret and the key's hash160). 762: meta_u64's default Ok(0) for a missing height/counter, not a key."
+    },
+    {
+      "tool": "CodeQL",
+      "rule": "rust/hard-coded-cryptographic-value",
+      "path": "core/src/pq.rs",
+      "reason": "used in tests",
+      "comment": "771: NistDrbg { key: [0; 32] } is the NIST KAT AES-CTR DRBG's specified initial state, in #[cfg(test)] mod tests (from line 623), immediately updated from the KAT seed; it reproduces the node's Falcon-512 KATs."
+    }
+  ]
+}
