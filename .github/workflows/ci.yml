@@ -10,11 +10,11 @@
 #   core-macos   clippy and cargo test on macOS (the platform code paths); the iOS core build
 #   app          Flutter analyze / test; the app import and trust-text checks; the bridge is
 #                regenerated and must equal the committed one
-# Not in this workflow: the devnet acceptance suites (scripts/devnet-*.sh). They need the whole
-# workspace devnet: an ARMED devnet (attestor nodes and the attest agent built from ycash-dd),
-# lightwalletd-dd built and serving --yellowback, the Python test framework; more than 60 min from
-# cold on a hosted runner. They run nightly, non-gating, in devnet-nightly.yml on the owner's
-# machine as a self-hosted runner (README, "Testing").
+# Not in this workflow: the devnet acceptance suites (scripts/devnet-*.sh). They need a workspace
+# devnet (an ARMED devnet from ycash-dd, the attest agent, lightwalletd-dd serving --yellowback,
+# the Python test framework), so they run nightly, non-gating, in devnet-nightly.yml: its `hosted`
+# job on a GitHub-hosted runner (ycashd from the node's CI artifact, at most 60 min), its
+# `self-hosted` job on the owner's machine by manual dispatch (SECURITY-CI.md, "Devnet tiers").
 #
 # Third-party actions are pinned by commit, never by tag; the comment carries the tag (bump both).
 name: ci

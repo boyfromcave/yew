@@ -16,7 +16,7 @@ the same shape in every Yellowback repository:
 | Code-scanning triage | `code-scanning.yml` (`contrib/secops/code-scanning-triage.py`) | the open code-scanning alerts | dismisses the alerts listed in `contrib/secops/code-scanning-dismissals.json`; never fails on an open one | run summary (alerts left open), artifact `code-scanning-alerts` |
 | Dependency updates | `.github/dependabot.yml` | cargo, pub, github-actions | security updates only, one grouped PR per ecosystem; version updates off | Dependabot PRs |
 
-Nightly: Semgrep 02:17 UTC, code-scanning triage 03:53 UTC, secops 03:43 UTC, CodeQL weekly (Monday 04:29 UTC). Only Semgrep's `sync`
+Nightly: Semgrep 02:17 UTC, code-scanning triage 03:53 UTC, devnet (hosted) 03:17 UTC, secops 03:43 UTC, CodeQL weekly (Monday 04:29 UTC). Only Semgrep's `sync`
 and Dependabot open PRs; everything else reports to code scanning and the run summary.
 
 **Not covered, and why.** Dart (`app/`): Semgrep's Dart support is experimental with no maintained
@@ -57,6 +57,26 @@ reason a reviewer can check, in the file for that tool:
   `won't fix` / `used in tests`, and a comment of at most 280 characters with the argument);
   `code-scanning.yml` dismisses the matching alerts on a push to `upgrade/vault` that changes the
   file and nightly, so the decision is in the history rather than only in the web UI.
+
+## Devnet tiers (`devnet-nightly.yml`)
+
+The devnet acceptance suites (`core/tests/devnet.rs`, `YEW_DEVNET=1`) are non-gating and never run on
+a pull request.
+
+| Job | When | Runner | What runs |
+|---|---|---|---|
+| `hosted` | nightly 03:17 UTC on `upgrade/vault`; dispatch `runner: hosted` from any branch | GitHub-hosted `ubuntu-22.04`, 60 min | node vectors, `q_falcon_*`, `q_pqaddr_*`, W1, W2, W4 |
+| `self-hosted` | dispatch `runner: self-hosted` on `upgrade/vault` only, no schedule | the owner's `yb-devnet` runner | the same suites against the owner's built workspace, no time budget |
+
+Trust rules of the hosted job. `ycashd` is never built there: it is the `node-bin` artifact
+(`node-bin.tar`) of a ycash-dd `yellowback-tests.yml` run on `upgrade/vault` whose event is `push`,
+`schedule` or `workflow_dispatch` (never `pull_request`, never selected by branch name alone); a
+typed `node_run_id` must be numeric and is checked against the same rule, and ycash-dd is checked
+out at that run's head commit. The attest agent and lightwalletd-dd (at `proto/PIN`) are built in
+the job and never cached. The only caches are the Sapling parameters (download.z.cash, the sha256
+sums `zcutil/fetch-params.sh` pins, verified every run) and YEW's own build of the devnet test, each
+saved right after the step that fills it and before any node, lightwalletd or test code runs. A
+failure on `upgrade/vault` opens or comments on one issue labelled `devnet-nightly`.
 
 ## Repository settings (owner)
 
