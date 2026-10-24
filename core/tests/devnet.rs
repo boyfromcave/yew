@@ -1383,14 +1383,40 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
 
     // 6. The liquidator persona: node 0 sends $1,000 YED to A; a −80 % shock; mine past
     //    node 0's vault's claimHeight until ListClaimable names it; claim it from A.
-    let target: Vec<Value> = dn
-        .node_json(0, &["yed_listvaults", "ACTIVE"])
-        .as_array()
+    // `yed_listvaults` lists every vault the index knows; the target is one YEW does not own.
+    // On a devnet brought up for this suite alone (the hosted nightly) node 0 has minted none
+    // yet: it mints one now (two-step, its wallet completes it on the next blocks).
+    let own: std::collections::HashSet<String> = a
+        .vaults()
         .unwrap()
         .iter()
-        .filter(|x| x["ownerAddress"].as_str() != Some(&owner2_addr))
-        .cloned()
+        .map(|x| txid_hex(&x.txid))
         .collect();
+    let others = |dn: &Devnet| -> Vec<Value> {
+        dn.node_json(0, &["yed_listvaults", "ACTIVE"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|x| x["ownerAddress"].as_str() != Some(&owner2_addr))
+            .filter(|x| !own.contains(x["txid"].as_str().unwrap_or("")))
+            .cloned()
+            .collect()
+    };
+    let mut target = others(&dn);
+    if target.is_empty() {
+        let m = dn.node_json(0, &["yed_mint", "100000", "48", "", "", "false"]);
+        println!("node 0 mints a claim target: {m}");
+        let start = Instant::now();
+        while target.is_empty() {
+            assert!(
+                start.elapsed() < Duration::from_secs(300),
+                "node 0's claim-target mint never confirmed"
+            );
+            let h = dn.mine_pool();
+            wait_for_height(&mut c, h).await;
+            target = others(&dn);
+        }
+    }
     let target = target
         .iter()
         .min_by_key(|x| x["claimHeight"].as_u64().unwrap())
