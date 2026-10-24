@@ -65,7 +65,7 @@ a pull request.
 
 | Job | When | Runner | What runs |
 |---|---|---|---|
-| `hosted` | nightly 03:17 UTC on `upgrade/vault`; dispatch `runner: hosted` from any branch | GitHub-hosted `ubuntu-22.04`, 60 min | node vectors, `q_falcon_*`, `q_pqaddr_*` |
+| `hosted` | nightly 03:17 UTC on `upgrade/vault`; dispatch `runner: hosted` from any branch | GitHub-hosted `ubuntu-22.04`, 60 min | node vectors, W1, W2, W4, `q_falcon_*`, `q_pqaddr_*` |
 | `self-hosted` | dispatch `runner: self-hosted` on `upgrade/vault` only, no schedule | the owner's `yb-devnet` runner | W1, W2, W4, `q_falcon_*`, `q_pqaddr_*` against the owner's built workspace, no time budget |
 
 Trust rules of the hosted job. `ycashd` is never built there: it is the `node-bin` artifact
@@ -75,10 +75,9 @@ typed `node_run_id` must be numeric and is checked against the same rule, and yc
 out at that run's head commit. The attest agent and lightwalletd-dd (at `proto/PIN`) are built in
 the job and never cached. The only caches are the Sapling parameters (download.z.cash, the sha256
 sums `zcutil/fetch-params.sh` pins, verified every run) and YEW's own build of the devnet test, each
-saved right after the step that fills it and before any node, lightwalletd or test code runs. A
-W1, W2 and W4 are not in the hosted job: against the current node (Falcon from the vault activation)
-W2's P2PKH YED holders are refused and W1 stops at `branch-mismatch`, so they stay in the manual run
-until `core/tests/devnet.rs` follows the node. A failure on `upgrade/vault` opens or comments on one issue labelled `devnet-nightly`.
+saved right after the step that fills it and before any node, lightwalletd or test code runs.
+Every suite runs against Falcon from the vault activation, as mainnet: W2 and W4 send YED to YEW's
+Falcon holder addresses and assert one P2PKH send is refused (`bad-yed-holder`, TOK-PQ). A failure on `upgrade/vault` opens or comments on one issue labelled `devnet-nightly`.
 
 ## Repository settings (owner)
 

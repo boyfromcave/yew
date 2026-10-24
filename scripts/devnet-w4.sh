@@ -37,7 +37,7 @@ case "${1:-}" in
   test)
     cd "$here"
     YEW_DEVNET=1 YEW_DEVNET_SERVER="127.0.0.1:$lwd_port" YEW_DEVNET_PYTHON="$py" YEW_DEVNET_TOOL="$tool" \
-      cargo test -p yew-core --test devnet -- --ignored --nocapture w4_
+      cargo test -p yew-core --test devnet -- --ignored --nocapture --test-threads=1 w4_
     ;;
   status)
     dn status || true

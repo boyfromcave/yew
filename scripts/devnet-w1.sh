@@ -31,12 +31,12 @@ dn() { (cd "$ws/ycash-dd" && "$py" "$tool" "$@"); }
 case "${1:-}" in
   up)
     dn up --no-attest --lean --force
-    dn lightwalletd start --port "$lwd_port"
+    dn lightwalletd start --port "$lwd_port" --extra=--yellowback
     ;;
   test)
     cd "$here"
     YEW_DEVNET=1 YEW_DEVNET_SERVER="127.0.0.1:$lwd_port" YEW_DEVNET_PYTHON="$py" YEW_DEVNET_TOOL="$tool" \
-      cargo test -p yew-core --test devnet -- --ignored --nocapture
+      cargo test -p yew-core --test devnet -- --ignored --nocapture --test-threads=1 w1_
     ;;
   status)
     dn status || true
