@@ -436,5 +436,15 @@
       "date": "2026-10-23"
     }
   },
-  "rule_paths": []
+  "rule_paths": [
+    {
+      "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+      "paths": [
+        "contrib/secops/**"
+      ],
+      "reason": "contrib/secops/code-scanning-triage.py calls gh api with argv lists built from constants and the workflow-supplied repository name (no shell); it runs only in the code-scanning workflow with the job's own token.",
+      "by": "secops triage",
+      "date": "2026-10-24"
+    }
+  ]
 }
