@@ -39,7 +39,11 @@ case "${1:-}" in
   test)
     cd "$here"
     YEW_DEVNET=1 YEW_DEVNET_FUND_NODE="${YEW_DEVNET_FUND_NODE:-0}" YEW_DEVNET_SERVER="127.0.0.1:$lwd_port" YEW_DEVNET_PYTHON="$py" YEW_DEVNET_TOOL="$tool" \
-      cargo test -p yew-core --test devnet -- --ignored --nocapture --test-threads=1 w4_
+      cargo test -p yew-core --test devnet -- --ignored --nocapture --test-threads=1 w4_mint_
+    # The cancel test runs second: it drives the price down to make its vault claimable, after
+    # which only class C is mintable and w4_mint_'s 48-block (class A) mint would be blocked.
+    YEW_DEVNET=1 YEW_DEVNET_FUND_NODE="${YEW_DEVNET_FUND_NODE:-0}" YEW_DEVNET_SERVER="127.0.0.1:$lwd_port" YEW_DEVNET_PYTHON="$py" YEW_DEVNET_TOOL="$tool" \
+      cargo test -p yew-core --test devnet -- --ignored --nocapture --test-threads=1 w4_claim_
     ;;
   status)
     dn status || true

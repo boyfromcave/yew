@@ -2258,10 +2258,11 @@ async fn it_early_redeem_and_in_term_claim() {
     assert_eq!(a.mints().unwrap().len(), mints_before, "nothing funded");
     // A needs the target's debt in YED (its own $100 stays for v2's redeem).
     let a_addr = a.receive_address(true).unwrap();
-    let fund_yed = dn.node_json(
-        0,
-        &["yed_send", &a_addr.address_ye, &target_cents.to_string()],
-    );
+    // TOK-PQ: a P2PKH YED holder is refused (bad-yed-holder); YED goes to A's Falcon holder.
+    let refused = dn.node_try(0, &["yed_send", &a_addr.address_ye, "1000"]);
+    assert!(refused.contains("bad-yed-holder"), "TOK-PQ: {refused}");
+    let a_falcon = a.falcon_holder_address(&a_addr).unwrap();
+    let fund_yed = dn.node_json(0, &["yed_send", &a_falcon, &target_cents.to_string()]);
     confirm(&dn, &mut c, fund_yed["txid"].as_str().unwrap()).await;
     r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     assert_eq!(r.yed.0, 10_000 + target_cents, "{r:?}");
