@@ -636,7 +636,7 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
     let a_falcon = a.falcon_holder_address(&a_addr).unwrap();
     assert!(
         a_falcon.starts_with("yr") && a_falcon.len() == 53,
-        "{a_falcon}"
+        "a 53-character yr… Falcon holder address"
     );
     let refused = dn.node_try(0, &["yed_send", &a_addr.address_ye, "5000"]);
     assert!(refused.contains("bad-yed-holder"), "TOK-PQ: {refused}");
@@ -691,7 +691,7 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
     assert_eq!((p.change_cents, p.yed_inputs.len()), (3_766, 1));
     // A Falcon token input is spent with a 1,577-byte scriptSig: the size-rated fee is above
     // the FEE_ZAT floor (`max(FEE_ZAT, rate x size)`).
-    assert!(p.fee >= FEE_ZAT, "fee {}", p.fee);
+    assert!(p.fee >= FEE_ZAT, "the fee is at least FEE_ZAT");
     assert!(p.yec_inputs.iter().all(|u| u.class.yec_spendable()));
     let (txid, val) = yed_transfer::broadcast(&a, &mut c, &mut v, &p)
         .await
