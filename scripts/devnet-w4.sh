@@ -44,6 +44,7 @@ case "${1:-}" in
     # mintable (MINTPOL / HALT-2) and the other's class A mint is refused: the cancel test gets a
     # fresh devnet of its own.
     dn lightwalletd stop || true
+    dn down --wipe
     dn up --force
     dn lightwalletd start --port "$lwd_port" --extra=--yellowback
     YEW_DEVNET=1 YEW_DEVNET_FUND_NODE="${YEW_DEVNET_FUND_NODE:-0}" YEW_DEVNET_SERVER="127.0.0.1:$lwd_port" YEW_DEVNET_PYTHON="$py" YEW_DEVNET_TOOL="$tool" \
