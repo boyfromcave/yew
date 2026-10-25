@@ -184,7 +184,7 @@ proto/                  the three lightwalletd-dd .proto files + PIN (the commit
 scripts/                build, run, devnet and CI check scripts (listed below)
 docs/                   trust.md, design-notes.md, security-review.md, release.md, licenses.md
 flutter_rust_bridge.yaml   codegen config
-.github/workflows/ci.yml
+.github/workflows/      ci.yml (build, tests, checks); semgrep.yml, codeql.yml, secops.yml, code-scanning.yml (SECURITY-CI.md); devnet-nightly.yml
 ```
 
 ## Toolchain
@@ -356,7 +356,8 @@ the seed lives in the platform keystore and exists in the core only inside `Wall
 gate (every `SendTransaction` call site sits behind both layers), TLS (plain is a regtest-only
 property; CA pinning in the core and CLI), storage (`0600` cache, no Android backups,
 `FLAG_SECURE` on seed and key screens), and the bridge boundary. `cargo audit` and a license
-allow-list run in CI. The app has no telemetry and nothing in the core logs.
+allow-list run in CI; Semgrep, CodeQL, zizmor, gitleaks, OSV-Scanner, the code-scanning dismissal
+ledger and Dependabot are in [SECURITY-CI.md](SECURITY-CI.md), with how to accept a finding. The app has no telemetry and nothing in the core logs.
 
 An internal review on 2026-10-01 added: every server-supplied mint,
 claim and vault term is checked against the network's rules (`core/src/build/terms.rs`,
