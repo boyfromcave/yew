@@ -15,11 +15,9 @@
 #                The only caches: the Sapling parameters (fetched from download.z.cash, the sha256
 #                sums zcutil/fetch-params.sh pins, verified every run) and YEW's own cargo build of
 #                the devnet test, each saved right after the step that fills it, before any node,
-#                lightwalletd or test code runs. Suites: the node vectors, q_falcon_*, q_pqaddr_* (measured
-#                ~17 min on the first run, 7.5 of them setup). W1, W2 and W4 are left to the
-#                self-hosted run: against the current node (Falcon from the vault activation) W2's
-#                P2PKH YED holders are refused (bad-yed-holder) and W1 stops at branch-mismatch,
-#                test-content failures to fix in core/tests/devnet.rs, not a time limit.
+#                lightwalletd or test code runs. Suites: the node vectors, W1, W2, W4, q_falcon_*,
+#                q_pqaddr_*, every one against Falcon from the vault activation (as mainnet): YED
+#                goes to Falcon holders, one P2PKH send is asserted refused (bad-yed-holder).
 #   self-hosted  manual dispatch only (`runner: self-hosted`, upgrade/vault only): the owner's
 #                machine registered as a self-hosted runner labelled `yb-devnet`, with the workspace
 #                already built; every suite (W1, W2, W4, q_falcon_*, q_pqaddr_*), no time budget.
@@ -224,6 +222,24 @@ jobs:
         working-directory: ws/yew
         run: scripts/check-node-vectors.sh
       # Each suite: the script's own `up` (and `down` on exit), then the suite's tests only.
+      - name: W1 (YEC round trip and restore)
+        if: ${{ !cancelled() }}
+        working-directory: ws/yew
+        run: |
+          trap 'scripts/devnet-w1.sh down || true' EXIT
+          scripts/devnet-w1.sh up && scripts/devnet-w1.sh test
+      - name: W2 (YED transfer, the gate, the key round trip)
+        if: ${{ !cancelled() }}
+        working-directory: ws/yew
+        run: |
+          trap 'scripts/devnet-w2.sh down || true' EXIT
+          scripts/devnet-w2.sh up && scripts/devnet-w2.sh test
+      - name: W4 (mint, resume, lapse, redeem, import, claim; the attestor cancel)
+        if: ${{ !cancelled() }}
+        working-directory: ws/yew
+        run: |
+          trap 'scripts/devnet-w4.sh down || true' EXIT
+          scripts/devnet-w4.sh up && scripts/devnet-w4.sh test
       - name: Falcon YED holders (q_falcon_*)
         if: ${{ !cancelled() }}
         working-directory: ws/yew

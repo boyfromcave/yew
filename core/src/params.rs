@@ -422,6 +422,17 @@ pub enum BranchError {
     /// not know (mainnet / testnet before P8).
     #[error("branch-unknown: the server reports the vault upgrade active on {0}, which this build does not schedule")]
     UnscheduledVault(&'static str),
+    /// The chain tip is already under the Vault branch, but the server gave no vault activation
+    /// height (a lightwalletd without the Yellowback service, so no `GetChainInfo`): the wallet
+    /// cannot place the upgrade boundary, so nothing is signed. This is not a disagreement
+    /// between the server and the height rule; it is a missing input.
+    #[error("branch-no-activation: the chain tip at block {height} is under the vault upgrade ({tip:08x}), but the server reports no vault activation height (is lightwalletd serving --yellowback?)")]
+    VaultActivationUnknown {
+        /// The next block's height.
+        height: u64,
+        /// The chain tip's branch id (the Vault id).
+        tip: u32,
+    },
 }
 
 /// The branch id every transparent signature of a transaction for the **next block** commits to
@@ -453,6 +464,12 @@ pub fn signing_branch_id(
             if chaintip_branch == VAULT_BRANCH_ID || next_block_server == Some(VAULT_BRANCH_ID) {
                 if !network.vault_activation_from_server() {
                     return Err(BranchError::UnscheduledVault(network.chain_name()));
+                }
+                if chaintip_branch == VAULT_BRANCH_ID && activation.is_none() {
+                    return Err(BranchError::VaultActivationUnknown {
+                        height: next_height,
+                        tip: chaintip_branch,
+                    });
                 }
                 return Err(BranchError::Mismatch {
                     height: next_height,
@@ -1140,6 +1157,21 @@ mod tests {
         assert!(matches!(
             signing_branch_id(r, CANOPY, 150, None, Some(VAULT_BRANCH_ID)),
             Err(BranchError::Mismatch { .. })
+        ));
+        // Vault already on the chain tip but no activation height from the server (no Yellowback
+        // service): its own error, never a "mismatch" of an id with itself, and nothing signed.
+        let e = signing_branch_id(r, VAULT_BRANCH_ID, 200, None, None).unwrap_err();
+        assert_eq!(
+            e,
+            BranchError::VaultActivationUnknown {
+                height: 200,
+                tip: VAULT_BRANCH_ID
+            }
+        );
+        assert!(e.to_string().starts_with("branch-no-activation:"));
+        assert!(matches!(
+            signing_branch_id(r, VAULT_BRANCH_ID, 200, None, Some(VAULT_BRANCH_ID)),
+            Err(BranchError::VaultActivationUnknown { .. })
         ));
         // A disagreeing server is refused.
         assert!(matches!(
