@@ -183,8 +183,8 @@ pub struct TermClass {
     pub max_blocks: u32,
     /// `baseRatioBps`: 300 %, 400 %, 500 % (in-term plan D-IT-4: the longer the term, the higher).
     pub base_ratio_bps: i64,
-    /// `earlyRedeemFeeBps` (in-term plan IT-9, D-IT-16): of the collateral, paid on top of FEE-1 by a
-    /// redeem before `lockHeight` — 5 %, 2.5 %, 1 %.
+    /// `earlyRedeemFeeBps` (in-term plan IT-9′, D-IT-16, D-Q-23): of the debt at the vault's mint price,
+    /// paid on top of FEE-1′ by a redeem before `lockHeight` — 5 %, 2.5 %, 1 %.
     pub early_redeem_fee_bps: i64,
 }
 
