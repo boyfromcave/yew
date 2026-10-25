@@ -670,8 +670,8 @@ fn check_redeem(v: &Value, key: &str, m: &NodeMint, early: bool) {
         &sig[..sig.len() - 1],
         &digest
     ));
-    // IT-9: the early-redeem fee is the class's bps of the collateral, on top of FEE-1, in the
-    // pool payee's output; yed_estimateredeem quoted the same before the redeem was built.
+    // IT-9′: the early-redeem fee is the class's bps of the debt at pMint (of the collateral before
+    // rpcversion 8), on top of FEE-1′, in the pool payee's output; yed_estimateredeem quoted the same before the redeem was built.
     let collateral = m.tx.vout[0].value;
     let early_fee = redeem["result"]["earlyRedeemFeeZat"].as_i64().unwrap();
     let bps = network.term_classes()[m.term_class as usize].early_redeem_fee_bps;
