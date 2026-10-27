@@ -16,3 +16,8 @@ reason = "GitHub alias of RUSTSEC-2026-0009 (time 0.3.37 stack exhaustion in RFC
 id = "RUSTSEC-2023-0089"
 ignoreUntil = 2027-01-21
 reason = "atomic-polyfill is unmaintained (informational, no vulnerability, no fix). It is in Cargo.lock only through frost-core -> postcard -> heapless 0.7, which no enabled feature builds: `cargo tree --locked --target all -e all -i atomic-polyfill` prints nothing. cargo audit reports it as a non-blocking warning too."
+
+[[IgnoredVulns]]
+id = "GHSA-qwgh-2vcv-g2f7"
+ignoreUntil = 2027-01-25
+reason = "Cargo.lock: block-buffer 0.10.4 and 0.11.0-rc.3 under digest (sha2/blake2 in the zcash_* crates and the wallet's own hashing). GHSA-qwgh-2vcv-g2f7 (moderate, GitHub-only, not in the RustSec database cargo-deny reads): a panic caught inside a digest's compress callback can leave block-buffer's cursor out of range, so a later use of the same buffer reads or writes out of bounds. Fixed only in 0.12.1 (the digest 0.11 line); the digest 0.10 line, which every released sha2/sha3/blake2 still uses, has no fixed release. Nothing in yew calls catch_unwind, so a panic inside a compress callback is never caught and the cursor is never reused. Revisit when the RustCrypto hashes ship on digest 0.11."
