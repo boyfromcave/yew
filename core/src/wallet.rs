@@ -152,6 +152,9 @@ impl Drop for WrapSecret {
     }
 }
 
+/// YEC `(available, reserved)` zat and YED `(cents, pending cents)`: [`Wallet::spendable_balances`].
+pub type SpendableBalances = ((i64, i64), (u64, u64));
+
 impl std::fmt::Debug for Wallet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Wallet({:?})", self.network)
@@ -733,8 +736,8 @@ impl Wallet {
     pub fn balances(&self) -> Result<Balances, WalletError> {
         let utxos = self.store.utxos()?;
         let spendable = self.spendable_utxos()?;
-        let (yec_zat, yec_reserved_zat) = coins::yec_balances(&spendable);
-        let (yed_cents, yed_pending_cents) = coins::yed_balances(&spendable);
+        let ((yec_zat, yec_reserved_zat), (yed_cents, yed_pending_cents)) =
+            Self::spendable_balances_of(&spendable);
         let mut yec_pending_zat = 0;
         for (txid, _, _) in self.store.pending_txs()? {
             let pending_tokens: HashSet<u32> = utxos
@@ -945,6 +948,22 @@ impl Wallet {
     pub async fn mint_gate(&self, validator: &mut Validator) -> Result<MintGate, WalletError> {
         let yb = validator.client_mut().ok_or(GateError::YellowbackAbsent)?;
         mint::gate_now(self.network, yb).await
+    }
+
+    /// The YEC `(available, reserved)` zat and YED `(cents, pending cents)` the wallet can spend
+    /// now: locked outputs left out, so a token a pending transaction of this wallet spends
+    /// (locked `spent-by`) is not counted (cf. DigiByte v9.26.7's spendable figure; the node's
+    /// `confirmedCents` counts it). The pending change of such a transaction is the pending
+    /// figure (`PendingToken`), not the spendable one.
+    pub fn spendable_balances(&self) -> Result<SpendableBalances, WalletError> {
+        Ok(Self::spendable_balances_of(&self.spendable_utxos()?))
+    }
+
+    fn spendable_balances_of(spendable: &[Utxo]) -> SpendableBalances {
+        (
+            coins::yec_balances(spendable),
+            coins::yed_balances(spendable),
+        )
     }
 
     /// The UTXOs that are not locked (the input set every builder selects from).
@@ -1208,5 +1227,42 @@ mod tests {
         let w = Wallet::from_parts(store, Network::Regtest, &seed, None).unwrap();
         let other = keys::seed_from_mnemonic(PHRASE, "x").unwrap();
         assert!(Wallet::from_parts(w.store, Network::Regtest, &other, None).is_err());
+    }
+
+    /// Y4: a token a pending transaction of this wallet spends (locked `spent-by`) is not
+    /// spendable YED, in `balances` and in the sync's figure (`spendable_balances`); its change
+    /// is the pending figure.
+    #[test]
+    fn tokens_spent_by_a_pending_transaction_are_not_spendable() {
+        use crate::coins::{Utxo, UtxoClass};
+        let mut w = wallet();
+        let token = |n: u32, cents: u64, class| Utxo {
+            outpoint: crate::tx::OutPoint {
+                txid: [0x10; 32],
+                n,
+            },
+            address: String::new(),
+            script: Vec::new(),
+            value: crate::params::TOKEN_VALUE,
+            height: if class == UtxoClass::Token { 100 } else { 0 },
+            class,
+            cents,
+        };
+        w.store
+            .replace_utxos(&[
+                token(0, 10_000, UtxoClass::Token),
+                token(1, 2_500, UtxoClass::Token),
+                token(2, 6_000, UtxoClass::PendingToken),
+            ])
+            .unwrap();
+        let b = w.balances().unwrap();
+        assert_eq!((b.yed_cents, b.yed_pending_cents), (12_500, 6_000));
+        // Send $40 from the $100 token: it is locked spent-by the pending transfer.
+        w.store
+            .lock(&token(0, 0, UtxoClass::Token).outpoint, "spent-by:aa", 530)
+            .unwrap();
+        let b = w.balances().unwrap();
+        assert_eq!((b.yed_cents, b.yed_pending_cents), (2_500, 6_000));
+        assert_eq!(w.spendable_balances().unwrap().1, (2_500, 6_000));
     }
 }

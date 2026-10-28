@@ -63,9 +63,10 @@ pub struct SyncReport {
     pub utxos: usize,
     /// Locks released.
     pub locks_released: usize,
-    /// `(available, reserved)` YEC in zat.
+    /// `(available, reserved)` YEC in zat, spendable (locked outputs left out).
     pub yec: (i64, i64),
-    /// `(cents, pending cents)` YED.
+    /// `(cents, pending cents)` YED, spendable (a token a pending transaction spends is locked
+    /// and left out; that transaction's change is the pending figure).
     pub yed: (u64, u64),
     /// Tokens `GetAddressTokens` listed.
     pub tokens: usize,
@@ -609,8 +610,6 @@ pub async fn sync(
 
     wallet.store.replace_utxos(&utxos)?;
     report.utxos = utxos.len();
-    report.yec = coins::yec_balances(&utxos);
-    report.yed = coins::yed_balances(&utxos);
 
     let present: HashSet<OutPoint> = utxos.iter().map(|u| u.outpoint).collect();
     for l in wallet.store.locks()? {
@@ -621,6 +620,10 @@ pub async fn sync(
             report.locks_released += 1;
         }
     }
+
+    // The balances once the locks are settled: what the wallet can spend, not every confirmed
+    // output (an own token a pending transaction spends is locked, and not counted).
+    (report.yec, report.yed) = wallet.spendable_balances()?;
 
     wallet.store.set_meta("scanned_height", &tip.to_string())?;
     wallet
@@ -861,6 +864,14 @@ pub async fn refresh_vaults(
             p_mint: v.p_mint,
             cancel: cancel_of(&v),
         })?;
+        note_pending_spend(
+            wallet,
+            &OutPoint {
+                txid: vault_txid,
+                n: v.vout,
+            },
+            &v,
+        )?;
         n += 1;
         if v.status == "CLAIMING" {
             record_residual_intents(wallet, yb, &v, &owner, &yv, vault_txid).await?;
@@ -923,6 +934,49 @@ pub async fn refresh_vaults(
         })?;
     }
     Ok((n, Some(vt)))
+}
+
+/// The server's view of a pending spend of an own vault (`YedVault.spendPending` /
+/// `spendTxid`; cf. DigiByte v9.26.7 00136af6). A spend this wallet did not broadcast (the same
+/// seed on another device) locks the vault outpoint `spent-by` it, so `build_redeem` refuses
+/// the vault and the screen shows it pending; that lock is released again once the server stops
+/// reporting it (the spend left the mempool; a confirmed spend closes the vault and the
+/// confirmed-set check releases it). A spend this wallet broadcast is held by its own pending
+/// record and is never released here. A node that predates the fields answers false, which
+/// releases only server-reported locks.
+fn note_pending_spend(
+    wallet: &Wallet,
+    op: &OutPoint,
+    v: &crate::net::rpc::YedVault,
+) -> Result<(), WalletError> {
+    use crate::build::redeem::SPENT_BY;
+    let current = wallet
+        .store
+        .locks()?
+        .into_iter()
+        .find(|l| l.outpoint == *op && l.reason.starts_with(SPENT_BY));
+    if v.spend_pending {
+        if current.is_none() {
+            if let Ok(t) = txid_from_hex(&v.spend_txid) {
+                wallet
+                    .store
+                    .lock(op, &format!("{SPENT_BY}{}", txid_hex(&t)), 0)?;
+            }
+        }
+        return Ok(());
+    }
+    if let Some(l) = current {
+        let own: HashSet<String> = wallet
+            .store
+            .pending_txs()?
+            .into_iter()
+            .map(|(t, _, _)| txid_hex(&t))
+            .collect();
+        if !own.contains(&l.reason[SPENT_BY.len()..]) {
+            wallet.store.unlock(op)?;
+        }
+    }
+    Ok(())
 }
 
 /// The per-vault cancel limit of a `GetVault` answer (CAN-2, CAN-3), as the store keeps it: the
@@ -1671,5 +1725,61 @@ mod tests {
             label_for(&c, 10_000, 0),
             ("claimed vault, burned $100.00".into(), -10_000)
         );
+    }
+
+    /// Y2: the server's `spendPending` locks an own vault `spent-by` a spend this wallet did not
+    /// broadcast, and releases that lock once the server stops reporting it; a spend this
+    /// wallet broadcast (its own pending record) is never released here.
+    #[test]
+    fn server_reported_pending_spends_lock_and_release_the_vault() {
+        let w = {
+            let seed = crate::keys::seed_from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "",
+        )
+        .unwrap();
+            crate::wallet::Wallet::from_parts(
+                crate::store::Store::open_in_memory().unwrap(),
+                crate::params::Network::Regtest,
+                &seed,
+                None,
+            )
+            .unwrap()
+        };
+        let op = OutPoint {
+            txid: [0xef; 32],
+            n: 0,
+        };
+        let spender = txid_hex(&[0x5e; 32]);
+        let lock_of = |w: &Wallet| {
+            w.store
+                .locks()
+                .unwrap()
+                .into_iter()
+                .find(|l| l.outpoint == op)
+                .map(|l| l.reason)
+        };
+        let mut v = crate::net::rpc::YedVault {
+            spend_pending: true,
+            spend_txid: spender.clone(),
+            ..Default::default()
+        };
+        note_pending_spend(&w, &op, &v).unwrap();
+        assert_eq!(lock_of(&w), Some(format!("spent-by:{spender}")));
+        // Still pending: unchanged. No longer pending: released.
+        note_pending_spend(&w, &op, &v).unwrap();
+        assert_eq!(lock_of(&w), Some(format!("spent-by:{spender}")));
+        v.spend_pending = false;
+        v.spend_txid.clear();
+        note_pending_spend(&w, &op, &v).unwrap();
+        assert_eq!(lock_of(&w), None);
+        // An own broadcast: the server not (yet) reporting it does not release it.
+        let own = [0x6f; 32];
+        w.store.insert_pending_tx(&own, &[1], 530).unwrap();
+        w.store
+            .lock(&op, &format!("spent-by:{}", txid_hex(&own)), 530)
+            .unwrap();
+        note_pending_spend(&w, &op, &v).unwrap();
+        assert_eq!(lock_of(&w), Some(format!("spent-by:{}", txid_hex(&own))));
     }
 }

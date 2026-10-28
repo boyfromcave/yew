@@ -170,6 +170,8 @@ class _VaultTile extends StatelessWidget {
       when = 'claim cancelled by the attestor set: the vault continues at ${shorten(v.closingTxid)}';
     } else if (!v.open) {
       when = '${v.status.toLowerCase()} at ${v.closeHeight}';
+    } else if (v.closingTxid.isNotEmpty) {
+      when = 'redemption pending (${shorten(v.closingTxid)}): waiting for it to confirm';
     } else if (v.releasable) {
       when = 'void (${v.voidReason}) · release the collateral';
     } else if (v.claimable) {

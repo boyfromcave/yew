@@ -2411,7 +2411,10 @@ class VaultSummary {
   /// `closeHeight`, 0 while open.
   final PlatformInt64 closeHeight;
 
-  /// `closingTxid`, empty while open.
+  /// `closingTxid`, empty while open — except while a spend of the open vault is pending (a
+  /// redeem or release broadcast and not yet confirmed, or one the server reports in its
+  /// mempool): then that spend's txid, and `redeemable`, `releasable` and `renewable` are false
+  /// (the vault shows "redemption pending"; cf. DigiByte v9.26.7 00136af6).
   final String closingTxid;
 
   /// `voidReason`, empty unless VOID.
