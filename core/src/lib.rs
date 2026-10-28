@@ -29,6 +29,8 @@ pub mod net;
 pub mod params;
 pub mod payload;
 pub mod pq;
+#[cfg(target_arch = "wasm32")]
+mod pq_wasm_libc;
 pub mod sapling_params;
 pub mod script;
 pub mod shielded;

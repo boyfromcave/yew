@@ -83,6 +83,13 @@ fn build_falcon() {
     println!("cargo:rerun-if-changed={}", dir.display());
     let mut b = cc::Build::new();
     b.include(&dir).std("c99").opt_level(2).warnings(false);
+    // wasm32-unknown-unknown has no C library: the three headers the vendored files include
+    // come from pq-c/wasm-sysroot, their functions from src/pq_wasm_libc.rs.
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32") {
+        let sysroot = dir.parent().unwrap().join("wasm-sysroot");
+        println!("cargo:rerun-if-changed={}", sysroot.display());
+        b.include(sysroot);
+    }
     for f in FALCON_SOURCES {
         b.file(dir.join(f));
     }

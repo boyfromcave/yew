@@ -903,8 +903,10 @@ pub(crate) fn record_broadcast(
 pub(crate) fn send_refused(e: &WalletError) -> bool {
     use tonic::Code;
     match e {
-        WalletError::Net(NetError::SendRejected { .. })
-        | WalletError::Net(NetError::Transport(_)) => true,
+        WalletError::Net(NetError::SendRejected { .. }) => true,
+        // The browser's gRPC-web client has no transport error type (NetError::Transport is native).
+        #[cfg(not(target_arch = "wasm32"))]
+        WalletError::Net(NetError::Transport(_)) => true,
         WalletError::Net(NetError::Status(s)) => matches!(
             s.code(),
             Code::InvalidArgument

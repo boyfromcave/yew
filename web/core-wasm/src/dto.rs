@@ -607,7 +607,7 @@ pub fn vault_summary(
         blocks_until_term_end: (v.lock_height as i64 - tip as i64).max(0),
         early_redeem: early,
         early_redeem_fee_zat: amt(if early {
-            params::early_redeem_fee_zat(v.collateral_zat, fee_bps)
+            params::early_redeem_fee_zat(v.minted_cents, fee_bps, v.p_mint)
         } else {
             0
         }),
