@@ -221,8 +221,12 @@ def walk_kind():
     lap("reload → unlock → balances back", t0)
     # Yellowback: no vault, nothing claimable; the mint gate as the node reports it
     click("//nav/a[text()='Yellowback']"); wait_text("No open vault"); wait_text("$0.00")
-    click("//button[text()='Mint']"); gate = wait_text("Minting is open" if MINT else "halted", 30)
-    print("  mint: " + next(l for l in gate.splitlines() if ("Minting is open" in l or "halted" in l)), flush=True)
+    # A closed gate reads as the node's reason ("halted …") or, since upgrade/vault's plain-language
+    # halts, as core/src/build/terms.rs WAITING_FOR_PRICE on an unarmed cluster.
+    closed = ("halted", "Waiting for a price")
+    click("//button[text()='Mint']")
+    gate = wait_text("Minting is open", 30) if MINT else wait_text(" or ".join(closed), 30, pred=lambda t: any(k in t for k in closed))
+    print("  mint: " + next(l for l in gate.splitlines() if any(k in l for k in ("Minting is open",) + closed)), flush=True)
     click("//nav/a[text()='Yellowback']"); wait_text("No open vault"); click("//button[text()='Claimable']")
     # a shared cluster may hold other wallets' claimable vaults (an earlier --mint run's, left unredeemed)
     cl = wait_text("", 30, pred=lambda t: "Nothing is claimable right now." in t or " debt · " in t)
