@@ -3948,6 +3948,7 @@ dependencies = [
  "secp256k1 0.33.1",
  "serde",
  "serde-wasm-bindgen",
+ "serde_json",
  "sqlite-wasm-rs",
  "sqlite-wasm-vfs",
  "wasm-bindgen",
