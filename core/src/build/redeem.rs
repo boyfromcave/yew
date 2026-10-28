@@ -512,6 +512,50 @@ pub fn owner_spend_network_fee(
     }
 }
 
+/// The transaction a vault's outpoint is locked `spent-by` (display hex), if any: a redeem or
+/// release this wallet broadcast that has not confirmed or expired yet, or a spend the server
+/// reported pending (`YedVault.spendPending`, recorded by the sync). Cf. DigiByte v9.26.7
+/// 00136af6: a pending redemption is told apart before any coin is selected.
+pub fn pending_spend(
+    wallet: &Wallet,
+    v: &crate::store::VaultRow,
+) -> Result<Option<String>, WalletError> {
+    let op = OutPoint {
+        txid: v.txid,
+        n: v.vout,
+    };
+    Ok(wallet
+        .store
+        .locks()?
+        .into_iter()
+        .find(|l| l.outpoint == op && l.reason.starts_with(SPENT_BY))
+        .map(|l| l.reason[SPENT_BY.len()..].to_string()))
+}
+
+/// The lock reason prefix of an outpoint a broadcast transaction spends.
+pub const SPENT_BY: &str = "spent-by:";
+
+/// The `vault-spend-pending` refusal.
+pub fn spend_pending_error(spender: &str) -> WalletError {
+    WalletError::Other(format!(
+        "vault-spend-pending: a transaction spending this vault ({spender}) is waiting to confirm; wait until it confirms or expires"
+    ))
+}
+
+/// Refuse a vault the server reports a pending spend of (`YedVault.spendPending`; a node that
+/// predates the field answers false): a claim of it would conflict in the mempool.
+pub fn check_no_pending_spend(v: &crate::net::rpc::YedVault) -> Result<(), WalletError> {
+    if v.spend_pending {
+        let spender = if v.spend_txid.is_empty() {
+            "txid unknown"
+        } else {
+            v.spend_txid.as_str()
+        };
+        return Err(spend_pending_error(spender));
+    }
+    Ok(())
+}
+
 /// `BuildRedeem` (`txbuilder.cpp:1286-1299`): the owner-path spend of an own open vault at any
 /// height from the V's `ownerHeight` (the block after the mint since D-IT-15; before `lockHeight`
 /// with the early-redeem fee). `R` is the relay node's index tip (`GetYellowbackInfo.height`). This is
@@ -533,6 +577,9 @@ pub async fn build_redeem(
             "vault-not-active: the vault is {}",
             v.status
         )));
+    }
+    if let Some(spender) = pending_spend(wallet, &v)? {
+        return Err(spend_pending_error(&spender));
     }
     let info = yb.info().await?;
     let r = info.height as u32;
@@ -717,7 +764,6 @@ pub async fn broadcast(
     )
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
-    mint::send(client, &p.raw, &p.txid).await?;
     let vault_txid = crate::tx::txid_from_hex(&p.vault_txid).map_err(WalletError::Other)?;
     let mut locked = p.yed_inputs.clone();
     locked.push(Utxo {
@@ -732,60 +778,74 @@ pub async fn broadcast(
         class: UtxoClass::Vault,
         cents: 0,
     });
-    mint::record_broadcast(wallet, &p.txid, &p.raw, p.expiry_height, &locked)?;
-    for u in &p.yed_inputs {
-        wallet
-            .store
-            .insert_spent_token(&p.txid, &u.outpoint, u.cents)?;
-    }
-    let own = wallet.own_hashes()?;
-    let own_falcon = wallet.own_falcon_holders_for(&tx)?;
-    for (n, cents) in
-        coins::pre_lock_scripts(&tx, |s| Wallet::is_own_holder_script(s, &own, &own_falcon))
-    {
-        let script_pubkey = tx.vout[n as usize].script_pubkey.clone();
-        wallet.store.upsert_utxo(&Utxo {
-            outpoint: OutPoint { txid: p.txid, n },
-            address: super::yed_transfer::holder_address(wallet.network, &script_pubkey),
-            script: script_pubkey,
-            value: TOKEN_VALUE,
-            height: 0,
-            class: UtxoClass::PendingToken,
-            cents,
-        })?;
-    }
-    for (n, o) in tx.vout.iter().enumerate() {
-        if let Some(h) = script::p2pkh_hash(&o.script_pubkey) {
-            if own.contains(&h) {
-                wallet.store.insert_own_output(
-                    &OutPoint {
-                        txid: p.txid,
-                        n: n as u32,
-                    },
-                    o.value,
-                    &h,
-                )?;
+    let persist = || -> Result<(), WalletError> {
+        for u in &p.yed_inputs {
+            wallet
+                .store
+                .insert_spent_token(&p.txid, &u.outpoint, u.cents)?;
+        }
+        let own = wallet.own_hashes()?;
+        let own_falcon = wallet.own_falcon_holders_for(&tx)?;
+        for (n, cents) in
+            coins::pre_lock_scripts(&tx, |s| Wallet::is_own_holder_script(s, &own, &own_falcon))
+        {
+            let script_pubkey = tx.vout[n as usize].script_pubkey.clone();
+            wallet.store.upsert_utxo(&Utxo {
+                outpoint: OutPoint { txid: p.txid, n },
+                address: super::yed_transfer::holder_address(wallet.network, &script_pubkey),
+                script: script_pubkey,
+                value: TOKEN_VALUE,
+                height: 0,
+                class: UtxoClass::PendingToken,
+                cents,
+            })?;
+        }
+        for (n, o) in tx.vout.iter().enumerate() {
+            if let Some(h) = script::p2pkh_hash(&o.script_pubkey) {
+                if own.contains(&h) {
+                    wallet.store.insert_own_output(
+                        &OutPoint {
+                            txid: p.txid,
+                            n: n as u32,
+                        },
+                        o.value,
+                        &h,
+                    )?;
+                }
             }
         }
-    }
-    let yed_spent: i64 = p.yed_inputs.iter().map(|u| u.value).sum();
-    wallet.store.upsert_history(&HistoryRow {
-        txid: p.txid,
-        height: 0,
-        yec_delta: p.collateral_out + if p.change_cents > 0 { TOKEN_VALUE } else { 0 } - yed_spent,
-        has_payload: p.kind == "redeem",
-        pending: true,
-        shielded: false,
-        yed_delta: -(p.burn_cents as i64),
-        kind: p.kind.into(),
-        verdict: String::new(),
-        label: if p.kind == "redeem" {
-            format!("redeeming, burning {}", dollars(p.burn_cents as i64))
-        } else {
-            "releasing VOID vault".into()
-        },
-        labelled: p.kind != "redeem",
-    })?;
+        let yed_spent: i64 = p.yed_inputs.iter().map(|u| u.value).sum();
+        wallet.store.upsert_history(&HistoryRow {
+            txid: p.txid,
+            height: 0,
+            yec_delta: p.collateral_out + if p.change_cents > 0 { TOKEN_VALUE } else { 0 }
+                - yed_spent,
+            has_payload: p.kind == "redeem",
+            pending: true,
+            shielded: false,
+            yed_delta: -(p.burn_cents as i64),
+            kind: p.kind.into(),
+            verdict: String::new(),
+            label: if p.kind == "redeem" {
+                format!("redeeming, burning {}", dollars(p.burn_cents as i64))
+            } else {
+                "releasing VOID vault".into()
+            },
+            labelled: p.kind != "redeem",
+        })?;
+        Ok(())
+    };
+    mint::send_recorded(
+        wallet,
+        &p.txid,
+        &p.raw,
+        p.expiry_height,
+        &locked,
+        persist,
+        || Ok(()),
+        mint::send(client, &p.raw, &p.txid),
+    )
+    .await?;
     Ok((txid_hex(&p.txid), validation))
 }
 
@@ -1084,5 +1144,105 @@ mod tests {
         big.splice(0..0, std::iter::repeat_n(0x00u8, 1_100)); // OP_0 pushes ahead: not PQ-shaped
         tx.vin[0].script_sig = big;
         assert!(tx.check_script_sig_sizes().is_err());
+    }
+
+    // ---- Y2: a vault whose outpoint a pending transaction spends (DigiByte 00136af6)
+
+    fn y2_wallet() -> Wallet {
+        let seed = crate::keys::seed_from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "",
+        )
+        .unwrap();
+        crate::wallet::Wallet::from_parts(
+            crate::store::Store::open_in_memory().unwrap(),
+            crate::params::Network::Regtest,
+            &seed,
+            None,
+        )
+        .unwrap()
+    }
+
+    fn y2_vault() -> VaultRow {
+        crate::store::VaultRow {
+            txid: [0xef; 32],
+            vout: 0,
+            status: "ACTIVE".into(),
+            owner_hash160: [2; 20],
+            owner: crate::pq::PqKeyId {
+                scheme: 1,
+                hash: [3; 32],
+            },
+            term_class: "A".into(),
+            lock_height: 518,
+            claim_height: 538,
+            collateral_zat: 950_000_000,
+            minted_cents: 25_000,
+            mint_height: 501,
+            claimable: false,
+            underwater_at: 400_000,
+            sweep_before: 0,
+            close_height: 0,
+            closing_txid: String::new(),
+            void_reason: String::new(),
+            updated_height: 510,
+            owner_height: 499,
+            app_height: 499,
+            p_mint: 520_000,
+            cancel: Default::default(),
+        }
+    }
+
+    /// `build_redeem` refuses a vault locked `spent-by` a pending transaction before it asks the
+    /// server anything (the client below has no server: reaching it would be a transport error).
+    #[tokio::test]
+    async fn a_vault_with_a_pending_spend_is_not_redeemed_again() {
+        let w = y2_wallet();
+        let v = y2_vault();
+        w.store.upsert_vault(&v).unwrap();
+        let channel = tonic::transport::Endpoint::from_static("http://127.0.0.1:9").connect_lazy();
+        let mut yb = YellowbackClient::from_channel(channel);
+        assert_eq!(pending_spend(&w, &v).unwrap(), None);
+        let e = build_redeem(&w, &mut yb, &v.txid, 510, 0x6d5b_7a31)
+            .await
+            .unwrap_err();
+        assert!(!e.to_string().contains("vault-spend-pending"), "{e}");
+        let spender = txid_hex(&[0x5e; 32]);
+        w.store
+            .lock(
+                &OutPoint { txid: v.txid, n: 0 },
+                &format!("{SPENT_BY}{spender}"),
+                530,
+            )
+            .unwrap();
+        assert_eq!(pending_spend(&w, &v).unwrap(), Some(spender.clone()));
+        let e = build_redeem(&w, &mut yb, &v.txid, 510, 0x6d5b_7a31)
+            .await
+            .unwrap_err();
+        let msg = e.to_string();
+        assert!(
+            msg.starts_with("vault-spend-pending") && msg.contains(&spender),
+            "{msg}"
+        );
+        // Another lock reason on the vault outpoint is not a pending spend.
+        w.store
+            .lock(&OutPoint { txid: v.txid, n: 0 }, "vault", 0)
+            .unwrap();
+        assert_eq!(pending_spend(&w, &v).unwrap(), None);
+    }
+
+    /// A claim refuses a vault the server reports a pending spend of; a node that predates the
+    /// field (false, "") is no refusal.
+    #[test]
+    fn a_server_reported_pending_spend_refuses_a_claim() {
+        let mut v = crate::net::rpc::YedVault::default();
+        assert!(check_no_pending_spend(&v).is_ok());
+        v.spend_pending = true;
+        v.spend_txid = "ab".repeat(32);
+        let e = check_no_pending_spend(&v).unwrap_err().to_string();
+        assert!(
+            e.starts_with("vault-spend-pending") && e.contains(&"ab".repeat(32)),
+            "{e}"
+        );
     }
 }

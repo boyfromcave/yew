@@ -852,7 +852,10 @@ pub struct VaultSummary {
     pub underwater: bool,
     /// `closeHeight`, 0 while open.
     pub close_height: i64,
-    /// `closingTxid`, empty while open.
+    /// `closingTxid`, empty while open — except while a spend of the open vault is pending (a
+    /// redeem or release broadcast and not yet confirmed, or one the server reports in its
+    /// mempool): then that spend's txid, and `redeemable`, `releasable` and `renewable` are false
+    /// (the vault shows "redemption pending"; cf. DigiByte v9.26.7 00136af6).
     pub closing_txid: String,
     /// `voidReason`, empty unless VOID.
     pub void_reason: String,
@@ -2814,6 +2817,20 @@ fn vault_summary(
     }
 }
 
+/// An open vault with a spend pending (`build::redeem::pending_spend`) offers no second redeem,
+/// release or renew; the pending spend's txid is shown in `closing_txid`.
+fn with_pending_spend(mut s: VaultSummary, spender: Option<String>) -> VaultSummary {
+    if let Some(txid) = spender {
+        if s.open {
+            s.redeemable = false;
+            s.releasable = false;
+            s.renewable = false;
+            s.closing_txid = txid;
+        }
+    }
+    s
+}
+
 fn claim_intent_of(
     i: &crate::store::IntentRow,
     vaults: &[crate::store::VaultRow],
@@ -3096,8 +3113,14 @@ pub fn vaults() -> Result<Vec<VaultSummary>, YewError> {
         Ok(o.wallet
             .vaults()?
             .iter()
-            .map(|v| vault_summary(v, tip, claim_price.or(price), network, &mints, now))
-            .collect())
+            .map(|v| {
+                let s = vault_summary(v, tip, claim_price.or(price), network, &mints, now);
+                Ok(with_pending_spend(
+                    s,
+                    crate::build::redeem::pending_spend(&o.wallet, v)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, crate::wallet::WalletError>>()?)
     })
 }
 
@@ -3725,6 +3748,12 @@ mod tests {
         };
         const NOW: i64 = 1_790_000_000;
         let v = vault_summary(&vault, 510, Some(520_000), Network::Regtest, &[], NOW);
+        // Y2: a spend of it pending (locked `spent-by`): no second redeem, release or renew; the
+        // pending spend's txid is the row's closing txid while it is open.
+        let pending = with_pending_spend(v.clone(), Some("5e".repeat(32)));
+        assert!(pending.open && !pending.redeemable && !pending.releasable && !pending.renewable);
+        assert_eq!(pending.closing_txid, "5e".repeat(32));
+        assert_eq!(with_pending_spend(v.clone(), None), v);
         // The owner redeems at any height after the mint; before lockHeight with the early fee.
         assert!(v.open && v.redeemable && !v.releasable && !v.underwater);
         assert_eq!((v.blocks_until_redeem, v.blocks_until_term_end), (0, 8));

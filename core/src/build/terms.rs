@@ -49,6 +49,39 @@ pub fn check_cents(network: Network, cents: u64) -> Result<(), MintError> {
     Ok(())
 }
 
+/// What the wallet says while the network has no mint price (`pMint` undefined, HALT-1).
+pub const WAITING_FOR_PRICE: &str = "Waiting for a price: the attestors have not published a YEC price the network can mint at yet. Try again in a few blocks; redeeming is not affected.";
+
+/// A `haltMask` name (`GetStats.haltMask`, the node's `HaltMaskNames`) in plain words, for the
+/// mint screen; an unknown name is shown as it is.
+pub fn halt_sentence(name: &str) -> String {
+    match name {
+        "NO_PRICE" => "there is no YEC price yet".into(),
+        "GLOBAL_RATIO" => "the system's collateral ratio is below its safety floor, so only the most collateralised term classes can mint".into(),
+        "DIVERGENCE" => "the short- and long-term YEC prices disagree too much to price a mint safely".into(),
+        "NOT_ACTIVE" => "Yellowback is not active yet".into(),
+        "PARTICIPATION" => "too few attestors are taking part".into(),
+        "ENFORCEMENT" => "the network's enforcement check is not satisfied".into(),
+        other => format!("an unrecognised halt ({other})"),
+    }
+}
+
+/// A mint refusal identifier (`yed_mint`'s `mintpol-*`, as `mintBlockedReason` carries it) in
+/// plain words; an unknown identifier is shown as it is.
+pub fn mint_blocked_sentence(identifier: &str) -> String {
+    let id = identifier.split(':').next().unwrap_or("").trim();
+    match id {
+        "mintpol-no-price" => WAITING_FOR_PRICE.into(),
+        "mintpol-unarmed" => "Minting is paused: the price feed is not armed yet. Redeeming and claiming are not affected.".into(),
+        "mintpol-global-ratio" => "Minting is paused for this term: the system's collateral ratio is below its safety floor, so only the most collateralised term classes can mint.".into(),
+        "mintpol-divergence" => "Minting is paused: the short- and long-term YEC prices disagree too much to price a mint safely. Try again later.".into(),
+        "mintpol-cap" => "Minting is paused: the YED supply cap is reached.".into(),
+        "mintpol-not-active" => "Minting is not possible: Yellowback is not active on the network now.".into(),
+        "" => "Minting is not possible now (the server gave no reason).".into(),
+        _ => format!("Minting is not possible now ({identifier})."),
+    }
+}
+
 /// The class `lock_blocks` falls in, or `bad-lock`.
 pub fn class_for(network: Network, lock_blocks: u32) -> Result<&'static TermClass, MintError> {
     network
@@ -70,6 +103,13 @@ pub fn check_estimate(
 ) -> Result<&'static TermClass, MintError> {
     check_cents(network, cents)?;
     let class = class_for(network, lock_blocks)?;
+    // The node's own verdict on this mint (`mintBlocked`, cf. DigiByte v9.26.7 e18654a3): the
+    // mint would be refused at the next block, so nothing else in the estimate is relied on.
+    if e.mint_blocked {
+        return Err(MintError::Blocked {
+            reason: mint_blocked_sentence(&e.mint_blocked_reason),
+        });
+    }
     if e.term_class != class.letter {
         return Err(inconsistent(format!(
             "termClass {:?} for a lock of {lock_blocks} blocks (class {})",
@@ -103,7 +143,10 @@ pub fn check_estimate(
         )));
     }
     if e.p_mint <= 0 {
-        return Err(inconsistent("pMint undefined"));
+        // No mint price yet (HALT-1): an honest state of the network, not a server fault.
+        return Err(MintError::Blocked {
+            reason: WAITING_FOR_PRICE.into(),
+        });
     }
     if e.armed {
         // PRICE-2 (revised): pMint = min(xMint, aMint).
@@ -1022,10 +1065,13 @@ pub fn mint_gate(
             if price.attest_status.is_empty() { "status unknown" } else { price.attest_status.as_str() }
         ))
     } else if mintable_classes.is_empty() {
-        Some(if !stats.halt_mask.is_empty() {
+        Some(if stats.halt_mask.iter().any(|h| h == "NO_PRICE") {
+            WAITING_FOR_PRICE.to_string()
+        } else if !stats.halt_mask.is_empty() {
+            let why: Vec<String> = stats.halt_mask.iter().map(|h| halt_sentence(h)).collect();
             format!(
-                "Minting is halted ({}): no term class is mintable now.",
-                stats.halt_mask.join(", ")
+                "Minting is paused: {}. No term class can mint now; redeeming is not affected.",
+                why.join("; ")
             )
         } else {
             // The cap (W20, H-10) or the recapitalisation floor (W16) leaves no class.
@@ -1217,6 +1263,8 @@ mod tests {
             protocol_fee_cents: params::protocol_fee_cents(10_000),
             protocol_fee_zat: params::protocol_fee_zat(10_000, 520_000).unwrap(),
             x_mint: 530_000,
+            mint_blocked: false,
+            mint_blocked_reason: String::new(),
         }
     }
 
@@ -1343,7 +1391,6 @@ mod tests {
                 "pMint above min(xMint, aMint)",
                 Box::new(|e| e.p_mint = 600_000),
             ),
-            ("pMint undefined", Box::new(|e| e.p_mint = 0)),
             (
                 "base ratio of another class",
                 Box::new(|e| {
@@ -1381,6 +1428,29 @@ mod tests {
                 other => panic!("{what}: {other:?}"),
             }
         }
+        // Y3: an undefined pMint is the network waiting for a price, not an inconsistent server.
+        let mut e = honest();
+        e.p_mint = 0;
+        match check(&e) {
+            Err(MintError::Blocked { reason }) => assert_eq!(reason, WAITING_FOR_PRICE),
+            other => panic!("pMint undefined: {other:?}"),
+        }
+        // The node's mintBlocked verdict (lightwalletd L1) is the refusal, in plain words.
+        let mut e = honest();
+        e.mint_blocked = true;
+        e.mint_blocked_reason = "mintpol-global-ratio".into();
+        match check(&e) {
+            Err(MintError::Blocked { reason }) => {
+                assert!(reason.contains("collateral ratio is below"), "{reason}")
+            }
+            other => panic!("mintBlocked: {other:?}"),
+        }
+        let mut e = honest();
+        e.mint_blocked = true;
+        e.mint_blocked_reason = "mintpol-no-price: no pMint at refHeight".into();
+        assert!(
+            matches!(check(&e), Err(MintError::Blocked { reason }) if reason == WAITING_FOR_PRICE)
+        );
         // The node's own rounding (up to 1,000 zat) is accepted.
         let mut e = honest();
         e.required_zat = 57_692_308_000;
@@ -1986,11 +2056,21 @@ mod tests {
         )
         .unwrap();
         assert!(g.mintable_classes.is_empty());
-        assert!(g
-            .blocked
-            .as_deref()
-            .unwrap()
-            .contains("GLOBAL_RATIO, PARTICIPATION"));
+        // Y3: plain words, not the raw halt names.
+        let why = g.blocked.as_deref().unwrap();
+        assert!(
+            why.starts_with("Minting is paused: the system's collateral ratio"),
+            "{why}"
+        );
+        assert!(why.contains("too few attestors"), "{why}");
+        assert!(
+            !why.contains("GLOBAL_RATIO") && !why.contains("PARTICIPATION"),
+            "{why}"
+        );
+        // A missing price reads as waiting for one.
+        let g = mint_gate(m, &info(true), &price(true), &stats(&[], &["NO_PRICE"])).unwrap();
+        assert_eq!(g.blocked.as_deref(), Some(WAITING_FOR_PRICE));
+        assert_eq!(halt_sentence("NEW_BIT"), "an unrecognised halt (NEW_BIT)");
         let g = mint_gate(m, &info(true), &price(true), &stats(&[], &[])).unwrap();
         assert!(g
             .blocked

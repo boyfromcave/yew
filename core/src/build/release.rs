@@ -449,43 +449,56 @@ async fn broadcast_pq_sweep(
     })
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
-    mint::send(client, &p.raw, &p.txid).await?;
-    mint::record_broadcast(wallet, &p.txid, &p.raw, p.expiry_height, &[])?;
-    if let Some(h) = tx
-        .vout
-        .first()
-        .and_then(|o| script::p2pkh_hash(&o.script_pubkey))
-    {
-        wallet.store.mark_used(&h)?;
-        wallet.ensure_gap()?;
-        wallet
-            .store
-            .insert_own_output(&OutPoint { txid: p.txid, n: 0 }, p.value, &h)?;
-    }
-    wallet.store.upsert_history(&HistoryRow {
-        txid: p.txid,
-        height: 0,
-        yec_delta: p.value,
-        has_payload: false,
-        pending: true,
-        shielded: false,
-        yed_delta: 0,
-        kind: "pq_sweep".into(),
-        verdict: String::new(),
-        label: format!(
-            "moving {} from your vault-owner key",
-            crate::wallet::yec(p.value)
-        ),
-        labelled: false,
-    })?;
-    wallet.store.upsert_intent(&IntentRow {
-        pq_spend_txid: p.txid,
-        note: format!(
-            "moving the residual to your wallet ({} broadcast)",
-            &txid_hex(&p.txid)[..8]
-        ),
-        ..row
-    })?;
+    let original = row.clone();
+    let persist = || -> Result<(), WalletError> {
+        if let Some(h) = tx
+            .vout
+            .first()
+            .and_then(|o| script::p2pkh_hash(&o.script_pubkey))
+        {
+            wallet.store.mark_used(&h)?;
+            wallet.ensure_gap()?;
+            wallet
+                .store
+                .insert_own_output(&OutPoint { txid: p.txid, n: 0 }, p.value, &h)?;
+        }
+        wallet.store.upsert_history(&HistoryRow {
+            txid: p.txid,
+            height: 0,
+            yec_delta: p.value,
+            has_payload: false,
+            pending: true,
+            shielded: false,
+            yed_delta: 0,
+            kind: "pq_sweep".into(),
+            verdict: String::new(),
+            label: format!(
+                "moving {} from your vault-owner key",
+                crate::wallet::yec(p.value)
+            ),
+            labelled: false,
+        })?;
+        wallet.store.upsert_intent(&IntentRow {
+            pq_spend_txid: p.txid,
+            note: format!(
+                "moving the residual to your wallet ({} broadcast)",
+                &txid_hex(&p.txid)[..8]
+            ),
+            ..row
+        })?;
+        Ok(())
+    };
+    mint::send_recorded(
+        wallet,
+        &p.txid,
+        &p.raw,
+        p.expiry_height,
+        &[],
+        persist,
+        || Ok(wallet.store.upsert_intent(&original)?),
+        mint::send(client, &p.raw, &p.txid),
+    )
+    .await?;
     Ok((txid_hex(&p.txid), validation))
 }
 
@@ -514,35 +527,47 @@ async fn broadcast_pq_coin_move(
     })
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
-    mint::send(client, &p.raw, &p.txid).await?;
-    mint::record_broadcast(wallet, &p.txid, &p.raw, p.expiry_height, &[u])?;
-    if let Some(h) = tx
-        .vout
-        .first()
-        .and_then(|o| script::p2pkh_hash(&o.script_pubkey))
-    {
-        wallet.store.mark_used(&h)?;
-        wallet.ensure_gap()?;
-        wallet
-            .store
-            .insert_own_output(&OutPoint { txid: p.txid, n: 0 }, p.value, &h)?;
-    }
-    wallet.store.upsert_history(&HistoryRow {
-        txid: p.txid,
-        height: 0,
-        yec_delta: -p.fee,
-        has_payload: false,
-        pending: true,
-        shielded: false,
-        yed_delta: 0,
-        kind: "pq_sweep".into(),
-        verdict: String::new(),
-        label: format!(
-            "moving {} from your post-quantum address",
-            crate::wallet::yec(p.value)
-        ),
-        labelled: false,
-    })?;
+    let persist = || -> Result<(), WalletError> {
+        if let Some(h) = tx
+            .vout
+            .first()
+            .and_then(|o| script::p2pkh_hash(&o.script_pubkey))
+        {
+            wallet.store.mark_used(&h)?;
+            wallet.ensure_gap()?;
+            wallet
+                .store
+                .insert_own_output(&OutPoint { txid: p.txid, n: 0 }, p.value, &h)?;
+        }
+        wallet.store.upsert_history(&HistoryRow {
+            txid: p.txid,
+            height: 0,
+            yec_delta: -p.fee,
+            has_payload: false,
+            pending: true,
+            shielded: false,
+            yed_delta: 0,
+            kind: "pq_sweep".into(),
+            verdict: String::new(),
+            label: format!(
+                "moving {} from your post-quantum address",
+                crate::wallet::yec(p.value)
+            ),
+            labelled: false,
+        })?;
+        Ok(())
+    };
+    mint::send_recorded(
+        wallet,
+        &p.txid,
+        &p.raw,
+        p.expiry_height,
+        std::slice::from_ref(&u),
+        persist,
+        || Ok(()),
+        mint::send(client, &p.raw, &p.txid),
+    )
+    .await?;
     Ok((txid_hex(&p.txid), validation))
 }
 
@@ -576,55 +601,68 @@ pub async fn broadcast(
     )
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
-    mint::send(client, &p.raw, &p.txid).await?;
-    mint::record_broadcast(wallet, &p.txid, &p.raw, p.expiry_height, &p.inputs)?;
-    // vout[0] pays the intent's own recipient; vout[1] (if any) is the change key peeked at build.
-    for (n, o) in tx.vout.iter().enumerate() {
-        if let Some(h) = script::p2pkh_hash(&o.script_pubkey) {
-            if n == 1 {
-                wallet.store.mark_used(&h)?;
-                wallet.ensure_gap()?;
+    let original = row.clone();
+    let persist = || -> Result<(), WalletError> {
+        // vout[0] pays the intent's own recipient; vout[1] (if any) is the change key peeked at build.
+        for (n, o) in tx.vout.iter().enumerate() {
+            if let Some(h) = script::p2pkh_hash(&o.script_pubkey) {
+                if n == 1 {
+                    wallet.store.mark_used(&h)?;
+                    wallet.ensure_gap()?;
+                }
+                wallet.store.insert_own_output(
+                    &OutPoint {
+                        txid: p.txid,
+                        n: n as u32,
+                    },
+                    o.value,
+                    &h,
+                )?;
             }
-            wallet.store.insert_own_output(
-                &OutPoint {
-                    txid: p.txid,
-                    n: n as u32,
-                },
-                o.value,
-                &h,
-            )?;
         }
-    }
-    let spent: i64 = p.inputs.iter().map(|u| u.value).sum();
-    wallet.store.upsert_history(&HistoryRow {
-        txid: p.txid,
-        height: 0,
-        // A residual paid to the owner's PQPKH is not spendable YEC until it is moved.
-        yec_delta: if to_pq { 0 } else { p.value } + p.change - spent,
-        has_payload: false,
-        pending: true,
-        shielded: false,
-        yed_delta: 0,
-        kind: "claim_release".into(),
-        verdict: String::new(),
-        label: format!(
-            "releasing {} from {} intent",
-            crate::wallet::yec(p.value),
-            if row.role == super::claim::ROLE_RESIDUAL {
-                "the residual"
-            } else {
-                "the claim"
-            }
-        ),
-        labelled: false,
-    })?;
-    wallet.store.upsert_intent(&IntentRow {
-        state: IntentState::Releasing,
-        spend_txid: p.txid,
-        pq_spend_txid: [0; 32],
-        note: format!("release {} broadcast", &txid_hex(&p.txid)[..8]),
-        ..row
-    })?;
+        let spent: i64 = p.inputs.iter().map(|u| u.value).sum();
+        wallet.store.upsert_history(&HistoryRow {
+            txid: p.txid,
+            height: 0,
+            // A residual paid to the owner's PQPKH is not spendable YEC until it is moved.
+            yec_delta: if to_pq { 0 } else { p.value } + p.change - spent,
+            has_payload: false,
+            pending: true,
+            shielded: false,
+            yed_delta: 0,
+            kind: "claim_release".into(),
+            verdict: String::new(),
+            label: format!(
+                "releasing {} from {} intent",
+                crate::wallet::yec(p.value),
+                if row.role == super::claim::ROLE_RESIDUAL {
+                    "the residual"
+                } else {
+                    "the claim"
+                }
+            ),
+            labelled: false,
+        })?;
+        wallet.store.upsert_intent(&IntentRow {
+            state: IntentState::Releasing,
+            spend_txid: p.txid,
+            pq_spend_txid: [0; 32],
+            note: format!("release {} broadcast", &txid_hex(&p.txid)[..8]),
+            ..row
+        })?;
+        Ok(())
+    };
+    mint::send_recorded(
+        wallet,
+        &p.txid,
+        &p.raw,
+        p.expiry_height,
+        &p.inputs,
+        persist,
+        || Ok(wallet.store.upsert_intent(&original)?),
+        mint::send(client, &p.raw, &p.txid),
+    )
+    .await?;
     Ok((txid_hex(&p.txid), validation))
 }
 

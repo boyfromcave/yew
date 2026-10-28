@@ -97,7 +97,11 @@ class _VaultScreenState extends State<VaultScreen> {
     final canAct = v.redeemable || v.releasable;
     final enoughYed = app.balances.yedCents >= v.cents;
     final String status;
-    if (v.releasable) {
+    // A spend of the open vault is waiting to confirm (closingTxid carries it while open).
+    final spendPending = v.open && v.closingTxid.isNotEmpty;
+    if (spendPending) {
+      status = 'Redemption pending (${shorten(v.closingTxid)}): waiting for it to confirm (synced to ${v.tip})';
+    } else if (v.releasable) {
       status = 'VOID (${v.voidReason}): the collateral can be released';
     } else if (v.redeemable && v.earlyRedeem) {
       status = 'Redeemable now, before the term ends at height ${v.lockHeight} (${v.blocksUntilTermEnd} block${v.blocksUntilTermEnd == 1 ? '' : 's'} to go): an early redeem also pays the early-redeem fee of ${formatBps(v.earlyRedeemFeeBps)} of the debt (synced to ${v.tip})';
@@ -179,7 +183,7 @@ class _VaultScreenState extends State<VaultScreen> {
                     if (cancelQuietText(v).isNotEmpty) PreviewRow('Cancelled claims', cancelQuietText(v), key: const Key('cancel-quiet')),
                     PreviewRow('Vault owner (post-quantum)', shorten(v.ownerAddress, head: 14, tail: 8), key: const Key('owner-pq')),
                     PreviewRow('Vault', shorten(v.vaultTxid)),
-                    if (v.closingTxid.isNotEmpty) PreviewRow('Closed by', shorten(v.closingTxid)),
+                    if (v.closingTxid.isNotEmpty) PreviewRow(spendPending ? 'Pending spend' : 'Closed by', shorten(v.closingTxid)),
                   ],
                 ),
               ),

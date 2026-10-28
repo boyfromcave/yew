@@ -1281,6 +1281,25 @@ impl Store {
         Ok(())
     }
 
+    /// Undo what a broadcast recorded for `txid` before `SendTransaction` refused it
+    /// (`build::mint::send_recorded`): its pending record, history row, own outputs and tokens,
+    /// the tokens it spent, the outputs pre-locked as its change (`PendingToken`) and the claim
+    /// intents it would have made. The inputs' locks are the caller's (they are restored to
+    /// what they were). One SQLite transaction: all or nothing.
+    pub fn forget_tx(&self, txid: &[u8; 32]) -> Result<(), StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let t = txid.as_slice();
+        tx.execute("DELETE FROM pending_txs WHERE txid = ?1", params![t])?;
+        tx.execute("DELETE FROM history WHERE txid = ?1", params![t])?;
+        tx.execute("DELETE FROM own_outputs WHERE txid = ?1", params![t])?;
+        tx.execute("DELETE FROM own_tokens WHERE txid = ?1", params![t])?;
+        tx.execute("DELETE FROM spent_tokens WHERE spender = ?1", params![t])?;
+        tx.execute("DELETE FROM utxos WHERE txid = ?1", params![t])?;
+        tx.execute("DELETE FROM claim_intents WHERE txid = ?1", params![t])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     // ---- mints (the two-step state machine, W4)
 
     /// Insert a new row (state `CarrierSent`); returns its id.
@@ -1349,6 +1368,39 @@ impl Store {
                 note
             ],
         )?;
+        Ok(())
+    }
+
+    /// Put a row's step back exactly as it was (state, main and sweep txids, note): the undo of
+    /// [`Store::set_mint_state`] when the broadcast it recorded was refused.
+    pub fn restore_mint_step(
+        &self,
+        id: i64,
+        state: MintState,
+        main_txid: &[u8; 32],
+        sweep_txid: &[u8; 32],
+        note: &str,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE mints SET state = ?2, main_txid = ?3, sweep_txid = ?4, note = ?5 WHERE id = ?1",
+            params![
+                id,
+                state.as_str(),
+                main_txid.as_slice(),
+                sweep_txid.as_slice(),
+                note
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Drop a row (and its claim bounds): the undo of [`Store::insert_mint`] when the carrier it
+    /// was recorded for was refused before anything reached the chain.
+    pub fn delete_mint(&self, id: i64) -> Result<(), StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM claim_bounds WHERE mint_id = ?1", params![id])?;
+        tx.execute("DELETE FROM mints WHERE id = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 

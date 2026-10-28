@@ -306,6 +306,7 @@ pub async fn start(
             v.status
         )));
     }
+    super::redeem::check_no_pending_spend(&v)?;
     // The vault's script terms and debt, as the node reports them, checked (audit G-1); its V
     // script must be the YED vault this wallet rebuilds (U-23) — the one the claim spends.
     terms::check_vault(wallet.network, &v)?;
@@ -394,48 +395,60 @@ pub async fn start(
             ),
         )?;
     }
-    let step =
-        mint::carrier_step(wallet, client, validator, &bundle_bytes, r, tip, branch_id).await?;
-    let row = MintRow {
-        id: 0,
-        kind: MintKind::Claim,
-        state: MintState::CarrierSent,
-        created_height: tip,
-        cents: entry.minted_cents,
-        lock_blocks: 0,
-        term_class: v.term_class,
-        ref_height: r,
-        lock_height: v.lock_height as u32,
-        claim_height: v.claim_height as u32,
-        collateral_zat: v.collateral_zat,
-        fee_zat,
-        payee,
-        attest_fee_zat,
-        attest_payee,
-        residual_zat: entry.residual_zat,
-        bundle: bundle_bytes,
-        bundle_seqs: seqs
-            .iter()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>()
-            .join(","),
-        carrier_hash160: step.carrier_hash160,
-        owner_hash160: keys::hash160(&owner.to_bytes()),
-        carrier_txid: step.txid,
-        carrier_vout: 0,
-        main_txid: [0; 32],
-        sweep_txid: [0; 32],
-        expiry_height: step.expiry_height,
-        vault_txid: *vault_txid,
-        owner: Some(owner),
-        note: format!("clause {}", entry.claim_path),
+    let persist_row = |step: &mint::CarrierStep| -> Result<i64, WalletError> {
+        let row = MintRow {
+            id: 0,
+            kind: MintKind::Claim,
+            state: MintState::CarrierSent,
+            created_height: tip,
+            cents: entry.minted_cents,
+            lock_blocks: 0,
+            term_class: v.term_class,
+            ref_height: r,
+            lock_height: v.lock_height as u32,
+            claim_height: v.claim_height as u32,
+            collateral_zat: v.collateral_zat,
+            fee_zat,
+            payee,
+            attest_fee_zat,
+            attest_payee,
+            residual_zat: entry.residual_zat,
+            bundle: bundle_bytes.clone(),
+            bundle_seqs: seqs
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            carrier_hash160: step.carrier_hash160,
+            owner_hash160: keys::hash160(&owner.to_bytes()),
+            carrier_txid: step.txid,
+            carrier_vout: 0,
+            main_txid: [0; 32],
+            sweep_txid: [0; 32],
+            expiry_height: step.expiry_height,
+            vault_txid: *vault_txid,
+            owner: Some(owner),
+            note: format!("clause {}", entry.claim_path),
+        };
+        let id = wallet.store.insert_mint(&row)?;
+        if let Some(b) = bounds {
+            wallet
+                .store
+                .set_claim_bounds(id, b.max_burn_cents, b.min_out_zat)?;
+        }
+        Ok(id)
     };
-    let id = wallet.store.insert_mint(&row)?;
-    if let Some(b) = bounds {
-        wallet
-            .store
-            .set_claim_bounds(id, b.max_burn_cents, b.min_out_zat)?;
-    }
+    let (_, id) = mint::carrier_step(
+        wallet,
+        client,
+        validator,
+        &bundle_bytes,
+        r,
+        tip,
+        branch_id,
+        persist_row,
+    )
+    .await?;
     Ok(id)
 }
 
@@ -759,6 +772,7 @@ pub async fn finish(
             .ok_or(gate::GateError::YellowbackAbsent)?;
         let vt = mint::vault_terms_now(wallet, yb).await?;
         let v = yb.vault(&txid_hex(&m.vault_txid)).await?;
+        super::redeem::check_no_pending_spend(&v)?;
         if terms::vault_owner(&v).ok() != Some(owner) {
             return Err(MintError::Inconsistent {
                 what: format!(
@@ -914,7 +928,6 @@ pub async fn finish(
     )
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
-    mint::send(client, &raw, &txid).await?;
     let mut locked = yed_inputs.clone();
     locked.extend(funding.iter().cloned());
     locked.push(Utxo {
@@ -926,41 +939,41 @@ pub async fn finish(
         class: UtxoClass::Carrier,
         cents: 0,
     });
-    mint::record_broadcast(wallet, &txid, &raw, m.expiry_height, &locked)?;
-    for u in &yed_inputs {
-        wallet
-            .store
-            .insert_spent_token(&txid, &u.outpoint, u.cents)?;
-    }
-    if let Some(row) = &change_row {
-        let n = plan.change_vout as u32;
-        wallet.store.upsert_utxo(&Utxo {
-            outpoint: OutPoint { txid, n },
-            address: super::yed_transfer::holder_address(wallet.network, &change_script),
-            script: change_script.clone(),
-            value: TOKEN_VALUE,
-            height: 0,
-            class: UtxoClass::PendingToken,
-            cents: change_cents,
-        })?;
-        wallet
-            .store
-            .insert_own_output(&OutPoint { txid, n }, TOKEN_VALUE, &row.hash160)?;
-    }
-    if plan.funding_change_vout >= 0 {
-        wallet.store.mark_used(&fund_change_row.hash160)?;
-        wallet.ensure_gap()?;
-        wallet.store.insert_own_output(
-            &OutPoint {
-                txid,
-                n: plan.funding_change_vout as u32,
-            },
-            plan.funding_change,
-            &fund_change_row.hash160,
-        )?;
-    }
-    // The claimant intent: released after CLAIM_DELAY (build::release), or cancelled.
-    wallet.store.upsert_intent(&IntentRow {
+    let persist = || -> Result<(), WalletError> {
+        for u in &yed_inputs {
+            wallet
+                .store
+                .insert_spent_token(&txid, &u.outpoint, u.cents)?;
+        }
+        if let Some(row) = &change_row {
+            let n = plan.change_vout as u32;
+            wallet.store.upsert_utxo(&Utxo {
+                outpoint: OutPoint { txid, n },
+                address: super::yed_transfer::holder_address(wallet.network, &change_script),
+                script: change_script.clone(),
+                value: TOKEN_VALUE,
+                height: 0,
+                class: UtxoClass::PendingToken,
+                cents: change_cents,
+            })?;
+            wallet
+                .store
+                .insert_own_output(&OutPoint { txid, n }, TOKEN_VALUE, &row.hash160)?;
+        }
+        if plan.funding_change_vout >= 0 {
+            wallet.store.mark_used(&fund_change_row.hash160)?;
+            wallet.ensure_gap()?;
+            wallet.store.insert_own_output(
+                &OutPoint {
+                    txid,
+                    n: plan.funding_change_vout as u32,
+                },
+                plan.funding_change,
+                &fund_change_row.hash160,
+            )?;
+        }
+        // The claimant intent: released after CLAIM_DELAY (build::release), or cancelled.
+        wallet.store.upsert_intent(&IntentRow {
         outpoint: OutPoint { txid, n: 0 },
         vault_txid: m.vault_txid,
         role: ROLE_CLAIMANT.into(),
@@ -984,37 +997,50 @@ pub async fn finish(
             cents: plan.burn_cents.max(0) as u64,
         },
     })?;
-    let yed_spent: i64 = yed_inputs.iter().map(|u| u.value).sum();
-    let fund_spent: i64 = funding.iter().map(|u| u.value).sum();
-    wallet.store.upsert_history(&HistoryRow {
-        txid,
-        height: 0,
-        yec_delta: plan.funding_change + if change_cents > 0 { TOKEN_VALUE } else { 0 }
-            - yed_spent
-            - fund_spent
-            - CARRIER_VALUE,
-        has_payload: true,
-        pending: true,
-        shielded: false,
-        yed_delta: -plan.burn_cents,
-        kind: "claim".into(),
-        verdict: String::new(),
-        label: format!(
-            "claiming vault {}, burning {}{}; {} YEC pending release",
-            &txid_hex(&m.vault_txid)[..8],
-            dollars(plan.burn_cents),
-            if extra_burn > 0 {
-                format!(" (incl. {} remainder)", dollars(extra_burn as i64))
-            } else {
-                String::new()
-            },
-            crate::wallet::yec(plan.claimant_value)
-        ),
-        labelled: false,
-    })?;
-    wallet
-        .store
-        .set_mint_state(m.id, MintState::MainSent, Some(&txid), None, &m.note)?;
+        let yed_spent: i64 = yed_inputs.iter().map(|u| u.value).sum();
+        let fund_spent: i64 = funding.iter().map(|u| u.value).sum();
+        wallet.store.upsert_history(&HistoryRow {
+            txid,
+            height: 0,
+            yec_delta: plan.funding_change + if change_cents > 0 { TOKEN_VALUE } else { 0 }
+                - yed_spent
+                - fund_spent
+                - CARRIER_VALUE,
+            has_payload: true,
+            pending: true,
+            shielded: false,
+            yed_delta: -plan.burn_cents,
+            kind: "claim".into(),
+            verdict: String::new(),
+            label: format!(
+                "claiming vault {}, burning {}{}; {} YEC pending release",
+                &txid_hex(&m.vault_txid)[..8],
+                dollars(plan.burn_cents),
+                if extra_burn > 0 {
+                    format!(" (incl. {} remainder)", dollars(extra_burn as i64))
+                } else {
+                    String::new()
+                },
+                crate::wallet::yec(plan.claimant_value)
+            ),
+            labelled: false,
+        })?;
+        wallet
+            .store
+            .set_mint_state(m.id, MintState::MainSent, Some(&txid), None, &m.note)?;
+        Ok(())
+    };
+    mint::send_recorded(
+        wallet,
+        &txid,
+        &raw,
+        m.expiry_height,
+        &locked,
+        persist,
+        || mint::restore_step(wallet, m),
+        mint::send(client, &raw, &txid),
+    )
+    .await?;
     Ok(Finished {
         txid: txid_hex(&txid),
         validation,

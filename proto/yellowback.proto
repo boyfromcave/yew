@@ -193,6 +193,12 @@ message YedVault {
   // from -- the token spent at the claim's lowest-index YED input -- which a cancel re-issues the whole burn to as one
   // YED token (burnedCents); "" otherwise (the node omits the key).
   string refundHolder = 35;
+  // The vault's pending spend (additive, rpcversion unchanged; cf. DigiByte v9.26.7 00136af6, a pending redemption
+  // is told apart before coin selection): spendPending is true while a mempool transaction spends the vault
+  // outpoint (a redeem or claim waiting to confirm), and spendTxid is that transaction; false and "" otherwise,
+  // and also when the node predates the fields (it omits the keys). A wallet offers no second redeem or claim
+  // while it is set.
+  bool spendPending = 36; string spendTxid = 37;
 }
 message YedClaimable {
   int64 attestFeeZat = 1; int64 claimHeight = 2; string claimPath = 3; int64 collateralZat = 4; int64 emergencyOpenAt = 5;
@@ -219,6 +225,11 @@ message YedCollateralEstimate {
   int64 claimHeight = 6; int64 divergenceBps = 7; int64 lockHeight = 8; int64 minRatioBps = 9; int64 pMint = 10;
   int64 refHeight = 11; int64 requiredZat = 12; int64 sigmaMultBps = 13; string source = 14; string termClass = 15; int64 xMint = 16;
   int64 protocolFeeCents = 17; int64 protocolFeeZat = 18;             // rpcversion 8: FEE-1' of the debt at pMint
+  // The mint restriction (additive, rpcversion unchanged; cf. DigiByte v9.26.7 e18654a3 estimatecollateral's
+  // minting_restricted): mintBlocked is true when yed_mint of this query would be refused at the next block, and
+  // mintBlockedReason is the identifier it would throw (a mintpol-* or halt identifier); false and "" when the
+  // mint is allowed, and also when the node predates the fields (it omits the keys).
+  bool mintBlocked = 19; string mintBlockedReason = 20;
 }
 // rpcversion 8: FEE-1' of the debt in cents, in zat at pMint (0 when undefined), and AFEE-1''s share
 message YedFeeEstimate { int64 feeZat = 1; int64 attestFeeZat = 2; int64 feeCents = 3; int64 pMint = 4; }
