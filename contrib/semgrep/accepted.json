@@ -434,6 +434,146 @@
       "reason": "expect() on a local invariant, not on a server reply: the light wallet / prover opened or loaded just above, HMAC accepts any key length, an own HD Falcon row (from the wallet's store) has its chain and index, scheme 2 is registered. Checked 2026-10-23.",
       "by": "secops CI setup",
       "date": "2026-10-23"
+    },
+    "6e598065b3aa9bc7": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "web/core-wasm/src/lib.rs",
+      "reason": "web/core-wasm/src/lib.rs: expect() on a local invariant of the wasm session, not on input: the connection was set by ensure_conn() just above (it returns early on error). A failure is a bug, and a panic in the worker surfaces as a rejected call, never a wrong spend. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "0fcf77b0ed3d690e": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "web/core-wasm/src/lib.rs",
+      "reason": "web/core-wasm/src/lib.rs: expect() on a local invariant of the wasm session, not on input: the connection was set by ensure_conn() just above (it returns early on error). A failure is a bug, and a panic in the worker surfaces as a rejected call, never a wrong spend. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "eb383301ca6697e5": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "web/core-wasm/src/lib.rs",
+      "reason": "web/core-wasm/src/lib.rs: expect() on a local invariant of the wasm session, not on input: the connection was set by ensure_conn() just above (it returns early on error). A failure is a bug, and a panic in the worker surfaces as a rejected call, never a wrong spend. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "eb383301ca6697e5-1": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "web/core-wasm/src/lib.rs",
+      "reason": "web/core-wasm/src/lib.rs: expect() on a local invariant of the wasm session, not on input: the connection was set by ensure_conn() just above (it returns early on error). A failure is a bug, and a panic in the worker surfaces as a rejected call, never a wrong spend. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "eb383301ca6697e5-2": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "web/core-wasm/src/lib.rs",
+      "reason": "web/core-wasm/src/lib.rs: expect() on a local invariant of the wasm session, not on input: the connection was set by ensure_conn() just above (it returns early on error). A failure is a bug, and a panic in the worker surfaces as a rejected call, never a wrong spend. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "eb383301ca6697e5-3": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "web/core-wasm/src/lib.rs",
+      "reason": "web/core-wasm/src/lib.rs: expect() on a local invariant of the wasm session, not on input: the connection was set by ensure_conn() just above (it returns early on error). A failure is a bug, and a panic in the worker surfaces as a rejected call, never a wrong spend. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "eb383301ca6697e5-4": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "web/core-wasm/src/lib.rs",
+      "reason": "web/core-wasm/src/lib.rs: expect() on a local invariant of the wasm session, not on input: the connection was set by ensure_conn() just above (it returns early on error). A failure is a bug, and a panic in the worker surfaces as a rejected call, never a wrong spend. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "eb383301ca6697e5-5": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "web/core-wasm/src/lib.rs",
+      "reason": "web/core-wasm/src/lib.rs: expect() on a local invariant of the wasm session, not on input: the connection was set by ensure_conn() just above (it returns early on error). A failure is a bug, and a panic in the worker surfaces as a rejected call, never a wrong spend. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "eb383301ca6697e5-6": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "web/core-wasm/src/lib.rs",
+      "reason": "web/core-wasm/src/lib.rs: expect() on a local invariant of the wasm session, not on input: the connection was set by ensure_conn() just above (it returns early on error). A failure is a bug, and a panic in the worker surfaces as a rejected call, never a wrong spend. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "eb383301ca6697e5-7": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "web/core-wasm/src/lib.rs",
+      "reason": "web/core-wasm/src/lib.rs: expect() on a local invariant of the wasm session, not on input: the connection was set by ensure_conn() just above (it returns early on error). A failure is a bug, and a panic in the worker surfaces as a rejected call, never a wrong spend. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "eb383301ca6697e5-8": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "web/core-wasm/src/lib.rs",
+      "reason": "web/core-wasm/src/lib.rs: expect() on a local invariant of the wasm session, not on input: the connection was set by ensure_conn() just above (it returns early on error). A failure is a bug, and a panic in the worker surfaces as a rejected call, never a wrong spend. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "eb383301ca6697e5-9": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "web/core-wasm/src/lib.rs",
+      "reason": "web/core-wasm/src/lib.rs: expect() on a local invariant of the wasm session, not on input: the connection was set by ensure_conn() just above (it returns early on error). A failure is a bug, and a panic in the worker surfaces as a rejected call, never a wrong spend. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "eb383301ca6697e5-10": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "web/core-wasm/src/lib.rs",
+      "reason": "web/core-wasm/src/lib.rs: expect() on a local invariant of the wasm session, not on input: the connection was set by ensure_conn() just above (it returns early on error). A failure is a bug, and a panic in the worker surfaces as a rejected call, never a wrong spend. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "eb383301ca6697e5-11": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "web/core-wasm/src/lib.rs",
+      "reason": "web/core-wasm/src/lib.rs: expect() on a local invariant of the wasm session, not on input: the connection was set by ensure_conn() just above (it returns early on error). A failure is a bug, and a panic in the worker surfaces as a rejected call, never a wrong spend. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "eb383301ca6697e5-12": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "web/core-wasm/src/lib.rs",
+      "reason": "web/core-wasm/src/lib.rs: expect() on a local invariant of the wasm session, not on input: the connection was set by ensure_conn() just above (it returns early on error). A failure is a bug, and a panic in the worker surfaces as a rejected call, never a wrong spend. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "5258d0142cd0abc1": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "web/spike-blockdb/src/lib.rs",
+      "reason": "web/spike-blockdb is the W0.2 feasibility spike, never shipped; the expect is NonZeroU32::new(1), a constant. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "e4748854e0ae54ad": {
+      "rule": "python.lang.security.audit.dangerous-subprocess-use-tainted-env-args",
+      "path": "web/scripts/fund-helper.py",
+      "reason": "web/scripts/fund-helper.py: the devnet funding helper of web/scripts/test-core-wasm.sh; the ycash-cli command comes from the developer's own YEW_FUND_CLI / YEW_KUBE_NS / YEW_YCASHD_POD; argument list, no shell; loopback test helper, never shipped. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "d66b375c905191d0": {
+      "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+      "path": "web/scripts/fund-helper.py",
+      "reason": "web/scripts/fund-helper.py: the devnet funding helper of web/scripts/test-core-wasm.sh; the ycash-cli command comes from the developer's own YEW_FUND_CLI / YEW_KUBE_NS / YEW_YCASHD_POD; argument list, no shell; loopback test helper, never shipped. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "402c0a5713fddd2a": {
+      "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+      "path": "web/scripts/smoke.py",
+      "reason": "web/scripts/smoke.py: the browser smoke test's WebDriver and funding-helper URLs are the developer's own command-line arguments (local chromedriver, loopback helper); test script, never shipped. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
+    },
+    "ae8d31177841af5f": {
+      "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+      "path": "web/scripts/smoke.py",
+      "reason": "web/scripts/smoke.py: the browser smoke test's WebDriver and funding-helper URLs are the developer's own command-line arguments (local chromedriver, loopback helper); test script, never shipped. Checked 2026-10-28.",
+      "by": "secops triage (yew/web)",
+      "date": "2026-10-28"
     }
   },
   "rule_paths": [

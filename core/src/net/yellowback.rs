@@ -18,11 +18,10 @@
 //! reads [`Token`] and `YedTxInfo`. The remaining results are returned as the generated
 //! messages (`super::rpc`), whose field names are the node contract's JSON names.
 
-use tonic::transport::Channel;
 use tonic::Code;
 
 use super::rpc;
-use super::{limits, NetError, Server, YellowbackStreamerClient};
+use super::{limits, Channel, NetError, Server, YellowbackStreamerClient};
 use crate::tx::{txid_from_hex, OutPoint};
 
 /// The node `rpcversion` this build implements (`ycash-dd/doc/yellowback-rpc-contract.json`;
@@ -191,11 +190,33 @@ where
         match f().await {
             Err(s) if s.code() == Code::ResourceExhausted && tries < attempts => {
                 tries += 1;
-                tokio::time::sleep(interval).await;
+                pause(interval).await;
             }
             r => return r,
         }
     }
+}
+
+/// The retry's wait: tokio's timer natively; the browser has no tokio timer (core/Cargo.toml's
+/// wasm32 table), so there it is the global scope's `setTimeout` (a worker or a window).
+#[cfg(not(target_arch = "wasm32"))]
+async fn pause(d: std::time::Duration) {
+    tokio::time::sleep(d).await;
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn pause(d: std::time::Duration) {
+    use wasm_bindgen::JsCast;
+    let ms = d.as_millis().min(i32::MAX as u128) as i32;
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        let global = js_sys::global();
+        if let Ok(f) = js_sys::Reflect::get(&global, &"setTimeout".into()) {
+            let _ = f
+                .unchecked_into::<js_sys::Function>()
+                .call2(&global, &resolve, &ms.into());
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
 /// Collect a server stream up to `limit` messages (audit G-7).

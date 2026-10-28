@@ -2702,7 +2702,7 @@ async fn s2_shielded_receive_send_memo_and_regressions() {
         (200_000_000, 200_000_000, true),
         "{zb:?}"
     );
-    let zh = w.shielded().unwrap().history().unwrap();
+    let zh = w.shielded_mut().unwrap().history().unwrap();
     let row = zh
         .iter()
         .find(|x| txid_hex(&x.txid) == zfund)
@@ -2786,7 +2786,7 @@ async fn s2_shielded_receive_send_memo_and_regressions() {
     let zb = w.shielded().unwrap().balance().unwrap();
     assert_eq!(zb.total_zat, 149_990_000, "{zb:?}");
     let row = w
-        .shielded()
+        .shielded_mut()
         .unwrap()
         .history()
         .unwrap()
@@ -2925,7 +2925,7 @@ async fn s2_shielded_receive_send_memo_and_regressions() {
     assert!(z2.sendable);
     assert_eq!(w2.shielded().unwrap().balance().unwrap(), zb);
     let memos: Vec<String> = w2
-        .shielded()
+        .shielded_mut()
         .unwrap()
         .history()
         .unwrap()
@@ -3216,9 +3216,9 @@ fn open_at(dir: &std::path::Path, name: &str, mnemonic: &str, birthday: Option<u
 }
 
 /// `(txid display hex, height, delta, memo, expired)` of every private history row, sorted.
-fn private_rows(w: &Wallet) -> Vec<(String, u64, i64, String, bool)> {
+fn private_rows(w: &mut Wallet) -> Vec<(String, u64, i64, String, bool)> {
     let mut rows: Vec<_> = w
-        .shielded()
+        .shielded_mut()
         .unwrap()
         .history()
         .unwrap()
@@ -3443,7 +3443,7 @@ async fn s5_restore_with_birthday() {
             (want, want),
             "{name}: {zb:?}"
         );
-        let mut got: Vec<(String, u64, i64, String)> = private_rows(&w)
+        let mut got: Vec<(String, u64, i64, String)> = private_rows(&mut w)
             .into_iter()
             .map(|(t, h, d, m, _)| (t, h, d, m))
             .collect();
@@ -3589,7 +3589,7 @@ async fn s5_reorg_private_and_public() {
     );
     assert_eq!(zbal(&w), (250_000_000, 250_000_000), "nothing doubled");
     assert_eq!(r.yec.0 + r.yec.1, 125_000_000, "{r:?}");
-    let rows = private_rows(&w);
+    let rows = private_rows(&mut w);
     assert_eq!(rows.iter().filter(|x| x.0 == z1).count(), 1, "{rows:?}");
     assert!(rows
         .iter()
@@ -3648,7 +3648,7 @@ async fn s5_reorg_private_and_public() {
     let t = Instant::now();
     let (r, z) = sync_both(&mut w, &s.server, &mut s.c, &mut s.v).await;
     time_into(&mut s.timings, "r2DroppedSyncMillis", t);
-    let dropped = (zbal(&w), r.yec, private_rows(&w));
+    let dropped = (zbal(&w), r.yec, private_rows(&mut w));
     println!(
         "R2 dropped: private {:?} public {:?}; {z:?}\n{:?}",
         dropped.0, dropped.1, dropped.2
@@ -3706,7 +3706,7 @@ async fn s5_reorg_private_and_public() {
     println!("R2 re-mined: {z:?}");
     assert_eq!(zbal(&w), (325_000_000, 325_000_000), "back once re-mined");
     assert_eq!(r.yec.0 + r.yec.1, 165_000_000, "{r:?}");
-    let rows = private_rows(&w);
+    let rows = private_rows(&mut w);
     let z2rows: Vec<_> = rows.iter().filter(|x| x.0 == z2).collect();
     assert_eq!(z2rows.len(), 1, "{rows:?}");
     assert_eq!(
@@ -3760,7 +3760,7 @@ async fn s5_reorg_private_and_public() {
     let (_, z) = sync_both(&mut w, &s.server, &mut s.c, &mut s.v).await;
     assert!(z.sendable);
     assert_eq!(zbal(&w).0, before.0 - 60_000_000 - fee, "the send is mined");
-    assert!(private_rows(&w)
+    assert!(private_rows(&mut w)
         .iter()
         .any(|x| x.0 == sent.txid && x.1 == h3));
     // The loner runs past the expiry height: the block after nExpiryHeight drops the send from
@@ -3802,7 +3802,7 @@ async fn s5_reorg_private_and_public() {
         public_before,
         "the public side is untouched"
     );
-    let rows = private_rows(&w);
+    let rows = private_rows(&mut w);
     let srow = rows
         .iter()
         .find(|x| x.0 == sent.txid)
@@ -3895,7 +3895,7 @@ async fn s5_interrupted_sync_resumes() {
     assert_eq!(rz.received_notes, 3);
     let want = (
         reference.shielded().unwrap().balance().unwrap(),
-        private_rows(&reference),
+        private_rows(&mut reference),
         rr.yec,
     );
     assert_eq!(want.0.total_zat, 90_000_000);
@@ -3960,7 +3960,7 @@ async fn s5_interrupted_sync_resumes() {
     s.timings
         .insert("droppedInterruptions".into(), interrupted.join(" ").into());
     assert_eq!(w.shielded().unwrap().balance().unwrap(), want.0);
-    assert_eq!(private_rows(&w), want.1);
+    assert_eq!(private_rows(&mut w), want.1);
     drop(w);
 
     // 2. A real process killed with SIGKILL after 100, 250, 400, … ms, then resumed here.
@@ -4012,7 +4012,7 @@ async fn s5_interrupted_sync_resumes() {
     println!("resumed after the kills: {z:?}");
     assert_eq!(r.yec, want.2);
     assert_eq!(w.shielded().unwrap().balance().unwrap(), want.0);
-    assert_eq!(private_rows(&w), want.1);
+    assert_eq!(private_rows(&mut w), want.1);
     let _ = std::fs::remove_dir_all(&dir);
     s.finish("interrupt");
 }

@@ -34,18 +34,14 @@ bs58 = "=0.5.1"
 # roots. `rustls-native-certs` has no iOS backend, so without it every TLS connection on iOS
 # failed the handshake. `webpki-roots` is pinned here as a direct dependency so its version is
 # exact (plan §3.3 allow-list: scripts/allowed-deps.txt).
-tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "channel", "tls-ring", "tls-native-roots", "tls-webpki-roots"] }
-webpki-roots = "=1.0.10"
+# tonic and tokio are per target (the tables at the end of this file): the HTTP/2 channel with
+# rustls and the runtime natively, codegen and the runtime-free parts in the browser.
 tonic-prost = "=0.14.6"
 prost = "=0.14.4"
-tokio = { version = "=1.53.3", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
-rusqlite = { version = "=0.37.0", features = ["bundled"] }
+rusqlite = { version = "=0.39.0", features = ["bundled"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 thiserror = "=2.0.21"
-# The bridge (api.rs): the crate and flutter_rust_bridge_codegen are the same version (W0a); the
-# Dart package in app/pubspec.yaml is pinned to it too.
-flutter_rust_bridge = "=2.13.0"
 # Sapling key derivation (yew-shielded plan S0-1, `shielded_keys.rs`): ZIP-32 over the BIP39
 # seed, the Sapling key types and their Bech32 encodings. `zcash_keys` comes from
 # boyfromcave/librustzcash6 by git rev: 4867cf85 = miodragpop/librustzcash @ ec525fae (the
@@ -54,7 +50,7 @@ flutter_rust_bridge = "=2.13.0"
 # upgrade plan §15 finding 58). One source and revision for every `zcash_*` crate below and
 # in the light library, so Cargo unifies them. `sapling` feature only. `sapling-crypto` 0.7.0
 # and `zip32` 0.2.0 are the versions librustzcash6 locks (named directly for the key types).
-zcash_keys = { version = "=0.14.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["std", "sapling"] }
+zcash_keys = { version = "=0.14.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false, features = ["std", "sapling"] }
 sapling-crypto = { version = "=0.7.0", default-features = false, features = ["std"] }
 zip32 = { version = "=0.2.0", default-features = false }
 # The Ycash Sapling light client (yew-shielded plan S1/S2): compact-block sync from lightwalletd-dd,
@@ -63,30 +59,29 @@ zip32 = { version = "=0.2.0", default-features = false }
 # of its `upgrade/vault` branch (8daa6fb: the light library on librustzcash6 4867cf85, regtest
 # `vault=<h>`, signing the next block's branch from `GetChainInfo`). Git, not a path: the build
 # does not depend on the workspace layout, and CI resolves the same source as Cargo.lock.
-x402-ycash-light = { version = "=0.1.0", git = "https://github.com/boyfromcave/x402-ycash.git", rev = "8daa6fbba5479a684b2ca483b4cac51aea12a89a" }
+x402-ycash-light = { version = "=0.1.0", git = "https://github.com/boyfromcave/x402-ycash.git", rev = "334d74c75ad4498b6ecc2380cea6d13820b74765" }
 # The shielded spend path and the note store, read beside the light client (`core/src/shielded.rs`):
 # the light library syncs, YEW proposes/proves/signs (privacy-first funding, transparent recipients,
 # memos, the fee preview) and fetches memos (`decrypt_and_store_transaction`) itself, on the same
 # `zcash_client_sqlite` database. All from boyfromcave/librustzcash6 at the rev above, the versions the
 # light library locks; no feature beyond what it already enables. `rand` (0.8, `OsRng`) is the RNG
 # type `WalletDb` is generic over, already in the graph through the same crates.
-zcash_client_backend = { version = "=0.22.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false }
-zcash_client_sqlite = { version = "=0.20.2", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false }
+zcash_client_backend = { version = "=0.22.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false }
+zcash_client_sqlite = { version = "=0.20.2", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false }
 # `transparent-inputs` (yew-shielded plan S4, `shielded::Shielded::build_shield`): the builder
 # spends YEW's transparent `YEC` coins into a Sapling output to the wallet's own `ys1…` address
 # (shield). YEW still selects the coins (`coins::select_yec`, never the reserve, never a token)
 # and the gate checks them; the builder computes the ZIP-243 sighash over the Sapling bundle and
 # signs the transparent inputs with the keys YEW hands it for that one call.
-zcash_primitives = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["std", "transparent-inputs"] }
+zcash_primitives = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false, features = ["std", "transparent-inputs"] }
 # The transparent types the builder takes (outpoint, coin, address, signing set), same crate
 # librustzcash6 already links (no new crate in Cargo.lock).
-zcash_transparent = { version = "=0.8.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["std", "transparent-inputs"] }
+zcash_transparent = { version = "=0.8.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false, features = ["std", "transparent-inputs"] }
 # The secp256k1 the librustzcash6 builder signs with (0.29.1, already in Cargo.lock through
 # bip32), renamed: YEW's own signer stays on secp256k1 0.33.1 above. Used only to hand the
 # builder the keys of the selected coins (S4 shield).
 secp256k1_zcash = { package = "secp256k1", version = "=0.29.1", default-features = false, features = ["alloc"] }
-zcash_proofs = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["local-prover"] }
-zcash_protocol = { version = "=0.9.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["std"] }
+zcash_protocol = { version = "=0.9.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false, features = ["std"] }
 rand = { version = "=0.8.8", default-features = false, features = ["std", "std_rng", "getrandom"] }
 # Post-quantum vault owners (workspace docs/plans/yellowback-quantum-plan.md Q7, quantum spec §1-§4,
 # client survey yellowback-quantum-clients.md §1): SLH-DSA-SHA2-128s (FIPS 205 final, pure mode,
@@ -99,10 +94,6 @@ rand = { version = "=0.8.8", default-features = false, features = ["std", "std_r
 # 2.3.0-pre.7 a fresh resolve picks (rand_core 0.9's `CryptoRngCore` is gone); a `cargo update`
 # must keep `cargo update -p signature --precise 2.3.0-pre.4`.
 slh-dsa = { version = "=0.1.0", default-features = false, features = ["alloc"] }
-# The Sapling proving parameters are downloaded over HTTPS on first shielded send (S0-2,
-# `core/src/sapling_params.rs`): rustls through `tokio-rustls` (the version tonic's TLS already
-# links) with the Mozilla roots above; the SHA-256 pins, not the transport, are the integrity check.
-tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring"] }
 
 # flutter_rust_bridge's macros test `cfg(frb_expand)`.
 [lints.rust]
@@ -119,3 +110,51 @@ aes = "=0.8.4"
 cc = "=1.4.7"
 tonic-prost-build = "=0.14.6"
 prost-build = "=0.14.4"
+
+# Per-target dependencies (docs/plans/yew-web-plan.md §2, W0.4). Native (iOS, Android, the CLI,
+# the tests) is byte-for-byte what it was: the two tables below are the lines that used to sit in
+# [dependencies], with the same features. wasm32-unknown-unknown (the browser shell) gets what
+# compiles there and no more: the generated clients over gRPC-web (`tonic-web-wasm-client`; the
+# browser's `fetch` does TLS), tokio's runtime-free parts, and `wasm-bindgen-futures` for the
+# tasks the native side spawns on its runtime. Not linked in the browser: tonic's channel and
+# rustls, `webpki-roots`, `tokio-rustls` (the parameters fetch, S0-2), `flutter_rust_bridge`
+# (the Dart bridge, `api.rs`) and `zcash_proofs` (the prover: its `local-prover` pulls `home`,
+# which has no wasm32 build — W0.3 brings the browser prover).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# `tls-webpki-roots` (audit G-4): the Mozilla bundle as a root store beside the platform's
+# roots. `rustls-native-certs` has no iOS backend, so without it every TLS connection on iOS
+# failed the handshake. `webpki-roots` is pinned here as a direct dependency so its version is
+# exact (plan §3.3 allow-list: scripts/allowed-deps.txt).
+tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "channel", "tls-ring", "tls-native-roots", "tls-webpki-roots"] }
+webpki-roots = "=1.0.10"
+tokio = { version = "=1.53.3", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+# The bridge (api.rs): the crate and flutter_rust_bridge_codegen are the same version (W0a); the
+# Dart package in app/pubspec.yaml is pinned to it too.
+flutter_rust_bridge = "=2.13.0"
+zcash_proofs = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false, features = ["local-prover"] }
+# The Sapling proving parameters are downloaded over HTTPS on first shielded send (S0-2,
+# `core/src/sapling_params.rs`): rustls through `tokio-rustls` (the version tonic's TLS already
+# links) with the Mozilla roots above; the SHA-256 pins, not the transport, are the integrity check.
+tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
+# 0.9 is the tonic 0.14 line (0.7 was tonic 0.13); MIT/Apache-2.0.
+tonic-web-wasm-client = "=0.9.2"
+tokio = { version = "=1.53.3", default-features = false, features = ["sync"] }
+wasm-bindgen-futures = "=0.4.78"
+# Both `getrandom` lines in the graph must be told to use the Web Crypto API: 0.2 (rand 0.8, the
+# librustzcash6 crates) by its `js` feature; 0.3 (secp256k1 0.33 -> rand 0.9) by `wasm_js` plus
+# the `getrandom_backend="wasm_js"` cfg flag in `.cargo/config.toml`.
+getrandom = { version = "0.2", features = ["js"] }
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+# The browser prover (yew/web plan W0.3/W0.5): `LocalTxProver::from_bytes` (`local-prover` gates
+# the module; librustzcash6 up/web keeps its filesystem lookup native-only), serial — no `multicore`.
+zcash_proofs = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false, features = ["local-prover"] }
+# The browser prover's parameters (yew/web plan W0.3/W0.5, `sapling_params::fetch`): the
+# Cache API and `fetch` of the worker the core runs in (`web-sys`, the listed interfaces only),
+# `js-sys` for the byte buffers and the global scope, `wasm-bindgen` for the casts. The versions
+# are the ones `tonic-web-wasm-client` / `wasm-bindgen-futures` already lock.
+wasm-bindgen = "=0.2.128"
+js-sys = "=0.3.105"
+web-sys = { version = "=0.3.105", features = ["WorkerGlobalScope", "Cache", "CacheStorage", "Response"] }

@@ -1,0 +1,52 @@
+# W0 spike (yew/web plan §2, W0.3): does zcash_proofs' local Sapling prover (LocalTxProver) run
+# on wasm32-unknown-unknown in a browser worker, and how long does a spend + two outputs take?
+# Not a workspace member.
+[package]
+name = "spike-prover"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[workspace]
+
+[dependencies]
+# No default features: `local-prover` is the filesystem loader (home/xdg/known-folders) and
+# `multicore` is rayon; wasm32-unknown-unknown has neither threads nor a filesystem. What is left
+# is `LocalTxProver::from_bytes` and the single-threaded bellman prover. `local-prover` must stay
+# on anyway: `pub mod prover` (LocalTxProver, from_bytes included) is gated on it; its filesystem
+# helpers (home, xdg) compile for wasm32 and are simply never called.
+zcash_proofs = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false, features = ["local-prover"] }
+sapling-crypto = { version = "0.7", default-features = false, features = ["circuit"] }
+incrementalmerkletree = { version = "0.8", default-features = false, features = ["legacy-api"] }
+rand = "0.8"
+getrandom = { version = "0.2", features = ["js"] }
+sha2 = "0.10"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "WorkerGlobalScope", "Cache", "CacheStorage", "Request", "RequestInit", "Response", "Performance",
+] }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+# The yew root manifest's rusqlite-0.39 patch set is not needed here (no sqlite), but the proofs
+# crate's siblings must resolve to the same local tree it was built against.
+
+[profile.release]
+lto = true
+codegen-units = 1
+# wasm-opt is not run by cargo test; the figures are for plain rustc -O.
+
+# As the yew root manifest: dependencies optimised in dev builds too (bellman at opt-level 0
+# takes minutes per proof), the spike itself at 0.
+[profile.dev.package."*"]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+[patch.crates-io]

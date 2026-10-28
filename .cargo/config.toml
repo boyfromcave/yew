@@ -1,0 +1,6 @@
+# The browser build (docs/plans/yew-web-plan.md §2, W0.4). `getrandom` 0.3 (secp256k1 0.33 ->
+# rand 0.9 -> rand_core 0.9) has no default backend on wasm32-unknown-unknown: it wants its
+# `wasm_js` feature (core/Cargo.toml, the wasm32 table) AND this cfg flag, by design
+# (https://docs.rs/getrandom/0.3/#webassembly-support). Only this target is affected.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]

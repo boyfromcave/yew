@@ -1,0 +1,33 @@
+# W0.4 spike (yew/web plan §2): yew-core's network layer on wasm32-unknown-unknown — the gRPC-web
+# channel `net::Server::connect` builds in the browser, and a `GetLightdInfo` over it from
+# headless Chrome (no server listens: the request must be attempted and come back as an error).
+# Not a workspace member (its graph resolves for wasm32 only; same patch tables as the root).
+[package]
+name = "spike-net"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[workspace]
+
+[dependencies]
+yew-core = { path = "../../core" }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+# The yew-core dependencies keep the root's optimisation split (sapling proving is slow at -O0).
+[profile.dev.package."*"]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+# As in the root Cargo.toml (patches do not propagate through dependencies).
+[patch.crates-io]
+schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee" }
+

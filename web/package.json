@@ -1,0 +1,23 @@
+{
+  "name": "yew-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build && node scripts/sri.mjs dist",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "check": "scripts/check-web-imports.sh && tsc --noEmit && vitest run"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.1",
+    "typescript": "~5.6.3",
+    "vite": "^6.0.11",
+    "vite-plugin-wasm": "^3.4.1",
+    "vitest": "^2.1.9"
+  },
+  "dependencies": {
+    "qrcode-generator": "^1.4.4"
+  }
+}

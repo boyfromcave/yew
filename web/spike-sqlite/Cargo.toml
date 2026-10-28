@@ -1,0 +1,30 @@
+# W0 spike (yew/web plan §2, decision I-4): does zcash_client_sqlite compile for
+# wasm32-unknown-unknown with rusqlite 0.38's sqlite-wasm-rs backend? Not a workspace member.
+[package]
+name = "spike-sqlite"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[workspace]
+
+[dependencies]
+zcash_client_sqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false }
+rusqlite = { version = "0.39", default-features = false }
+sqlite-wasm-rs = { version = "0.5", default-features = false }
+sqlite-wasm-vfs = { version = "0.2", default-features = false }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+getrandom = { version = "0.2", features = ["js"] }
+rand = "0.8"
+js-sys = "0.3"
+zcash_protocol = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee" }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[patch.crates-io]
+schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee" }

@@ -1,0 +1,39 @@
+:root { --bg: #fff; --fg: #111; --muted: #666; --line: #e3e3e3; --yed: #b8860b; --yec: #1f6feb; --danger: #c62828; --ok: #2e7d32; --card: #fafafa; }
+@media (prefers-color-scheme: dark) { :root { --bg: #121212; --fg: #eee; --muted: #aaa; --line: #333; --card: #1c1c1c; --yed: #e0b23a; --yec: #6ea8ff; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+#app { max-width: 480px; margin: 0 auto; padding: 16px; }
+header.top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+header.top h1 { font-size: 20px; margin: 0; color: var(--yed); }
+header.top a, nav a { color: var(--fg); text-decoration: none; margin-left: 12px; }
+nav { display: flex; justify-content: space-around; border-top: 1px solid var(--line); padding: 10px 0; margin-top: 24px; }
+nav a.active { color: var(--yed); font-weight: 600; }
+h2 { font-size: 18px; margin: 16px 0 8px; } h3 { font-size: 16px; margin: 0 0 8px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin: 10px 0; }
+.card.error { border-color: var(--danger); } .card.result { text-align: center; }
+.big { font-size: 34px; font-weight: 700; } .yed { color: var(--yed); } .yec { color: var(--yec); }
+.small, .k { font-size: 13px; color: var(--muted); } .warn { color: var(--danger); font-weight: 600; }
+.row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; } .row .v { text-align: right; word-break: break-all; }
+button { font: inherit; padding: 10px 16px; border-radius: 10px; border: 1px solid var(--yed); background: var(--yed); color: #fff; cursor: pointer; }
+button.secondary { background: transparent; color: var(--fg); border-color: var(--line); }
+button.danger { background: var(--danger); border-color: var(--danger); }
+button:disabled { opacity: .5; cursor: default; }
+.actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+label { display: block; margin: 10px 0 4px; font-size: 14px; color: var(--muted); }
+input[type=text], input[type=number], input[type=password], input[type=url], textarea, select { width: 100%; font: inherit; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+textarea { min-height: 80px; }
+.seed { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; list-style: none; padding: 0; counter-reset: w; }
+.seed li { font-family: ui-monospace, monospace; padding: 6px; border: 1px solid var(--line); border-radius: 8px; } .seed li::before { counter-increment: w; content: counter(w) " "; color: var(--muted); }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin: 8px 0; }
+.seg button { flex: 1; border: 0; border-radius: 0; background: transparent; color: var(--fg); } .seg button.on { background: var(--yed); color: #fff; }
+.slide-wrap { position: relative; margin: 14px 0; }
+.slide { width: 100%; height: 48px; -webkit-appearance: none; appearance: none; background: var(--line); border-radius: 24px; outline: none; }
+.slide::-webkit-slider-thumb { -webkit-appearance: none; width: 44px; height: 44px; border-radius: 22px; background: var(--yed); cursor: grab; }
+.slide::-moz-range-thumb { width: 44px; height: 44px; border-radius: 22px; background: var(--yed); border: 0; }
+.slide-label { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; color: var(--muted); font-size: 14px; }
+.progress .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; } .progress .fill { height: 100%; background: var(--yec); }
+.qr { max-width: 240px; margin: 12px auto; } .qr svg { width: 100%; height: auto; background: #fff; border-radius: 8px; }
+code.txid, code.addr { display: block; word-break: break-all; font-size: 13px; padding: 8px; background: var(--card); border-radius: 8px; }
+ul.list { list-style: none; padding: 0; margin: 0; } ul.list li { display: flex; justify-content: space-between; gap: 10px; padding: 10px 4px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.pending { color: var(--muted); font-style: italic; }
+p.trust { margin: 0 0 10px; }

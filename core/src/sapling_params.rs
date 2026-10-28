@@ -26,14 +26,28 @@
 //! `zcutil/fetch-params.sh` uses today. The pinned SHA-256s make the host a question of
 //! availability, not trust.
 
+//!
+//! wasm32 (the browser wallet, yew/web plan W0.3/W0.5): the pins, [`verify_bytes`], [`status`],
+//! [`ensure_verified`] and [`ParamsSource`] compile; the download ([`download`] and the HTTP/TLS
+//! client below it, tokio + rustls) is native only. The browser has no files: [`fetch`] (and
+//! [`fetch_with`], with progress; [`cached`] reads the cache alone) looks in
+//! the Cache API (`caches.open(CACHE_NAME)`), else fetches each file from the sources in order
+//! with the browser's `fetch`, keeps bytes only if they verify against the same pins, and hands
+//! them to `Shielded::set_prover_bytes`. A cache entry that no longer verifies is deleted.
+
 use std::fs::{self, File};
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::net::TcpStream;
 
 /// One parameter file and its pin.
@@ -74,8 +88,14 @@ pub const DEFAULT_SOURCES: &[&str] = &["https://download.z.cash/downloads/"];
 /// Total bytes of a download from nothing.
 pub const TOTAL_BYTES: u64 = SPEND.bytes + OUTPUT.bytes;
 
+/// The browser's Cache API cache holding the verified files (the replacement for the
+/// parameters directory).
+pub const CACHE_NAME: &str = "yew-sapling-params-v1";
+
+#[cfg(not(target_arch = "wasm32"))]
 /// Redirects followed per file.
 const MAX_REDIRECTS: usize = 5;
+#[cfg(not(target_arch = "wasm32"))]
 /// Bound on a response header block.
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 
@@ -189,6 +209,21 @@ fn hash_file(path: &Path) -> Result<(u64, String), std::io::Error> {
     Ok((n, crate::keys::hex(&h.finalize())))
 }
 
+/// Refuse `data` unless its length and SHA-256 are `f`'s pins.
+pub fn verify_bytes(f: &ParamFile, data: &[u8]) -> Result<(), ParamsError> {
+    let got_sha256 = crate::keys::hex(&Sha256::digest(data));
+    if data.len() as u64 != f.bytes || got_sha256 != f.sha256 {
+        return Err(ParamsError::Mismatch {
+            name: f.name,
+            got_bytes: data.len() as u64,
+            got_sha256,
+            bytes: f.bytes,
+            sha256: f.sha256,
+        });
+    }
+    Ok(())
+}
+
 fn check_file(dir: &Path, f: &ParamFile) -> Result<(), ParamsError> {
     let path = dir.join(f.name);
     let (got_bytes, got_sha256) =
@@ -291,6 +326,7 @@ impl ParamsSource {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Download progress: bytes so far of `total` (the files still missing when the call began).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Progress {
@@ -302,6 +338,7 @@ pub struct Progress {
     pub total: u64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Fetch every missing or wrong file from `source` into `dir` (created `0700` if absent),
 /// verifying each against its pin before it is renamed into place. Files already present and
 /// matching are kept. Returns the final [`ParamsState`] (verified).
@@ -354,6 +391,7 @@ pub async fn download(
     Ok(status(dir))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// The sink of one file: the `.part` file and the running hash, bounded by the pinned length.
 struct Sink<'a> {
     file: File,
@@ -366,6 +404,7 @@ struct Sink<'a> {
     path: &'a Path,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Sink<'_> {
     fn write(&mut self, buf: &[u8]) -> Result<(), ParamsError> {
         if self.n + buf.len() as u64 > self.f.bytes {
@@ -398,6 +437,7 @@ impl Sink<'_> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn fetch_one(
     source: &ParamsSource,
     f: &ParamFile,
@@ -466,6 +506,7 @@ async fn fetch_one(
     sink.finish()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Resolve a `Location` against the current target. A redirect may not downgrade TLS.
 fn redirect_target(cur: &ParamsSource, location: &str) -> Result<ParamsSource, String> {
     let ParamsSource::Http {
@@ -506,19 +547,24 @@ fn redirect_target(cur: &ParamsSource, location: &str) -> Result<ParamsSource, S
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn read_line(r: &mut BufReader<Box<dyn Io>>, line: &mut Vec<u8>) -> std::io::Result<usize> {
     line.clear();
     r.read_until(b'\n', line).await
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 enum Fetched {
     Done,
     Redirect(String),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 trait Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+#[cfg(not(target_arch = "wasm32"))]
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> Io for T {}
 
+#[cfg(not(target_arch = "wasm32"))]
 fn tls_config() -> Arc<tokio_rustls::rustls::ClientConfig> {
     static CFG: OnceLock<Arc<tokio_rustls::rustls::ClientConfig>> = OnceLock::new();
     CFG.get_or_init(|| {
@@ -536,6 +582,7 @@ fn tls_config() -> Arc<tokio_rustls::rustls::ClientConfig> {
     .clone()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn connect(tls: bool, host: &str, port: u16) -> Result<Box<dyn Io>, String> {
     let tcp = TcpStream::connect((host.trim_matches(|c| c == '[' || c == ']'), port))
         .await
@@ -554,6 +601,7 @@ async fn connect(tls: bool, host: &str, port: u16) -> Result<Box<dyn Io>, String
     Ok(Box::new(stream))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// One `GET`; the body goes to `sink`. A 3xx with `Location` is returned for the caller.
 async fn http_get(target: &ParamsSource, sink: &mut Sink<'_>) -> Result<Fetched, ParamsError> {
     let ParamsSource::Http {
@@ -702,6 +750,143 @@ async fn http_get(target: &ParamsSource, sink: &mut Sink<'_>) -> Result<Fetched,
     Ok(Fetched::Done)
 }
 
+/// The browser fetch (translated from `web/spike-prover`): both files as verified bytes, the
+/// Cache API copy when there is one, else the first of `sources` (base URLs ending in `/`;
+/// [`DEFAULT_SOURCES`] when empty) that serves bytes matching the pin, which is then cached.
+/// Runs in the worker the core lives in (the Cache API is available there).
+#[cfg(target_arch = "wasm32")]
+pub async fn fetch(sources: &[&str]) -> Result<(Vec<u8>, Vec<u8>), ParamsError> {
+    fetch_with(sources, |_, _, _| {}).await
+}
+
+/// [`fetch`] reporting progress (W1a): `progress(name, done, total)` before and after each
+/// file, `done` counting the bytes of the files complete so far and `total` = [`TOTAL_BYTES`]
+/// (the browser's `fetch` hands a file over whole, so there is no finer grain to report).
+#[cfg(target_arch = "wasm32")]
+pub async fn fetch_with(
+    sources: &[&str],
+    mut progress: impl FnMut(&'static str, u64, u64),
+) -> Result<(Vec<u8>, Vec<u8>), ParamsError> {
+    let sources = if sources.is_empty() {
+        DEFAULT_SOURCES
+    } else {
+        sources
+    };
+    progress(SPEND.name, 0, TOTAL_BYTES);
+    let spend = web::fetch_param(&SPEND, sources).await?;
+    progress(OUTPUT.name, SPEND.bytes, TOTAL_BYTES);
+    let output = web::fetch_param(&OUTPUT, sources).await?;
+    progress(OUTPUT.name, TOTAL_BYTES, TOTAL_BYTES);
+    Ok((spend, output))
+}
+
+/// The verified copies the Cache API holds, both files or `None` (no network; W1a's
+/// `params_status` and the confirm path's reload after a page reload). An entry that no longer
+/// verifies is deleted, as in [`fetch`].
+#[cfg(target_arch = "wasm32")]
+pub async fn cached() -> Result<Option<(Vec<u8>, Vec<u8>)>, ParamsError> {
+    let cache = web::open_cache(SPEND.name).await?;
+    let Some(spend) = web::cached_param(&cache, &SPEND).await? else {
+        return Ok(None);
+    };
+    let Some(output) = web::cached_param(&cache, &OUTPUT).await? else {
+        return Ok(None);
+    };
+    Ok(Some((spend, output)))
+}
+
+#[cfg(target_arch = "wasm32")]
+mod web {
+    use super::{ParamFile, ParamsError, CACHE_NAME};
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+
+    fn scope() -> web_sys::WorkerGlobalScope {
+        js_sys::global().unchecked_into()
+    }
+
+    fn transfer(name: &'static str, e: JsValue) -> ParamsError {
+        ParamsError::Transfer(name.into(), format!("{e:?}"))
+    }
+
+    async fn response_bytes(
+        name: &'static str,
+        resp: &web_sys::Response,
+    ) -> Result<Vec<u8>, ParamsError> {
+        let buf = JsFuture::from(resp.array_buffer().map_err(|e| transfer(name, e))?)
+            .await
+            .map_err(|e| transfer(name, e))?;
+        Ok(js_sys::Uint8Array::new(&buf).to_vec())
+    }
+
+    /// The Cache API cache holding the verified files.
+    pub async fn open_cache(name: &'static str) -> Result<web_sys::Cache, ParamsError> {
+        let caches = scope().caches().map_err(|e| transfer(name, e))?;
+        Ok(JsFuture::from(caches.open(CACHE_NAME))
+            .await
+            .map_err(|e| transfer(name, e))?
+            .unchecked_into())
+    }
+
+    /// The cache's copy of `f` when it verifies against the pin; an entry that no longer
+    /// matches is dropped, not used.
+    pub async fn cached_param(
+        cache: &web_sys::Cache,
+        f: &ParamFile,
+    ) -> Result<Option<Vec<u8>>, ParamsError> {
+        let name = f.name;
+        let key = format!("/{name}");
+        let hit = JsFuture::from(cache.match_with_str(&key))
+            .await
+            .map_err(|e| transfer(name, e))?;
+        if hit.is_undefined() {
+            return Ok(None);
+        }
+        let data = response_bytes(name, &hit.unchecked_into()).await?;
+        if super::verify_bytes(f, &data).is_ok() {
+            return Ok(Some(data));
+        }
+        let _ = JsFuture::from(cache.delete_with_str(&key)).await;
+        Ok(None)
+    }
+
+    pub async fn fetch_param(f: &ParamFile, sources: &[&str]) -> Result<Vec<u8>, ParamsError> {
+        let name = f.name;
+        let cache = open_cache(name).await?;
+        let key = format!("/{name}");
+        if let Some(data) = cached_param(&cache, f).await? {
+            return Ok(data);
+        }
+        let mut last = ParamsError::Transfer(name.into(), "no source".into());
+        for base in sources {
+            let url = format!("{base}{name}");
+            let resp: web_sys::Response = match JsFuture::from(scope().fetch_with_str(&url)).await {
+                Ok(r) => r.unchecked_into(),
+                Err(e) => {
+                    last = ParamsError::Transfer(name.into(), format!("{url}: {e:?}"));
+                    continue;
+                }
+            };
+            if !resp.ok() {
+                last = ParamsError::Transfer(name.into(), format!("{url}: HTTP {}", resp.status()));
+                continue;
+            }
+            let data = response_bytes(name, &resp).await?;
+            if let Err(e) = super::verify_bytes(f, &data) {
+                last = e;
+                continue;
+            }
+            let body = js_sys::Uint8Array::from(data.as_slice());
+            if let Ok(cached) = web_sys::Response::new_with_opt_buffer_source(Some(&body)) {
+                let _ = JsFuture::from(cache.put_with_str(&key, &cached)).await;
+            }
+            return Ok(data);
+        }
+        Err(last)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(test)]
 mod tests {
     use super::*;

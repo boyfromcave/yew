@@ -277,3 +277,54 @@ the build is refused.
   `qr_flutter`, `mobile_scanner` (camera), `flutter_rust_bridge`. None opens a socket; the
   `INTERNET` permission serves the core's gRPC only. No crash reporting, no analytics
   (`docs/release.md` §6).
+
+## The web shell (yew/web, W3)
+
+The browser shell (`web/`, plan `docs/plans/yew-web-plan.md` §3) runs the same core as
+WebAssembly in a dedicated worker; the threat model differs from the apps' in one way that
+no code can change: **the code arrives from the web server on every load.**
+
+**Threat model.**
+
+| Threat | What stands against it | What does not |
+|---|---|---|
+| A server (or a CDN, or a MITM on a plain origin) serving altered code | TLS to the origin; the **reproducible build** (`web/scripts/build-release.sh`: wasm module and bundle each built twice, every file compared; `dist/BUNDLE-SHA256SUMS` and its hash published with the release) so anyone can rebuild and compare; `web/scripts/verify-bundle.sh` checks a served origin against the sums and recomputes the SRI attributes; SRI on index.html's own script and stylesheet tags (`web/scripts/sri.mjs`) | The user's browser cannot verify the bundle hash by itself: SRI pins what index.html names, not index.html. A hostile origin serves a different index.html with matching attributes. Verification is external (a second party running verify-bundle, a browser extension, a pinned PWA) — the trust text says so |
+| XSS in the page | The CSP (`default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`): no inline script or style, no `eval`, no remote script, no framing; `check-web-imports.sh` keeps crypto and sockets out of `web/src`; every DOM write goes through `dom.ts` `h()` with text nodes (the one `innerHTML` is the QR SVG from `qrcode-generator`, built from the wallet's own address) | A CSP cannot stop a bug in the shipped code itself; `'wasm-unsafe-eval'` is needed for `WebAssembly.instantiate` and allows any wasm from `'self'` |
+| A hostile extension or a compromised browser profile | nothing — an extension with page access reads the DOM, the worker's messages and IndexedDB; this is the stated limit (`docs/trust.md`, the web paragraph) | — |
+| Another origin reading the wallet's storage | the same-origin policy (OPFS, IndexedDB, the Cache API are per origin); COOP `same-origin` + COEP `require-corp` (cross-origin isolation: no cross-origin window handles, `SharedArrayBuffer` available for a future threaded prover) | a subdomain is a different origin, but a cookie-less app has nothing a subdomain could reach anyway |
+| The seed at rest | AES-256-GCM in IndexedDB under a WebAuthn PRF passkey (HKDF) or PBKDF2-SHA-256 600 000 (`keystore.ts`, W1b); never localStorage, never a cookie, never sent; unlocked into the worker's wasm memory only | the PBKDF2 path is as strong as the passphrase; Argon2id waits for the core to export it (W1b); clearing site data deletes the ciphertext — only the written phrase restores |
+| A hostile light-client server | exactly the apps' S-4 table: the gate, the terms checks, the dry run; `connect-src 'self'` makes the page's own origin (the gateway) the only destination, so the server choice is the deployment's, not a setting | the same lies as on mobile: hidden payments, a stale tip, the fee payee |
+
+**Supply chain.** `tonic-web-wasm-client` is pinned to a git rev of an open upstream PR
+(`web/core-wasm/Cargo.toml`, `cf9abc39…`, PR #113: a Trailers-Only gRPC-web reply was
+"malformed response", W1a) — a fork rev in the dependency graph until the fix is released;
+it is the one git dependency outside `boyfromcave/*`, and the rev is in `Cargo.lock`. The
+wasm module is a function of `rust-toolchain.toml`, `core-wasm/Cargo.lock` and the sources only:
+`wasm-opt` is NOT run (`--no-opt`; wasm-pack downloads binaryen unverified, and the 9 % it
+saves on the wire is not worth an input outside the lock file — `build-core-wasm.sh`). The
+bundle is a function of `package-lock.json` (`npm ci`) and the sources; `vite.config.ts` says
+what must stay out (dates, environment values). The proving parameters are fetched once into
+the Cache API (`sapling_params::fetch_with`, W1a) from the standard source or an address set in
+Settings, and kept only if they match the pins compiled into the core (`sapling-spend.params`
+`8e48ffd23abb3a5fd9c5589204f32d9c31285a04b78096ba40a79b75677efc13`, 47 958 396 bytes;
+`sapling-output.params` `2f0ebbcbb9bb0bcffe95a397e7eba89c29eb4dde6191c339db88570e3f3fb0e4`,
+3 592 860 bytes); `confirm` re-verifies the cached copy before the prover loads (Z-2 holds).
+
+**Storage: the sahpool rule.** SQLite on OPFS goes through `sqlite-wasm-vfs`'s sahpool, which
+admits **one connection per file name at a time** and holds a fixed pool of **6 files** by
+default (`OpfsSAHPoolCfg::default()`); one wallet uses three (`yew-<net>.sqlite`,
+`shielded/yew-<net>/wallet.sqlite`, `shielded/yew-<net>/cache.sqlite`; journals come and go).
+The core's session (`yew-web-core`, `take_session` / `BUSY`) is the lock that keeps the rule:
+a call in flight makes every other call answer `busy: a call is in progress`
+(`tests/harden.rs` `busy_under_concurrency`: `sync`, `balances`, `history`,
+`shielded_balance` and `open_at` racing a sync, three rounds, then close and reopen the same
+store, the balance intact), and `core.ts` `serialized()` queues the UI's calls so the shell
+never sees it. A second store directory in the same origin (a restore beside an old wallet)
+exceeds the pool: "store: sqlite: unable to open database file" — the restore and forget
+flows must delete the old files or reserve capacity (plan W3 finding).
+
+**Memory.** The prover's peak is **115 MiB of wasm linear memory** (W0.3: after parsing the
+52 MB parameters and after one spend + two outputs; linear memory never shrinks) on top of
+the module (11.5 MB) and the page; a device that cannot give the worker ~150 MiB cannot send
+privately. Chrome, Firefox and Safari all allow it on a laptop; a low-memory phone browser may
+kill the worker (a `params:` error, not a loss).
