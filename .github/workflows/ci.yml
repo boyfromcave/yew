@@ -211,8 +211,9 @@ jobs:
         run: npm ci && scripts/check-web-imports.sh && npx vitest run
       - name: Rust toolchain + wasm32 target
         run: rustup show active-toolchain && rustup target add wasm32-unknown-unknown
-      - name: "Install clang (wasm32 C: secp256k1-sys, sqlite)"
-        run: sudo apt-get update && sudo apt-get install -y clang lld && clang --version
+      # llvm: llvm-ar (AR_wasm32_unknown_unknown); protoc: x402-ycash-light's build.rs.
+      - name: "Install clang, llvm-ar (wasm32 C: secp256k1-sys, sqlite) and protoc"
+        run: sudo apt-get update && sudo apt-get install -y clang lld llvm protobuf-compiler && clang --version && llvm-ar --version && protoc --version
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: web/core-wasm
