@@ -13,11 +13,9 @@
 #   web          yew/web (plan W3): the import rule, tsc, vitest, then web/scripts/build-release.sh
 #                — the wasm module and the Vite bundle each built twice and compared file by file
 #                (fails on non-determinism), BUNDLE-SHA256SUMS written — and verify-bundle.sh
-#                against the built dist served locally (the sums and the SRI attributes). The
-#                core-wasm crate's [patch] entries are LOCAL paths to sibling checkouts
-#                (../librustzcash6-web, ../x402-web, both `up/web`, plan W0.1) until those are
-#                pushed and the patches become git revs: the job clones the siblings when the
-#                branches exist upstream and otherwise skips the build (reported, not failed).
+#                against the built dist served locally (the sums and the SRI attributes).
+#                librustzcash6 and x402-ycash come by git rev (their `up/web` branches), as
+#                in the root manifest.
 # Not in this workflow: the devnet acceptance suites (scripts/devnet-*.sh). They need a workspace
 # devnet (an ARMED devnet from ycash-dd, the attest agent, lightwalletd-dd serving --yellowback,
 # the Python test framework), so they run nightly, non-gating, in devnet-nightly.yml: its `hosted`
@@ -209,58 +207,36 @@ jobs:
       - name: shell checks (imports, tsc, vitest)
         working-directory: web
         run: npm ci && npm run check
-      # The sibling checkouts the local [patch] paths name (web/core-wasm/Cargo.toml). Until
-      # `up/web` is pushed in both, the wasm build cannot resolve and the rest is skipped.
-      - name: siblings at up/web (librustzcash6-web, x402-web)
-        id: sib
-        run: |
-          ok=true
-          for r in librustzcash6:librustzcash6-web x402-ycash:x402-web; do
-            repo=${r%%:*}; dir=${r##*:}
-            if git ls-remote --exit-code --heads "https://github.com/boyfromcave/$repo.git" up/web >/dev/null 2>&1; then
-              git clone --quiet --branch up/web --depth 1 "https://github.com/boyfromcave/$repo.git" "$GITHUB_WORKSPACE/../$dir"
-            else
-              echo "::warning::boyfromcave/$repo has no up/web branch yet; the web release build is skipped"; ok=false
-            fi
-          done
-          echo "ok=$ok" >> "$GITHUB_OUTPUT"
       - name: Rust toolchain + wasm32 target
-        if: steps.sib.outputs.ok == 'true'
         run: rustup show active-toolchain && rustup target add wasm32-unknown-unknown
       - name: "Install clang (wasm32 C: secp256k1-sys, sqlite)"
-        if: steps.sib.outputs.ok == 'true'
         run: sudo apt-get update && sudo apt-get install -y clang lld && clang --version
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        if: steps.sib.outputs.ok == 'true'
         with:
           workspaces: web/core-wasm
           save-if: ${{ github.event_name != 'pull_request' }}
       - name: cache wasm-pack
-        if: steps.sib.outputs.ok == 'true'
         id: wp
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cargo/bin/wasm-pack
           key: wasm-pack-${{ runner.os }}-${{ runner.arch }}-${{ env.WASM_PACK_VERSION }}
       - name: install wasm-pack
-        if: steps.sib.outputs.ok == 'true' && steps.wp.outputs.cache-hit != 'true'
+        if: steps.wp.outputs.cache-hit != 'true'
         run: cargo install wasm-pack --version "$WASM_PACK_VERSION" --locked
       - name: reproducible release build (twice, compared)
-        if: steps.sib.outputs.ok == 'true'
         working-directory: web
         env:
           CC_wasm32_unknown_unknown: clang
           AR_wasm32_unknown_unknown: llvm-ar
         run: scripts/build-release.sh
       - name: verify the served bundle (sums + SRI)
-        if: steps.sib.outputs.ok == 'true'
         working-directory: web
         run: |
           python3 -m http.server 8080 --directory dist >/dev/null 2>&1 &
           sleep 1
           RELEASE_BUNDLE_HASH=$(shasum -a 256 dist/BUNDLE-SHA256SUMS | cut -d' ' -f1) scripts/verify-bundle.sh http://127.0.0.1:8080
       - name: bundle sums (artifact)
-        if: steps.sib.outputs.ok == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: yew-web-BUNDLE-SHA256SUMS

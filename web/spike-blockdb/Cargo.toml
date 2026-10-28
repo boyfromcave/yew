@@ -13,11 +13,11 @@ crate-type = ["cdylib", "rlib"]
 [workspace]
 
 [dependencies]
-zcash_client_sqlite = { path = "../../../librustzcash6-web/zcash_client_sqlite", default-features = false }
-zcash_client_backend = { path = "../../../librustzcash6-web/zcash_client_backend", default-features = false }
-zcash_keys = { path = "../../../librustzcash6-web/zcash_keys", features = ["sapling"] }
-zcash_primitives = { path = "../../../librustzcash6-web/zcash_primitives", default-features = false }
-zcash_protocol = { path = "../../../librustzcash6-web/components/zcash_protocol", features = ["local-consensus"] }
+zcash_client_sqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1", default-features = false }
+zcash_client_backend = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1", default-features = false }
+zcash_keys = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1", features = ["sapling"] }
+zcash_primitives = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1", default-features = false }
+zcash_protocol = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1", features = ["local-consensus"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false, features = ["std"] }
 zcash_note_encryption = "0.4"
 zip32 = "0.2"
@@ -37,7 +37,7 @@ js-sys = "0.3"
 wasm-bindgen-test = "0.3"
 
 [patch.crates-io]
-schemerz-rusqlite = { path = "../../../librustzcash6-web/components/schemerz-rusqlite" }
+schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1" }
 
 # As the yew root manifest does for its own crates: trial decryption, the shard tree and SQLite at
 # opt-level 0 overrun wasm-bindgen-test's per-test timeout; keep the dependencies optimised in the

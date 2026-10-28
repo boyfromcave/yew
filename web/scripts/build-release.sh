@@ -38,10 +38,10 @@ if [ "${WASM:-1}" = 1 ]; then
   # same from any checkout location, cargo home or target directory. This target-specific
   # variable REPLACES .cargo/config.toml's `target.wasm32-unknown-unknown.rustflags`, so the
   # getrandom cfg from there is repeated here (keep the two in step).
-  REPO=$(cd .. && pwd); SIB=$(cd ../.. && pwd)
+  REPO=$(cd .. && pwd)
   # The target directory cargo will use (CARGO_TARGET_DIR, or a config.toml `build.target-dir`).
   TARGET1=$(cd core-wasm && cargo metadata --format-version 1 --no-deps 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
-  export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="--cfg getrandom_backend=\"wasm_js\" --remap-path-prefix=$REPO=/src/yew --remap-path-prefix=$SIB/librustzcash6-web=/src/librustzcash6-web --remap-path-prefix=$SIB/x402-web=/src/x402-web --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=$(rustc --print sysroot)=/rustc --remap-path-prefix=$TARGET1=/target"
+  export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="--cfg getrandom_backend=\"wasm_js\" --remap-path-prefix=$REPO=/src/yew --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=$(rustc --print sysroot)=/rustc --remap-path-prefix=$TARGET1=/target"
   # The second build compiles from scratch in its own target directory (a cached artifact would
   # prove nothing); CLEAN=0 skips that and reuses the cache (fast, a weaker check).
   for i in 1 2; do

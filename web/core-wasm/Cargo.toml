@@ -47,9 +47,9 @@ opt-level = 3
 debug-assertions = false
 overflow-checks = false
 
-# LOCAL PATHS, as in the root Cargo.toml (patches do not propagate through dependencies).
+# As in the root Cargo.toml (patches do not propagate through dependencies).
 [patch.crates-io]
-schemerz-rusqlite = { path = "../../../librustzcash6-web/components/schemerz-rusqlite" }
+schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1" }
 # tonic-web-wasm-client 0.9.2 answers "malformed response" to a Trailers-Only gRPC-web reply
 # (grpc-status in the HTTP headers, empty body) — what Envoy Gateway sends for an empty server
 # stream (the kind cluster's yindex `GetTaddressTxids` for an address with no history) — so the
@@ -58,18 +58,3 @@ schemerz-rusqlite = { path = "../../../librustzcash6-web/components/schemerz-rus
 # until it is released. Same rev in web/core-wasm/Cargo.toml.
 tonic-web-wasm-client = { git = "https://github.com/QuantumExplorer/tonic-web-wasm-client.git", rev = "cf9abc3952405cd61d7deacf906ff9e1dd8515ea" }
 
-[patch."https://github.com/boyfromcave/librustzcash6.git"]
-zcash_protocol = { path = "../../../librustzcash6-web/components/zcash_protocol" }
-zcash_primitives = { path = "../../../librustzcash6-web/zcash_primitives" }
-f4jumble = { path = "../../../librustzcash6-web/components/f4jumble" }
-zcash_address = { path = "../../../librustzcash6-web/components/zcash_address" }
-zcash_encoding = { path = "../../../librustzcash6-web/components/zcash_encoding" }
-zcash_transparent = { path = "../../../librustzcash6-web/zcash_transparent" }
-zcash_client_backend = { path = "../../../librustzcash6-web/zcash_client_backend" }
-zcash_client_sqlite = { path = "../../../librustzcash6-web/zcash_client_sqlite" }
-zcash_keys = { path = "../../../librustzcash6-web/zcash_keys" }
-zcash_proofs = { path = "../../../librustzcash6-web/zcash_proofs" }
-zip321 = { path = "../../../librustzcash6-web/components/zip321" }
-
-[patch."https://github.com/boyfromcave/x402-ycash.git"]
-x402-ycash-light = { path = "../../../x402-web/light" }
