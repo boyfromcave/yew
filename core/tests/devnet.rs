@@ -25,7 +25,18 @@
 //!   a bundle with one mutated signature refused; a redeem after `lockHeight`; a −80 % price
 //!   shock and the claim of node 0's vault by the YEW wallet (the liquidator persona).
 //!
-//! Run: `YEW_DEVNET=1 cargo test -p yew-core --test devnet -- --ignored --nocapture [w1_|w2_|w4_]`.
+//! - `q_falcon_holders_receive_send_mint_and_restore` (quantum line, TOK-PQ): an ARMED devnet whose
+//!   nodes run `-pqfalconheight=<F>` (`scripts/devnet-falcon.sh`): P2PKH YED before `F`, the
+//!   Falcon receive address from `F`, a transfer spending a P2PKH and a Falcon token with Falcon
+//!   change, a mint whose token goes to a Falcon holder, and a restore from the seed.
+//!
+//! - `q_pqaddr_sq_receive_send_and_move` (quantum line, D-Q-20/D-Q-21): an ARMED devnet in the
+//!   mainnet regime with lightwalletd-dd q/pqaddr (`scripts/devnet-pqaddr.sh`): YEC and YED to the
+//!   wallet's Falcon holder found through its `rq…` form (YED a TOKEN row only, a `TOKEN_VALUE`
+//!   output HELD, plain YEC PQ_OWNED), a YEC send to the node's `rq…`, the PQ coin moved into the
+//!   wallet, and a restore from the seed.
+//!
+//! Run: `YEW_DEVNET=1 cargo test -p yew-core --test devnet -- --ignored --nocapture [w1_|w2_|w4_|q_falcon_|q_pqaddr_]`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -304,8 +315,10 @@ async fn w1_yec_round_trip_and_restore() {
     let (avail, _) = coins::yec_balances(&w.spendable_utxos().unwrap());
     assert!(avail < funded - send, "locked inputs are not spendable");
     dn.wait_mempool(&txid.to_string());
-    dn.run(&["mine", "1"]);
+    // The height before the block: read after `mine`, lightwalletd may already hold the new
+    // block and `h + 1` would never come.
     let h = c.latest_height().await.unwrap();
+    dn.run(&["mine", "1"]);
     wait_for_height(&mut c, h + 1).await;
     let r = sync(&mut w, &mut c, v.client_mut()).await.unwrap();
     let expected = funded - send - FEE_ZAT;
@@ -365,6 +378,22 @@ fn fresh_wallet(dir: &std::path::Path, name: &str, birthday: u64) -> (Wallet, St
         Wallet::open(&path, Network::Regtest, &mnemonic, "", Some(birthday)).unwrap(),
         mnemonic,
     )
+}
+
+/// The `z_importpqkey` argument (`"2:<seed hex>"`) of the Falcon holder key `id` of `w` (opened
+/// from `mnemonic`, no passphrase): `DerivePQSeed(seed, 2, index)` at the holder's index. Under
+/// TOK-PQ YED is held by Falcon keys, so this is the YED half of the key round trip (D-W-11).
+fn falcon_pqseed(w: &Wallet, mnemonic: &str, id: &yew_core::pq::PqKeyId) -> String {
+    let row = w
+        .own_falcon_holders()
+        .unwrap()
+        .remove(id)
+        .expect("an own Falcon holder");
+    let idx = yew_core::wallet::falcon_holder_index(row.hd_chain().unwrap(), row.index).unwrap();
+    let seed = keys::seed_from_mnemonic(mnemonic, "").unwrap();
+    let pq =
+        yew_core::pq::PqSeedRoot::from_seed(&seed).derive(yew_core::pq::SCHEME_FN_DSA_512, idx);
+    format!("{}:{}", yew_core::pq::SCHEME_FN_DSA_512, keys::hex(&pq))
 }
 
 /// Node `n`'s spendable YED coins as `(outpoint, cents)` from `yed_listunspent` (the wallet's
@@ -555,7 +584,7 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
     std::fs::create_dir_all(&dir).unwrap();
     let birthday = info.block_height.saturating_sub(1);
     let (mut a, _) = fresh_wallet(&dir, "a", birthday);
-    let (mut b, _) = fresh_wallet(&dir, "b", birthday);
+    let (mut b, b_mnemonic) = fresh_wallet(&dir, "b", birthday);
 
     // 1. yed_mint on node 0 (wait=false: the carrier first, a pool block, then the MINT the
     //    wallet broadcasts on its own, then another pool block).
@@ -594,12 +623,25 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
     let ti = v.client_mut().unwrap().tx_info(&mint_txid).await.unwrap();
     assert_eq!((ti.r#type.as_str(), ti.verdict.as_str()), ("mint", "ok"));
 
-    // 2. Node 0 sends YED and YEC to wallet A: nothing before confirmation, YED after.
+    // 2. Node 0 sends YED and YEC to wallet A: nothing before confirmation, YED after. The
+    //    devnet runs Falcon from the vault activation, as mainnet: YED goes to A's Falcon holder
+    //    address, and A's P2PKH YED address is refused by the node (TOK-PQ, bad-yed-holder).
     let a_addr = a.receive_address(false).unwrap();
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     assert_eq!((r.yed, r.yec), ((0, 0), (0, 0)));
+    assert!(
+        a.falcon_now(),
+        "the devnet mirrors mainnet: Falcon from the vault activation"
+    );
+    let a_falcon = a.falcon_holder_address(&a_addr).unwrap();
+    assert!(
+        a_falcon.starts_with("yr") && a_falcon.len() == 53,
+        "a 53-character yr… Falcon holder address"
+    );
+    let refused = dn.node_try(0, &["yed_send", &a_addr.address_ye, "5000"]);
+    assert!(refused.contains("bad-yed-holder"), "TOK-PQ: {refused}");
     let fund = dn.node(0, &["sendtoaddress", &a_addr.address_s, "1.0"]);
-    let sent = dn.node_json(0, &["yed_send", &a_addr.address_ye, "5000"]);
+    let sent = dn.node_json(0, &["yed_send", &a_falcon, "5000"]);
     let sent_txid = sent["txid"].as_str().unwrap().to_string();
     dn.wait_mempool(&fund);
     dn.wait_mempool(&sent_txid);
@@ -639,19 +681,17 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
     let bal = a.balances().unwrap();
     assert_eq!((bal.yed_cents, bal.yed_pending_cents), (5_000, 0));
 
-    // 3. A sends $12.34 to B: the change is PENDING_TOKEN until the block; then B has YED.
+    // 3. A sends $12.34 to B's Falcon holder: the change (to A's Falcon holder) is
+    //    PENDING_TOKEN until the block; then B has YED.
     let b_addr = b.receive_address(false).unwrap();
-    let p = yed_transfer::build_yed_transfer(
-        &a,
-        &[(b_addr.address_ye.clone(), 1_234)],
-        r.tip,
-        r.branch_id,
-    )
-    .unwrap();
-    assert_eq!(
-        (p.change_cents, p.yed_inputs.len(), p.fee),
-        (3_766, 1, FEE_ZAT)
-    );
+    let b_falcon_id = b.falcon_holder_id(&b_addr).unwrap();
+    let b_falcon = b.falcon_holder_address(&b_addr).unwrap();
+    let p = yed_transfer::build_yed_transfer(&a, &[(b_falcon.clone(), 1_234)], r.tip, r.branch_id)
+        .unwrap();
+    assert_eq!((p.change_cents, p.yed_inputs.len()), (3_766, 1));
+    // A Falcon token input is spent with a 1,577-byte scriptSig: the size-rated fee is above
+    // the FEE_ZAT floor (`max(FEE_ZAT, rate x size)`).
+    assert!(p.fee >= FEE_ZAT, "the fee is at least FEE_ZAT");
     assert!(p.yec_inputs.iter().all(|u| u.class.yec_spendable()));
     let (txid, val) = yed_transfer::broadcast(&a, &mut c, &mut v, &p)
         .await
@@ -722,7 +762,7 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
     let bad = yed_transfer::assemble(
         &a,
         &a_token,
-        &[(script::p2pkh_script(&b_addr.hash160), 9_999)],
+        &[(yew_core::pq::pqpkh_script(&b_falcon_id).unwrap(), 9_999)],
         &change_row.hash160,
         ra.tip,
         ra.branch_id,
@@ -757,13 +797,9 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
 
     // 5. Sub-dollar change is refused with the alternatives; the node's estimate on the same
     //    coins (after the key import below) reports the same two amounts.
-    let e = yed_transfer::build_yed_transfer(
-        &a,
-        &[(b_addr.address_ye.clone(), 3_716)],
-        ra.tip,
-        ra.branch_id,
-    )
-    .unwrap_err();
+    let e =
+        yed_transfer::build_yed_transfer(&a, &[(b_falcon.clone(), 3_716)], ra.tip, ra.branch_id)
+            .unwrap_err();
     let (below, above) = match e {
         yew_core::wallet::WalletError::Transfer(yed_transfer::TransferError::ChangeFloor {
             needed,
@@ -784,9 +820,8 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
     for round in 0..2 {
         let mut recipients = serde_json::Map::new();
         for _ in 0..7 {
-            let s = dn.node(0, &["getnewaddress"]);
-            let h = keys::parse_address(Network::Regtest, &s).unwrap().hash();
-            let ye = keys::encode_yellowback(Network::Regtest, &h);
+            // node 0's own Falcon holder (yed_getnewaddress from the Falcon height, TOK-PQ)
+            let ye = dn.node(0, &["yed_getnewaddress"]);
             recipients.insert(
                 ye,
                 Value::from(100 + rng.below(if round == 0 { 3_000 } else { 900 })),
@@ -802,10 +837,11 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
     }
     assert_eq!(comparisons, 100);
 
-    // 7. The WIF round trip (D-W-11): fund B's address with YEC too, export its key, import it
-    //    on node 5 (a -yellowback wallet node; node 1 is the stock node of the armed devnet),
-    //    dumpprivkey equals, balances show, the node reports the same change-floor
-    //    alternatives on those coins, and node 5 can yed_send them.
+    // 7. The key round trip (D-W-11): fund B's address with YEC too, export its WIF and its
+    //    Falcon holder seed and import both on node 5 (a -yellowback wallet node; node 1 is the
+    //    stock node of the armed devnet): dumpprivkey equals, balances show, the node reports the
+    //    same change-floor alternatives on those coins, and node 5 can yed_send them. Under TOK-PQ
+    //    the token is held by B's Falcon key, so the YED comes over with z_importpqkey.
     let fund_b = dn.node(0, &["sendtoaddress", &b_addr.address_s, "0.5"]);
     dn.wait_mempool(&fund_b);
     let h = dn.mine_pool();
@@ -816,7 +852,14 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
     let node5_before = dn.node_json(5, &["yed_getbalance"])["confirmedCents"]
         .as_u64()
         .unwrap();
-    dn.node(5, &["importprivkey", &wif, "yew-b", "true"]);
+    dn.node(5, &["importprivkey", &wif, "yew-b", "false"]);
+    let pqseed = falcon_pqseed(&b, &b_mnemonic, &b_falcon_id);
+    let imported = dn.node_json(5, &["z_importpqkey", &pqseed, "true", "yew-b-falcon"]);
+    assert_eq!(
+        imported["pqkeyid"].as_str().unwrap(),
+        keys::hex(&b_falcon_id.to_bytes()),
+        "{imported}"
+    );
     assert_eq!(
         dn.node(5, &["dumpprivkey", &b_addr.address_s]),
         wif,
@@ -826,8 +869,8 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
         dn.node(5, &["getreceivedbyaddress", &b_addr.address_s, "1"])
             .parse::<f64>()
             .unwrap(),
-        0.5001,
-        "0.5 YEC plus the token's TOKEN_VALUE, both received at the imported address"
+        0.5,
+        "0.5 YEC received at the imported address (the token is at B's Falcon holder)"
     );
     let node5_after = dn.node_json(5, &["yed_getbalance"])["confirmedCents"]
         .as_u64()
@@ -868,7 +911,7 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
         "the node reports the same alternatives on the same coins: {est}"
     );
     assert!(alt.below.is_some() && alt.above == Some(total));
-    let back = dn.node_json(5, &["yed_send", &a_addr.address_ye, "1234"]);
+    let back = dn.node_json(5, &["yed_send", &a_falcon, "1234"]);
     let back_txid = back["txid"].as_str().unwrap().to_string();
     dn.wait_mempool(&back_txid);
     let h = dn.mine_pool();
@@ -1147,10 +1190,28 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
         .expect("vault 2");
     println!("mint 2 (resumed) done: {} lock {}", f2.txid, v2.lock_height);
 
-    // 3. Plan §8.6 / open question 6: the owner key of vault 2 into node 5 with rescan.
-    let owner2_addr = keys::encode_yellowback(Network::Regtest, &v2.owner_hash160);
-    let wif2 = a.export_wif(&owner2_addr).unwrap();
-    dn.node(5, &["importprivkey", &wif2, "yew-vault-owner", "true"]);
+    // 3. Plan §8.6 / open question 6: the key of vault 2 into node 5 with rescan. On the quantum
+    //    line (rpcversion 7) the owner is a post-quantum key the node cannot import (there is no
+    //    PQ import RPC, and no owner public key is on chain): the WIF YEW exports is the token
+    //    holder's (the external key the PQ owner is paired with), so node 5 gets the YED, not the
+    //    vault.
+    let owner2_addr = keys::encode_pq_yellowback(Network::Regtest, &v2.owner).unwrap();
+    // Under TOK-PQ the minted token is held by the Falcon key paired with the mint's holder row
+    // (`mint_token_script`), so node 5 gets it with z_importpqkey, not importprivkey.
+    let holder2_row = a
+        .addresses()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.hash160 == v2.owner_hash160)
+        .expect("vault 2's holder row");
+    let holder2 = a.falcon_holder_id(&holder2_row).unwrap();
+    let pqseed2 = falcon_pqseed(&a, &mnemonic, &holder2);
+    let imported = dn.node_json(5, &["z_importpqkey", &pqseed2, "true", "yew-vault-holder"]);
+    assert_eq!(
+        imported["pqkeyid"].as_str().unwrap(),
+        keys::hex(&holder2.to_bytes()),
+        "{imported}"
+    );
     let listed5 = dn.node_json(5, &["yed_listvaults"]);
     let seen5 = listed5
         .as_array()
@@ -1160,11 +1221,15 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     let node5_yed = dn.node_json(5, &["yed_getbalance"])["confirmedCents"]
         .as_u64()
         .unwrap();
-    // In-term D-IT-15: a redeem before lockHeight is valid (with the early-redeem fee), so node 5
-    // would close vault 2 here with the imported key and the YED at its address; the probe asks
-    // for the quote only (yed_estimateredeem), and the redeem stays in 5b.
+    // In-term D-IT-15: a redeem before lockHeight is valid (with the early-redeem fee); before the
+    // quantum line node 5 could close vault 2 with the imported key. Now it quotes the early fee
+    // but cannot redeem (vault-not-owned: the owner is YEW's PQ key), and 5b records the refusal.
     let early = dn.node_try(5, &["yed_estimateredeem", &f2.txid]);
-    assert!(early.contains("\"early\": true"), "{early}");
+    // (`yed_listvaults` is the index's list of every vault: `seen5` says nothing about ownership.)
+    assert!(
+        early.contains("vault-not-owned") && early.contains("\"early\": true"),
+        "{early}"
+    );
     println!(
         "Q6: node 5 after importprivkey: yed_listvaults lists vault 2 = {seen5} yed_getbalance {node5_yed} cents; yed_estimateredeem before lockHeight -> {early}"
     );
@@ -1249,9 +1314,10 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
         .redeem_preview(&mut v, &v1.txid, r.tip, r.branch_id)
         .await
         .unwrap();
+    // rpcversion 8: FEE-1′ of the debt at the vault's stored pMint
     assert_eq!(
         p.fee_zat,
-        yew_core::params::fee_zat_for(Network::Regtest, v1.collateral_zat)
+        yew_core::params::protocol_fee_zat(v1.minted_cents, v1.p_mint).unwrap()
     );
     let (sent, val) = a.redeem_confirm(&mut c, &mut v, &p).await.unwrap();
     assert_eq!(
@@ -1317,14 +1383,40 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
 
     // 6. The liquidator persona: node 0 sends $1,000 YED to A; a −80 % shock; mine past
     //    node 0's vault's claimHeight until ListClaimable names it; claim it from A.
-    let target: Vec<Value> = dn
-        .node_json(0, &["yed_listvaults", "ACTIVE"])
-        .as_array()
+    // `yed_listvaults` lists every vault the index knows; the target is one YEW does not own.
+    // On a devnet brought up for this suite alone (the hosted nightly) node 0 has minted none
+    // yet: it mints one now (two-step, its wallet completes it on the next blocks).
+    let own: std::collections::HashSet<String> = a
+        .vaults()
         .unwrap()
         .iter()
-        .filter(|x| x["ownerAddress"].as_str() != Some(&owner2_addr))
-        .cloned()
+        .map(|x| txid_hex(&x.txid))
         .collect();
+    let others = |dn: &Devnet| -> Vec<Value> {
+        dn.node_json(0, &["yed_listvaults", "ACTIVE"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|x| x["ownerAddress"].as_str() != Some(&owner2_addr))
+            .filter(|x| !own.contains(x["txid"].as_str().unwrap_or("")))
+            .cloned()
+            .collect()
+    };
+    let mut target = others(&dn);
+    if target.is_empty() {
+        let m = dn.node_json(0, &["yed_mint", "100000", "48", "", "", "false"]);
+        println!("node 0 mints a claim target: {m}");
+        let start = Instant::now();
+        while target.is_empty() {
+            assert!(
+                start.elapsed() < Duration::from_secs(300),
+                "node 0's claim-target mint never confirmed"
+            );
+            let h = dn.mine_pool();
+            wait_for_height(&mut c, h).await;
+            target = others(&dn);
+        }
+    }
     let target = target
         .iter()
         .min_by_key(|x| x["claimHeight"].as_u64().unwrap())
@@ -1359,10 +1451,9 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
         }
     }
     let a_addr = a.receive_address(true).unwrap();
-    let fund_yed = dn.node_json(
-        0,
-        &["yed_send", &a_addr.address_ye, &target_cents.to_string()],
-    );
+    // TOK-PQ: YED to A's Falcon holder (a P2PKH holder is bad-yed-holder from the Falcon height).
+    let a_falcon = a.falcon_holder_address(&a_addr).unwrap();
+    let fund_yed = dn.node_json(0, &["yed_send", &a_falcon, &target_cents.to_string()]);
     confirm(&dn, &mut c, fund_yed["txid"].as_str().unwrap()).await;
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     assert!(r.yed.0 >= target_cents, "{r:?}");
@@ -1640,11 +1731,21 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The vault upgrade (U-24): a claim an attestor cancels during the claim delay. YEW claims a
-/// fresh vault of node 0 after a −80 % shock; attestor node 5 cancels the claimant intent
-/// (`vault_buildcancel` → `set_signcancel` → `vault_send`); YEW's sync marks the intent
-/// `CANCELLED` (the burn is not refunded), refuses a release, and the node re-created the vault
-/// as ACTIVE at the cancel's output 0. Needs the vault-upgrade devnet (`scripts/devnet-w4.sh`).
+/// The vault upgrade (U-24) with CAN-1 / CAN-2 / C4b (the cancel-limit design): a claim one
+/// attestor says was made at a wrong price, cancelled during the claim delay, and the claimant's
+/// burn coming back.
+///
+/// Node 0 mints a $100 vault. The first attestor goes offline (an aClaim is the bundle's highest
+/// price, so while it attests a higher price no claim passes); the pools and the other attestors
+/// move to a price at which the vault is at 120 % of its debt (under θ). Once its last attestation
+/// has aged out of the bundle, YEW claims the vault by path (a), burning $100 from two tokens at its
+/// Falcon holder (TOK-PQ: the devnet mirrors mainnet, so YED is held by Falcon holders only); the
+/// node's `refundHolder` is that holder. The offline attestor, which never attested the claim's
+/// `refHeight`, co-signs a cancel with a price statement 12 % higher, where the vault is above θ
+/// ("not claimable", C4b): `yed_signcancelcosign`, `yed_buildcancel`, `set_signcancel`,
+/// `vault_send`. YEW's sync then marks the intent `CANCELLED`, refuses a release, and finds the
+/// refund: its YED balance is back to what it was before the claim, the refund token at its Falcon
+/// holder. Needs the vault-upgrade devnet (`scripts/devnet-w4.sh`).
 #[tokio::test]
 #[ignore = "needs the ARMED vault-upgrade regtest devnet (scripts/devnet-w4.sh) and YEW_DEVNET=1"]
 async fn w4_claim_cancelled_by_the_attestor_set() {
@@ -1665,7 +1766,34 @@ async fn w4_claim_cancelled_by_the_attestor_set() {
     let dir = std::env::temp_dir().join(format!("yew-devnet-w4c-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (mut b, _) = fresh_wallet(&dir, "b", info.block_height.saturating_sub(1));
-    // A fresh $100 vault of node 0 (the target), and $100 of YED for B to burn.
+    let attestors: Vec<usize> = {
+        let st: Value = serde_json::from_str(
+            &std::fs::read_to_string(format!("{}/devnet.json", dn.dir)).unwrap(),
+        )
+        .unwrap();
+        st["attestors"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_u64())
+                    .map(|x| x as usize)
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![5, 6, 7])
+    };
+    assert!(!attestors.is_empty(), "an ARMED devnet has attestors");
+    // Pools at `pool`, every attestor at `attested`, then one pool block (no `price` in between:
+    // `price` also rewrites every automated attestor's mock price).
+    let dissenter = attestors[0];
+    // The pools and the running attestors at `pool`, then one pool block.
+    let mine_split = |pool: &str, _attested: &str| -> u64 {
+        dn.run(&["price", pool]);
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let p = 2 + NEXT.fetch_add(1, Ordering::SeqCst) % 3;
+        let out = dn.run(&["mine", "1", &p.to_string()]);
+        out.rsplit("-> ").next().unwrap().trim().parse().unwrap()
+    };
+    // A fresh $100 vault of node 0 (the target), and $120 of YED for B in two tokens.
     let active = |dn: &Devnet| -> Vec<String> {
         dn.node_json(0, &["yed_listvaults", "ACTIVE"])
             .as_array()
@@ -1674,56 +1802,84 @@ async fn w4_claim_cancelled_by_the_attestor_set() {
             .map(|x| x["txid"].as_str().unwrap().to_string())
             .collect()
     };
-    let before = active(&dn);
-    let m = dn.node_json(0, &["yed_mint", "10000", "48", "", "", "false"]);
-    println!("target mint: {m}");
-    let start = Instant::now();
-    let target = loop {
-        let h = dn.mine_pool();
-        wait_for_height(&mut c, h).await;
-        if let Some(t) = active(&dn).into_iter().find(|t| !before.contains(t)) {
-            break t;
+    // The dissenter's YEC is its bond: give it fee money for the cancel's carrier and fee.
+    let fee_addr = dn.node(dissenter, &["getnewaddress"]);
+    dn.node(0, &["sendtoaddress", &fee_addr, "1"]);
+    // Node 0 mints twice: $100 of YED to fund B (with what is left of the target's), then the target.
+    let mint_new = |cents: &str| {
+        let before = active(&dn);
+        let m = dn.node_json(0, &["yed_mint", cents, "48", "", "", "false"]);
+        println!("mint {cents}: {m}");
+        let start = Instant::now();
+        loop {
+            let h = dn.mine_pool();
+            if let Some(t) = active(&dn).into_iter().find(|t| !before.contains(t)) {
+                break (t, h);
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(300),
+                "the mint never confirmed"
+            );
         }
-        assert!(
-            start.elapsed() < Duration::from_secs(300),
-            "the target mint never confirmed"
-        );
     };
+    mint_new("10000");
+    let (target, h) = mint_new("10000");
+    wait_for_height(&mut c, h).await;
     let tv = dn.node_json(0, &["yed_getvault", &target]);
-    let claim_height = tv["claimHeight"].as_u64().unwrap();
+    let coll_yec = tv["collateralZat"].as_f64().unwrap() / 1e8;
+    let debt_usd = tv["mintedCents"].as_f64().unwrap() / 100.0;
+    // The price at which the vault's collateral is `ratio` × its debt.
+    let price_at = |ratio: f64| format!("{:.6}", ratio * debt_usd / coll_yec);
+    let (pool_px, attested_px) = (price_at(1.20), price_at(1.20 * 1.12));
+    println!("vault {target}: {coll_yec} YEC against ${debt_usd}; pools and two attestors ${pool_px} (120 %), node{dissenter} ${attested_px} (134 %)");
     let addr = b.receive_address(true).unwrap();
     for amount in ["5", "3", "2"] {
         dn.node(fund_node(), &["sendtoaddress", &addr.address_s, amount]);
     }
-    let y = dn.node_json(0, &["yed_send", &addr.address_ye, "10000"]);
-    confirm(&dn, &mut c, y["txid"].as_str().unwrap()).await;
+    let falcon = b
+        .falcon_holder_id(&addr)
+        .expect("a Falcon holder (the devnet mirrors mainnet)");
+    let holder = keys::encode_pq_yellowback(Network::Regtest, &falcon).unwrap();
+    // TOK-PQ: from the Falcon height YED is held by Falcon holders only (bad-yed-holder for a P2PKH
+    // address), so both tokens are at the wallet's Falcon holder and so is the refund.
+    let y1 = dn.node_json(0, &["yed_send", &holder, "6000"]);
+    confirm(&dn, &mut c, y1["txid"].as_str().unwrap()).await;
+    let y2 = dn.node_json(0, &["yed_send", &holder, "6000"]);
+    confirm(&dn, &mut c, y2["txid"].as_str().unwrap()).await;
     let mut r = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
-    assert!(r.yed.0 >= 10_000, "{r:?}");
-    dn.run(&["price", "--shock=-80%"]);
-    *dn.price.borrow_mut() = "10".into();
+    assert!(r.yed.0 >= 12_000, "{r:?}");
+    let yed_before_claim = r.yed.0;
+
+    // The dissenting attestor goes offline; the price falls until the vault is claimable at the
+    // claim price (the windows follow, and the dissenter's last attestation ages out).
+    dn.run(&["attestor", &dissenter.to_string(), "stop"]);
     let start = Instant::now();
     let entry = loop {
         assert!(
             start.elapsed() < Duration::from_secs(1200),
             "the target never became claimable"
         );
-        let h = dn.mine_pool();
+        let h = mine_split(&pool_px, &attested_px);
         wait_for_height(&mut c, h).await;
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         r = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
-        if r.tip < claim_height {
-            continue;
-        }
         if let Some(e) = b
             .claimable(&mut v)
             .await
             .unwrap()
             .into_iter()
-            .find(|x| x.vault_txid == target)
+            .find(|x| x.vault_txid == target && x.claimable)
         {
             break e;
         }
     };
+    assert_eq!(entry.claim_path, "a", "{entry:?}");
+    // CAN-2 on yed_listclaimable (node fix/cancel-fields-2): a vault never cancelled needs one.
+    assert_eq!(
+        (entry.cancels_required, entry.cancel_count),
+        (1, 0),
+        "{entry:?}"
+    );
     let target_id = txid_from_hex(&target).unwrap();
     let bounds = yew_core::build::terms::ClaimBounds {
         max_burn_cents: entry.minted_cents,
@@ -1748,29 +1904,82 @@ async fn w4_claim_cancelled_by_the_attestor_set() {
         .await
         .unwrap();
     assert_eq!(fc.validation.verdict, "ok");
-    confirm(&dn, &mut c, &fc.txid).await;
+    dn.wait_mempool(&fc.txid);
+    let h = mine_split(&pool_px, &attested_px);
+    wait_for_height(&mut c, h).await;
     let r = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
-    let yed_after_claim = r.yed.0;
     let intent = OutPoint {
         txid: txid_from_hex(&fc.txid).unwrap(),
         n: 0,
     };
+    // CAN-1: the node's refundHolder is the claim's first YED input, YEW's Falcon holder.
+    let claiming = dn.node_json(0, &["yed_getvault", &target]);
+    assert_eq!(claiming["status"].as_str(), Some("CLAIMING"), "{claiming}");
+    let holder_hex = claiming["refundHolder"]
+        .as_str()
+        .expect("a CLAIMING vault's refundHolder");
+    let holder_script = keys::unhex(holder_hex).unwrap();
     assert_eq!(
-        b.store.intent(&intent).unwrap().unwrap().state,
-        yew_core::store::IntentState::Pending
+        yew_core::pq::pqpkh_of(&holder_script),
+        Some(falcon),
+        "the refund goes to the wallet's Falcon holder"
     );
-    // Attestor node 5 cancels the claim within the delay.
+    let row = b.store.intent(&intent).unwrap().unwrap();
+    assert_eq!(row.state, yew_core::store::IntentState::Pending);
+    assert_eq!(row.refund.script, holder_script, "{row:?}");
+    let burned = claiming["burnedCents"].as_u64().unwrap();
+    assert_eq!(row.refund.cents, burned);
+    assert_eq!(
+        yed_before_claim - r.yed.0,
+        burned,
+        "the claim burned {burned}"
+    );
+
+    // The dissenting attestor cancels the claim within CLAIM_DELAY.
     let ip = format!("{}:0", fc.txid);
-    let built = dn.node_json(5, &["vault_buildcancel", &ip]);
-    println!("vault_buildcancel: {built}");
-    let signed = dn.node(5, &["set_signcancel", built["hex"].as_str().unwrap()]);
-    let signed_hex = serde_json::from_str::<Value>(&signed)
-        .ok()
-        .and_then(|j| j["hex"].as_str().map(String::from))
-        .unwrap_or(signed);
-    let cancel = dn.node(5, &["vault_send", &signed_hex]);
-    println!("cancel {cancel}");
-    confirm(&dn, &mut c, &cancel).await;
+    // A cancel re-creates the vault at the cancel's output 0, so the claimed outpoint is gone.
+    let cancelled = |dn: &Devnet| {
+        let out = dn.node_try(0, &["yed_getvault", &target]);
+        out.contains("vault-not-found")
+            || serde_json::from_str::<Value>(&out).is_ok_and(|j| j["status"] != "CLAIMING")
+    };
+    let mut cancel = String::new();
+    if !cancelled(&dn) {
+        // C4b: a member with no attestation at the claim's refHeight states its price there.
+        let micro = ((attested_px.parse::<f64>().unwrap()) * 1e6).round() as u64;
+        let micro = micro.to_string();
+        let mut cosig = None;
+        for a in [dissenter] {
+            let out = dn.node_try(a, &["yed_signcancelcosign", &ip, &micro]);
+            match serde_json::from_str::<Value>(&out) {
+                Ok(j) if j["cosig"].is_string() => {
+                    cosig = Some((a, j["cosig"].as_str().unwrap().to_string()));
+                    break;
+                }
+                _ => println!("node{a} yed_signcancelcosign: {out}"),
+            }
+        }
+        let (a, cos) = cosig.expect("an attestor whose attested price says not claimable co-signs");
+        let built = dn.node_json(a, &["yed_buildcancel", &ip, &format!("[\"{cos}\"]")]);
+        println!("yed_buildcancel: {built}");
+        if built["carrierTxid"].is_string() {
+            dn.wait_mempool(built["carrierTxid"].as_str().unwrap());
+        }
+        let signed = dn.node_json(
+            a,
+            &[
+                "set_signcancel",
+                built["hex"].as_str().unwrap(),
+                r#"{"acknowledgerestore":true}"#,
+            ],
+        );
+        cancel = dn.node(a, &["vault_send", signed["hex"].as_str().unwrap()]);
+        dn.wait_mempool(&cancel);
+        let h = mine_split(&pool_px, &attested_px);
+        wait_for_height(&mut c, h).await;
+    }
+    assert!(cancelled(&dn), "the claim was not cancelled");
+    tokio::time::sleep(Duration::from_secs(2)).await;
     let r = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
     let row = b.store.intent(&intent).unwrap().unwrap();
     assert_eq!(
@@ -1778,17 +1987,38 @@ async fn w4_claim_cancelled_by_the_attestor_set() {
         yew_core::store::IntentState::Cancelled,
         "{row:?}"
     );
-    assert!(row.note.contains("not refunded"), "{row:?}");
+    assert!(row.note.contains("came back"), "{row:?}");
     assert!(b.release_preview(&intent, r.tip, r.branch_id).is_err());
-    assert_eq!(r.yed.0, yed_after_claim, "the burn is not refunded (U-24)");
-    let reopened = dn.node_json(0, &["yed_getvault", &cancel]);
+    // CAN-1: the whole burn is back, as one token at the Falcon holder.
+    assert_eq!(
+        r.yed.0, yed_before_claim,
+        "the burn is refunded (CAN-1): {r:?}"
+    );
+    let tokens = dn.node_json(0, &["yed_listtokens", &format!("[\"{holder}\"]")]);
+    let refund = tokens
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| {
+            t["cents"].as_u64() == Some(burned)
+                && t["txid"].as_str() != y1["txid"].as_str()
+                && t["txid"].as_str() != y2["txid"].as_str()
+        })
+        .unwrap_or_else(|| panic!("no refund token of {burned} cents at {holder}: {tokens}"));
+    let cancel_txid = refund["txid"].as_str().unwrap().to_string();
+    if !cancel.is_empty() {
+        assert_eq!(cancel_txid, cancel);
+    }
+    let reopened = dn.node_json(0, &["yed_getvault", &cancel_txid]);
     assert_eq!(reopened["status"].as_str().unwrap(), "ACTIVE", "{reopened}");
-    let ti = v.client_mut().unwrap().tx_info(&cancel).await.unwrap();
+    assert_eq!(reopened["cancelCount"].as_u64(), Some(1), "{reopened}");
+    let ti = v.client_mut().unwrap().tx_info(&cancel_txid).await.unwrap();
     assert_eq!(ti.r#type, "claim_cancel");
     println!(
-        "W4 cancel acceptance ok: claim {} cancelled by {cancel}; the vault lives on at {cancel}:0",
+        "W4 cancel acceptance ok: claim {} cancelled by {cancel_txid}; {burned} cents refunded to the Falcon holder {holder}; the vault lives on at {cancel_txid}:0",
         fc.txid
     );
+    dn.run(&["attestor", &dissenter.to_string(), "start"]);
     dn.run(&["price", "50"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1830,7 +2060,7 @@ async fn mine_and_sync(
 #[ignore = "needs an ARMED in-term regtest devnet (scripts/devnet-it.sh) and YEW_DEVNET=1"]
 async fn it_early_redeem_and_in_term_claim() {
     use yew_core::build::mint::window_open;
-    use yew_core::params::{early_redeem_fee_zat, fee_zat_for, CLAIM_THRESHOLD_BPS};
+    use yew_core::params::{early_redeem_fee_zat, protocol_fee_zat, CLAIM_THRESHOLD_BPS};
     if std::env::var("YEW_DEVNET").ok().as_deref() != Some("1") {
         eprintln!("YEW_DEVNET is not 1; skipping");
         return;
@@ -1847,7 +2077,11 @@ async fn it_early_redeem_and_in_term_claim() {
     assert!(availability.usable(), "{availability:?}");
     let ref_lag = match &availability {
         Availability::Present { info, .. } => {
-            assert_eq!(info.rpcversion, 6, "the in-term line");
+            assert_eq!(
+                info.rpcversion,
+                yew_core::net::yellowback::KNOWN_RPCVERSION,
+                "the in-term rules on the quantum line (rpcversion 7)"
+            );
             let p = info.params.as_ref().unwrap();
             assert!(p.in_term_claims, "params.inTermClaims");
             assert_eq!(p.claim_threshold_bps, CLAIM_THRESHOLD_BPS);
@@ -1936,8 +2170,8 @@ async fn it_early_redeem_and_in_term_claim() {
         .redeem_preview(&mut v, &v1.txid, r.tip, r.branch_id)
         .await
         .unwrap();
-    let fee1 = fee_zat_for(Network::Regtest, v1.collateral_zat);
-    let early = early_redeem_fee_zat(v1.collateral_zat, 500);
+    let fee1 = protocol_fee_zat(v1.minted_cents, v1.p_mint).unwrap();
+    let early = early_redeem_fee_zat(v1.minted_cents, 500, v1.p_mint);
     assert_eq!(
         (p.early_redeem_fee_zat, p.fee_zat, p.lock_time),
         (early, fee1 + early, v1.owner_height),
@@ -1950,19 +2184,26 @@ async fn it_early_redeem_and_in_term_claim() {
         fee1 + early,
         "the early fee rides on the FEE-1 output"
     );
-    // The node's own quote for the same vault (its owner key imported into node 5): the same fee.
+    // The node's own quote for the same vault: on the quantum line the owner is YEW's SLH-DSA
+    // key, which no node RPC imports, so node 5 (holding only the paired holder key) quotes the
+    // fees with `canRedeem: false` and "vault-not-owned"; the fees must still be YEW's.
     let owner_addr = keys::encode_yellowback(Network::Regtest, &v1.owner_hash160);
     let wif = a.export_wif(&owner_addr).unwrap();
-    dn.node(5, &["importprivkey", &wif, "yew-it-owner", "true"]);
+    dn.node(5, &["importprivkey", &wif, "yew-it-holder", "true"]);
     let quote = dn.node_try(5, &["yed_estimateredeem", &txid_hex(&v1.txid)]);
     println!("node 5 yed_estimateredeem: {quote}");
-    if let Ok(q) = serde_json::from_str::<Value>(&quote) {
-        assert_eq!(q["earlyRedeemFeeZat"].as_i64(), Some(early), "{q}");
-        assert_eq!(q["feeZat"].as_i64(), Some(fee1 + early), "{q}");
-        assert_eq!(q["early"].as_bool(), Some(true), "{q}");
-    } else {
-        panic!("yed_estimateredeem did not answer a quote: {quote}");
-    }
+    let q: Value = serde_json::from_str(&quote).expect("yed_estimateredeem answers a quote");
+    assert_eq!(q["earlyRedeemFeeZat"].as_i64(), Some(early), "{q}");
+    assert_eq!(q["feeZat"].as_i64(), Some(fee1 + early), "{q}");
+    assert_eq!(q["early"].as_bool(), Some(true), "{q}");
+    assert_eq!(q["canRedeem"].as_bool(), Some(false), "{q}");
+    assert!(
+        q["error"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("vault-not-owned"),
+        "{q}"
+    );
     let (sent, val) = a.redeem_confirm(&mut c, &mut v, &p).await.unwrap();
     assert_eq!(
         (val.verdict.as_str(), val.path.as_str(), val.burned),
@@ -2043,10 +2284,11 @@ async fn it_early_redeem_and_in_term_claim() {
     assert_eq!(a.mints().unwrap().len(), mints_before, "nothing funded");
     // A needs the target's debt in YED (its own $100 stays for v2's redeem).
     let a_addr = a.receive_address(true).unwrap();
-    let fund_yed = dn.node_json(
-        0,
-        &["yed_send", &a_addr.address_ye, &target_cents.to_string()],
-    );
+    // TOK-PQ: a P2PKH YED holder is refused (bad-yed-holder); YED goes to A's Falcon holder.
+    let refused = dn.node_try(0, &["yed_send", &a_addr.address_ye, "1000"]);
+    assert!(refused.contains("bad-yed-holder"), "TOK-PQ: {refused}");
+    let a_falcon = a.falcon_holder_address(&a_addr).unwrap();
+    let fund_yed = dn.node_json(0, &["yed_send", &a_falcon, &target_cents.to_string()]);
     confirm(&dn, &mut c, fund_yed["txid"].as_str().unwrap()).await;
     r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     assert_eq!(r.yed.0, 10_000 + target_cents, "{r:?}");
@@ -2146,7 +2388,7 @@ async fn it_early_redeem_and_in_term_claim() {
         .redeem_preview(&mut v, &v2.txid, r.tip, r.branch_id)
         .await
         .unwrap();
-    let early2 = early_redeem_fee_zat(v2.collateral_zat, 500);
+    let early2 = early_redeem_fee_zat(v2.minted_cents, 500, v2.p_mint);
     assert_eq!(p2.early_redeem_fee_zat, early2, "{p2:?}");
     let (sent2, val2) = a.redeem_confirm(&mut c, &mut v, &p2).await.unwrap();
     assert_eq!((val2.verdict.as_str(), val2.path.as_str()), ("ok", "owner"));
@@ -3773,4 +4015,361 @@ async fn s5_interrupted_sync_resumes() {
     assert_eq!(private_rows(&mut w), want.1);
     let _ = std::fs::remove_dir_all(&dir);
     s.finish("interrupt");
+}
+
+/// Falcon YED holders (TOK-PQ; quantum spec F-7, owner decision 2026-10-10: Falcon from day one on
+/// mainnet). On an ARMED devnet of the quantum node whose nodes all run `-pqfalconheight=<F>`
+/// (`scripts/devnet-falcon.sh`, portseed 2200, lightwalletd on 2219):
+///
+/// 1. before `F` the wallet's YED receive address is its P2PKH key and node 0 pays it YED;
+/// 2. from `F` the receive address is the 53-character Falcon holder of the same key, node 0 pays
+///    it YED (a `TX_PQPKH` scheme 2 token, found through `GetAddressTokens`);
+/// 3. YEW sends YED to node 0's Falcon address spending the P2PKH and the Falcon token (the
+///    Falcon input signed with the vendored PQClean code, 1,577-byte scriptSig), its change
+///    going to a Falcon holder; the node's gate verdict is `ok` and the block accepts it;
+/// 4. a YEW mint after `F` puts its token on the holder key's Falcon pair;
+/// 5. a wallet restored from the seed finds every Falcon token (the gap scan).
+#[tokio::test]
+#[ignore = "needs an ARMED quantum devnet with -pqfalconheight (scripts/devnet-falcon.sh) and YEW_DEVNET=1"]
+async fn q_falcon_holders_receive_send_mint_and_restore() {
+    use yew_core::build::mint::window_open;
+    if std::env::var("YEW_DEVNET").ok().as_deref() != Some("1") {
+        eprintln!("YEW_DEVNET is not 1; skipping");
+        return;
+    }
+    let dn = Devnet::new("yb-devnet-falcon", "2200");
+    let server =
+        Server::parse(&env_or("YEW_DEVNET_SERVER", "127.0.0.1:2219".into()), true).unwrap();
+    let channel = server.connect().await.expect("connect to lightwalletd");
+    let mut c = CompactClient::from_channel(channel.clone());
+    let info = c.lightd_info_for(Network::Regtest).await.unwrap();
+    let (mut v, availability) = Validator::detect(YellowbackClient::from_channel(channel))
+        .await
+        .expect("probe");
+    assert!(availability.usable(), "{availability:?}");
+    let falcon_height = match &availability {
+        Availability::Present { info, .. } => {
+            let pq = info
+                .params
+                .as_ref()
+                .unwrap()
+                .pq
+                .as_ref()
+                .expect("params.pq");
+            assert!(
+                pq.falcon_height > 0,
+                "the devnet runs -pqfalconheight: {pq:?}"
+            );
+            pq.falcon_height as u64
+        }
+        Availability::Absent => unreachable!(),
+    };
+    warm_and_fund_node_yed(&dn, &mut c, &mut v, &availability).await;
+    let tip = c.latest_height().await.unwrap();
+    assert!(
+        tip + 6 < falcon_height,
+        "start the test well before the Falcon height {falcon_height} (tip {tip})"
+    );
+
+    let dir = std::env::temp_dir().join(format!("yew-devnet-falcon-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let birthday = info.block_height.saturating_sub(1);
+    let (mut a, mnemonic) = fresh_wallet(&dir, "a", birthday);
+    let fund = fund_node();
+    let addr = a.receive_address(false).unwrap();
+    for amount in ["12", "3"] {
+        let t = dn.node(fund, &["sendtoaddress", &addr.address_s, amount]);
+        assert_eq!(t.len(), 64, "{t}");
+        dn.wait_mempool(&t);
+    }
+    // 1. Before Falcon: a P2PKH YED receive address.
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert!(!a.falcon_now(), "tip {} before {falcon_height}", r.tip);
+    let pre = dn.node_json(0, &["yed_send", &addr.address_ye, "5000"]);
+    confirm(&dn, &mut c, pre["txid"].as_str().unwrap()).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(r.yed, (5_000, 0), "{r:?}");
+    assert_eq!(r.yec.0 + r.yec.1, 15 * 100_000_000);
+
+    // 2. Mine to the Falcon height: the receive address becomes the Falcon holder.
+    loop {
+        let h = dn.mine_pool();
+        wait_for_height(&mut c, h).await;
+        if h + 1 >= falcon_height {
+            break;
+        }
+    }
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert!(a.falcon_now(), "tip {} at {falcon_height}", r.tip);
+    let row = a.receive_address(false).unwrap();
+    let falcon_addr = a.falcon_holder_address(&row).unwrap();
+    assert_eq!(falcon_addr.len(), 53, "{falcon_addr}");
+    assert!(falcon_addr.starts_with("yr"));
+    // the node agrees it is a Falcon holder address
+    let va = dn.node_json(0, &["yed_validateaddress", &falcon_addr]);
+    assert_eq!(va["isvalid"].as_bool(), Some(true), "{va}");
+    // a P2PKH YED address is refused by the node now (TOK-PQ), as by YEW
+    let refused = dn.node_try(0, &["yed_send", &addr.address_ye, "1000"]);
+    assert!(refused.contains("bad-yed-holder"), "{refused}");
+    let to_falcon = dn.node_json(0, &["yed_send", &falcon_addr, "3000"]);
+    confirm(&dn, &mut c, to_falcon["txid"].as_str().unwrap()).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(r.yed, (8_000, 0), "{r:?}");
+    let utxos = a.store.utxos().unwrap();
+    let falcon_token = utxos
+        .iter()
+        .find(|u| u.class == UtxoClass::Token && yew_core::pq::pqpkh_of(&u.script).is_some())
+        .expect("a Falcon TOKEN row");
+    assert_eq!(
+        (falcon_token.cents, falcon_token.address.as_str()),
+        (3_000, falcon_addr.as_str())
+    );
+
+    // 3. Send 6,000 cents to node 0's Falcon address: both tokens in, Falcon change.
+    let node_falcon = dn.node(0, &["yed_getnewaddress"]);
+    assert_eq!(node_falcon.len(), 53, "{node_falcon}");
+    let p =
+        yed_transfer::build_yed_transfer(&a, &[(node_falcon.clone(), 6_000)], r.tip, r.branch_id)
+            .unwrap();
+    assert_eq!((p.yed_inputs.len(), p.change_cents), (2, 2_000));
+    let (tx, _) = Transaction::parse(&p.raw).unwrap();
+    let falcon_in = tx
+        .vin
+        .iter()
+        .find(|i| i.prevout == falcon_token.outpoint)
+        .expect("the Falcon token is spent");
+    assert_eq!(falcon_in.script_sig.len(), 1_577);
+    let change = yew_core::pq::pqpkh_of(&tx.vout[1].script_pubkey).expect("Falcon change");
+    assert!(a.own_falcon_holders().unwrap().contains_key(&change));
+    let (txid, validation) = yed_transfer::broadcast(&a, &mut c, &mut v, &p)
+        .await
+        .unwrap();
+    assert_eq!(validation.verdict, "ok", "{validation:?}");
+    confirm(&dn, &mut c, &txid).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(r.yed, (2_000, 0), "{r:?}");
+    let listed = dn.node_json(0, &["yed_listtokens", &format!("[\"{node_falcon}\"]")]);
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["txid"] == txid.as_str() && t["cents"] == 6_000),
+        "{listed}"
+    );
+
+    // 4. A mint after Falcon: the token goes to the holder key's Falcon pair.
+    let id = a
+        .mint_start(&mut c, &mut v, 10_000, 96, None, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    let m = a.store.mint(id).unwrap().unwrap();
+    confirm(&dn, &mut c, &txid_hex(&m.carrier_txid)).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert!(window_open(r.tip, m.expiry_height));
+    let f = a
+        .mint_finish(&mut c, &mut v, id, r.tip, r.branch_id)
+        .await
+        .unwrap();
+    assert_eq!(f.validation.verdict, "ok", "{:?}", f.validation);
+    confirm(&dn, &mut c, &f.txid).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(r.yed, (12_000, 0), "{r:?}");
+    let (mtx, _) = Transaction::parse(&f.raw).unwrap();
+    let minted = yew_core::pq::pqpkh_of(&mtx.vout[1].script_pubkey).expect("Falcon token");
+    assert_eq!(minted.scheme, 2);
+    assert!(a.own_falcon_holders().unwrap().contains_key(&minted));
+
+    // 5. Restore from the seed: every Falcon token is found again.
+    let path = dir.join("restored.sqlite").to_string_lossy().to_string();
+    let mut b = Wallet::open(&path, Network::Regtest, &mnemonic, "", Some(birthday)).unwrap();
+    let rb = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(rb.yed, r.yed, "{rb:?}");
+    let falcon_rows = b
+        .store
+        .utxos()
+        .unwrap()
+        .into_iter()
+        .filter(|u| u.class == UtxoClass::Token && yew_core::pq::pqpkh_of(&u.script).is_some())
+        .count();
+    assert_eq!(falcon_rows, 2, "the Falcon change and the minted token");
+    println!(
+        "Falcon devnet ok: F={falcon_height}, transfer {txid} (Falcon input + change), mint {}",
+        f.txid
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Post-quantum addresses end to end (lightwalletd-dd q/pqaddr: `TX_PQPKH` in the taddr methods
+/// under the plain `sq…`/`rq…` form). On an ARMED quantum devnet in the mainnet regime (Falcon
+/// from the vault activation; `scripts/devnet-pqaddr.sh`, portseed 3370, lightwalletd on 3389):
+///
+/// 1. node 2 pays YEC to the `rq…` form of the wallet's Falcon holder (once plain, once exactly
+///    `TOKEN_VALUE`) and node 0 pays YED to its `yr…` form: the sync finds all three through the
+///    `rq…` address; the YED is one TOKEN row (from `GetAddressTokens`, not duplicated by
+///    `GetAddressUtxos`), the `TOKEN_VALUE` output is HELD, the plain YEC is PQ_OWNED — in neither
+///    YEC balance — and the payment is in history;
+/// 2. YEW sends YEC to node 0's `rq…` address (a `TX_PQPKH` output the node and lightwalletd see)
+///    and refuses its 53-character `yr…` form as a YEC destination;
+/// 3. the PQ_OWNED coin moves into the wallet (one Falcon input, gate `ok`, mined);
+/// 4. a wallet restored from the seed finds the same balances.
+#[tokio::test]
+#[ignore = "needs an ARMED quantum devnet and lightwalletd-dd q/pqaddr (scripts/devnet-pqaddr.sh) and YEW_DEVNET=1"]
+async fn q_pqaddr_sq_receive_send_and_move() {
+    if std::env::var("YEW_DEVNET").ok().as_deref() != Some("1") {
+        eprintln!("YEW_DEVNET is not 1; skipping");
+        return;
+    }
+    let dn = Devnet::new("yb-devnet-pqaddr", "3370");
+    let server =
+        Server::parse(&env_or("YEW_DEVNET_SERVER", "127.0.0.1:3389".into()), true).unwrap();
+    let channel = server.connect().await.expect("connect to lightwalletd");
+    let mut c = CompactClient::from_channel(channel.clone());
+    let info = c.lightd_info_for(Network::Regtest).await.unwrap();
+    let (mut v, availability) = Validator::detect(YellowbackClient::from_channel(channel))
+        .await
+        .expect("probe");
+    assert!(availability.usable(), "{availability:?}");
+    warm_and_fund_node_yed(&dn, &mut c, &mut v, &availability).await;
+
+    let dir = std::env::temp_dir().join(format!("yew-devnet-pqaddr-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let birthday = info.block_height.saturating_sub(1);
+    let (mut a, mnemonic) = fresh_wallet(&dir, "a", birthday);
+    let fund = fund_node();
+    let addr = a.receive_address(false).unwrap();
+    let t = dn.node(fund, &["sendtoaddress", &addr.address_s, "5"]);
+    confirm(&dn, &mut c, &t).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert!(
+        a.falcon_now(),
+        "the devnet mirrors mainnet: Falcon from the vault activation"
+    );
+    assert_eq!(r.yec.0 + r.yec.1, 5 * 100_000_000);
+    assert!(
+        !r.pq_unindexed,
+        "lightwalletd-dd q/pqaddr serves PQ addresses: {r:?}"
+    );
+
+    // 1. YEC and YED to the wallet's Falcon holder, YEC through its rq… form.
+    let row = a.receive_address(false).unwrap();
+    let falcon = a.falcon_holder_id(&row).unwrap();
+    let holder_yr = keys::encode_pq_yellowback(Network::Regtest, &falcon).unwrap();
+    let holder_rq = keys::encode_pq_yec(Network::Regtest, &falcon).unwrap();
+    assert!(
+        holder_rq.starts_with("rq") && holder_rq.len() == 53,
+        "{holder_rq}"
+    );
+    let va = dn.node_json(0, &["validateaddress", &holder_rq]);
+    assert_eq!(va["isvalid"].as_bool(), Some(true), "{va}");
+    let pay = dn.node(fund, &["sendtoaddress", &holder_rq, "2"]);
+    let token_sized = dn.node(fund, &["sendtoaddress", &holder_rq, "0.0001"]);
+    dn.wait_mempool(&pay);
+    dn.wait_mempool(&token_sized);
+    let yed = dn.node_json(0, &["yed_send", &holder_yr, "3000"]);
+    let yed_txid = yed["txid"].as_str().unwrap().to_string();
+    confirm(&dn, &mut c, &yed_txid).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert!(r.pq_addresses > 0 && !r.pq_unindexed, "{r:?}");
+    assert_eq!(r.yed, (3_000, 0), "{r:?}");
+    assert_eq!(
+        r.yec.0 + r.yec.1,
+        5 * 100_000_000,
+        "YEC at a PQ key is in neither balance"
+    );
+    let utxos = a.store.utxos().unwrap();
+    let pq_of = |class: UtxoClass| {
+        utxos
+            .iter()
+            .filter(|u| u.class == class && yew_core::pq::pqpkh_of(&u.script) == Some(falcon))
+            .collect::<Vec<_>>()
+    };
+    let tokens = pq_of(UtxoClass::Token);
+    assert_eq!(tokens.len(), 1, "one Falcon TOKEN row: {utxos:?}");
+    assert_eq!(tokens[0].cents, 3_000);
+    assert_eq!(txid_hex(&tokens[0].outpoint.txid), yed_txid);
+    let held = pq_of(UtxoClass::Held);
+    assert_eq!(held.len(), 1, "{utxos:?}");
+    assert_eq!(held[0].value, TOKEN_VALUE);
+    assert_eq!(txid_hex(&held[0].outpoint.txid), token_sized);
+    let owned = pq_of(UtxoClass::PqOwned);
+    assert_eq!(owned.len(), 1, "{utxos:?}");
+    assert_eq!(owned[0].value, 2 * 100_000_000);
+    assert_eq!(txid_hex(&owned[0].outpoint.txid), pay);
+    let b = a.balances().unwrap();
+    assert_eq!(b.yec_pq_zat, 2 * 100_000_000);
+    assert_eq!(b.pq_coins, vec![owned[0].outpoint]);
+    let hist = a.store.history().unwrap();
+    let paid = hist
+        .iter()
+        .find(|h| txid_hex(&h.txid) == pay)
+        .expect("the rq… payment is in history");
+    assert!(paid.yec_delta >= 2 * 100_000_000, "{paid:?}");
+
+    // 2. YEW → node 0's rq… address; its yr… form is refused as a YEC destination.
+    let node_yr = dn.node(0, &["yed_getnewaddress"]);
+    let node_id = keys::parse_pq_address(Network::Regtest, &node_yr).unwrap();
+    let node_rq = keys::encode_pq_yec(Network::Regtest, &node_id).unwrap();
+    let e =
+        yec_send::build_yec_send(&a, &node_yr, 100_000_000, false, r.tip, r.branch_id).unwrap_err();
+    assert!(e.to_string().contains("sq…"), "{e}");
+    let p = yec_send::build_yec_send(&a, &node_rq, 100_000_000, false, r.tip, r.branch_id).unwrap();
+    let sent = yec_send::broadcast(&a, &mut c, &mut v, &p).await.unwrap();
+    confirm(&dn, &mut c, &sent).await;
+    let out = dn.node_json(0, &["gettxout", &sent, "0"]);
+    assert_eq!(
+        out["scriptPubKey"]["type"].as_str(),
+        Some("pqpubkeyhash"),
+        "{out}"
+    );
+    let listed = c
+        .address_utxos(std::slice::from_ref(&node_rq), 0)
+        .await
+        .unwrap();
+    assert!(
+        listed
+            .iter()
+            .any(|u| txid_hex(&u.txid) == sent && u.index == 0 && u.value_zat == 100_000_000),
+        "lightwalletd lists the payment under {node_rq}"
+    );
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(r.yec.0 + r.yec.1, 4 * 100_000_000 - p.fee);
+
+    // 3. The PQ_OWNED coin moves into the wallet.
+    let coin = a.balances().unwrap().pq_coins[0];
+    let mv = a.release_preview(&coin, r.tip, r.branch_id).unwrap();
+    let (mtx, _) = Transaction::parse(&mv.raw).unwrap();
+    assert_eq!(mtx.vin.len(), 1);
+    assert_eq!(mtx.vin[0].script_sig.len(), 1_577);
+    let (moved, validation) = a.release_confirm(&mut c, &mut v, &mv).await.unwrap();
+    assert_eq!(validation.verdict, "ok", "{validation:?}");
+    assert_eq!(validation.burned, 0);
+    confirm(&dn, &mut c, &moved).await;
+    let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(r.yec.0 + r.yec.1, 4 * 100_000_000 - p.fee + mv.value);
+    assert_eq!(r.yed, (3_000, 0));
+    let b = a.balances().unwrap();
+    assert_eq!((b.yec_pq_zat, b.pq_coins.len()), (0, 0));
+
+    // 4. Restore from the seed.
+    let path = dir.join("restored.sqlite").to_string_lossy().to_string();
+    let mut w = Wallet::open(&path, Network::Regtest, &mnemonic, "", Some(birthday)).unwrap();
+    let rw = sync(&mut w, &mut c, v.client_mut()).await.unwrap();
+    assert_eq!(
+        (rw.yec.0 + rw.yec.1, rw.yed),
+        (r.yec.0 + r.yec.1, r.yed),
+        "{rw:?}"
+    );
+    assert_eq!(w.balances().unwrap().yec_pq_zat, 0);
+    assert!(w
+        .store
+        .history()
+        .unwrap()
+        .iter()
+        .any(|h| txid_hex(&h.txid) == pay));
+    println!(
+        "pqaddr devnet ok: rq… payment {pay}, YED {yed_txid}, YEW → {node_rq} {sent}, move {moved} ({} zat fee)",
+        mv.fee
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

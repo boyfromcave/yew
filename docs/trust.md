@@ -16,6 +16,17 @@ address shows its amount on the chain.
 Your keys never leave this device. The seed is kept in the phone's secure keystore, and every
 signature is made in the wallet's own core. No server can spend your YEC or your YED.
 
+Your vaults are owned by a post-quantum key (SLH-DSA), and your YED is held by post-quantum
+keys (Falcon), all made from your seed on this phone. They protect who can spend a vault or
+your YED: those signatures are designed to resist a quantum computer. They do not make the rest
+of the wallet post-quantum: public YEC is held by ordinary keys, and private (Sapling) YEC is
+not post-quantum either. A post-quantum key cannot be kept on a hardware wallet, watched from
+another wallet, or shared as an extended public key (xpub): only your seed, restored into YEW,
+can spend a vault or your YED. Other wallets do not reliably derive the same post-quantum keys
+from these words (YecWallet and ycashd 4.5 do not at all), so do not count on another wallet to
+recover a vault or YED. A vault-owner address (53 characters) names a vault; it is never an
+address to receive YED or YEC. YED is received on a Falcon address of the same length.
+
 For what it knows about the chain, YEW trusts one light-client server: the one named in
 Settings. That server tells the wallet which coins exist, which of them are YED, the current
 price, and whether a transaction it is about to send is sound. A dishonest server cannot spend
@@ -33,8 +44,9 @@ fingerprints built into YEW.
 
 When you mint, redeem or claim, the wallet checks the server's terms against the network's
 rules before you confirm: the lock and claim heights, the collateral the price calls for, the
-enforcement fee and, on a redeem before the term ends, the early-redeem fee, each always the
-rule's amount and never more, and on a claim the share returned to the vault's owner. It then
+protocol fee (a share of your debt in dollars, converted at the vault's mint price) and, on a
+redeem before the term ends, the early-redeem fee, each always the rule's amount and never more,
+and on a claim the share returned to the vault's owner. It then
 signs only what you confirmed: if the server's answer would lock more collateral, burn more YED
 or pay you less, nothing is signed. What it cannot check is the fee's recipient: the server
 chooses which eligible miner the fee goes to, or that none is due. Use a server you trust for
@@ -42,7 +54,7 @@ these operations.
 
 Your YEC is locked for the term you choose. You can redeem at any time by paying back the YED
 you minted; redeeming before the term ends also costs an early-redeem fee of 5 %, 2.5 % or 1 %
-of your collateral for a short, medium or long term. If your collateral falls below 125 % of
+of your debt for a short, medium or long term. If your collateral falls below 125 % of
 your debt at the attested price, anyone may close your vault by paying your debt; you then
 receive whatever collateral is worth more than 125 % of the debt — which, at the threshold, is
 usually nothing. Before that happens, your wallet will warn you, and redeeming stops it.

@@ -428,3 +428,175 @@ scripts/devnet-w1.sh down [--wipe]
 0.5 YEC back (the node holds exactly the bytes the core built, `getreceivedbyaddress` agrees),
 locks release on confirmation, and a restore from the same seed into a fresh database reproduces
 the balance and UTXO set. Not part of CI (nightly on the owner's machine, plan §6.4).
+
+## Q7 — post-quantum vault owners (branch `upgrade/quantum-vaults`, rpcversion 7)
+
+The workspace's `docs/plans/yellowback-quantum-spec.md` is normative; `yellowback-quantum-clients.md`
+§3 is the YEW inventory. YEW-a (`core: post-quantum vault owners`) brought the PQ crypto, the
+templates, the addresses and the v4 MINT; YEW-b the rest below.
+
+**Owner keys.** Every vault owner is an SLH-DSA-SHA2-128s key, `HKDF-SHA256(BIP39 seed, "Ycash PQ
+key" ‖ scheme ‖ index)` (spec A-12), paired with the external receive key of the same index (the
+MINT's token holder). No owner index of its own: a restore that finds the external keys finds the
+owners. The public ids are cached in the store's `pq_owners` table (schema v5): a keygen is ~68 ms
+in a dev build, so a gap-limit set costs ~1.4 s once per wallet instead of once per open; the
+signing path re-derives the key and checks its id. YEW exports no PQ key: there is no WIF, xpub or
+watch-only form, and no node RPC imports one (the devnet suites now assert that node 5, given the
+paired holder's WIF, quotes a redeem with `canRedeem: false` / `vault-not-owned`).
+
+**Store v5.** `mints`/`vaults` hold `owner_scheme` + `owner_hash` (the 33-byte `owner_pubkey` is
+dropped; v4 → v5 keeps only a `01 ‖ hash` value, a secp256k1 owner being no vault owner on this
+line); `pq_owners`; `claim_intents.pq_spend_txid`; intent state `SWEPT`.
+
+**Fees.** A transaction with a post-quantum input pays `max(FEE_ZAT, rate × size)` with
+`CFeeRate::GetFee`'s rounding, `rate` = the server's `params.pq.feeRateZatPerKB` (at least the
+100 zat/kB relay floor, refused above 100×). The size is priced before signing: the SLH-DSA
+scriptSig is exact (7,938 bytes, 7,939 with a V selector), each ECDSA input is bounded at 108
+bytes. Every scriptSig is checked against the relay limits (9,000 PQ, 1,650 other) before a
+broadcast. Since audit 04/N-1 the fee is also never below the 6.20.0 line's ZIP-317 conventional
+fee, `500 · max(2, max(⌈vin bytes/150⌉, ⌈vout bytes/34⌉))` (`params::zip317_conventional_fee`;
+the YED builders use the node's pre-signing `YedConventionalFeeEstimate`,
+`params::yed_conventional_fee_estimate`), outside the cap, as both node lines' wallets and
+builders now pay: a ycash6 relay that opts into ZIP-317 (`-txunpaidactionlimit=0`) refuses a
+transaction paying less, and every ycash6 node's ZIP-401 limiter ranks it first for eviction.
+At the default 1× rate an SLH-DSA owner spend therefore pays 27,000 zat (54 actions), not the
+1,000 of client survey C-5, and a Falcon input 5,500 (11 actions).
+
+**TOK-PQ: Falcon YED holders.** Owner decision 2026-10-10: Falcon goes live with the vault
+upgrade, `pqFalconHeight = 0` on mainnet and testnet, so every YED holder there is a Falcon key
+from the first block. `Wallet::pq_terms` enforces that off regtest whatever a server says;
+regtest follows the server's `-pqfalconheight`, so the P2PKH holder paths stay testable before
+Falcon. From the Falcon height (judged for the block the transaction can first be mined in) YEW:
+
+- *receives* on the 53-character Falcon holder address (`yb…`/`yt…`/`yr…`, scheme 2) paired with
+  its receive key (`receive_address(Yed)`, `yew-cli address`). YED only: YEC for the same key goes
+  to its `sq…` form (below, "Post-quantum addresses end to end"). The server's `params.pq` is remembered in the store so an offline
+  open shows the right address;
+- *holds*: one Falcon key per HD key, `DerivePQSeed(BIP39 seed, 2, index)` with external `i` →
+  `i` and change `i` → `2³¹ + i`, so the address gap scan is also the holder gap scan. The ids
+  are cached in the additive `pq_holders` table (no schema bump); signing re-derives the key and
+  checks its id. Sync asks `GetAddressTokens` for the Falcon addresses of every derived key (the
+  only source of YED; the taddr methods see the same outputs on the `sq…` form, below); a
+  listed token marks its pair used (the gap rule), its transaction is fetched once
+  (`GetTransaction`) to check the output is the own `TX_PQPKH` — a `TX_PQCHANNEL` client output
+  is listed under the same address but is no wallet coin — and is recorded in history; the coin
+  is a `TOKEN` row. PreLock and the history delta count own Falcon outputs;
+- *sends*: TRANSFER, REDEEM and CLAIM sign a Falcon input with the node's own Falcon C (below),
+  chunked `<sig 520> <sig 147> OP_2 <pk 520> <pk 377> OP_2`, 1,577 bytes; YED change goes to the
+  change key's Falcon holder; a MINT's token goes to the Falcon pair of its holder key. A
+  P2PKH or SLH-DSA *recipient* is still refused (`falcon-holder-required`), as the node's
+  `bad-yed-holder`. Before Falcon a YED destination is P2PKH only (an SLH-DSA address is a vault
+  owner, C-10; a Falcon address is non-standard until activation: `falcon-not-active`);
+- *prices*: a transaction with a Falcon input pays `max(FEE_ZAT, pqfeerate × size)` like an
+  owner spend (transfer: re-selected until the YEC inputs cover it; redeem: per-input scriptSig
+  bounds; claim: signed, measured, re-priced), and never less than the 6.20.0 line's ZIP-317
+  conventional fee (audit 04/N-1, as both node lines' wallets and builders: a Falcon input is
+  ~11 logical actions, an SLH-DSA one ~54; `params::zip317_conventional_fee`,
+  `yed_conventional_fee_estimate`), so a ycash6 relay started with `-txunpaidactionlimit=0`
+  accepts it and the ZIP-401 limiter does not evict it first. A Falcon transfer pays ~5,500 zat.
+
+**Falcon implementation.** `core/pq-c/falcon` is a byte copy of the node's
+`src/crypto/pq/falcon` (ycash-dd = ycash6: PQClean `falcon-padded-512/clean` at `0586a824`, the
+inline-SHAKE patch P1, the Ycash entry points), pinned by `SHA256SUMS` and compiled by
+`build.rs` with `cc` (C99, `-O2`, no target-feature flags; the `clean` code emulates floating
+point with integers, so the bytes are target-independent; `fips202.c`'s generic public symbols
+are renamed `yew_pq_*` by `-D` defines). A pure-Rust Falcon was rejected: `fn-dsa` 0.4 hashes a
+different message representative and keygen (client survey C-7), and no crate reproduces
+PQClean's seeded keygen. Proof: the node's golden vectors (3 Falcon keys: keygen from the 48-byte
+seed, signing with the recorded 88-byte entropy, verify) and the node's Falcon KATs (NIST round 3
+counts 0–4 and PQClean's padded count 0, replayed through the NIST AES-256 CTR DRBG) reproduce
+byte for byte (`pq::tests`); on the devnet the node accepts YEW's Falcon spends. Signing draws
+the 88 bytes from the OS RNG and verifies the signature before returning it. Mobile: the C
+compiles for `aarch64-apple-ios[-sim]` and `aarch64`/`x86_64-linux-android` with the toolchains
+the build scripts already use (rusqlite's bundled SQLite takes the same path);
+`build-core-ios.sh` now exports `IPHONEOS_DEPLOYMENT_TARGET` (default 15.0, the app's), since
+Falcon's large stack frames reference `___chkstk_darwin`, which rustc's default iOS 10.0 link
+cannot resolve.
+
+**Devnet (2026-10-10, ycash-dd `aa0fd3812`, lightwalletd-dd `ef70570`, portseed 2200, F = 260).**
+`scripts/devnet-falcon.sh up|test` (the devnet tool run through a wrapper that adds
+`-pqfalconheight` to every node): `q_falcon_holders_receive_send_mint_and_restore` — P2PKH YED
+before F, the Falcon receive address from F (node 0 refuses a P2PKH YED address with
+`bad-yed-holder`), a transfer spending a P2PKH and a Falcon token with Falcon change (gate `ok`,
+mined), a YEW mint after F with its token on a Falcon holder, and a restore from the seed that
+finds both Falcon tokens (280 s).
+
+**Gaps.** A Falcon holder used and then emptied leaves no trace a restore can see (spent tokens
+are not listed and PQ outputs are not address-indexed); its P2PKH pair usually carries the YEC
+change of the same transaction, so the gap scan normally still sees it, but a run of more than
+`GAP_LIMIT` such keys would stop a restore early. A Falcon key is not seed-portable to other
+implementations (plan §4.6): only this code (and the node's) re-derives it.
+
+**The PQ IKM (audit 06/Y-3, LOW-06-Y-4).** YEW's input keying material is the 64-byte BIP39 seed
+of the words and the passphrase; ycash-dd's wallet uses its 32-byte HD seed and ycash6's the
+64-byte seed of its own 24-word phrase (empty passphrase). So the same 24 English words without a
+passphrase give the same PQ keys in YEW and in ycashd 6.x, and different ones in ycashd 4.5 /
+YecWallet: the node's `pq_wallet_vectors.json` carries both IKMs (`hdSeed`, `mnemonic`) and
+`pq.rs` `derivation_reproduces_the_node_wallet_vector` replays both, from the phrase. YEW does
+not promise any other wallet as a recovery path (the index ranges differ: Falcon holders follow
+the HD address indices, change at `0x8000_0000 + i`): the trust statement and the seed screens
+say "restore in YEW".
+
+**The residual (spec F-3).** A claimed vault's RED-5 residual intent pays `PQPKH(owner)`. YEW
+releases it like a claimant intent (recipient shown as the 53-character owner address), and once
+that release confirms the same intent row offers the move of the coin (`release txid:0`) into a
+fresh P2PKH change key: one SLH-DSA spend, its size-priced fee out of the coin, gated by name
+(`Path::PqSweep`). A residual released by another party (a release needs no signature) was a
+recorded gap until q/pqaddr: the sync now finds that coin on the owner's `sq…` form (below).
+
+**Addresses.** Mainnet YED is `yb…` on this line (D-Q-21: 0x1FDD, PQ 0x56AB); testnet `yt…`,
+regtest `yr…` unchanged. Plain-YEC PQ addresses `sq…`/`tq…`/`rq…` (D-Q-20: 0x4DD9 / 0x4F61 /
+0x4C51) are YEC destinations since q/pqaddr (below). The node at `aa0fd3812` still renders mainnet
+`ye…` until its Y-B sweep; the regenerated vectors are regtest and already final.
+
+**Post-quantum addresses end to end (q/pqaddr, 2026-10-11; lightwalletd-dd q/pqaddr `f33fb1e`,
+which serves `TX_PQPKH` in `GetTaddressTxids` / `GetTaddressBalance` / `GetAddressUtxos` under
+the plain `sq…` form and maps a 53-character PQ `yb…` to it).**
+- *Send.* A YEC destination is `s1…`, `s3…`, the 35-character `yb…` (as before) or `sq…`/`tq…`/
+  `rq…` of either scheme (`keys::parse_yec_destination`), paid a 35-byte `TX_PQPKH`; the inputs
+  stay P2PKH, so the fee is any YEC send's. A private-funded send never pays a PQ recipient (the
+  Sapling builder has no `TX_PQPKH` output): it goes transparent. A 53-character PQ `yb…` is
+  **refused** as a YEC destination — a Falcon one names a YED holder (D-Q-21; "ask for its sq…
+  address"), an SLH-DSA one a vault owner (C-10) — because D-Q-20 gives plain YEC its own prefix
+  and the node's `key_io` decodes only that one (`sendtoaddress` refuses the YED form). A YED
+  destination never takes `sq…`. `validate_address` reports `pq_yec` as valid; the Send screen
+  refuses the asset mismatch before the preview (`destinationMismatch`), the builders again.
+- *Sync.* Each pass also asks `GetTaddressTxids` for the `sq…` form of every own post-quantum key
+  paired with the pass's addresses — the Falcon holders (once TOK-PQ is announced) and the
+  SLH-DSA vault owners (when the server offers Yellowback) — and one `GetAddressUtxos` for all of
+  them. History counts own PQ outputs (the residual included); a used PQ key marks its pair used.
+  A server that answers `INVALID_ARGUMENT` (a lightwalletd before q/pqaddr) only switches the PQ
+  lookups off for that run (`SyncReport.pq_unindexed`).
+- *YED stays out of YEC.* `GetAddressTokens` remains the only source of YED. A `GetAddressUtxos`
+  row for a PQ address that is a Falcon token row already is skipped; one that any
+  `GetAddressTokens` answer lists (the Falcon holders' and, asked separately, the vault owners'
+  53-character addresses), or of exactly `TOKEN_VALUE`, is `HELD`; any other own PQ output is
+  `PQ_OWNED` (`coins::classify_pq_listed`): in neither YEC balance and in no P2PKH path's selection.
+- *Spend.* `Balances.yec_pq_zat` / `pq_coins` show it on Home ("YEC at your post-quantum
+  addresses"); `release_preview(<coin>)` moves one coin to a fresh P2PKH change key exactly like a
+  released residual (one Falcon or SLH-DSA input, fee `max(FEE_ZAT, pqfeerate × size)` out of the
+  coin, `Path::PqSweep`, the remote layer must say `ok, burned 0`), the coin locked until it
+  confirms or expires.
+- *Devnet (2026-10-12, ycash-dd q/attest `87f826f61`, lightwalletd-dd q/pqaddr `f33fb1e`, portseed
+  3370, lightwalletd on 3389).* `scripts/devnet-pqaddr.sh up|test`: `q_pqaddr_sq_receive_send_and_move`
+  — node 0 pays YEC (2 YEC and exactly `TOKEN_VALUE`) to the `rq…` form of a YEW Falcon holder and
+  YED to its `yr…` form; the sync finds them as one PQ_OWNED, one HELD and one TOKEN row (the YEC
+  balance unchanged); YEW pays node 0's `rq…` (`gettxout` type `pqpubkeyhash`, listed by
+  lightwalletd) and refuses its `yr…` as a YEC destination; the PQ_OWNED coin moves into the wallet
+  (1,577-byte Falcon scriptSig, verdict `ok`, burned 0); a restore from the seed agrees (52 s).
+- *Not done.* YEW still hands out `s…` for YEC (no `sq…` receive address), and a YEC send does not
+  spend `PQ_OWNED` coins directly (they are moved first).
+
+**Node vector pin (audit 06/Y-1, Y-2, Y-5; LOW-06-Y-1).** `core/tests/vectors/{vault,pq,pq_wallet}_vectors.json`
+are copies of the node's `src/test/data/` files at the two commits `core/tests/vectors/PIN` names
+(ycash-dd and ycash6; the files are identical on both lines). `scripts/check-node-vectors.sh`
+compares them in CI and fails, never skips; `scripts/resync-node-vectors.sh` re-copies and
+re-pins. The owner-spend replay is scheme-aware (SLH-DSA and Falcon owners, V and I, every
+selector the vector holds; an unknown shape fails) and counts the entries. The devnet suites run
+nightly in `.github/workflows/devnet-nightly.yml` (self-hosted, non-gating).
+
+**Vectors and devnet (2026-10-10, ycash-dd `aa0fd3812`, lightwalletd-dd `ef70570`, portseed
+1860).** `transparent/addresses/params/templates.json` regenerated with `yellowback-devnet vectors
+--seed 1` + `scripts/vectors-in-term.py`; `w4_templates_reproduce_the_node_scripts_and_payloads`
+runs again (v4 MINTs, PQ V, the node's SLH-DSA owner scriptSigs). `it_early_redeem_and_in_term_claim`
+passed against that devnet (344 s).

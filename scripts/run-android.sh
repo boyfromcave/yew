@@ -7,7 +7,7 @@
 # and runs the app, or one of the integration tests, on an Android emulator against a
 # lightwalletd-dd `--yellowback` server.
 #
-#   scripts/run-android.sh [host:port] [--test m1|m2]   default server 10.0.2.2:9267
+#   scripts/run-android.sh [host:port] [--test m1|m2|q]   default server 10.0.2.2:9267
 #                                                       (the emulator's name for the host's loopback)
 #
 # Emulator: the connected device $YEW_DEVICE (default emulator-5554); when none is connected the
@@ -17,12 +17,13 @@
 # (the command-line tools need JAVA_HOME, e.g. Android Studio's JBR). The server goes to the app as
 # --dart-define=YEW_SERVER (the integration tests read it; the app itself takes the server from
 # Onboarding: network regtest, the host:port, plain).
+# The q flow also reads $YEW_OPERATOR (host:port of scripts/devnet-operator.py) as --dart-define.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 server="10.0.2.2:9267"; test=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --test) test="${2:?--test m1|m2}"; shift 2 ;;
+    --test) test="${2:?--test m1|m2|q}"; shift 2 ;;
     *) server="$1"; shift ;;
   esac
 done
@@ -41,7 +42,7 @@ if ! "$adb" devices | grep -q "^$device[[:space:]]*device"; then
 fi
 cd "$here/app"
 if [[ -n "$test" ]]; then
-  exec flutter test "integration_test/${test}_flow_test.dart" -d "$device" --dart-define="YEW_SERVER=$server"
+  exec flutter test "integration_test/${test}_flow_test.dart" -d "$device" --dart-define="YEW_SERVER=$server" ${YEW_OPERATOR:+--dart-define=YEW_OPERATOR=$YEW_OPERATOR}
 fi
 echo "run-android: device $device, server $server (Onboarding: Create > network regtest > $server > plain)"
 exec flutter run -d "$device" --dart-define="YEW_SERVER=$server"

@@ -57,3 +57,6 @@ wasm-bindgen-futures
 wasm-bindgen
 js-sys
 web-sys
+# Quantum plan Q7 (2026-10-10): SLH-DSA-SHA2-128s vault owners (core/src/pq.rs), RustCrypto `slh-dsa` =0.1.0
+# (FIPS 205 final; client survey §1: the version that resolves beside bip32's pre-release pins).
+slh-dsa

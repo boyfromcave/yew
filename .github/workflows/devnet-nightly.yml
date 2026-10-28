@@ -1,0 +1,361 @@
+# YEW devnet acceptance, nightly (remedial report LOW-06-Y-1, audit 06/Y-5; the node's nightly-tier
+# model). The suites core/tests/devnet.rs runs only with YEW_DEVNET=1 (W1, W2, W4, the Falcon
+# holders q_falcon_*, the post-quantum addresses q_pqaddr_*) need a workspace devnet: an ARMED
+# devnet from ycash-dd (ycashd, the attest agent, the devnet tool and its Python test framework),
+# lightwalletd-dd serving --yellowback, the Sapling parameters. Two jobs:
+#
+#   hosted       (the nightly; also `runner: hosted` on a dispatch, from any branch) GitHub-hosted,
+#                at most 60 min. ycashd is NOT built: it is the node-bin artifact of a trusted run
+#                of ycash-dd's yellowback-tests.yml on upgrade/vault (a push, schedule or dispatch
+#                run, never a pull_request run, never chosen by branch name alone; a typed
+#                node_run_id must be numeric and name such a run), and ycash-dd is checked out at
+#                that run's head commit so the devnet tool and framework match the binary. The attest
+#                agent (contrib/yellowback/attest) is built from that checkout and lightwalletd-dd at
+#                the commit proto/PIN records, neither cached (both are another repository's code).
+#                The only caches: the Sapling parameters (fetched from download.z.cash, the sha256
+#                sums zcutil/fetch-params.sh pins, verified every run) and YEW's own cargo build of
+#                the devnet test, each saved right after the step that fills it, before any node,
+#                lightwalletd or test code runs. Suites: the node vectors, W1, W2, W4, q_falcon_*,
+#                q_pqaddr_*, every one against Falcon from the vault activation (as mainnet): YED
+#                goes to Falcon holders, one P2PKH send is asserted refused (bad-yed-holder).
+#   self-hosted  manual dispatch only (`runner: self-hosted`, upgrade/vault only): the owner's
+#                machine registered as a self-hosted runner labelled `yb-devnet`, with the workspace
+#                already built; every suite (W1, W2, W4, q_falcon_*, q_pqaddr_*), no time budget.
+#                It has no schedule, so nothing queues against the runner when it is offline.
+#
+# Non-gating by construction: schedule and manual dispatch only, never pull_request (a
+# self-hosted runner must not run workflow code from a fork or an unmerged branch). A failure of
+# the scheduled run (or a dispatch on upgrade/vault) opens (or comments on) one issue labelled
+# `devnet-nightly`.
+#
+# Self-hosted runner prerequisites (owner, once): the runner's environment sets YB_WORKSPACE to the
+# workspace checkout (with .venv, ycash-dd built: ycashd, the attest agent; lightwalletd-dd built),
+# and BITCOIND / YELLOWBACK_ATTEST_BIN / YELLOWBACK_LWD_BIN if the devnet tool's defaults do not find
+# them. The suites run from a detached worktree of the workspace's yew clone at this commit
+# ($YB_WORKSPACE/wt/ci-yew-nightly), so the owner's own trees are never checked out or changed.
+name: devnet-nightly
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: 'hosted (GitHub-hosted, any branch) or self-hosted (the owner''s yb-devnet runner, upgrade/vault only)'
+        type: choice
+        options: [hosted, self-hosted]
+        default: hosted
+      node_run_id:
+        description: 'hosted: a ycash-dd yellowback-tests run id (numeric; a push/schedule/dispatch run of upgrade/vault) to take ycashd from; empty = the latest such run with the artifact'
+        type: string
+        default: ''
+
+permissions: {}
+
+concurrency:
+  group: devnet-nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  hosted:
+    if: github.event_name == 'schedule' || inputs.runner == 'hosted'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read  # gh run list/download on the node repository's runs
+      issues: write  # the failure step opens or comments on the devnet-nightly issue
+    env:
+      NODE_REPO: boyfromcave/ycash-dd
+      NODE_BRANCH: upgrade/vault
+      NODE_ARTIFACT: node-bin
+      NODE_RUN_ID: ${{ inputs.node_run_id }}
+      LWD_REPO: https://github.com/boyfromcave/lightwalletd.git
+      GO_VERSION: '1.24.7'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: ws/yew
+          persist-credentials: false
+      # The devnet scripts find the workspace as the first directory above yew with repos.yaml.
+      - name: workspace layout
+        run: |
+          touch ws/repos.yaml
+          echo "WS=$GITHUB_WORKSPACE/ws" >> "$GITHUB_ENV"
+      - name: Install protoc
+        run: sudo apt-get update -q && sudo apt-get install -y -q protobuf-compiler && protoc --version
+      # YEW's own build of the devnet test binary: restored, built, saved before anything from
+      # another repository is fetched or run. Keyed on the toolchain file and Cargo.lock, exact key.
+      - name: restore the YEW build
+        id: yewcache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ws/yew/target
+          key: yew-devnet-${{ runner.os }}-${{ hashFiles('ws/yew/rust-toolchain.toml', 'ws/yew/Cargo.lock') }}
+      - name: build the devnet test (cargo test --no-run)
+        working-directory: ws/yew
+        run: |
+          rustup show active-toolchain
+          cargo test -p yew-core --test devnet --locked --no-run
+      - if: steps.yewcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ws/yew/target
+          key: ${{ steps.yewcache.outputs.cache-primary-key }}
+      - name: restore zcash params
+        id: params
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.zcash-params
+          key: zcash-params-8e48ffd2-2f0ebbcb-b685d700
+      - name: fetch and verify zcash params (the sums zcutil/fetch-params.sh pins)
+        run: |
+          dir="$HOME/.zcash-params"; mkdir -p "$dir"; cd "$dir"
+          for f in sapling-spend.params sapling-output.params sprout-groth16.params; do
+            [ -f "$f" ] && continue
+            for i in 1 2; do curl -fsSL --retry 3 -o "$f.part.$i" "https://download.z.cash/downloads/$f.part.$i"; done
+            cat "$f.part.1" "$f.part.2" > "$f" && rm "$f.part.1" "$f.part.2"
+          done
+          sha256sum -c <<'EOF'
+          8e48ffd23abb3a5fd9c5589204f32d9c31285a04b78096ba40a79b75677efc13  sapling-spend.params
+          2f0ebbcbb9bb0bcffe95a397e7eba89c29eb4dde6191c339db88570e3f3fb0e4  sapling-output.params
+          b685d700c60328498fbde589c8c7c484c722b788b265b72af448a5bf0ee55b50  sprout-groth16.params
+          EOF
+      - if: steps.params.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.zcash-params
+          key: ${{ steps.params.outputs.cache-primary-key }}
+      # No cache is saved from here on: everything below runs another repository's code.
+      - name: download ycashd from a trusted node run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Only a run of upgrade/vault started by a push, the schedule or a dispatch: never a
+          # pull_request run, whose artifact a fork's code built (a fork PR's head branch may carry
+          # the same name). The branch AND the event are checked for a typed run id too.
+          trusted='select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")'
+          if [ -n "$NODE_RUN_ID" ]; then
+            case "$NODE_RUN_ID" in *[!0-9]*) echo "::error::node_run_id is not a run id"; exit 1 ;; esac
+            runs=$(gh run view "$NODE_RUN_ID" -R "$NODE_REPO" --json databaseId,event,headBranch,workflowName \
+              -q "select(.headBranch == \"$NODE_BRANCH\" and .workflowName == \"yellowback-tests\") | $trusted | .databaseId")
+            [ -n "$runs" ] || { echo "::error::run $NODE_RUN_ID is not a push/schedule/dispatch yellowback-tests run of $NODE_REPO $NODE_BRANCH"; exit 1; }
+          else
+            runs=$(gh run list -R "$NODE_REPO" -w yellowback-tests.yml -b "$NODE_BRANCH" -L 30 --json databaseId,event,headBranch \
+              -q ".[] | select(.headBranch == \"$NODE_BRANCH\") | $trusted | .databaseId")
+          fi
+          got=
+          for r in $runs; do
+            if gh run download "$r" -R "$NODE_REPO" -n "$NODE_ARTIFACT" -D "$RUNNER_TEMP/dl" 2>/dev/null; then got=$r; break; fi
+          done
+          [ -n "$got" ] && [ -f "$RUNNER_TEMP/dl/node-bin.tar" ] || { echo "::error::no $NODE_ARTIFACT (node-bin.tar) in the trusted $NODE_REPO $NODE_BRANCH runs ($runs)"; exit 1; }
+          sha=$(gh run view "$got" -R "$NODE_REPO" --json headSha -q .headSha)
+          case "$sha" in *[!0-9a-f]*|'') echo "::error::bad head sha"; exit 1 ;; esac
+          [ ${#sha} -eq 40 ] || { echo "::error::bad head sha"; exit 1; }
+          echo "ycashd from $NODE_REPO run $got at $sha"
+          echo "NODE_SHA=$sha" >> "$GITHUB_ENV"
+          echo "- ycashd: $NODE_REPO run [$got]($GITHUB_SERVER_URL/$NODE_REPO/actions/runs/$got), commit \`$sha\`" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ env.NODE_REPO }}
+          ref: ${{ env.NODE_SHA }}
+          path: ws/ycash-dd
+          persist-credentials: false
+      - name: unpack ycashd
+        run: |
+          tar -xf "$RUNNER_TEMP/dl/node-bin.tar" -C ws/ycash-dd src/ycashd src/ycash-cli
+          test -x ws/ycash-dd/src/ycashd && test -x ws/ycash-dd/src/ycash-cli
+          ws/ycash-dd/src/ycashd --version | head -1 || true
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+      # The workspace venv's packages (workspace requirements.txt) and its pyblake2 shim
+      # (scripts/bootstrap.sh), which the inherited test framework imports.
+      - name: devnet venv
+        run: |
+          python -m venv ws/.venv
+          ws/.venv/bin/pip install --quiet "pyasyncore>=1.0.4" "pyzmq>=25" "requests>=2.31" "simplejson>=3.19"
+          site=$(ws/.venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')
+          printf '%s\n' 'from hashlib import blake2b, blake2s  # noqa: F401' > "$site/pyblake2.py"
+          ws/.venv/bin/python -c 'import asyncore, zmq, requests, simplejson, pyblake2'
+      - name: build the attest agent (ycash-dd contrib/yellowback/attest, its own toolchain, uncached)
+        working-directory: ws/ycash-dd/contrib/yellowback/attest
+        run: |
+          rustup show active-toolchain
+          CARGO_TARGET_DIR="$RUNNER_TEMP/attest-target" cargo build --release --locked
+          echo "YELLOWBACK_ATTEST_BIN=$RUNNER_TEMP/attest-target/release/yellowback-attest" >> "$GITHUB_ENV"
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false  # lightwalletd-dd is another repository's code: nothing from its build is cached
+      - name: build lightwalletd-dd at proto/PIN
+        run: |
+          set -euo pipefail
+          pin=$(awk '{print $2}' ws/yew/proto/PIN)
+          case "$pin" in *[!0-9a-f]*|'') echo "::error::proto/PIN is not a commit"; exit 1 ;; esac
+          git clone --quiet --filter=blob:none "$LWD_REPO" ws/lightwalletd-dd
+          git -C ws/lightwalletd-dd checkout --quiet "$pin"
+          (cd ws/lightwalletd-dd && CGO_ENABLED=0 go build -mod=vendor -o lightwalletd .)
+          echo "YELLOWBACK_LWD_BIN=$WS/lightwalletd-dd/lightwalletd" >> "$GITHUB_ENV"
+          echo "- lightwalletd-dd: \`$pin\` (proto/PIN)" >> "$GITHUB_STEP_SUMMARY"
+      - name: devnet environment
+        run: |
+          {
+            echo "BITCOIND=$WS/ycash-dd/src/ycashd"
+            echo "YEW_DEVNET_TOOL=$WS/ycash-dd/contrib/yellowback/devnet/yellowback-devnet"
+            echo "YEW_DEVNET_PYTHON=$WS/.venv/bin/python"
+          } >> "$GITHUB_ENV"
+      - name: node vectors (scripts/check-node-vectors.sh)
+        working-directory: ws/yew
+        run: scripts/check-node-vectors.sh
+      # Each suite: the script's own `up` (and `down` on exit), then the suite's tests only.
+      - name: W1 (YEC round trip and restore)
+        if: ${{ !cancelled() }}
+        working-directory: ws/yew
+        run: |
+          trap 'scripts/devnet-w1.sh down || true' EXIT
+          scripts/devnet-w1.sh up && scripts/devnet-w1.sh test
+      - name: W2 (YED transfer, the gate, the key round trip)
+        if: ${{ !cancelled() }}
+        working-directory: ws/yew
+        run: |
+          trap 'scripts/devnet-w2.sh down || true' EXIT
+          scripts/devnet-w2.sh up && scripts/devnet-w2.sh test
+      - name: W4 (mint, resume, lapse, redeem, import, claim; the attestor cancel)
+        if: ${{ !cancelled() }}
+        working-directory: ws/yew
+        run: |
+          trap 'scripts/devnet-w4.sh down || true' EXIT
+          scripts/devnet-w4.sh up && scripts/devnet-w4.sh test
+      - name: Falcon YED holders (q_falcon_*)
+        if: ${{ !cancelled() }}
+        working-directory: ws/yew
+        run: |
+          trap 'scripts/devnet-falcon.sh down || true' EXIT
+          scripts/devnet-falcon.sh up && scripts/devnet-falcon.sh test
+      - name: post-quantum addresses (q_pqaddr_*)
+        if: ${{ !cancelled() }}
+        working-directory: ws/yew
+        run: |
+          trap 'scripts/devnet-pqaddr.sh down || true' EXIT
+          scripts/devnet-pqaddr.sh up && scripts/devnet-pqaddr.sh test
+      - name: upload devnet logs on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: yew-devnet-logs
+          path: ~/yb-devnet-*/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: open or update the devnet-nightly issue
+        if: ${{ failure() && github.ref == 'refs/heads/upgrade/vault' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          run="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          auth=(-H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json")
+          # The reply goes to a file, not a pipe into an interpreter (semgrep gha-curl-pipe-shell).
+          open_issues="$RUNNER_TEMP/devnet-nightly-issues.json"
+          curl -fsSL "${auth[@]}" -o "$open_issues" "$api/issues?state=open&labels=devnet-nightly&per_page=1"
+          num="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d[0]["number"] if d else "")' "$open_issues")"
+          body="$(python3 -c 'import json,sys; print(json.dumps({"body": "devnet-nightly failed at " + sys.argv[1] + ": " + sys.argv[2]}))' "$GITHUB_SHA" "$run")"
+          if [ -n "$num" ]; then
+            curl -fsSL "${auth[@]}" -X POST "$api/issues/$num/comments" -d "$body" >/dev/null
+          else
+            title="$(python3 -c 'import json,sys; b=json.loads(sys.argv[1]); b.update(title="devnet-nightly: the YEW devnet acceptance suites failed", labels=["devnet-nightly"]); print(json.dumps(b))' "$body")"
+            curl -fsSL "${auth[@]}" -X POST "$api/issues" -d "$title" >/dev/null
+          fi
+
+  self-hosted:
+    # The owner's machine only, on a manual dispatch of upgrade/vault (runner: self-hosted).
+    if: github.event_name == 'workflow_dispatch' && inputs.runner == 'self-hosted' && github.ref == 'refs/heads/upgrade/vault'
+    runs-on: [self-hosted, yb-devnet]
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      issues: write  # the failure step opens or comments on the devnet-nightly issue
+    env:
+      YEW_DEVNET_TOOL: ${{ vars.YEW_DEVNET_TOOL }}
+    steps:
+      - name: worktree of this commit in the workspace
+        run: |
+          set -euo pipefail
+          : "${YB_WORKSPACE:?the runner must set YB_WORKSPACE}"
+          wt="$YB_WORKSPACE/wt/ci-yew-nightly"
+          git -C "$YB_WORKSPACE/yew" fetch --quiet origin "$GITHUB_SHA"
+          git -C "$YB_WORKSPACE/yew" worktree remove --force "$wt" 2>/dev/null || true
+          git -C "$YB_WORKSPACE/yew" worktree add --force --detach "$wt" "$GITHUB_SHA"
+          echo "YEW_WT=$wt" >> "$GITHUB_ENV"
+          # The quantum suites default to the old q-dd worktree's tool; upgrade/vault carries it.
+          echo "YEW_DEVNET_TOOL=${YEW_DEVNET_TOOL:-$YB_WORKSPACE/ycash-dd/contrib/yellowback/devnet/yellowback-devnet}" >> "$GITHUB_ENV"
+      - name: node vectors (scripts/check-node-vectors.sh)
+        run: cd "$YEW_WT" && scripts/check-node-vectors.sh
+      - name: W1 (YEC round trip and restore)
+        if: ${{ !cancelled() }}
+        run: |
+          cd "$YEW_WT"
+          trap 'scripts/devnet-w1.sh down || true' EXIT
+          scripts/devnet-w1.sh up && scripts/devnet-w1.sh test
+      - name: W2 (YED transfer, the gate, mint/redeem/claim)
+        if: ${{ !cancelled() }}
+        run: |
+          cd "$YEW_WT"
+          trap 'scripts/devnet-w2.sh down || true' EXIT
+          scripts/devnet-w2.sh up && scripts/devnet-w2.sh test
+      - name: W4
+        if: ${{ !cancelled() }}
+        run: |
+          cd "$YEW_WT"
+          trap 'scripts/devnet-w4.sh down || true' EXIT
+          scripts/devnet-w4.sh up && scripts/devnet-w4.sh test
+      - name: Falcon YED holders (q_falcon_*)
+        if: ${{ !cancelled() }}
+        run: |
+          cd "$YEW_WT"
+          trap 'scripts/devnet-falcon.sh down || true' EXIT
+          scripts/devnet-falcon.sh up && scripts/devnet-falcon.sh test
+      - name: post-quantum addresses (q_pqaddr_*)
+        if: ${{ !cancelled() }}
+        run: |
+          cd "$YEW_WT"
+          trap 'scripts/devnet-pqaddr.sh down || true' EXIT
+          scripts/devnet-pqaddr.sh up && scripts/devnet-pqaddr.sh test
+      - name: remove the worktree
+        if: ${{ always() }}
+        run: |
+          [ -n "${YEW_WT:-}" ] && git -C "$YB_WORKSPACE/yew" worktree remove --force "$YEW_WT" || true
+      - name: open or update the devnet-nightly issue
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          run="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          auth=(-H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json")
+          # The reply goes to a file, not a pipe into an interpreter (semgrep gha-curl-pipe-shell).
+          open_issues="$RUNNER_TEMP/devnet-nightly-issues.json"
+          curl -fsSL "${auth[@]}" -o "$open_issues" "$api/issues?state=open&labels=devnet-nightly&per_page=1"
+          num="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d[0]["number"] if d else "")' "$open_issues")"
+          body="$(python3 -c 'import json,sys; print(json.dumps({"body": "devnet-nightly failed at " + sys.argv[1] + ": " + sys.argv[2]}))' "$GITHUB_SHA" "$run")"
+          if [ -n "$num" ]; then
+            curl -fsSL "${auth[@]}" -X POST "$api/issues/$num/comments" -d "$body" >/dev/null
+          else
+            title="$(python3 -c 'import json,sys; b=json.loads(sys.argv[1]); b.update(title="devnet-nightly: the YEW devnet acceptance suites failed", labels=["devnet-nightly"]); print(json.dumps(b))' "$body")"
+            curl -fsSL "${auth[@]}" -X POST "$api/issues" -d "$title" >/dev/null
+          fi

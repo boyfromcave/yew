@@ -17,6 +17,8 @@ const claimable1 = ClaimableItem(
   claimPath: 'a',
   pClaimMicroUsd: 100000,
   feeZat: 1000,
+  protocolFeeCents: 100,
+  pMintMicroUsd: 520000,
   attestFeeZat: 0,
   residualZat: 0,
   claimantZat: 949998000,
@@ -25,6 +27,9 @@ const claimable1 = ClaimableItem(
   underwaterAtMicroUsd: 120000,
   lockHeight: 500,
   inTerm: true,
+  cancelsRequired: 1,
+  cancelCount: 0,
+  cancelQuietUntil: 0,
 );
 
 /// rpcversion 6: listed because its claim branch is open, but above θ — shown, not offered.
@@ -37,6 +42,8 @@ const listed1 = ClaimableItem(
   claimPath: '',
   pClaimMicroUsd: 500000,
   feeZat: 50000000,
+  protocolFeeCents: 100,
+  pMintMicroUsd: 520000,
   attestFeeZat: 0,
   residualZat: 0,
   claimantZat: 0,
@@ -45,6 +52,9 @@ const listed1 = ClaimableItem(
   underwaterAtMicroUsd: 131578,
   lockHeight: 500,
   inTerm: true,
+  cancelsRequired: 1,
+  cancelCount: 0,
+  cancelQuietUntil: 0,
 );
 
 Future<void> openClaimable(WidgetTester tester, Harness h) async {
@@ -107,7 +117,7 @@ void main() {
   testWidgets('a claim needs the debt in YED; the carrier refusal is verbatim', (tester) async {
     final h = Harness(withWallet: true);
     h.api.claimableAnswer = const [claimable1];
-    h.api.balancesAnswer = const Balances(yecZat: 150000000, yecReservedZat: 105000, yecPendingZat: 0, yedCents: 500, yedPendingCents: 0, priceMicroUsd: 100000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false);
+    h.api.balancesAnswer = const Balances(yecZat: 150000000, yecReservedZat: 105000, yecPendingZat: 0, yedCents: 500, yedPendingCents: 0, priceMicroUsd: 100000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false, yecPqZat: 0, pqCoins: []);
     await openClaimable(tester, h);
     await tester.tap(find.byKey(Key('claimable-${claimable1.vaultTxid}')));
     await tester.pumpAndSettle();
@@ -116,7 +126,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(h.api.calls.where((c) => c.startsWith('claim ')), isEmpty);
 
-    h.api.balancesAnswer = const Balances(yecZat: 150000000, yecReservedZat: 105000, yecPendingZat: 0, yedCents: 5000, yedPendingCents: 0, priceMicroUsd: 100000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false);
+    h.api.balancesAnswer = const Balances(yecZat: 150000000, yecReservedZat: 105000, yecPendingZat: 0, yedCents: 5000, yedPendingCents: 0, priceMicroUsd: 100000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false, yecPqZat: 0, pqCoins: []);
     const refusal = 'insufficient-yec: the mint needs 10023000 zat of YEC (collateral 0, token 10000, fees 3000, carrier 10000), have 5000 zat spendable';
     h.api.claimError = const YewError(kind: ErrorKind.needYecForFees, message: refusal);
     await h.state.refresh();
@@ -124,5 +134,40 @@ void main() {
     await tester.longPress(find.byKey(const Key('slide-to-confirm')));
     await tester.pumpAndSettle();
     expect(find.text(refusal), findsOneWidget);
+  });
+
+  testWidgets('the cancel limit (CAN-2) per row and in the picked claim; a cancel returns the burn (CAN-1)', (tester) async {
+    final h = Harness(withWallet: true);
+    final twice = ClaimableItem(
+      vaultTxid: 'd2' * 32,
+      ownerAddress: claimable1.ownerAddress,
+      cents: claimable1.cents,
+      collateralZat: claimable1.collateralZat,
+      claimHeight: claimable1.claimHeight,
+      claimPath: 'b',
+      pClaimMicroUsd: claimable1.pClaimMicroUsd,
+      feeZat: claimable1.feeZat,
+      protocolFeeCents: claimable1.protocolFeeCents,
+      pMintMicroUsd: claimable1.pMintMicroUsd,
+      attestFeeZat: 0,
+      residualZat: 0,
+      claimantZat: claimable1.claimantZat,
+      payee: claimable1.payee,
+      claimable: true,
+      underwaterAtMicroUsd: claimable1.underwaterAtMicroUsd,
+      lockHeight: claimable1.lockHeight,
+      inTerm: true,
+      cancelsRequired: 2,
+      cancelCount: 1,
+      cancelQuietUntil: 600,
+    );
+    h.api.claimableAnswer = [claimable1, twice];
+    await openClaimable(tester, h);
+    expect(find.textContaining('one attestor can cancel a claim'), findsOneWidget);
+    expect(find.textContaining('2 attestors signing together can cancel a claim (1 recent cancel; one attestor again from height 600)'), findsOneWidget);
+    await tester.tap(find.byKey(Key('claimable-${twice.vaultTxid}')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('claim-cancels-required')), findsOneWidget);
+    expect(find.text('the \$10.00 you burn comes back to you as YED; the fees do not'), findsOneWidget);
   });
 }

@@ -88,10 +88,19 @@ class _ParamsSheetState extends State<ParamsSheet> {
   void _start(AppState app) {
     setState(() {
       _error = null;
-      _progress = const ParamsProgress(file: '', doneBytes: 0, totalBytes: 0, finished: false);
+      _progress = const ParamsProgress(file: '', doneBytes: 0, totalBytes: 0, finished: false, error: '');
     });
     _sub = app.api.downloadParams(baseUrl: app.settings.paramsUrl).listen(
       (p) {
+        // A failure is the stream's last event (the core never returns it as an error).
+        if (p.error.isNotEmpty) {
+          setState(() {
+            _error = p.error;
+            _progress = null;
+            _sub = null;
+          });
+          return;
+        }
         setState(() => _progress = p);
         if (p.finished && mounted) Navigator.of(context).pop(true);
       },
@@ -100,6 +109,16 @@ class _ParamsSheetState extends State<ParamsSheet> {
         _progress = null;
         _sub = null;
       }),
+      // A stream that ends with neither `finished` nor an error must not leave the bar running.
+      onDone: () {
+        final p = _progress;
+        if (!mounted || _sub == null || p == null || p.finished) return;
+        setState(() {
+          _error = 'The download stopped before both files were checked.';
+          _progress = null;
+          _sub = null;
+        });
+      },
     );
   }
 

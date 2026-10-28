@@ -4,6 +4,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:yew_app/api/wallet_api.dart';
 import 'package:yew_app/screens/keys.dart';
 import 'package:yew_app/trust_text.dart';
 
@@ -62,10 +63,26 @@ void main() {
     expect(h.api.calls.where((c) => c.startsWith('exportWif')), isEmpty);
     await tester.tap(find.byKey(const Key('reveal')));
     await tester.pumpAndSettle();
-    expect(h.api.calls, contains('exportWif $fakeYe'));
+    expect(h.api.calls, contains('exportWif $fakeS'));
     expect(find.text('cVfakeWif1111111111111111111111111111111111111111111'), findsOneWidget);
-    expect(find.text(fakeYe), findsOneWidget);
+    expect(find.text('$fakeYe (P2PKH form of this key)'), findsOneWidget);
     expect(find.text(fakeS), findsOneWidget);
+    expect(find.byKey(const Key('wif-falcon-note')), findsNothing);
+  });
+
+  testWidgets('export private key once Falcon is active: by the s… form, the P2PKH YED form labelled, the Falcon holder named', (tester) async {
+    final h = Harness(withWallet: true);
+    // addresses() lists the 53-character Falcon holder as the YED form (core: TOK-PQ).
+    const falcon = 'yr2VSZg8io63sLAH7edCZ5YPZN4ihsf6m1U3y38sTygja16pcz1bo';
+    h.api.address = const AddressPair(ye: falcon, s: fakeS, path: "m/44'/347'/0'/0/0 (Falcon holder)", coveredBySeed: true, address: fakeS, kind: ReceiveKind.transparent);
+    await openSettings(tester, h);
+    await tester.tap(find.byKey(const Key('export-key')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('reveal')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('exportWif $fakeS'), reason: 'a Falcon address has no WIF: export by the s… form');
+    expect(find.text('$fakeYe (P2PKH form of this key)'), findsOneWidget);
+    expect(find.byKey(const Key('wif-falcon-note')), findsOneWidget);
   });
 
   testWidgets('import private key calls the bridge with the birthday and flags the key as outside the seed', (tester) async {

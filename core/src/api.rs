@@ -236,7 +236,7 @@ pub struct Created {
     /// The mnemonic, **only when this call generated it** (the app stores it in the platform
     /// keystore and shows it once for backup); `None` when the caller supplied the words.
     pub seed_words: Option<String>,
-    /// The primary receive address, `ye…` form.
+    /// The primary receive address, `yb…` form.
     pub address_ye: String,
 }
 
@@ -338,6 +338,12 @@ pub struct Balances {
     pub shielded_scanned_height: i64,
     /// Scanned to the tip: private sending is available ("sending available at 100%").
     pub shielded_sendable: bool,
+    /// YEC at the wallet's own post-quantum keys (class `PQ_OWNED`: a payment to a Falcon
+    /// holder's `sq…` form, a vault owner's residual), zat. In neither YEC balance: no P2PKH
+    /// path spends it; [`release_preview`] of a coin in [`Balances::pq_coins`] moves it.
+    pub yec_pq_zat: i64,
+    /// The `PQ_OWNED` coins not already being moved, `txid:n`, oldest first.
+    pub pq_coins: Vec<String>,
 }
 
 /// Which receive address [`receive_address`] returns.
@@ -347,15 +353,17 @@ pub enum ReceiveKind {
     Transparent,
     /// The private Sapling `ys1…` address (shielded YEC, memos).
     Shielded,
-    /// The Yellowback `ye…` form of the transparent address (YED, mint).
+    /// The Yellowback `yb…` form of the transparent address (YED, mint).
     Yed,
 }
 
 /// A receive address: `address` is the one of `kind`; for the transparent kinds `ye` and `s`
-/// are the two forms of the same key, for a shielded address both are empty.
+/// are the two forms of the same key (once Falcon is active, `receive_address`'s `ye` is the
+/// 53-character Falcon holder address paired with that key), for a shielded address both are
+/// empty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AddressPair {
-    /// The Yellowback form (`ye…` / `yt…` / `yr…`).
+    /// The Yellowback form (`yb…` / `yt…` / `yr…`; 53 characters for a Falcon holder).
     pub ye: String,
     /// The transparent form (`s1…` / `sm…`).
     pub s: String,
@@ -363,7 +371,7 @@ pub struct AddressPair {
     pub path: String,
     /// `false` for an imported key (not covered by the seed backup).
     pub covered_by_seed: bool,
-    /// The address of `kind` (`s…`, `ye…` or `ys1…`).
+    /// The address of `kind` (`s…`, `yb…` or `ys1…`).
     pub address: String,
     /// The kind of `address`.
     pub kind: ReceiveKind,
@@ -480,6 +488,10 @@ pub struct ParamsProgress {
     pub total_bytes: i64,
     /// The last event: both files verified and in place.
     pub finished: bool,
+    /// The last event of a failed download: why (empty otherwise). A failure is reported only
+    /// here: flutter_rust_bridge hands a stream function's `Err` to a future the generated Dart
+    /// never awaits, so the app would never see it.
+    pub error: String,
 }
 
 /// The node's dry run of a preview (`ValidateRawTransaction`).
@@ -504,7 +516,7 @@ pub struct DryRun {
 /// One recipient of a YED send.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Recipient {
-    /// `ye…` / `yr…` / `s…`.
+    /// `yb…` / `yr…` / `s…`.
     pub address: String,
     /// Cents.
     pub cents: i64,
@@ -527,8 +539,11 @@ pub struct YedPreview {
     pub change_cents: i64,
     /// Number of YEC inputs (fee).
     pub yec_inputs: u32,
-    /// The fee, zat.
+    /// The network fee, zat (rpcversion 8: the Yellowback size fee, dollars per KB at the attested
+    /// price).
     pub fee_zat: i64,
+    /// [`YedPreview::fee_zat`] in US cents at the last sync's price (0 when unknown).
+    pub fee_usd_cents: i64,
     /// YEC change, zat.
     pub yec_change_zat: i64,
     /// `nExpiryHeight`.
@@ -549,10 +564,13 @@ pub struct SendResult {
     pub verdict: String,
 }
 
+// Debug is written by hand below and redacts `wif` (a private key), so a `{:?}` in a log line or a
+// panic never prints it (contrib/semgrep/rules/yew.yaml `yew.keys.secret-type-derives-debug`).
 /// [`export_wif`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WifExport {
-    /// The address, `ye…` form.
+    /// The key's P2PKH address, `yb…` form (35 characters). Once Falcon is in force YED is
+    /// received at the key's Falcon holder instead, which has no WIF.
     pub address_ye: String,
     /// The address, `s…` form.
     pub address_s: String,
@@ -562,15 +580,32 @@ pub struct WifExport {
     pub covered_by_seed: bool,
 }
 
+impl std::fmt::Debug for WifExport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WifExport")
+            .field("address_ye", &self.address_ye)
+            .field("address_s", &self.address_s)
+            .field("wif", &"<redacted>")
+            .field("covered_by_seed", &self.covered_by_seed)
+            .finish()
+    }
+}
+
 /// [`validate_address`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AddressCheck {
     /// Parses for the network.
     pub valid: bool,
     /// `p2pkh` / `p2sh`, `sapling` for a private address (`ys1…` / `ytestsapling1…` /
-    /// `yregtestsapling1…`), empty when invalid.
+    /// `yregtestsapling1…`); for the 53-character post-quantum forms (rpcversion 7, D-Q-20):
+    /// `pq` (a Falcon YED holder address: valid, it receives YED once Falcon is active),
+    /// `pq_owner` (an SLH-DSA vault-owner address: never a payment address, C-10) and `pq_yec`
+    /// (`sq…`/`tq…`/`rq…`, D-Q-20: valid, it receives YEC and never YED). The kind is
+    /// asset-blind: a `pq` address is refused as a YEC destination and a `pq_yec` one as a YED
+    /// destination (the Send screen says so before the preview; the builders refuse too).
+    /// Empty when unknown.
     pub kind: String,
-    /// The `ye…` form was given.
+    /// The `yb…` form was given.
     pub yellowback_form: bool,
     /// Why it is invalid, empty when valid.
     pub message: String,
@@ -640,19 +675,26 @@ pub struct MintEstimate {
     pub required_zat: i64,
     /// The collateral the MINT will lock (rounded as `BuildMint` does).
     pub collateral_zat: i64,
-    /// The enforcement fee, zat (0 under FEE-0).
+    /// The protocol fee, zat (0 under FEE-0): FEE-1′ (rpcversion 8), the debt's dollars in marginal
+    /// bands (1 % to $1,000, 0.5 % to $10,000, 0.1 % above, at least $1) at `pMint`; a redeem of the
+    /// vault pays the same dollars again at the same price.
     pub fee_zat: i64,
+    /// The protocol fee in US cents (shown even under FEE-0, where it is not paid).
+    pub protocol_fee_cents: i64,
     /// The attestor fee, zat (0 under AFEE-0).
     pub attest_fee_zat: i64,
-    /// The enforcement fee payee (`s…`), empty under FEE-0. The amount is checked against
-    /// FEE-1 locally; the payee's eligibility is the node's to judge (audit G-2).
+    /// The protocol fee payee (`s…`), empty under FEE-0. The amount is computed locally (FEE-1′);
+    /// the payee's eligibility is the node's to judge (audit G-2).
     pub payee: String,
     /// `CARRIER_VALUE`, zat.
     pub carrier_zat: i64,
     /// `TOKEN_VALUE` for the new YED output, zat.
     pub token_zat: i64,
-    /// The two network fees, zat.
+    /// The two network fees, zat: the carrier's flat fee and the MINT's Yellowback size fee
+    /// (dollars per KB at the attested price, rpcversion 8).
     pub network_fee_zat: i64,
+    /// `MAX_MINT`, cents ($100,000 on every network, D-Q-24).
+    pub max_mint_cents: i64,
     /// Everything the two steps need from YEC, zat.
     pub total_zat: i64,
     /// Spendable `YEC` + `FEE_RESERVE`, zat.
@@ -740,7 +782,9 @@ pub struct VaultSummary {
     pub vault_txid: String,
     /// `ACTIVE`, `VOID`, `CLOSED`, `CLAIMED`.
     pub status: String,
-    /// The owner address, `ye…` form (an own key).
+    /// The vault owner's post-quantum address (quantum spec §4, §6.2 `ownerAddress`: 53
+    /// characters, `yb…`/`yt…`/`yr…`): a vault identifier, **never** a receive address (client
+    /// survey C-10). YED and YEC go to the receive addresses.
     pub owner_address: String,
     /// The term class letter.
     pub term_class: String,
@@ -770,12 +814,22 @@ pub struct VaultSummary {
     /// `ACTIVE` and the next block is below `lockHeight`: a redeem now pays the early-redeem fee
     /// (IT-9).
     pub early_redeem: bool,
-    /// The early-redeem fee a redeem now would pay, zat: `collateral · earlyRedeemFeeBps[class] /
-    /// 10⁴` while [`VaultSummary::early_redeem`], else 0 (the preview's figure is the one signed:
-    /// it is 0 under FEE-0, which this offline summary cannot know).
+    /// The early-redeem fee a redeem now would pay, zat: `earlyRedeemFeeBps[class]` of the debt at
+    /// the vault's `pMint` (IT-9′, rpcversion 8) while [`VaultSummary::early_redeem`], else 0 (the
+    /// preview's figure is the one signed: it is 0 under FEE-0, which this offline summary cannot know).
     pub early_redeem_fee_zat: i64,
-    /// The class's early-redeem fee rate, bps of the collateral (500 / 250 / 100).
+    /// The early-redeem fee in US cents: the debt's share, exact (it no longer moves with the price);
+    /// shown beside the debt, and gone at the end of the term (the lockup report's recommendation).
+    pub early_redeem_fee_usd_cents: i64,
+    /// The class's early-redeem fee rate, bps of the debt (500 / 250 / 100).
     pub early_redeem_fee_bps: i64,
+    /// The vault's stored mint price, µUSD per YEC (0 until a sync has read it): every fee of the
+    /// vault is struck at it.
+    pub p_mint_micro_usd: i64,
+    /// The protocol fee a redeem pays, US cents (FEE-1′ of the debt; 0 for a vault that is not ACTIVE).
+    pub protocol_fee_cents: i64,
+    /// [`VaultSummary::protocol_fee_cents`] in zat at `pMint` (0 when the price is unknown).
+    pub protocol_fee_zat: i64,
     /// Claims are judged by the threshold at every height (in-term plan IT-2): always true on this
     /// build (the server's `inTermClaims` is checked at connect).
     pub in_term_claims: bool,
@@ -798,7 +852,10 @@ pub struct VaultSummary {
     pub underwater: bool,
     /// `closeHeight`, 0 while open.
     pub close_height: i64,
-    /// `closingTxid`, empty while open.
+    /// `closingTxid`, empty while open — except while a spend of the open vault is pending (a
+    /// redeem or release broadcast and not yet confirmed, or one the server reports in its
+    /// mempool): then that spend's txid, and `redeemable`, `releasable` and `renewable` are false
+    /// (the vault shows "redemption pending"; cf. DigiByte v9.26.7 00136af6).
     pub closing_txid: String,
     /// `voidReason`, empty unless VOID.
     pub void_reason: String,
@@ -830,6 +887,24 @@ pub struct VaultSummary {
     /// `REOPENED`: an attestor cancelled the claim and the vault lives on at `closing_txid`
     /// (U-24), the same position at a new outpoint (shown there; this row is history).
     pub reopened: bool,
+    /// `cancelCount` (the per-vault cancel limit, CAN-2): the claims of this position the
+    /// attestor set cancelled that still count (0 at the mint; it survives every re-creation).
+    pub cancel_count: i64,
+    /// `cancelsRequired`: how many attestors must sign together to cancel a claim of this vault
+    /// that confirms in the next block (1, one more for each recent cancel, at most 4; regtest 3).
+    /// 0 = not yet synced.
+    pub cancels_required: i64,
+    /// `cancelQuietUntil`: from this height the count starts again from one; 0 when the vault was
+    /// never cancelled.
+    pub cancel_quiet_until: i64,
+    /// Blocks until `cancel_quiet_until` (0 once reached, or never cancelled).
+    pub blocks_until_quiet_end: i64,
+    /// `heldResiduals` (CAN-3): how many of the owner's leftovers (the residual intents of
+    /// cancelled claims) this vault holds.
+    pub held_residuals: i64,
+    /// Why those leftovers cannot be released now (empty when none is held, or when the release
+    /// may pass): release needs the vault closed, or past its quiet period and not claimable.
+    pub held_reason: String,
 }
 
 /// A claim intent paying this wallet (the vault upgrade, U-15, U-23, U-24): the claimant's
@@ -847,7 +922,8 @@ pub struct ClaimIntent {
     pub role: String,
     /// The intent's value, zat (what the release pays).
     pub value_zat: i64,
-    /// `PENDING`, `RELEASING`, `RELEASED` or `CANCELLED`.
+    /// `PENDING`, `RELEASING`, `RELEASED`, `CANCELLED` or `SWEPT` (a residual's post-quantum
+    /// coin moved to the wallet).
     pub state: String,
     /// The height the claim confirmed at, 0 while unconfirmed.
     pub height: i64,
@@ -855,31 +931,54 @@ pub struct ClaimIntent {
     pub release_height: i64,
     /// Blocks until then (0 once reached).
     pub blocks_until_release: i64,
-    /// The release can be built now.
+    /// The release can be built now — or, with [`ClaimIntent::pq_move`], the move.
     pub releasable: bool,
+    /// The residual was released to the vault owner's post-quantum key (quantum spec F-3) and
+    /// [`release_preview`] now builds the move of that coin into the wallet (one ~8 KB
+    /// post-quantum spend; its size-priced fee comes out of the coin).
+    pub pq_move: bool,
     /// The attestor set cancelled the claim: the collateral went back into the vault and the
-    /// claim's burn is not refunded (U-24).
+    /// claim's burn came back as YED to [`ClaimIntent::refund_address`] (CAN-1, U-24 revised); the
+    /// claim's YEC fees did not.
     pub cancelled: bool,
+    /// CAN-1, a claim this wallet made: the YED a cancel re-issues, cents (the claim's whole burn;
+    /// 0 when unknown or for a residual).
+    pub refund_cents: i64,
+    /// Where it goes: the YED address (P2PKH `y…` or 53-character Falcon holder) of the token the
+    /// claim spent at its lowest-index YED input — the node's `refundHolder`. Empty when unknown.
+    pub refund_address: String,
+    /// [`ClaimIntent::refund_address`] is one of this wallet's own addresses.
+    pub refund_own: bool,
     /// The release date estimate (Unix seconds; `now + (releaseHeight − tip) · 75`).
     pub release_time_secs: i64,
+    /// A residual of a cancelled claim that the vault now holds (CAN-3): the node refuses its
+    /// release until the vault is closed, or past its quiet period and not claimable.
+    pub held: bool,
+    /// Why it is held now (empty unless [`ClaimIntent::held`]); the text to show.
+    pub held_reason: String,
     /// The release (or the transaction that spent it), empty until known.
     pub spend_txid: String,
     /// What to tell the user.
     pub note: String,
 }
 
-/// [`release_preview`]: the signed RELEASE waiting for [`release_confirm`].
+/// [`release_preview`]: the signed RELEASE (or post-quantum move) waiting for [`release_confirm`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReleasePreview {
     /// Pass to [`release_confirm`].
     pub preview_id: String,
-    /// The intent released, `txid:n`.
+    /// `release`, or `pq_move` (a released residual's post-quantum coin, or any own
+    /// post-quantum coin of [`Balances::pq_coins`], into the wallet).
+    pub kind: String,
+    /// The intent released (or the post-quantum coin moved), `txid:n`.
     pub intent: String,
-    /// What the release pays, zat.
+    /// What the recipient receives, zat.
     pub value_zat: i64,
-    /// The own address it pays.
+    /// The address it pays: an own `s…` key, or (a residual's release) the vault owner's
+    /// 53-character post-quantum address.
     pub recipient_address: String,
-    /// The network fee, zat (from the wallet's YEC).
+    /// The network fee, zat: from the wallet's YEC (a release), or out of the coin, priced by
+    /// size (a move: `max(1,000, pqfeerate × size)`).
     pub fee_zat: i64,
     /// The txid the broadcast will have.
     pub txid: String,
@@ -935,7 +1034,8 @@ pub struct ClaimTerms {
 pub struct ClaimableItem {
     /// The vault's mint txid.
     pub vault_txid: String,
-    /// The owner, `ye…`.
+    /// The owner's post-quantum address as the server reports it (`ownerAddress`, 53
+    /// characters on rpcversion 7): it names the vault, never a payment address.
     pub owner_address: String,
     /// The debt to burn, cents (the wallet must hold at least this).
     pub cents: i64,
@@ -947,8 +1047,12 @@ pub struct ClaimableItem {
     pub claim_path: String,
     /// `pClaim` at the node's tip, micro-USD per YEC.
     pub p_claim_micro_usd: i64,
-    /// The enforcement fee, zat.
+    /// The protocol fee, zat: FEE-1′ of the debt at the vault's `pMint` (rpcversion 8).
     pub fee_zat: i64,
+    /// The protocol fee, US cents.
+    pub protocol_fee_cents: i64,
+    /// The vault's stored mint price, µUSD per YEC.
+    pub p_mint_micro_usd: i64,
     /// The attestor fee, zat.
     pub attest_fee_zat: i64,
     /// RED-5's residual to the owner, zat.
@@ -966,6 +1070,14 @@ pub struct ClaimableItem {
     pub lock_height: i64,
     /// The vault is still in its term (a claim now is a claim in term).
     pub in_term: bool,
+    /// CAN-2 (`yed_listclaimable`): how many attestors must sign together to cancel a claim of
+    /// this vault confirmed in the next block (1 for a vault not cancelled lately; 0 from a node
+    /// that does not say).
+    pub cancels_required: i64,
+    /// The vault's recent (counted) cancels.
+    pub cancel_count: i64,
+    /// From this height a cancel needs one attestor again; 0 when never cancelled.
+    pub cancel_quiet_until: i64,
 }
 
 /// The terms of a [`MintEstimate`] the user confirmed, passed back to [`mint_start`] so the
@@ -1000,18 +1112,29 @@ pub struct RedeemPreview {
     pub change_cents: i64,
     /// YED inputs spent.
     pub yed_inputs: u32,
-    /// What the fee output pays, zat: the enforcement fee (FEE-1, checked locally) plus the
+    /// What the fee output pays, zat: the protocol fee (FEE-1′, computed locally) plus the
     /// early-redeem fee.
     pub fee_zat: i64,
-    /// The enforcement fee alone (FEE-1).
-    pub enforcement_fee_zat: i64,
-    /// The early-redeem fee within `fee_zat` (IT-9): due when the redeem confirms before
-    /// `lockHeight`, 0 otherwise and under FEE-0. Shown before the slider.
+    /// The protocol fee alone (FEE-1′ of the debt at the vault's `pMint`), zat.
+    pub protocol_fee_zat: i64,
+    /// The protocol fee, US cents (rpcversion 8: the same dollars the mint paid).
+    pub protocol_fee_cents: i64,
+    /// The vault's stored mint price, µUSD per YEC: the price both fees are struck at.
+    pub p_mint_micro_usd: i64,
+    /// The early-redeem fee within `fee_zat` (IT-9′, of the debt): due when the redeem confirms
+    /// before `lockHeight`, 0 otherwise and under FEE-0. Shown before the slider.
     pub early_redeem_fee_zat: i64,
+    /// [`RedeemPreview::early_redeem_fee_zat`] in US cents: the debt's share, exact (0 when none).
+    pub early_redeem_fee_usd_cents: i64,
     /// The vault's `lockHeight` (the end of the term).
     pub lock_height: i64,
     /// The enforcement fee payee (`s…`), empty under FEE-0.
     pub payee: String,
+    /// The network fee taken from the collateral, zat: the Yellowback size fee of the ~8 KB
+    /// post-quantum owner spend (dollars per KB at the attested price, rpcversion 8).
+    pub network_fee_zat: i64,
+    /// [`RedeemPreview::network_fee_zat`] in US cents at the last sync's price (0 when unknown).
+    pub network_fee_usd_cents: i64,
     /// The collateral returned, zat.
     pub collateral_zat: i64,
     /// The own address it returns to.
@@ -1039,9 +1162,9 @@ pub struct RedeemResult {
     pub extra_burn_cents: i64,
     /// YED change, cents.
     pub change_cents: i64,
-    /// The enforcement fee, zat.
+    /// The protocol fee plus any early-redeem fee, zat (the fee output).
     pub fee_zat: i64,
-    /// The early-redeem fee within `fee_zat` (IT-9).
+    /// The early-redeem fee within `fee_zat` (IT-9′).
     pub early_redeem_fee_zat: i64,
     /// The enforcement fee payee (`s…`), empty under FEE-0.
     pub payee: String,
@@ -1143,7 +1266,26 @@ fn wallet_id(w: &Wallet) -> Result<String, YewError> {
     Ok(format!("yew-{}", &h[..h.len().min(16)]))
 }
 
-fn yellowback_status(a: &Availability) -> YellowbackStatus {
+/// Why a present Yellowback service is not believed on `network`, if it is not: its Falcon
+/// activation (`params.pq`) is not the one compiled into this build (mainnet, testnet;
+/// `terms::check_falcon_activation`). YED is then hidden as for a server without the service.
+fn yellowback_refusal(a: &Availability, network: Network) -> Option<String> {
+    let Availability::Present { info, .. } = a else {
+        return None;
+    };
+    let pq = info.params.as_ref()?.pq.as_ref()?;
+    crate::build::terms::check_falcon_activation(network, pq)
+        .err()
+        .map(|e| e.to_string())
+}
+
+/// YED may be shown and used: the service is usable ([`Availability::usable`]) and not refused
+/// ([`yellowback_refusal`]).
+fn yellowback_usable(a: &Availability, network: Network) -> bool {
+    a.usable() && yellowback_refusal(a, network).is_none()
+}
+
+fn yellowback_status(a: &Availability, network: Network) -> YellowbackStatus {
     match a {
         Availability::Absent => YellowbackStatus {
             present: false,
@@ -1160,7 +1302,7 @@ fn yellowback_status(a: &Availability) -> YellowbackStatus {
             active,
         } => YellowbackStatus {
             present: true,
-            usable: a.usable(),
+            usable: yellowback_usable(a, network),
             rpcversion: info.rpcversion,
             enabled: *enabled,
             active: *active,
@@ -1191,7 +1333,13 @@ async fn connect(server: &Server, network: Network) -> Result<Conn, YewError> {
 /// Connect if not connected.
 async fn ensure_conn(o: &mut Open) -> Result<(), YewError> {
     if o.conn.is_none() {
-        o.conn = Some(connect(&o.server, o.wallet.network).await?);
+        let c = connect(&o.server, o.wallet.network).await?;
+        // rpcversion 7: the size fee rate and the Falcon activation, for every builder. A bad
+        // `params.pq` is not fatal here: the mint/redeem/claim paths re-read and refuse it.
+        if let Availability::Present { info, .. } = &c.availability {
+            let _ = o.wallet.note_server_params(info.params.as_ref());
+        }
+        o.conn = Some(c);
     }
     Ok(())
 }
@@ -1336,7 +1484,29 @@ pub fn validate_address(network: NetworkId, address: String) -> AddressCheck {
             message: String::new(),
         };
     }
-    match keys::parse_address(network.to_network(), address.trim()) {
+    let net = network.to_network();
+    if let Ok(id) = keys::parse_pq_address(net, address.trim()) {
+        let falcon = id.scheme == crate::pq::SCHEME_FN_DSA_512;
+        return AddressCheck {
+            valid: falcon,
+            kind: if falcon { "pq" } else { "pq_owner" }.into(),
+            yellowback_form: true,
+            message: if falcon {
+                String::new()
+            } else {
+                keys::KeyError::PqOwnerAddress(address.trim().into()).to_string()
+            },
+        };
+    }
+    if keys::parse_pq_yec_address(net, address.trim()).is_ok() {
+        return AddressCheck {
+            valid: true,
+            kind: "pq_yec".into(),
+            yellowback_form: false,
+            message: String::new(),
+        };
+    }
+    match keys::parse_address(net, address.trim()) {
         Ok(a) => AddressCheck {
             valid: true,
             kind: match a.kind {
@@ -1395,7 +1565,7 @@ pub fn probe_server(
             chain_name: c.chain_name,
             tip: c.tip as i64,
             taddr_support: true,
-            yellowback: yellowback_status(&c.availability),
+            yellowback: yellowback_status(&c.availability, network),
         })
     })
 }
@@ -1444,6 +1614,15 @@ pub fn create_wallet(
         )?;
         let id = wallet_id(&wallet)?;
         let primary = wallet.receive_address(false)?;
+        // The YED form as `receive_address` gives it: the Falcon holder once TOK-PQ is in force
+        // (mainnet and testnet always; regtest once the server's terms are known), never a
+        // P2PKH `yb…` a sender's node would refuse as `bad-yed-holder`.
+        let address_ye = if wallet.falcon_now() {
+            wallet.falcon_holder_address(&primary)
+        } else {
+            None
+        }
+        .unwrap_or_else(|| primary.address_ye.clone());
         if generated.is_some() {
             // A seed generated here has no history: the private account starts at the tip
             // when no birthday was given (`build::yec_private::sync_shielded`).
@@ -1459,7 +1638,7 @@ pub fn create_wallet(
         Ok(Created {
             wallet_id: id,
             seed_words: generated,
-            address_ye: primary.address_ye,
+            address_ye,
         })
     })
 }
@@ -1559,7 +1738,7 @@ pub fn status() -> Result<Status, YewError> {
                 birthday: birthday as i64,
                 sync_height: sync_height as i64,
                 addresses: addresses as i64,
-                yellowback: yellowback_status(&c.availability),
+                yellowback: yellowback_status(&c.availability, network),
                 core_version: crate::VERSION.to_string(),
             })
         })
@@ -1602,6 +1781,12 @@ pub fn balances() -> Result<Balances, YewError> {
             yec_shielded_pending_zat: (z.pending_change_zat + z.pending_incoming_zat) as i64,
             shielded_scanned_height: z.scanned_height as i64,
             shielded_sendable: z.sendable,
+            yec_pq_zat: b.yec_pq_zat,
+            pq_coins: b
+                .pq_coins
+                .iter()
+                .map(|op| format!("{}:{}", txid_hex(&op.txid), op.n))
+                .collect(),
         })
     })
 }
@@ -1622,16 +1807,29 @@ pub fn receive_address(kind: ReceiveKind, fresh: bool) -> Result<AddressPair, Ye
         }
         _ => {
             let row = o.wallet.receive_address(fresh)?;
+            // TOK-PQ (mainnet and testnet from the first block; regtest from its Falcon height):
+            // YED is received by the Falcon holder paired with this key, so the YED form is its
+            // 53-character post-quantum address (YED only: YEC goes to the `s…` form).
+            let falcon = if o.wallet.falcon_now() {
+                o.wallet.falcon_holder_address(&row)
+            } else {
+                None
+            };
+            let ye = falcon.clone().unwrap_or_else(|| row.address_ye.clone());
             Ok(AddressPair {
                 address: if kind == ReceiveKind::Yed {
-                    row.address_ye.clone()
+                    ye.clone()
                 } else {
                     row.address_s.clone()
                 },
                 kind,
-                ye: row.address_ye,
+                ye,
                 s: row.address_s,
-                path: format!("m/44'/347'/0'/{}/{}", row.chain, row.index),
+                path: if falcon.is_some() {
+                    format!("m/44'/347'/0'/{}/{} (Falcon holder)", row.chain, row.index)
+                } else {
+                    format!("m/44'/347'/0'/{}/{}", row.chain, row.index)
+                },
                 covered_by_seed: true,
             })
         }
@@ -1689,21 +1887,32 @@ pub fn new_shielded_address() -> Result<AddressPair, YewError> {
 /// Every address of the wallet (Settings → export private key picks one).
 pub fn addresses() -> Result<Vec<AddressPair>, YewError> {
     with_open(|o| {
+        // TOK-PQ: once Falcon is in force the YED form of an HD key is its Falcon holder (as
+        // `receive_address`); the P2PKH `yb…` form is the key's WIF export only
+        // (`export_wif`, labelled there). An imported key has no Falcon pair.
+        let falcon = o.wallet.falcon_now();
         Ok(o.wallet
             .addresses()?
             .into_iter()
             .map(|r| {
                 let hd = r.hd_chain().is_some();
+                let holder = if falcon && hd {
+                    o.wallet.falcon_holder_address(&r)
+                } else {
+                    None
+                };
                 AddressPair {
                     address: r.address_s.clone(),
                     kind: ReceiveKind::Transparent,
-                    ye: r.address_ye,
-                    s: r.address_s,
-                    path: if hd {
-                        format!("m/44'/347'/0'/{}/{}", r.chain, r.index)
-                    } else {
-                        "imported".into()
+                    path: match (hd, holder.is_some()) {
+                        (true, true) => {
+                            format!("m/44'/347'/0'/{}/{} (Falcon holder)", r.chain, r.index)
+                        }
+                        (true, false) => format!("m/44'/347'/0'/{}/{}", r.chain, r.index),
+                        _ => "imported".into(),
                     },
+                    ye: holder.unwrap_or(r.address_ye),
+                    s: r.address_s,
                     covered_by_seed: hd,
                 }
             })
@@ -2033,9 +2242,33 @@ fn params_status_of(dir: &std::path::Path) -> ParamsStatus {
 /// loopback `http://` for tests), or, when `base_url` is empty, from
 /// [`sapling_params::DEFAULT_SOURCES`] in order (the next is tried when one fails), into the app's data directory,
 /// each file verified against its pinned SHA-256 before it is kept. Progress on `sink`, ending
-/// with a `finished` event ([`params_status`] then says `ready`); the wallet stays usable
-/// meanwhile (the download does not hold the wallet).
+/// with a `finished` event ([`params_status`] then says `ready`) or, on any failure, an event
+/// carrying `error`; the wallet stays usable meanwhile (the download does not hold the wallet).
 pub fn download_params(base_url: String, sink: StreamSink<ParamsProgress>) -> Result<(), YewError> {
+    download_params_to(base_url, |p| {
+        let _ = sink.add(p);
+    });
+    Ok(())
+}
+
+/// [`download_params`] with its events going to `emit`: every outcome is an event, the last one
+/// `finished` or carrying `error` (never a returned error, which the app would not see).
+fn download_params_to(base_url: String, emit: impl Fn(ParamsProgress) + Send + Sync + Clone) {
+    if let Err(e) = download_params_inner(base_url, emit.clone()) {
+        emit(ParamsProgress {
+            file: String::new(),
+            done_bytes: 0,
+            total_bytes: 0,
+            finished: false,
+            error: e.message,
+        });
+    }
+}
+
+fn download_params_inner(
+    base_url: String,
+    emit: impl Fn(ParamsProgress) + Send + Sync + Clone,
+) -> Result<(), YewError> {
     static DOWNLOADING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let Ok(_guard) = DOWNLOADING.try_lock() else {
         return Err(YewError::new(
@@ -2062,13 +2295,14 @@ pub fn download_params(base_url: String, sink: StreamSink<ParamsProgress>) -> Re
     let mut last_err = String::new();
     let mut done = None;
     for source in &sources {
-        let progress_sink = sink.clone();
+        let progress = emit.clone();
         match runtime().block_on(sapling_params::download(source, &dir, move |p| {
-            let _ = progress_sink.add(ParamsProgress {
+            progress(ParamsProgress {
                 file: p.file.to_string(),
                 done_bytes: p.done as i64,
                 total_bytes: p.total as i64,
                 finished: false,
+                error: String::new(),
             });
         })) {
             Ok(st) => {
@@ -2079,11 +2313,12 @@ pub fn download_params(base_url: String, sink: StreamSink<ParamsProgress>) -> Re
         }
     }
     let st = done.ok_or_else(|| YewError::new(ErrorKind::Network, last_err))?;
-    let _ = sink.add(ParamsProgress {
+    emit(ParamsProgress {
         file: String::new(),
         done_bytes: (sapling_params::TOTAL_BYTES - st.missing_bytes) as i64,
         total_bytes: sapling_params::TOTAL_BYTES as i64,
         finished: true,
+        error: String::new(),
     });
     Ok(())
 }
@@ -2128,6 +2363,10 @@ pub fn send_yed_preview(recipients: Vec<Recipient>) -> Result<YedPreview, YewErr
                 change_cents: p.change_cents as i64,
                 yec_inputs: p.yec_inputs.len() as u32,
                 fee_zat: p.fee,
+                fee_usd_cents: crate::params::zat_to_usd_cents(
+                    p.fee,
+                    r.price_micro_usd.unwrap_or(0),
+                ),
                 yec_change_zat: p.yec_change,
                 expiry_height: p.expiry_height,
                 txid: txid.clone(),
@@ -2229,8 +2468,8 @@ pub fn import_wif(wif: String, birthday: Option<i64>) -> Result<AddressPair, Yew
 /// Sync now, reporting progress on `sink` (Dart: a `Stream<SyncEvent>`), ending with `Done`
 /// or `Failed`: the transparent sync (addresses, YED) and then the private (Sapling) scan, as
 /// one progress (`percent`). A failed private sync does not fail the call: `Done` carries it
-/// in `shielded_message` (transparent YEC and YED are synced either way). The returned error
-/// mirrors the `Failed` event.
+/// in `shielded_message` (transparent YEC and YED are synced either way). A failure is the
+/// `Failed` event, never the returned error (which the generated Dart does not await).
 pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
     let emit = |e: SyncEvent| {
         let _ = sink.add(e);
@@ -2263,18 +2502,23 @@ pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
             if o.conn.is_none() {
                 o.conn = Some(connect(&o.server, network).await?);
             }
-            let (tip, usable) = {
+            let (tip, usable, refused) = {
                 let c = o.conn.as_ref().expect("set above");
-                (c.tip as i64, c.availability.usable())
+                let refused = yellowback_refusal(&c.availability, network);
+                (
+                    c.tip as i64,
+                    c.availability.usable() && refused.is_none(),
+                    refused,
+                )
             };
             emit(SyncEvent {
                 yellowback_usable: usable,
                 ..event(
                     SyncStage::Probing,
-                    if usable {
-                        "Yellowback service present".into()
-                    } else {
-                        "No usable Yellowback service: YED hidden".into()
+                    match refused {
+                        Some(why) => format!("Yellowback service refused, YED hidden: {why}"),
+                        None if usable => "Yellowback service present".into(),
+                        None => "No usable Yellowback service: YED hidden".into(),
                     },
                     tip,
                     2,
@@ -2341,10 +2585,15 @@ pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
                 ),
                 Err(e) => (0, false, e.message.clone(), ", private sync failed".into()),
             };
+            let refused = r
+                .yellowback_refused
+                .as_ref()
+                .map(|why| format!("; Yellowback service refused, YED hidden: {why}"))
+                .unwrap_or_default();
             emit(SyncEvent {
                 stage: SyncStage::Done,
                 message: format!(
-                    "Synced to {}: {} transactions, {} outputs, {} tokens{extra}",
+                    "Synced to {}: {} transactions, {} outputs, {} tokens{extra}{refused}",
                     r.tip, r.transactions, r.utxos, r.tokens
                 ),
                 tip: r.tip as i64,
@@ -2358,8 +2607,12 @@ pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
             Ok(())
         }
         Err(e) => {
-            emit(event(SyncStage::Failed, e.message.clone(), 0, 0));
-            Err(e)
+            // The failure is the stream's last event, and only that: flutter_rust_bridge hands a
+            // stream function's `Err` to a future the generated Dart never awaits, so returning
+            // it surfaced as an uncaught "Instance of 'YewError'" (the q device flow, a sync
+            // refused by lightwalletd's rate limit) instead of the Failed event the app reads.
+            emit(event(SyncStage::Failed, e.message, 0, 0));
+            Ok(())
         }
     }
 }
@@ -2488,7 +2741,7 @@ fn vault_summary(
     VaultSummary {
         vault_txid: txid_hex(&v.txid),
         status: v.status.clone(),
-        owner_address: keys::encode_yellowback(network, &v.owner_hash160),
+        owner_address: keys::encode_pq_yellowback(network, &v.owner).unwrap_or_default(),
         term_class: v.term_class.clone(),
         cents: v.minted_cents as i64,
         collateral_zat: v.collateral_zat,
@@ -2502,11 +2755,27 @@ fn vault_summary(
         blocks_until_term_end: (v.lock_height as i64 - tip as i64).max(0),
         early_redeem: early,
         early_redeem_fee_zat: if early {
-            crate::params::early_redeem_fee_zat(v.collateral_zat, fee_bps)
+            crate::params::early_redeem_fee_zat(v.minted_cents, fee_bps, v.p_mint)
+        } else {
+            0
+        },
+        early_redeem_fee_usd_cents: if early {
+            crate::params::early_redeem_fee_cents(v.minted_cents, fee_bps)
         } else {
             0
         },
         early_redeem_fee_bps: fee_bps,
+        p_mint_micro_usd: v.p_mint,
+        protocol_fee_cents: if active {
+            crate::params::protocol_fee_cents(v.minted_cents)
+        } else {
+            0
+        },
+        protocol_fee_zat: if active {
+            crate::params::protocol_fee_zat(v.minted_cents, v.p_mint).unwrap_or(0)
+        } else {
+            0
+        },
         in_term_claims: true,
         claim_threshold_bps: crate::params::CLAIM_THRESHOLD_BPS,
         claim_price_micro_usd: p_claim,
@@ -2529,16 +2798,51 @@ fn vault_summary(
         claim_open: active && tip >= app_from,
         claiming: v.status == "CLAIMING",
         reopened: v.status == "REOPENED",
+        cancel_count: v.cancel.count,
+        cancels_required: v.cancel.required,
+        cancel_quiet_until: v.cancel.quiet_until as i64,
+        blocks_until_quiet_end: if v.cancel.quiet_until == 0 {
+            0
+        } else {
+            (v.cancel.quiet_until as i64 - (tip as i64 + 1)).max(0)
+        },
+        held_residuals: v.cancel.held_residuals.len() as i64,
+        held_reason: if v.cancel.held_residuals.is_empty() {
+            String::new()
+        } else {
+            crate::build::release::held_reason(v, tip)
+                .map(|w| w.trim_start_matches("intent-residual-held: ").to_string())
+                .unwrap_or_default()
+        },
     }
+}
+
+/// An open vault with a spend pending (`build::redeem::pending_spend`) offers no second redeem,
+/// release or renew; the pending spend's txid is shown in `closing_txid`.
+fn with_pending_spend(mut s: VaultSummary, spender: Option<String>) -> VaultSummary {
+    if let Some(txid) = spender {
+        if s.open {
+            s.redeemable = false;
+            s.releasable = false;
+            s.renewable = false;
+            s.closing_txid = txid;
+        }
+    }
+    s
 }
 
 fn claim_intent_of(
     i: &crate::store::IntentRow,
+    vaults: &[crate::store::VaultRow],
+    own: &crate::build::claim::OwnHolders,
     tip: u64,
     network: Network,
     now: i64,
 ) -> ClaimIntent {
+    let (refund_addr, refund_own) =
+        crate::build::claim::refund_address(&i.refund.script, own, network);
     let rh = i.release_height().unwrap_or(0);
+    let held = crate::build::release::residual_held(i, vaults, tip);
     ClaimIntent {
         intent: format!("{}:{}", txid_hex(&i.outpoint.txid), i.outpoint.n),
         vault_txid: txid_hex(&i.vault_txid),
@@ -2552,13 +2856,21 @@ fn claim_intent_of(
         } else {
             (rh as i64 - (tip as i64 + 1)).max(0)
         },
-        releasable: crate::build::release::not_releasable(i, tip).is_none(),
+        releasable: crate::build::release::not_releasable(i, tip).is_none() && held.is_none(),
+        pq_move: crate::build::release::pq_coin(i).is_some(),
         cancelled: i.state == crate::store::IntentState::Cancelled,
+        refund_cents: i.refund.cents as i64,
+        refund_address: refund_addr,
+        refund_own,
         release_time_secs: if rh == 0 {
             0
         } else {
             height_time(network, rh, tip, now)
         },
+        held: held.is_some(),
+        held_reason: held
+            .map(|w| w.trim_start_matches("intent-residual-held: ").to_string())
+            .unwrap_or_default(),
         spend_txid: hex_or_empty(&i.spend_txid),
         note: i.note.clone(),
     }
@@ -2658,11 +2970,13 @@ pub fn mint_estimate(cents: i64, lock_blocks: u32) -> Result<MintEstimate, YewEr
                 required_zat: e.required_zat,
                 collateral_zat: e.collateral_zat,
                 fee_zat: e.fee_zat,
+                protocol_fee_cents: e.protocol_fee_cents,
                 attest_fee_zat: e.attest_fee_zat,
                 payee: e.payee.clone(),
                 carrier_zat: params::CARRIER_VALUE,
                 token_zat: params::TOKEN_VALUE,
-                network_fee_zat: 2 * params::FEE_ZAT,
+                network_fee_zat: e.network_fee_zat,
+                max_mint_cents: params::MAX_MINT_CENTS as i64,
                 total_zat: e.total_zat,
                 available_zat: e.available_zat,
                 affordable: e.affordable(),
@@ -2799,8 +3113,14 @@ pub fn vaults() -> Result<Vec<VaultSummary>, YewError> {
         Ok(o.wallet
             .vaults()?
             .iter()
-            .map(|v| vault_summary(v, tip, claim_price.or(price), network, &mints, now))
-            .collect())
+            .map(|v| {
+                let s = vault_summary(v, tip, claim_price.or(price), network, &mints, now);
+                Ok(with_pending_spend(
+                    s,
+                    crate::build::redeem::pending_spend(&o.wallet, v)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, crate::wallet::WalletError>>()?)
     })
 }
 
@@ -2821,6 +3141,7 @@ pub fn redeem_preview(vault_txid: String) -> Result<RedeemPreview, YewError> {
                     .await?
             };
             let id = txid_hex(&p.txid);
+            let price_micro_usd = r.price_micro_usd.unwrap_or(0);
             let out = RedeemPreview {
                 preview_id: id.clone(),
                 vault_txid: p.vault_txid.clone(),
@@ -2830,10 +3151,18 @@ pub fn redeem_preview(vault_txid: String) -> Result<RedeemPreview, YewError> {
                 change_cents: p.change_cents as i64,
                 yed_inputs: p.yed_inputs.len() as u32,
                 fee_zat: p.fee_zat,
-                enforcement_fee_zat: p.fee_zat - p.early_redeem_fee_zat,
+                protocol_fee_zat: p.fee_zat - p.early_redeem_fee_zat,
+                protocol_fee_cents: p.protocol_fee_cents,
+                p_mint_micro_usd: p.p_mint,
                 early_redeem_fee_zat: p.early_redeem_fee_zat,
+                early_redeem_fee_usd_cents: p.early_redeem_fee_cents,
                 lock_height: p.lock_height as i64,
                 payee: p.payee.clone(),
+                network_fee_zat: p.network_fee_zat,
+                network_fee_usd_cents: crate::params::zat_to_usd_cents(
+                    p.network_fee_zat,
+                    price_micro_usd,
+                ),
                 collateral_zat: p.collateral_out,
                 collateral_address: p.collateral_address.clone(),
                 lock_time: p.lock_time as i64,
@@ -2893,10 +3222,15 @@ pub fn claim_intents() -> Result<Vec<ClaimIntent>, YewError> {
         let tip = synced_tip(o)?;
         let network = o.wallet.network;
         let now = now_secs();
+        let vaults = o.wallet.vaults()?;
+        let own = crate::build::claim::OwnHolders {
+            p2pkh: o.wallet.own_hashes()?,
+            falcon: o.wallet.own_falcon_holders()?.into_keys().collect(),
+        };
         Ok(o.wallet
             .intents()?
             .iter()
-            .map(|i| claim_intent_of(i, tip, network, now))
+            .map(|i| claim_intent_of(i, &vaults, &own, tip, network, now))
             .collect())
     })
 }
@@ -2911,10 +3245,15 @@ pub fn release_preview(intent: String) -> Result<ReleasePreview, YewError> {
             let id = txid_hex(&p.txid);
             let out = ReleasePreview {
                 preview_id: id.clone(),
+                kind: match p.kind {
+                    crate::build::release::ReleaseKind::Release => "release",
+                    crate::build::release::ReleaseKind::PqSweep => "pq_move",
+                }
+                .into(),
                 intent: format!("{}:{}", txid_hex(&p.intent.txid), p.intent.n),
                 value_zat: p.value,
                 recipient_address: p.recipient_address.clone(),
-                fee_zat: crate::params::FEE_ZAT,
+                fee_zat: p.fee,
                 txid: id.clone(),
             };
             o.previews.insert(id, Preview::Release(p));
@@ -2971,6 +3310,8 @@ pub fn claimable() -> Result<Vec<ClaimableItem>, YewError> {
                     claim_path: c.claim_path,
                     p_claim_micro_usd: c.p_claim,
                     fee_zat: c.fee_zat,
+                    protocol_fee_cents: c.protocol_fee_cents,
+                    p_mint_micro_usd: c.p_mint,
                     attest_fee_zat: c.attest_fee_zat,
                     residual_zat: c.residual_zat,
                     claimant_zat: c.claimant_zat,
@@ -2979,6 +3320,9 @@ pub fn claimable() -> Result<Vec<ClaimableItem>, YewError> {
                     underwater_at_micro_usd: c.underwater_at,
                     lock_height: c.lock_height as i64,
                     in_term: c.in_term,
+                    cancels_required: c.cancels_required,
+                    cancel_count: c.cancel_count,
+                    cancel_quiet_until: c.cancel_quiet_until,
                 })
                 .collect())
         })
@@ -3126,6 +3470,55 @@ mod tests {
             .kind,
             ErrorKind::Input
         );
+
+        // Mainnet is Falcon from day one: the created wallet's YED address is its 53-character
+        // Falcon holder (`yb…`), the one Receive shows, not the P2PKH form (device run, q flow).
+        let m = create_wallet(
+            Some(PHRASE.into()),
+            String::new(),
+            Some(5),
+            NetworkId::Mainnet,
+            "lwd.example.org:443".into(),
+            false,
+            None,
+            tmp_dir("main-created"),
+        )
+        .unwrap();
+        assert_eq!(
+            (m.address_ye.len(), &m.address_ye[..2]),
+            (53, "yb"),
+            "{}",
+            m.address_ye
+        );
+        assert_eq!(
+            receive_address(ReceiveKind::Yed, false).unwrap().ye,
+            m.address_ye
+        );
+        // The address list shows the Falcon holders too; the P2PKH form is the WIF export's.
+        let listed = addresses().unwrap();
+        assert!(!listed.is_empty());
+        for a in &listed {
+            assert_eq!(a.ye.len(), 53, "{a:?}");
+            assert!(a.path.ends_with("(Falcon holder)"), "{a:?}");
+        }
+        assert!(listed.iter().any(|a| a.ye == m.address_ye));
+        let w = export_wif(listed[0].s.clone()).unwrap();
+        assert_eq!((w.address_ye.len(), &w.address_ye[..2]), (35, "yb"));
+        lock();
+
+        // download_params reports every failure as its stream's last event (`error`), never as
+        // a returned error the generated Dart would leave unawaited.
+        for url in ["not a url", "https://params.example/"] {
+            let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let sink = events.clone();
+            download_params_to(url.into(), move |p| sink.lock().unwrap().push(p));
+            let events = events.lock().unwrap();
+            let last = events.last().expect("a terminal event");
+            assert!(
+                !last.finished && !last.error.is_empty(),
+                "{url}: {events:?}"
+            );
+        }
 
         let dir = tmp_dir("regtest");
         let c = create_wallet(
@@ -3294,7 +3687,7 @@ mod tests {
             sweep_txid: [0; 32],
             expiry_height: 538,
             vault_txid: [0; 32],
-            owner_pubkey: vec![],
+            owner: None,
             note: String::new(),
         };
         // Window open at tip 500: 500 + 1 + 3 <= 538, 34 blocks left; finish allowed.
@@ -3331,7 +3724,10 @@ mod tests {
             vout: 0,
             status: "ACTIVE".into(),
             owner_hash160: [2; 20],
-            owner_pubkey: [3; 33],
+            owner: crate::pq::PqKeyId {
+                scheme: 1,
+                hash: [3; 32],
+            },
             term_class: "A".into(),
             lock_height: 518,
             claim_height: 538,
@@ -3347,16 +3743,30 @@ mod tests {
             updated_height: 510,
             owner_height: 499,
             app_height: 499,
+            p_mint: 520_000,
+            cancel: Default::default(),
         };
         const NOW: i64 = 1_790_000_000;
         let v = vault_summary(&vault, 510, Some(520_000), Network::Regtest, &[], NOW);
+        // Y2: a spend of it pending (locked `spent-by`): no second redeem, release or renew; the
+        // pending spend's txid is the row's closing txid while it is open.
+        let pending = with_pending_spend(v.clone(), Some("5e".repeat(32)));
+        assert!(pending.open && !pending.redeemable && !pending.releasable && !pending.renewable);
+        assert_eq!(pending.closing_txid, "5e".repeat(32));
+        assert_eq!(with_pending_spend(v.clone(), None), v);
         // The owner redeems at any height after the mint; before lockHeight with the early fee.
         assert!(v.open && v.redeemable && !v.releasable && !v.underwater);
         assert_eq!((v.blocks_until_redeem, v.blocks_until_term_end), (0, 8));
         assert!(v.early_redeem && v.in_term_claims);
         assert_eq!(
             (v.early_redeem_fee_bps, v.early_redeem_fee_zat),
-            (500, 47_500_000)
+            (500, 2_403_846_154) // IT-9′: 5 % of the $250 debt at the vault's pMint $0.52
+        );
+        assert_eq!(v.early_redeem_fee_usd_cents, 1_250);
+        // FEE-1′ of the $250 debt: 1 % = $2.50, at $0.52
+        assert_eq!(
+            (v.protocol_fee_cents, v.protocol_fee_zat, v.p_mint_micro_usd),
+            (250, 480_769_231, 520_000)
         );
         assert_eq!(
             (v.claim_threshold_bps, v.claim_price_micro_usd),
@@ -3381,9 +3791,12 @@ mod tests {
         assert!(v.claimable && v.claim_warning && !v.near_threshold && v.underwater);
         // The block before lockHeight is the last early one: a redeem then confirms at lockHeight.
         let v = vault_summary(&vault, 516, Some(520_000), Network::Regtest, &[], NOW);
-        assert!(v.early_redeem && v.early_redeem_fee_zat == 47_500_000);
+        assert!(v.early_redeem && v.early_redeem_fee_zat == 2_403_846_154);
+        // shown in dollars: the debt's share, exact (rpcversion 8), whatever the price now
+        assert_eq!(v.early_redeem_fee_usd_cents, 1_250);
         let v = vault_summary(&vault, 517, Some(520_000), Network::Regtest, &[], NOW);
         assert!(!v.early_redeem && v.early_redeem_fee_zat == 0 && !v.renewable);
+        assert_eq!(v.early_redeem_fee_usd_cents, 0);
         let row_for_vault = MintRow {
             vault_txid: [0xef; 32],
             lock_blocks: 60,
@@ -3393,7 +3806,13 @@ mod tests {
         assert!(v.renewable && !v.claim_warning && v.renew_lock_blocks == 60);
         assert_eq!(v.lock_time_secs, NOW - 18 * 75);
         assert_eq!(v.cents, 25_000);
+        // C-10: the owner address is the 53-character post-quantum form, never the holder's.
         assert_eq!(
+            v.owner_address,
+            keys::encode_pq_yellowback(Network::Regtest, &vault.owner).unwrap()
+        );
+        assert_eq!(v.owner_address.len(), 53);
+        assert_ne!(
             v.owner_address,
             keys::encode_yellowback(Network::Regtest, &[2; 20])
         );
@@ -3421,7 +3840,7 @@ mod tests {
         let v = vault_summary(&closed, 540, Some(100_000), Network::Regtest, &[], NOW);
         assert!(!v.open && !v.redeemable && !v.underwater && v.close_height == 520);
         assert!(!v.renewable && !v.claim_warning && !v.claim_open);
-        // Mainnet, class B (91–180 d): the early-redeem fee is 2.5 % of the collateral.
+        // Mainnet, class B (91–180 d): the early-redeem fee is 2.5 % of the debt (IT-9′): $6.25 at $0.52.
         let main = VaultRow {
             term_class: "B".into(),
             lock_height: 1_100_000,
@@ -3436,10 +3855,107 @@ mod tests {
         let v = vault_summary(&main, 1_000_000, None, Network::Mainnet, &[], NOW);
         assert!(v.redeemable && v.early_redeem && !v.renewable && !v.claim_warning);
         assert_eq!(
-            (v.early_redeem_fee_bps, v.early_redeem_fee_zat),
-            (250, 23_750_000)
+            (
+                v.early_redeem_fee_bps,
+                v.early_redeem_fee_zat,
+                v.early_redeem_fee_usd_cents
+            ),
+            (250, 1_201_923_077, 625)
         );
         assert_eq!(v.renew_lock_blocks, 170_000);
+    }
+
+    /// The per-vault cancel limit (CAN-2, CAN-3) on the vault summary: the count, the co-signers a
+    /// cancel now needs, the end of the quiet period, and the held leftovers with why they wait.
+    #[test]
+    fn vault_summary_cancel_limit() {
+        use crate::store::{VaultCancel, VaultRow};
+        let base = VaultRow {
+            txid: [0xab; 32],
+            vout: 0,
+            status: "ACTIVE".into(),
+            owner_hash160: [2; 20],
+            owner: crate::pq::PqKeyId {
+                scheme: 1,
+                hash: [2; 32],
+            },
+            term_class: "A".into(),
+            lock_height: 900,
+            claim_height: 900,
+            collateral_zat: 1_000_000_000,
+            minted_cents: 10_000,
+            mint_height: 90,
+            claimable: false,
+            underwater_at: 0,
+            sweep_before: 0,
+            close_height: 0,
+            closing_txid: String::new(),
+            void_reason: String::new(),
+            updated_height: 150,
+            owner_height: 91,
+            app_height: 91,
+            p_mint: 520_000,
+            cancel: VaultCancel {
+                count: 0,
+                required: 1,
+                quiet_until: 0,
+                held_residuals: vec![],
+            },
+        };
+        const NOW: i64 = 1_790_000_000;
+        let never = vault_summary(&base, 150, None, Network::Regtest, &[], NOW);
+        assert_eq!(
+            (
+                never.cancel_count,
+                never.cancels_required,
+                never.cancel_quiet_until,
+                never.blocks_until_quiet_end
+            ),
+            (0, 1, 0, 0)
+        );
+        assert!(never.held_residuals == 0 && never.held_reason.is_empty());
+        let cancelled = VaultRow {
+            cancel: VaultCancel {
+                count: 2,
+                required: 3,
+                quiet_until: 190,
+                held_residuals: vec![crate::tx::OutPoint {
+                    txid: [5; 32],
+                    n: 1,
+                }],
+            },
+            ..base.clone()
+        };
+        let v = vault_summary(&cancelled, 150, None, Network::Regtest, &[], NOW);
+        assert_eq!(
+            (
+                v.cancel_count,
+                v.cancels_required,
+                v.cancel_quiet_until,
+                v.blocks_until_quiet_end,
+                v.held_residuals
+            ),
+            (2, 3, 190, 39, 1)
+        );
+        assert!(
+            v.held_reason.contains("190") && !v.held_reason.starts_with("intent-"),
+            "{}",
+            v.held_reason
+        );
+        // Past the quiet period and not claimable: the release may pass, no reason shown.
+        let v = vault_summary(&cancelled, 189, None, Network::Regtest, &[], NOW);
+        assert!(v.blocks_until_quiet_end == 0 && v.held_reason.is_empty());
+        // Claimable: still held.
+        let claimable = VaultRow {
+            claimable: true,
+            ..cancelled.clone()
+        };
+        let v = vault_summary(&claimable, 300, None, Network::Regtest, &[], NOW);
+        assert!(
+            v.held_reason.contains("can be claimed"),
+            "{}",
+            v.held_reason
+        );
     }
 
     #[test]
@@ -3460,6 +3976,51 @@ mod tests {
         assert!(ok.valid && ok.yellowback_form && ok.kind == "p2pkh");
         let bad = validate_address(NetworkId::Regtest, "ye-not-an-address".into());
         assert!(!bad.valid && !bad.message.is_empty());
+        // The post-quantum forms (rpcversion 7; D-Q-20): a Falcon holder is valid (the builder
+        // applies the Falcon rule), an SLH-DSA owner never a payment address (C-10), sq… known.
+        let id = |scheme| crate::pq::PqKeyId {
+            scheme,
+            hash: [3; 32],
+        };
+        let f = validate_address(
+            NetworkId::Regtest,
+            keys::encode_pq_yellowback(Network::Regtest, &id(2)).unwrap(),
+        );
+        assert!(f.valid && f.kind == "pq" && f.yellowback_form);
+        let o = validate_address(
+            NetworkId::Regtest,
+            keys::encode_pq_yellowback(Network::Regtest, &id(1)).unwrap(),
+        );
+        assert!(!o.valid && o.kind == "pq_owner" && o.message.contains("vault-owner"));
+        let q = validate_address(
+            NetworkId::Regtest,
+            keys::encode_pq_yec(Network::Regtest, &id(1)).unwrap(),
+        );
+        assert!(q.valid && q.kind == "pq_yec" && q.message.is_empty());
+        // the node's regtest pair (lightwalletd-dd q/pqaddr pqPlainVectors): rq… is a YEC address
+        let n = validate_address(
+            NetworkId::Regtest,
+            "rq5MXCssfNHhhz8WuNL5bKAmUKc1k1Wx7TpG2fM8ks9Gz5cPeCqKa".into(),
+        );
+        assert!(n.valid && n.kind == "pq_yec" && !n.yellowback_form, "{n:?}");
+        let m = validate_address(
+            NetworkId::Mainnet,
+            "sq4ekeYR7pAE7ByLpq428jfiHrrsVyMnSTs58MNJeFMXDFL63vTbT".into(),
+        );
+        assert!(m.valid && m.kind == "pq_yec", "{m:?}");
+        assert!(validate_address(
+            NetworkId::Regtest,
+            "sq4ekeYR7pAE7ByLpq428jfiHrrsVyMnSTs58MNJeFMXDFL63vTbT".into()
+        )
+        .kind
+        .is_empty());
+        // a mainnet PQ address on regtest is nothing
+        assert!(validate_address(
+            NetworkId::Regtest,
+            keys::encode_pq_yellowback(Network::Mainnet, &id(2)).unwrap()
+        )
+        .kind
+        .is_empty());
         // Private addresses are kind `sapling` on their own network only (S4; the app no longer
         // guesses by prefix).
         for (net, id) in [

@@ -237,7 +237,7 @@ class _MintScreenState extends State<MintScreen> {
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
               onChanged: (_) => _reset(),
               style: t.headlineMedium,
-              decoration: const InputDecoration(labelText: 'Amount to mint', prefixText: '\$ ', suffixText: 'YED'),
+              decoration: InputDecoration(labelText: 'Amount to mint (up to ${formatYed(maxMintCents)})', prefixText: '\$ ', suffixText: 'YED'),
             ),
             const SizedBox(height: 16),
             Text('Term', style: t.titleSmall),
@@ -327,6 +327,16 @@ class _MintScreenState extends State<MintScreen> {
                   child: Text(inTermPromise, style: t.bodySmall),
                 ),
               ),
+              // rpcversion 8 (D-Q-23..D-Q-26): the fees in dollars, as the protocol charges them
+              const SizedBox(height: 8),
+              Text(
+                'Fees: the protocol fee is ${formatYed(e.protocolFeeCents)} for this debt (1 % of the first \$1,000, 0.5 % up to \$10,000, '
+                '0.1 % above, at least \$1), paid in YEC at the mint price. Redeeming the vault pays the same ${formatYed(e.protocolFeeCents)} '
+                'again at that price and, before the term ends, the early-redeem fee (5 %, 2.5 % or 1 % of the debt), which disappears at '
+                'the end of the term. Network fees are charged in dollars per KB at the attested price.',
+                key: const Key('fee-note'),
+                style: t.bodySmall,
+              ),
             ],
           ],
         ),
@@ -386,11 +396,13 @@ class MintEstimateCard extends StatelessWidget {
             // fee); claimable at any height below θ (the promise below says both in full).
             PreviewRow('Term ends', 'height ${e.lockHeight}'),
             const PreviewRow('Claimable', 'below 125 % of the debt'),
-            if (e.feeZat > 0) PreviewRow('Enforcement fee', '${formatYec(e.feeZat)} YEC'),
+            // rpcversion 8 (D-Q-23): the protocol fee is dollars of the debt (1 % to $1,000, 0.5 % to
+            // $10,000, 0.1 % above, at least $1) at the mint price; the redeem pays the same again
+            PreviewRow('Protocol fee', e.feeZat > 0 ? '${formatYed(e.protocolFeeCents)} · ${formatYec(e.feeZat)} YEC' : 'none (no pool is eligible)', key: const Key('protocol-fee')),
             if (e.payee.isNotEmpty) PreviewRow('Fee paid to', shorten(e.payee, head: 10, tail: 6)),
             if (e.attestFeeZat > 0) PreviewRow('Attestor fee', '${formatYec(e.attestFeeZat)} YEC'),
             PreviewRow('Carrier + token', '${formatYec(e.carrierZat + e.tokenZat)} YEC'),
-            PreviewRow('Network fees', '${formatYec(e.networkFeeZat)} YEC (two transactions)'),
+            PreviewRow('Network fees', '${formatYec(e.networkFeeZat)} YEC (two transactions)', key: const Key('network-fees')),
             PreviewRow('Total YEC needed', '${formatYec(e.totalZat)} YEC', emphasis: true),
             const Divider(height: 20),
             PreviewRow('Price at R', e.pMintMicroUsd == null ? 'unavailable' : formatUsdPerYec(e.pMintMicroUsd!)),

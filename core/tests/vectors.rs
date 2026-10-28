@@ -144,6 +144,20 @@ fn address_vectors() {
 #[test]
 fn params_vector() {
     let v = load("params.json");
+    // rpcversion 7's post-quantum block, as YEW reads it (terms::pq_terms).
+    let pq = &v["yed_getinfo"]["params"]["pq"];
+    assert_eq!(v["yed_getinfo"]["rpcversion"].as_i64(), Some(7));
+    assert_eq!(pq["schemes"], serde_json::json!([1]));
+    assert_eq!(pq["falconActive"].as_bool(), Some(false));
+    assert_eq!(pq["falconHeight"].as_i64(), Some(-1));
+    assert_eq!(
+        pq["feeRateZatPerKB"].as_i64(),
+        Some(yew_core::params::RELAY_FLOOR_ZAT_PER_KB)
+    );
+    assert_eq!(
+        v["yed_getinfo"]["params"]["attest"]["mintPayloadVersion"].as_u64(),
+        Some(yew_core::payload::MINT_VERSION as u64)
+    );
     let c = &v["constants"];
     assert_eq!(c["TOKEN_VALUE"].as_i64(), Some(TOKEN_VALUE));
     assert_eq!(
@@ -251,25 +265,38 @@ fn template_payload_vectors_round_trip() {
         let hex = hex_field(t, "payloadHex");
         let d = &t["payloadDecoded"];
         assert_eq!(d["type"].as_str().unwrap(), kind);
-        assert_eq!(d["version"].as_u64().unwrap(), payload::VERSION as u64);
+        // Quantum spec C-1: a MINT is version 4 (PQ owner), every other type stays version 3
+        // (`templates.json` regenerated on a quantum devnet, rpcversion 7; a v3 MINT is
+        // non-Yellowback, `payload.rs` unit tests).
+        if kind == "mint" {
+            assert_eq!(d["version"].as_u64(), Some(4), "{key}: a quantum-line MINT");
+            assert!(
+                d.get("ownerPubKey").is_none(),
+                "{key}: rpcversion 7 has no owner key"
+            );
+        }
+        assert_eq!(
+            d["version"].as_u64().unwrap(),
+            payload::version_of(match kind {
+                "mint" => payload::PayloadType::Mint,
+                "transfer" => payload::PayloadType::Transfer,
+                _ => payload::PayloadType::Redeem,
+            }) as u64
+        );
         let expected = match kind {
-            "mint" => {
-                let mut owner_key = [0u8; 33];
-                owner_key.copy_from_slice(&hex_field(d, "ownerPubKey"));
-                Payload::Mint {
-                    term_class: match d["termClass"].as_str().unwrap() {
-                        "A" => 0,
-                        "B" => 1,
-                        _ => 2,
-                    },
-                    cents: d["cents"].as_u64().unwrap() as u32,
-                    lock_height: d["lockHeight"].as_u64().unwrap() as u32,
-                    ref_height: d["refHeight"].as_u64().unwrap() as u32,
-                    owner_key,
-                    fee_vout: d["feeVout"].as_u64().unwrap() as u8,
-                    attest_fee_vout: d["attestFeeVout"].as_u64().unwrap() as u8,
-                }
-            }
+            "mint" => Payload::Mint {
+                term_class: match d["termClass"].as_str().unwrap() {
+                    "A" => 0,
+                    "B" => 1,
+                    _ => 2,
+                },
+                cents: d["cents"].as_u64().unwrap() as u32,
+                lock_height: d["lockHeight"].as_u64().unwrap() as u32,
+                ref_height: d["refHeight"].as_u64().unwrap() as u32,
+                owner: pq_owner_of(d),
+                fee_vout: d["feeVout"].as_u64().unwrap() as u8,
+                attest_fee_vout: d["attestFeeVout"].as_u64().unwrap() as u8,
+            },
             "transfer" => Payload::Transfer {
                 assignments: assignments(d),
             },
@@ -323,6 +350,19 @@ fn template_payload_vectors_round_trip() {
                 "{key}: vout {vout}"
             );
         }
+    }
+}
+
+/// A decoded MINT payload's or vault's post-quantum owner as rpcversion 7 reports it (quantum
+/// spec §6.2: `ownerScheme`, `ownerHash`; `ownerPubKey` is removed).
+fn pq_owner_of(d: &Value) -> yew_core::pq::PqKeyId {
+    yew_core::pq::PqKeyId {
+        scheme: d["ownerScheme"]
+            .as_u64()
+            .expect("ownerScheme (rpcversion 7)") as u8,
+        hash: hex_field(d, "ownerHash")
+            .try_into()
+            .expect("ownerHash, 32 bytes"),
     }
 }
 
@@ -432,7 +472,7 @@ struct NodeMint {
     txid: [u8; 32],
     vault: yew_core::vault::VaultParams,
     vault_script: Vec<u8>,
-    owner: [u8; 33],
+    owner: yew_core::pq::PqKeyId,
     lock_height: u32,
     ref_height: u32,
     term_class: u8,
@@ -450,8 +490,7 @@ fn check_mint(v: &Value, key: &str, carrier_key: &str) -> NodeMint {
     let mint = &v[key];
     let (tx, txid) = template_tx(mint);
     let d = &mint["payloadDecoded"];
-    let mut owner = [0u8; 33];
-    owner.copy_from_slice(&hex_field(d, "ownerPubKey"));
+    let owner = pq_owner_of(d);
     let lock_height = d["lockHeight"].as_u64().unwrap() as u32;
     let ref_height = d["refHeight"].as_u64().unwrap() as u32;
     assert_eq!(
@@ -499,11 +538,12 @@ fn check_mint(v: &Value, key: &str, carrier_key: &str) -> NodeMint {
         tx.vout[0].value,
         mint["result"]["collateralZat"].as_i64().unwrap()
     );
-    // vout[1]: TOKEN_VALUE to P2PKH(owner); vout[2]: the payload; vout[3]/[4]: the fees.
+    // vout[1]: TOKEN_VALUE to a fresh holder key (spec §3.6: P2PKH before the Falcon height, the
+    // holder is no longer the owner); vout[2]: the payload; vout[3]/[4]: the fees.
     assert_eq!(tx.vout[1].value, TOKEN_VALUE);
-    assert_eq!(
-        tx.vout[1].script_pubkey,
-        script::p2pkh_script(&keys::hash160(&owner))
+    assert!(
+        script::p2pkh_hash(&tx.vout[1].script_pubkey).is_some(),
+        "{key}: the token goes to a P2PKH holder"
     );
     let term_class = match d["termClass"].as_str().unwrap() {
         "A" => 0,
@@ -517,7 +557,7 @@ fn check_mint(v: &Value, key: &str, carrier_key: &str) -> NodeMint {
         cents: d["cents"].as_u64().unwrap() as u32,
         lock_height,
         ref_height,
-        owner_key: owner,
+        owner,
         fee_vout,
         attest_fee_vout,
     };
@@ -603,18 +643,17 @@ fn check_redeem(v: &Value, key: &str, m: &NodeMint, early: bool) {
     assert_eq!(redeem["txinfo"]["path"].as_str(), Some("owner"));
     let r = redeem["payloadDecoded"]["refHeight"].as_u64().unwrap() as u32;
     assert_eq!(rtx.expiry_height, r + REF_WINDOW);
-    let (selector, args) =
-        yew_core::vault::parse_selector(yew_core::vault::Kind::Vault, &rtx.vin[0].script_sig)
-            .unwrap();
-    assert_eq!(
-        (selector, args.len()),
-        (2, 1),
-        "{key}: the V's OWNER branch"
-    );
+    let (selector, sig, pk) = yew_core::vault::parse_owner_script_sig(
+        yew_core::vault::Kind::Vault,
+        &rtx.vin[0].script_sig,
+    )
+    .unwrap();
+    assert_eq!(selector, 2, "{key}: the V's OWNER branch");
     assert_eq!(
         rtx.vin[0].script_sig,
-        yew_core::vault::vault_owner_script_sig(&args[0])
+        yew_core::vault::vault_owner_script_sig(&sig, &pk).unwrap()
     );
+    assert_eq!(yew_core::pq::PqKeyId::of(m.owner.scheme, &pk), m.owner);
     let digest = rtx
         .sighash(
             0,
@@ -624,20 +663,34 @@ fn check_redeem(v: &Value, key: &str, m: &NodeMint, early: bool) {
             signing_branch_id(),
         )
         .unwrap();
-    let sig = secp256k1::ecdsa::Signature::from_der(&args[0][..args[0].len() - 1]).unwrap();
-    let pk = secp256k1::PublicKey::from_slice(&m.owner).unwrap();
-    assert!(secp256k1::ecdsa::verify(&sig, secp256k1::Message::from_digest(digest), &pk).is_ok());
-    // IT-9: the early-redeem fee is the class's bps of the collateral, on top of FEE-1, in the
-    // pool payee's output; yed_estimateredeem quoted the same before the redeem was built.
+    assert_eq!(sig.last(), Some(&1u8), "SIGHASH_ALL");
+    assert!(yew_core::pq::verify(
+        m.owner.scheme,
+        &pk,
+        &sig[..sig.len() - 1],
+        &digest
+    ));
+    // IT-9′: the early-redeem fee is the class's bps of the debt at pMint (of the collateral before
+    // rpcversion 8), on top of FEE-1′, in the pool payee's output; yed_estimateredeem quoted the same before the redeem was built.
     let collateral = m.tx.vout[0].value;
     let early_fee = redeem["result"]["earlyRedeemFeeZat"].as_i64().unwrap();
     let bps = network.term_classes()[m.term_class as usize].early_redeem_fee_bps;
     if early {
         assert!(r + 1 < m.lock_height);
-        assert_eq!(
-            early_fee,
-            yew_core::params::early_redeem_fee_zat(collateral, bps)
-        );
+        // The vectors' devnet states its rpcversion: IT-9 (≤ 7) is of the collateral, IT-9′ (8, the
+        // fee structure) of the debt at the vault's stored pMint. The vectors are still the quantum
+        // devnet's (rpcversion 7) until they are regenerated on a fees-line (q/fees) devnet.
+        let rpcversion = load("params.json")["yed_getinfo"]["rpcversion"]
+            .as_i64()
+            .unwrap_or(0);
+        let want = if rpcversion >= 8 {
+            let p_mint = redeem["estimate"]["pMint"].as_i64().unwrap_or(0);
+            let debt = redeem["estimate"]["burnedCents"].as_u64().unwrap_or(0);
+            yew_core::params::early_redeem_fee_zat(debt, bps, p_mint)
+        } else {
+            ((collateral as i128) * (bps as i128) / 10_000) as i64
+        };
+        assert_eq!(early_fee, want);
         assert!(early_fee > 0);
         let e = &redeem["estimate"];
         assert_eq!(e["early"].as_bool(), Some(true));
@@ -690,9 +743,10 @@ fn check_redeem(v: &Value, key: &str, m: &NodeMint, early: bool) {
         attest_script: None,
         attest_fee_zat: 0,
         residual_zat: 0,
-        owner_script: script::p2pkh_script(&keys::hash160(&m.owner)),
+        owner_script: yew_core::pq::pqpkh_script(&m.owner).unwrap(),
         carrier_value: 0,
         collateral_script: rtx.vout[0].script_pubkey.clone(),
+        network_fee: yew_core::params::FEE_ZAT,
     };
     let plan = yew_core::build::redeem::plan_vault_spend(&shape).unwrap();
     assert_eq!(
@@ -727,6 +781,11 @@ fn check_redeem(v: &Value, key: &str, m: &NodeMint, early: bool) {
 /// template at `vout[0]`, the MINT `vout` order and values, the payload bytes, the carrier
 /// scriptSig push encoding, the owner and claim scriptSigs, `nLockTime` / `nSequence` /
 /// `nExpiryHeight` — byte for byte except keys and amounts, which are the node's own here.
+///
+/// **Quantum line:** the checks are ported to the post-quantum owner (v4 MINT, PQ V, the
+/// chunked SLH-DSA owner scriptSig verified over the sighash, PQPKH residual, a P2PKH holder).
+/// `templates.json` was regenerated on a quantum regtest devnet (ycash-dd `upgrade/quantum-vaults`
+/// `aa0fd3812`, rpcversion 7; `yellowback-devnet vectors --seed 1` + `scripts/vectors-in-term.py`).
 #[test]
 fn w4_templates_reproduce_the_node_scripts_and_payloads() {
     let v = load("templates.json");
@@ -757,6 +816,12 @@ fn check_in_term_claim(v: &Value, m: &NodeMint) {
     );
     assert_eq!(row["claimable"].as_bool(), Some(true));
     assert_eq!(row["claimPath"].as_str(), Some("a"));
+    // The node's 53-character post-quantum owner address (rpcversion 7 `ownerAddress`) is the
+    // one YEW renders for the payload's owner (quantum spec §4; regtest `yr…` is final).
+    assert_eq!(
+        row["ownerAddress"].as_str().unwrap(),
+        keys::encode_pq_yellowback(network, &m.owner).unwrap()
+    );
     assert_eq!(row["lockHeight"].as_u64(), Some(m.lock_height as u64));
     let height = claim["txinfo"]["height"].as_u64().unwrap() as u32;
     assert!(
@@ -869,11 +934,12 @@ fn check_in_term_claim(v: &Value, m: &NodeMint) {
         attest_script: Some(addr("attestPayee")),
         attest_fee_zat: claim["txinfo"]["attestFeeZat"].as_i64().unwrap(),
         residual_zat: claim["txinfo"]["residualZat"].as_i64().unwrap(),
-        owner_script: script::p2pkh_script(&keys::hash160(&m.owner)),
+        owner_script: yew_core::pq::pqpkh_script(&m.owner).unwrap(),
         claimant_script: script::p2pkh_script(&to.hash()),
         funding,
         funding_change_script: ctx.vout.last().unwrap().script_pubkey.clone(),
         carrier: ctx.vin[carrier_vin].prevout,
+        network_fee: yew_core::params::FEE_ZAT,
     };
     let plan = yew_core::build::claim::plan_claim(&shape).unwrap();
     assert_eq!(plan.lock_time, ctx.lock_time);

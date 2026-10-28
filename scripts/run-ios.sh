@@ -7,18 +7,19 @@
 # force-loaded into the Runner by app/ios/Flutter/YewCore.xcconfig) and runs the app, or one of
 # the integration tests, on an iOS simulator against a lightwalletd-dd `--yellowback` server.
 #
-#   scripts/run-ios.sh [host:port] [--test m1|m2]     default server 127.0.0.1:9267 (the armed devnet)
+#   scripts/run-ios.sh [host:port] [--test m1|m2|q]     default server 127.0.0.1:9267 (the armed devnet)
 #
 # Simulator: $YEW_SIM (a udid or a name), else the booted one, else the first available iPhone
 # (booted here). The server goes to the app as --dart-define=YEW_SERVER (the integration tests
 # read it; the app itself takes the server from Onboarding: network regtest, the host:port, plain).
+# The q flow also reads $YEW_OPERATOR (host:port of scripts/devnet-operator.py) as --dart-define.
 # Needs: Xcode with an iOS simulator runtime, Flutter (README "Toolchain"), the Rust targets.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 server="127.0.0.1:9267"; test=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --test) test="${2:?--test m1|m2}"; shift 2 ;;
+    --test) test="${2:?--test m1|m2|q}"; shift 2 ;;
     *) server="$1"; shift ;;
   esac
 done
@@ -35,7 +36,7 @@ xcrun simctl boot "$sim" 2>/dev/null || true
 open -a Simulator
 cd "$here/app"
 if [[ -n "$test" ]]; then
-  exec flutter test "integration_test/${test}_flow_test.dart" -d "$sim" --dart-define="YEW_SERVER=$server"
+  exec flutter test "integration_test/${test}_flow_test.dart" -d "$sim" --dart-define="YEW_SERVER=$server" ${YEW_OPERATOR:+--dart-define=YEW_OPERATOR=$YEW_OPERATOR}
 fi
 echo "run-ios: simulator $sim, server $server (Onboarding: Create > network regtest > $server > plain)"
 exec flutter run -d "$sim" --dart-define="YEW_SERVER=$server"

@@ -17,7 +17,11 @@
 # file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ws="$(cd "$here/.." && pwd)"
+# The workspace is the first directory above with repos.yaml (a wt/ worktree too: the nightly
+# devnet workflow runs from one).
+ws="$here"
+while [[ ! -f "$ws/repos.yaml" && "$ws" != "/" ]]; do ws="$(dirname "$ws")"; done
+[[ -f "$ws/repos.yaml" ]] || { echo "devnet-w2: no workspace (repos.yaml) above $here" >&2; exit 2; }
 export YELLOWBACK_DEVNET_DIR="${YELLOWBACK_DEVNET_DIR:-$HOME/yb-devnet-w0c}"
 export YELLOWBACK_DEVNET_PORTSEED="${YELLOWBACK_DEVNET_PORTSEED:-9}"
 lwd_port="${YEW_LWD_PORT:-9267}"
@@ -47,7 +51,7 @@ case "${1:-}" in
     ;;
   down)
     dn lightwalletd stop || true
-    dn down "${2:-}"
+    dn down ${2:+"$2"}
     ;;
   *)
     sed -n '2,14p' "$0"

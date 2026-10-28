@@ -3,7 +3,7 @@
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
 // Receive (plan §5.1; yew-shielded plan §3): one QR. The private `ys1…` address by default once
-// the private balance has synced; a toggle to the public `s…` address and to the YED `ye…`
+// the private balance has synced; a toggle to the public `s…` address and to the YED `yb…`
 // form; copy; "new address" (a new private address on the private tab).
 import 'package:flutter/material.dart';
 
@@ -66,7 +66,9 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                       caption: switch (kind) {
                         ReceiveKind.shielded => 'Send YEC here privately. The amount and any message are hidden on the chain.',
                         ReceiveKind.transparent => 'Your public Ycash address, for any Ycash wallet (YecWallet, Ywallet).',
-                        ReceiveKind.yed => 'Send YED or YEC here. Same key as your public address.',
+                        ReceiveKind.yed => a.ye.length == 53
+                            ? 'Send YED here: your post-quantum (Falcon) YED address. YED only: send YEC to your public address.'
+                            : 'Send YED or YEC here: the same key as your public address. A vault-owner address (53 characters) is never a receive address.',
                       },
                     ),
                   const SizedBox(height: 16),

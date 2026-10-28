@@ -18,6 +18,15 @@ import '../widgets/preview_card.dart';
 import '../widgets/slide_to_confirm.dart';
 import 'mint_progress.dart';
 
+/// CAN-2 (the node's `yed_listclaimable`): who can cancel a claim of this vault made now, and when the
+/// count goes back to one. Empty from a node that does not say.
+String cancelLimitText(ClaimableItem v) {
+  if (v.cancelsRequired <= 0) return '';
+  final who = v.cancelsRequired == 1 ? 'one attestor' : '${v.cancelsRequired} attestors signing together';
+  final quiet = v.cancelQuietUntil > 0 && v.cancelsRequired > 1 ? ' (${v.cancelCount} recent cancel${v.cancelCount == 1 ? '' : 's'}; one attestor again from height ${v.cancelQuietUntil})' : '';
+  return '$who can cancel a claim$quiet';
+}
+
 class ClaimableScreen extends StatefulWidget {
   const ClaimableScreen({super.key});
 
@@ -88,7 +97,7 @@ class _ClaimableScreenState extends State<ClaimableScreen> {
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
           children: [
             Text(
-              'Vaults whose claim branch is open, in term too. Only those the node judges claimable at its tip (collateral under 125 % of the debt at the claim price) can be claimed; the others are listed with the price below which they become so. Claiming burns the vault\'s debt from your YED and moves its collateral into a claim for you, in two transactions like a mint; you release it after the claim delay unless an attestor cancels a wrong-price claim first (then the burn is not refunded). The fees are paid from your YEC.',
+              'Vaults whose claim branch is open, in term too. Only those the node judges claimable at its tip (collateral under 125 % of the debt at the claim price) can be claimed; the others are listed with the price below which they become so. Claiming burns the vault\'s debt from your YED and moves its collateral into a claim for you, in two transactions like a mint; you release it after the claim delay unless the attestor set cancels a wrong-price claim first: then the YED you burned comes back to you, but not the fees. The fees are paid from your YEC.',
               style: t.bodyMedium?.copyWith(color: c.pending),
             ),
             const SizedBox(height: 12),
@@ -111,7 +120,7 @@ class _ClaimableScreenState extends State<ClaimableScreen> {
                     title: Text('${formatYed(v.cents)} debt · ${formatYec(v.collateralZat)} YEC', style: t.titleMedium),
                     subtitle: Text(
                       v.claimable
-                          ? 'claimable now${v.inTerm ? ' (in term)' : ''} · you keep about ${formatYec(v.claimantZat)} YEC · clause ${v.claimPath} · ${shorten(v.ownerAddress, head: 8, tail: 4)}'
+                          ? 'claimable now${v.inTerm ? ' (in term)' : ''} · you keep about ${formatYec(v.claimantZat)} YEC · clause ${v.claimPath} · ${shorten(v.ownerAddress, head: 8, tail: 4)}${cancelLimitText(v).isNotEmpty ? '\n${cancelLimitText(v)}' : ''}'
                           : 'not claimable: above ${formatUsdPerYec(v.underwaterAtMicroUsd)} · ${shorten(v.ownerAddress, head: 8, tail: 4)}',
                       key: Key('claimable-state-${v.vaultTxid}'),
                     ),
@@ -127,11 +136,21 @@ class _ClaimableScreenState extends State<ClaimableScreen> {
                     children: [
                       PreviewRow('You burn', formatYed(p.cents), emphasis: true, color: c.yed),
                       PreviewRow('Collateral', '${formatYec(p.collateralZat)} YEC', emphasis: true, color: c.yec),
-                      if (p.feeZat > 0) PreviewRow('Enforcement fee', '${formatYec(p.feeZat)} YEC'),
+                      if (p.feeZat > 0) PreviewRow('Protocol fee', '${formatYed(p.protocolFeeCents)} · ${formatYec(p.feeZat)} YEC (at the vault\'s mint price${p.pMintMicroUsd > 0 ? ' ${formatUsdPerYec(p.pMintMicroUsd)}' : ''})', key: const Key('claim-protocol-fee')),
                       if (p.payee.isNotEmpty) PreviewRow('Fee paid to', shorten(p.payee, head: 10, tail: 6)),
                       if (p.attestFeeZat > 0) PreviewRow('Attestor fee', '${formatYec(p.attestFeeZat)} YEC'),
-                      if (p.residualZat > 0) PreviewRow('Residual to owner', '${formatYec(p.residualZat)} YEC'),
+                      if (p.residualZat > 0) ...[
+                        PreviewRow('Residual to owner', '${formatYec(p.residualZat)} YEC'),
+                        const PreviewRow(
+                          'If the claim is cancelled',
+                          'that residual stays held until the vault closes. After the quiet period it can be released only once the position is no longer claimable',
+                          key: Key('claim-residual-held'),
+                        ),
+                      ],
                       PreviewRow('You keep', '${formatYec(p.claimantZat)} YEC', emphasis: true),
+                      // CAN-2 / CAN-1: who can stop this claim, and what comes back if it is stopped.
+                      if (cancelLimitText(p).isNotEmpty) PreviewRow('Can be cancelled by', cancelLimitText(p), key: const Key('claim-cancels-required')),
+                      PreviewRow('If cancelled', 'the ${formatYed(p.cents)} you burn comes back to you as YED; the fees do not', key: const Key('claim-refund')),
                       PreviewRow('Claim path', p.claimPath == 'a' ? 'a · underwater at ${formatUsdPerYec(p.pClaimMicroUsd)}' : 'b · notice + emergency price'),
                       PreviewRow('Term', p.inTerm ? 'in term until height ${p.lockHeight}: a claim in term' : 'ended at height ${p.lockHeight}'),
                       PreviewRow('Vault', shorten(p.vaultTxid)),

@@ -134,6 +134,12 @@ pub enum Path {
     /// `build::release`): the named intent at `vin[0]` (a template output, never classified),
     /// fee inputs `YEC` / `FeeReserve` only, no payload.
     IntentRelease(OutPoint),
+    /// The move of an own post-quantum coin (`TX_PQPKH`: a released residual's, quantum spec
+    /// F-3, or a `PQ_OWNED` row the sync found on an own `sq…` address; `build::release`) to an
+    /// own P2PKH key: the named coin is the **only** input (one SLH-DSA or Falcon spend), no
+    /// payload. Named, never classified here: the builders check a `PQ_OWNED` row's class
+    /// themselves, and a residual's coin is known from the intent it released.
+    PqSweep(OutPoint),
     /// A spend of the wallet's Sapling notes (`shielded.rs`): no transparent input.
     Shielded,
     /// A shield (S4, `build::yec_move`): transparent `YEC` inputs only (never the fee reserve,
@@ -153,6 +159,7 @@ impl Path {
             Path::Claim(_) => "claim",
             Path::Sweep => "sweep",
             Path::IntentRelease(_) => "intent release",
+            Path::PqSweep(_) => "post-quantum coin move",
             Path::Shielded => "shielded",
             Path::Shield => "shield",
         }
@@ -168,6 +175,7 @@ impl Path {
             Path::Claim(_) => c.claim_spendable(),
             Path::Sweep => c == UtxoClass::Carrier,
             Path::IntentRelease(_) => c.yec_spendable(),
+            Path::PqSweep(_) => false,
             Path::Shielded => false,
             Path::Shield => c == UtxoClass::Yec,
         }
@@ -203,7 +211,7 @@ pub fn check(
     for (n, i) in tx.vin.iter().enumerate() {
         // The claim path's vault is another wallet's output, and a released intent a template
         // output: each is named, never classified.
-        if let Path::Claim(named) | Path::IntentRelease(named) = path {
+        if let Path::Claim(named) | Path::IntentRelease(named) | Path::PqSweep(named) = path {
             if n == 0 {
                 if i.prevout != named {
                     return Err(GateError::VaultShape(path.name(), named.display()));
@@ -307,6 +315,12 @@ pub fn check(
             }
         }
         Path::Sweep | Path::Shield | Path::IntentRelease(_) => no_payload(&tx)?,
+        Path::PqSweep(named) => {
+            no_payload(&tx)?;
+            if tx.vin.len() != 1 {
+                return Err(GateError::VaultShape(path.name(), named.display()));
+            }
+        }
         Path::Shielded => unreachable!("checked by check_shielded above"),
     }
     Ok(tx)
@@ -461,7 +475,7 @@ mod tests {
     use crate::tx::{TxIn, TxOut};
     use std::collections::HashMap;
 
-    const ALL: [UtxoClass; 9] = [
+    const ALL: [UtxoClass; 10] = [
         UtxoClass::Yec,
         UtxoClass::FeeReserve,
         UtxoClass::Token,
@@ -470,6 +484,7 @@ mod tests {
         UtxoClass::Carrier,
         UtxoClass::UnknownP2sh,
         UtxoClass::Held,
+        UtxoClass::PqOwned,
         UtxoClass::Foreign,
     ];
 
@@ -800,7 +815,10 @@ mod tests {
             cents: 10_000,
             lock_height: 10,
             ref_height: 5,
-            owner_key: [2; 33],
+            owner: crate::pq::PqKeyId {
+                scheme: 1,
+                hash: [2; 32],
+            },
             fee_vout: 0xff,
             attest_fee_vout: 0xff,
         };

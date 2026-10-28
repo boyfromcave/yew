@@ -28,6 +28,7 @@ pub mod keys;
 pub mod net;
 pub mod params;
 pub mod payload;
+pub mod pq;
 pub mod sapling_params;
 pub mod script;
 pub mod shielded;

@@ -33,7 +33,20 @@ use crate::tx::{txid_from_hex, OutPoint};
 /// ACTIVE vault whose claim branch is open, in term too, with `claimable` true or false; the
 /// params carry `inTermClaims`, `claimThresholdBps` and `earlyRedeemFeeBps`. The match stays
 /// exact: an rpcversion-5 node's rows would read as `claimable: false`, which is not what it meant.
-pub const KNOWN_RPCVERSION: i64 = 6;
+/// `7` is the post-quantum line this build implements (branch `upgrade/quantum-vaults`, the
+/// workspace's `docs/plans/yellowback-quantum-spec.md` §6.2): every vault owner is a post-quantum
+/// key (`ownerScheme` + `ownerHash`, the 53-character `ownerAddress`; no public key on chain), a
+/// MINT's payload is version 4 (`attest.mintPayloadVersion`), and `params.pq` carries the owner
+/// schemes, the Falcon activation and the size-priced fee rate. Exact again: an rpcversion-6
+/// node would hand back secp256k1 owners this build can neither sign for nor check.
+/// `8` is the fee structure this build implements (branch `q/fees`, the workspace's
+/// `docs/plans/yellowback-quantum-fees-spec.md` §3.4, owner decisions D-Q-23..D-Q-26): the protocol fee
+/// is dollars of the debt in marginal bands at the vault's stored `pMint` (`params.fees.protocol`,
+/// `YedVault.pMint`), the early-redeem fee is of the debt, network fees are dollars per KB at the
+/// attested price (`params.fees.network`), `maxMintCents` is $100,000, `params.feeMinZat` /
+/// `feeBps` and `GetFeePayee`'s collateral and fee are gone. Exact again: an rpcversion-7 node
+/// charges a collateral fee this build no longer computes.
+pub const KNOWN_RPCVERSION: i64 = 8;
 
 /// The upgrade status string that means "active" (`YellowbackActivation.status`, rpcversion 5:
 /// `"pending"` | `"active"`).
@@ -85,7 +98,7 @@ pub struct Token {
     pub value_zat: i64,
     /// The height the token was created at.
     pub height: i64,
-    /// The `ye…` form.
+    /// The `yb…` form.
     pub address: String,
     /// The `s…` form.
     pub transparent_address: String,
@@ -145,6 +158,45 @@ fn map_status(s: tonic::Status) -> NetError {
     }
 }
 
+/// lightwalletd-dd's per-peer limiter on this service (`frontend/yellowback_ratelimit.go`: a
+/// burst of 20 calls, one more per second) answers `RESOURCE_EXHAUSTED` when a wallet with many
+/// vaults syncs on a fast link. Every call this client makes is a read or a dry run (nothing here
+/// broadcasts), so it is paced: wait one refill interval and ask again, at most
+/// [`PACE_ATTEMPTS`] times (a full burst refills in 20 s), then return the original error.
+const PACE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+/// See [`PACE_INTERVAL`].
+const PACE_ATTEMPTS: u32 = 25;
+
+async fn paced<T, F, Fut>(f: F) -> Result<T, tonic::Status>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, tonic::Status>>,
+{
+    paced_with(PACE_INTERVAL, PACE_ATTEMPTS, f).await
+}
+
+/// [`paced`] with the interval and the attempt bound given (the unit test's fast clock).
+async fn paced_with<T, F, Fut>(
+    interval: std::time::Duration,
+    attempts: u32,
+    mut f: F,
+) -> Result<T, tonic::Status>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, tonic::Status>>,
+{
+    let mut tries = 1;
+    loop {
+        match f().await {
+            Err(s) if s.code() == Code::ResourceExhausted && tries < attempts => {
+                tries += 1;
+                tokio::time::sleep(interval).await;
+            }
+            r => return r,
+        }
+    }
+}
+
 /// Collect a server stream up to `limit` messages (audit G-7).
 async fn collect<T>(
     stream: &mut tonic::Streaming<T>,
@@ -184,7 +236,13 @@ impl YellowbackClient {
     /// `rpcversion` other than [`KNOWN_RPCVERSION`] ⇒ [`NetError::UnknownRpcVersion`];
     /// otherwise [`Availability::Present`] with the `enabled && active` gate evaluated.
     pub async fn probe(&mut self) -> Result<Availability, NetError> {
-        let info = match self.inner.get_yellowback_info(rpc::Empty {}).await {
+        let info = match paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::Empty {};
+            async move { c.get_yellowback_info(req).await }
+        })
+        .await
+        {
             Ok(r) => r.into_inner(),
             Err(s) if s.code() == Code::Unimplemented => return Ok(Availability::Absent),
             Err(s) => return Err(map_status(s)),
@@ -207,57 +265,67 @@ impl YellowbackClient {
 
     /// `GetYellowbackInfo` (`yed_getinfo`), unchecked.
     pub async fn info(&mut self) -> Result<rpc::YellowbackInfo, NetError> {
-        Ok(self
-            .inner
-            .get_yellowback_info(rpc::Empty {})
-            .await
-            .map_err(map_status)?
-            .into_inner())
+        Ok(paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::Empty {};
+            async move { c.get_yellowback_info(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner())
     }
 
     /// `GetPrice` (`yed_getprice [height]`; 0 = the index tip). `pMint` is the display price
     /// (plan §1.1); a field of 0 means "undefined" on the wire (proto3 has no null).
     pub async fn price(&mut self, height: u32) -> Result<rpc::YedPrice, NetError> {
-        Ok(self
-            .inner
-            .get_price(rpc::HeightFilter { height })
-            .await
-            .map_err(map_status)?
-            .into_inner())
+        Ok(paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::HeightFilter { height };
+            async move { c.get_price(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner())
     }
 
     /// `GetStats` (`yed_getstats`).
     pub async fn stats(&mut self) -> Result<rpc::YellowbackStats, NetError> {
-        Ok(self
-            .inner
-            .get_stats(rpc::Empty {})
-            .await
-            .map_err(map_status)?
-            .into_inner())
+        Ok(paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::Empty {};
+            async move { c.get_stats(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner())
     }
 
     /// `GetActivation` (`yed_getactivation`).
     pub async fn activation(&mut self) -> Result<rpc::YellowbackActivation, NetError> {
-        Ok(self
-            .inner
-            .get_activation(rpc::Empty {})
-            .await
-            .map_err(map_status)?
-            .into_inner())
+        Ok(paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::Empty {};
+            async move { c.get_activation(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner())
     }
 
     /// `GetTxInfo` (`yed_gettxinfo <txid>`): the index's `TxLog` record — the verdict every
     /// history label derives from (contract rule 3). `txid` in display order. A txid the index
     /// does not know is [`NetError::Node`] with identifier `tx-not-found`.
     pub async fn tx_info(&mut self, txid: &str) -> Result<rpc::YedTxInfo, NetError> {
-        Ok(self
-            .inner
-            .get_tx_info(rpc::YedTxid {
+        Ok(paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::YedTxid {
                 txid: txid.to_string(),
-            })
-            .await
-            .map_err(map_status)?
-            .into_inner())
+            };
+            async move { c.get_tx_info(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner())
     }
 
     /// `GetChainInfo` (lightwalletd-dd 0b3448e+, x402 X-F71): the next block's consensus branch
@@ -266,7 +334,13 @@ impl YellowbackClient {
     /// available, wrong only on the block before a network upgrade. Used by the shielded spend
     /// path (`shielded.rs`) to refuse building with branch-id parameters the next block rejects.
     pub async fn chain_info(&mut self) -> Result<Option<(u64, u32)>, NetError> {
-        match self.inner.get_chain_info(rpc::Empty {}).await {
+        match paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::Empty {};
+            async move { c.get_chain_info(req).await }
+        })
+        .await
+        {
             Ok(r) => {
                 let c = r.into_inner();
                 let id = u32::from_str_radix(c.next_block_branch_id.trim_start_matches("0x"), 16)
@@ -286,15 +360,17 @@ impl YellowbackClient {
     /// `ValidateRawTransaction` (`yed_validaterawtransaction <hex>`): the dry run of §3.8 at
     /// the tip plus script verification. Never commits anything.
     pub async fn validate_raw(&mut self, raw: Vec<u8>) -> Result<Validation, NetError> {
-        let v = self
-            .inner
-            .validate_raw_transaction(rpc::RawTransaction {
-                data: raw,
+        let v = paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::RawTransaction {
+                data: raw.clone(),
                 height: 0,
-            })
-            .await
-            .map_err(map_status)?
-            .into_inner();
+            };
+            async move { c.validate_raw_transaction(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner();
         let mut unconfirmed_inputs = Vec::with_capacity(v.unconfirmed_inputs.len());
         for o in &v.unconfirmed_inputs {
             unconfirmed_inputs.push(outpoint_of(&o.txid, o.vout)?);
@@ -319,26 +395,30 @@ impl YellowbackClient {
     /// `DecodePayload` (`yed_decodepayload <hex>`): the node's parse of a payload, for
     /// cross-checking [`crate::payload`] — never for display in the app, which decodes locally.
     pub async fn decode_payload(&mut self, hex: &str) -> Result<rpc::YedPayload, NetError> {
-        Ok(self
-            .inner
-            .decode_payload(rpc::YedHex {
+        Ok(paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::YedHex {
                 hex: hex.to_string(),
-            })
-            .await
-            .map_err(map_status)?
-            .into_inner())
+            };
+            async move { c.decode_payload(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner())
     }
 
     /// `GetVault` (`yed_getvault <txid>`).
     pub async fn vault(&mut self, txid: &str) -> Result<rpc::YedVault, NetError> {
-        Ok(self
-            .inner
-            .get_vault(rpc::YedTxid {
+        Ok(paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::YedTxid {
                 txid: txid.to_string(),
-            })
-            .await
-            .map_err(map_status)?
-            .into_inner())
+            };
+            async move { c.get_vault(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner())
     }
 
     /// `ListVaults` (`yed_listvaults [status] [count] [skip]`), collected.
@@ -348,16 +428,18 @@ impl YellowbackClient {
         count: u32,
         skip: u32,
     ) -> Result<Vec<rpc::YedVault>, NetError> {
-        let mut stream = self
-            .inner
-            .list_vaults(rpc::YedVaultFilter {
+        let mut stream = paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::YedVaultFilter {
                 status: status.to_string(),
                 count,
                 skip,
-            })
-            .await
-            .map_err(map_status)?
-            .into_inner();
+            };
+            async move { c.list_vaults(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner();
         collect(&mut stream, "vaults", limits::MAX_VAULTS).await
     }
 
@@ -372,17 +454,19 @@ impl YellowbackClient {
         owner: &str,
         kind: &str,
     ) -> Result<Vec<rpc::VaultOutput>, NetError> {
-        let mut stream = self
-            .inner
-            .list_vault_outputs(rpc::VaultOutputFilter {
+        let mut stream = paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::VaultOutputFilter {
                 tag: tag.to_string(),
                 setid: set_id.to_string(),
                 owner: owner.to_string(),
                 kind: kind.to_string(),
-            })
-            .await
-            .map_err(map_status)?
-            .into_inner();
+            };
+            async move { c.list_vault_outputs(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner();
         collect(&mut stream, "vault outputs", limits::MAX_VAULTS).await
     }
 
@@ -406,7 +490,13 @@ impl YellowbackClient {
 
     /// `GetChainInfo`'s full answer (the upgrades list included), `None` from an older server.
     pub async fn chain_info_full(&mut self) -> Result<Option<rpc::YedChainInfo>, NetError> {
-        match self.inner.get_chain_info(rpc::Empty {}).await {
+        match paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::Empty {};
+            async move { c.get_chain_info(req).await }
+        })
+        .await
+        {
             Ok(r) => Ok(Some(r.into_inner())),
             Err(s) if s.code() == Code::Unimplemented => Ok(None),
             Err(s) => Err(map_status(s)),
@@ -415,25 +505,29 @@ impl YellowbackClient {
 
     /// `ListClaimable` (`yed_listclaimable`), collected.
     pub async fn list_claimable(&mut self) -> Result<Vec<rpc::YedClaimable>, NetError> {
-        let mut stream = self
-            .inner
-            .list_claimable(rpc::Empty {})
-            .await
-            .map_err(map_status)?
-            .into_inner();
+        let mut stream = paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::Empty {};
+            async move { c.list_claimable(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner();
         collect(&mut stream, "claimable vaults", limits::MAX_VAULTS).await
     }
 
     /// `GetNotice` (`yed_getnotice <vaultTxid>`).
     pub async fn notice(&mut self, vault_txid: &str) -> Result<rpc::YedNotice, NetError> {
-        Ok(self
-            .inner
-            .get_notice(rpc::YedTxid {
+        Ok(paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::YedTxid {
                 txid: vault_txid.to_string(),
-            })
-            .await
-            .map_err(map_status)?
-            .into_inner())
+            };
+            async move { c.get_notice(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner())
     }
 
     /// `EstimateCollateral` (`yed_estimatecollateral <cents> <lockBlocks> [priceMicroUsd]`).
@@ -443,48 +537,57 @@ impl YellowbackClient {
         lock_blocks: u32,
         price_micro_usd: u64,
     ) -> Result<rpc::YedCollateralEstimate, NetError> {
-        Ok(self
-            .inner
-            .estimate_collateral(rpc::YedMintQuery {
+        Ok(paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::YedMintQuery {
                 cents,
                 lock_blocks,
                 price_micro_usd,
-            })
-            .await
-            .map_err(map_status)?
-            .into_inner())
+            };
+            async move { c.estimate_collateral(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner())
     }
 
-    /// `EstimateFee` (`yed_estimatefee <collateralZat>`).
+    /// `EstimateFee` (`yed_estimatefee <mintedCents> [priceMicroUsd]`, rpcversion 8): the protocol fee
+    /// of a debt; `price_micro_usd` 0 = the node's reference price.
     pub async fn estimate_fee(
         &mut self,
-        collateral_zat: i64,
+        minted_cents: u64,
+        price_micro_usd: u64,
     ) -> Result<rpc::YedFeeEstimate, NetError> {
-        Ok(self
-            .inner
-            .estimate_fee(rpc::YedFeeQuery { collateral_zat })
-            .await
-            .map_err(map_status)?
-            .into_inner())
+        Ok(paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::YedFeeQuery {
+                minted_cents,
+                price_micro_usd,
+            };
+            async move { c.estimate_fee(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner())
     }
 
-    /// `GetFeePayee` (`yed_getfeepayee <refHeight> <collateralZat> [selectorHex]`).
+    /// `GetFeePayee` (`yed_getfeepayee <refHeight> [selectorHex]`; rpcversion 8: no collateral, no fee).
     pub async fn fee_payee(
         &mut self,
         ref_height: u32,
-        collateral_zat: i64,
         selector_hex: &str,
     ) -> Result<rpc::YedPayee, NetError> {
-        Ok(self
-            .inner
-            .get_fee_payee(rpc::YedPayeeQuery {
+        Ok(paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::YedPayeeQuery {
                 ref_height,
-                collateral_zat,
                 selector_hex: selector_hex.to_string(),
-            })
-            .await
-            .map_err(map_status)?
-            .into_inner())
+            };
+            async move { c.get_fee_payee(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner())
     }
 
     /// `BuildBundle` (`yed_buildbundle <refHeight> <selectorHex>`).
@@ -493,15 +596,17 @@ impl YellowbackClient {
         ref_height: u32,
         selector_hex: &str,
     ) -> Result<rpc::YedBundle, NetError> {
-        Ok(self
-            .inner
-            .build_bundle(rpc::YedBundleQuery {
+        Ok(paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::YedBundleQuery {
                 ref_height,
                 selector_hex: selector_hex.to_string(),
-            })
-            .await
-            .map_err(map_status)?
-            .into_inner())
+            };
+            async move { c.build_bundle(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner())
     }
 
     /// `GetSelection` (`yed_getselection <refHeight> <selectorHex>`).
@@ -510,41 +615,47 @@ impl YellowbackClient {
         ref_height: u32,
         selector_hex: &str,
     ) -> Result<rpc::YedSelection, NetError> {
-        Ok(self
-            .inner
-            .get_selection(rpc::YedBundleQuery {
+        Ok(paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::YedBundleQuery {
                 ref_height,
                 selector_hex: selector_hex.to_string(),
-            })
-            .await
-            .map_err(map_status)?
-            .into_inner())
+            };
+            async move { c.get_selection(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner())
     }
 
     /// `GetAttestations` (`yed_getattestations`), collected.
     pub async fn attestations(&mut self) -> Result<Vec<rpc::YedAttestation>, NetError> {
-        let mut stream = self
-            .inner
-            .get_attestations(rpc::Empty {})
-            .await
-            .map_err(map_status)?
-            .into_inner();
+        let mut stream = paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::Empty {};
+            async move { c.get_attestations(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner();
         collect(&mut stream, "attestations", limits::MAX_ATTESTATIONS).await
     }
 
     /// `ListAttestors` (`yed_listattestors [height]`; 0 = the tip), collected.
     pub async fn list_attestors(&mut self, height: u32) -> Result<Vec<rpc::YedAttestor>, NetError> {
-        let mut stream = self
-            .inner
-            .list_attestors(rpc::HeightFilter { height })
-            .await
-            .map_err(map_status)?
-            .into_inner();
+        let mut stream = paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::HeightFilter { height };
+            async move { c.list_attestors(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner();
         collect(&mut stream, "attestors", limits::MAX_ATTESTORS).await
     }
 
     /// `GetAddressTokens` (`yed_listtokens <addresses> [minHeight]`; lightwalletd Phase L2):
-    /// the live YED outputs paying any of `addresses` (`s…` or `ye…` form), whoever holds the
+    /// the live YED outputs paying any of `addresses` (`s…` or `yb…` form), whoever holds the
     /// keys — **the only source of the TOKEN class** (D-W-8). Spent tokens are never listed
     /// (IN-1 erases them). Chunked by [`TOKENS_MAX_ADDRESSES`]; the stream is collected.
     pub async fn address_tokens(
@@ -554,15 +665,17 @@ impl YellowbackClient {
     ) -> Result<Vec<Token>, NetError> {
         let mut out = Vec::new();
         for chunk in addresses.chunks(TOKENS_MAX_ADDRESSES) {
-            let mut stream = self
-                .inner
-                .get_address_tokens(rpc::YedAddressList {
+            let mut stream = paced(|| {
+                let mut c = self.inner.clone();
+                let req = rpc::YedAddressList {
                     addresses: chunk.to_vec(),
                     min_height,
-                })
-                .await
-                .map_err(map_status)?
-                .into_inner();
+                };
+                async move { c.get_address_tokens(req).await }
+            })
+            .await
+            .map_err(map_status)?
+            .into_inner();
             while let Some(t) = stream.message().await.map_err(map_status)? {
                 if out.len() >= limits::MAX_TOKENS {
                     return Err(NetError::TooLarge {
@@ -600,6 +713,50 @@ pub fn vault_activation(ci: &rpc::YedChainInfo) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A closure that answers `RESOURCE_EXHAUSTED` `busy` times, then `Ok(7)`; counts calls.
+    async fn run_paced(busy: u32, attempts: u32, code: Code) -> (Result<u32, tonic::Status>, u32) {
+        let calls = std::cell::Cell::new(0u32);
+        let r = paced_with(std::time::Duration::from_millis(1), attempts, || {
+            calls.set(calls.get() + 1);
+            let n = calls.get();
+            async move {
+                if n <= busy {
+                    Err(tonic::Status::new(
+                        code,
+                        "rate limited: at most 20 calls per burst",
+                    ))
+                } else {
+                    Ok(7)
+                }
+            }
+        })
+        .await;
+        (r, calls.get())
+    }
+
+    #[tokio::test]
+    async fn paced_retries_rate_limits_and_gives_up_with_the_original_error() {
+        // Rate-limited three times, then served: four calls, the answer.
+        let (r, calls) = run_paced(3, PACE_ATTEMPTS, Code::ResourceExhausted).await;
+        assert_eq!((r.unwrap(), calls), (7, 4));
+        // Never served: exactly `attempts` calls, then the server's own status, unchanged.
+        let (r, calls) = run_paced(u32::MAX, 5, Code::ResourceExhausted).await;
+        let s = r.unwrap_err();
+        assert_eq!(
+            (s.code(), s.message(), calls),
+            (
+                Code::ResourceExhausted,
+                "rate limited: at most 20 calls per burst",
+                5
+            )
+        );
+        // Any other status is not retried.
+        let (r, calls) = run_paced(u32::MAX, PACE_ATTEMPTS, Code::Unavailable).await;
+        assert_eq!((r.unwrap_err().code(), calls), (Code::Unavailable, 1));
+        // The production bound covers a full burst refill (20 calls at 1 s).
+        assert!(PACE_ATTEMPTS as u64 * PACE_INTERVAL.as_secs() >= 20);
+    }
 
     #[test]
     fn vault_activation_reads_the_upgrades_list() {

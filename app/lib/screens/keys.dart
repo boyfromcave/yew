@@ -60,7 +60,9 @@ class _ExportKeyScreenState extends State<ExportKeyScreen> {
     final app = AppScope.read(context);
     if (app.settings.biometrics && !await app.auth.authenticate('Export a private key')) return;
     try {
-      final w = await app.api.exportWif(address: _chosen!.ye);
+      // By the s… form: once Falcon is active `ye` is the key's 53-character Falcon holder,
+      // which has no WIF.
+      final w = await app.api.exportWif(address: _chosen!.s);
       setState(() => _wif = w);
     } catch (e) {
       setState(() => _error = messageOf(e));
@@ -102,7 +104,14 @@ class _ExportKeyScreenState extends State<ExportKeyScreen> {
             ),
           if (_error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error!, style: TextStyle(color: c.danger))),
           if (_wif != null) ...[
-            Text(_wif!.addressYe, style: t.bodySmall, textAlign: TextAlign.center),
+            Text('${_wif!.addressYe} (P2PKH form of this key)', key: const Key('wif-ye'), style: t.bodySmall, textAlign: TextAlign.center),
+            if (_chosen!.ye != _wif!.addressYe)
+              Text(
+                'YED is received at ${shorten(_chosen!.ye, head: 12, tail: 6)}, its post-quantum (Falcon) holder, which no WIF exports.',
+                key: const Key('wif-falcon-note'),
+                style: t.bodySmall,
+                textAlign: TextAlign.center,
+              ),
             Text(_wif!.addressS, style: t.bodySmall, textAlign: TextAlign.center),
             if (!_wif!.coveredBySeed) Text('imported key: not covered by the recovery phrase', style: t.bodySmall?.copyWith(color: c.danger), textAlign: TextAlign.center),
             const SizedBox(height: 12),

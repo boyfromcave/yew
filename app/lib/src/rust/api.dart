@@ -7,7 +7,7 @@ import 'frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `claim_intent_of`, `connect`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `height_time`, `hex_or_empty`, `history_item`, `locked`, `merge_shielded`, `mint_status_of`, `new`, `now_secs`, `open_wallet`, `params_dir_of`, `params_status_of`, `parse_outpoint`, `parse_server`, `parse_txid`, `renew_lock_blocks`, `row_status`, `runtime`, `shielded_pair`, `store_err`, `sync_shielded`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `yec_preview_of`, `yellowback_status`
+// These functions are ignored because they are not marked as `pub`: `claim_intent_of`, `connect`, `download_params_inner`, `download_params_to`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `height_time`, `hex_or_empty`, `history_item`, `locked`, `merge_shielded`, `mint_status_of`, `new`, `now_secs`, `open_wallet`, `params_dir_of`, `params_status_of`, `parse_outpoint`, `parse_server`, `parse_txid`, `renew_lock_blocks`, `row_status`, `runtime`, `shielded_pair`, `store_err`, `sync_shielded`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `with_pending_spend`, `yec_preview_of`, `yellowback_refusal`, `yellowback_status`, `yellowback_usable`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Conn`, `Open`, `Preview`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
 
@@ -187,8 +187,8 @@ Future<ParamsStatus> paramsStatus() =>
 /// loopback `http://` for tests), or, when `base_url` is empty, from
 /// [`sapling_params::DEFAULT_SOURCES`] in order (the next is tried when one fails), into the app's data directory,
 /// each file verified against its pinned SHA-256 before it is kept. Progress on `sink`, ending
-/// with a `finished` event ([`params_status`] then says `ready`); the wallet stays usable
-/// meanwhile (the download does not hold the wallet).
+/// with a `finished` event ([`params_status`] then says `ready`) or, on any failure, an event
+/// carrying `error`; the wallet stays usable meanwhile (the download does not hold the wallet).
 Stream<ParamsProgress> downloadParams({required String baseUrl}) =>
     RustLib.instance.api.crateApiDownloadParams(baseUrl: baseUrl);
 
@@ -215,8 +215,8 @@ Future<AddressPair> importWif({required String wif, PlatformInt64? birthday}) =>
 /// Sync now, reporting progress on `sink` (Dart: a `Stream<SyncEvent>`), ending with `Done`
 /// or `Failed`: the transparent sync (addresses, YED) and then the private (Sapling) scan, as
 /// one progress (`percent`). A failed private sync does not fail the call: `Done` carries it
-/// in `shielded_message` (transparent YEC and YED are synced either way). The returned error
-/// mirrors the `Failed` event.
+/// in `shielded_message` (transparent YEC and YED are synced either way). A failure is the
+/// `Failed` event, never the returned error (which the generated Dart does not await).
 Stream<SyncEvent> syncNow() => RustLib.instance.api.crateApiSyncNow();
 
 /// Whether a mint can be made now (connects; no sync): the Mint screen calls it before the
@@ -321,10 +321,16 @@ class AddressCheck {
   final bool valid;
 
   /// `p2pkh` / `p2sh`, `sapling` for a private address (`ys1…` / `ytestsapling1…` /
-  /// `yregtestsapling1…`), empty when invalid.
+  /// `yregtestsapling1…`); for the 53-character post-quantum forms (rpcversion 7, D-Q-20):
+  /// `pq` (a Falcon YED holder address: valid, it receives YED once Falcon is active),
+  /// `pq_owner` (an SLH-DSA vault-owner address: never a payment address, C-10) and `pq_yec`
+  /// (`sq…`/`tq…`/`rq…`, D-Q-20: valid, it receives YEC and never YED). The kind is
+  /// asset-blind: a `pq` address is refused as a YEC destination and a `pq_yec` one as a YED
+  /// destination (the Send screen says so before the preview; the builders refuse too).
+  /// Empty when unknown.
   final String kind;
 
-  /// The `ye…` form was given.
+  /// The `yb…` form was given.
   final bool yellowbackForm;
 
   /// Why it is invalid, empty when valid.
@@ -356,9 +362,11 @@ class AddressCheck {
 }
 
 /// A receive address: `address` is the one of `kind`; for the transparent kinds `ye` and `s`
-/// are the two forms of the same key, for a shielded address both are empty.
+/// are the two forms of the same key (once Falcon is active, `receive_address`'s `ye` is the
+/// 53-character Falcon holder address paired with that key), for a shielded address both are
+/// empty.
 class AddressPair {
-  /// The Yellowback form (`ye…` / `yt…` / `yr…`).
+  /// The Yellowback form (`yb…` / `yt…` / `yr…`; 53 characters for a Falcon holder).
   final String ye;
 
   /// The transparent form (`s1…` / `sm…`).
@@ -370,7 +378,7 @@ class AddressPair {
   /// `false` for an imported key (not covered by the seed backup).
   final bool coveredBySeed;
 
-  /// The address of `kind` (`s…`, `ye…` or `ys1…`).
+  /// The address of `kind` (`s…`, `yb…` or `ys1…`).
   final String address;
 
   /// The kind of `address`.
@@ -451,6 +459,14 @@ class Balances {
   /// Scanned to the tip: private sending is available ("sending available at 100%").
   final bool shieldedSendable;
 
+  /// YEC at the wallet's own post-quantum keys (class `PQ_OWNED`: a payment to a Falcon
+  /// holder's `sq…` form, a vault owner's residual), zat. In neither YEC balance: no P2PKH
+  /// path spends it; [`release_preview`] of a coin in [`Balances::pq_coins`] moves it.
+  final PlatformInt64 yecPqZat;
+
+  /// The `PQ_OWNED` coins not already being moved, `txid:n`, oldest first.
+  final List<String> pqCoins;
+
   const Balances({
     required this.yecZat,
     required this.yecReservedZat,
@@ -466,6 +482,8 @@ class Balances {
     required this.yecShieldedPendingZat,
     required this.shieldedScannedHeight,
     required this.shieldedSendable,
+    required this.yecPqZat,
+    required this.pqCoins,
   });
 
   static Future<Balances> default_() =>
@@ -486,7 +504,9 @@ class Balances {
       yecShieldedSpendableZat.hashCode ^
       yecShieldedPendingZat.hashCode ^
       shieldedScannedHeight.hashCode ^
-      shieldedSendable.hashCode;
+      shieldedSendable.hashCode ^
+      yecPqZat.hashCode ^
+      pqCoins.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -506,7 +526,9 @@ class Balances {
           yecShieldedSpendableZat == other.yecShieldedSpendableZat &&
           yecShieldedPendingZat == other.yecShieldedPendingZat &&
           shieldedScannedHeight == other.shieldedScannedHeight &&
-          shieldedSendable == other.shieldedSendable;
+          shieldedSendable == other.shieldedSendable &&
+          yecPqZat == other.yecPqZat &&
+          pqCoins == other.pqCoins;
 }
 
 /// A claim intent paying this wallet (the vault upgrade, U-15, U-23, U-24): the claimant's
@@ -527,7 +549,8 @@ class ClaimIntent {
   /// The intent's value, zat (what the release pays).
   final PlatformInt64 valueZat;
 
-  /// `PENDING`, `RELEASING`, `RELEASED` or `CANCELLED`.
+  /// `PENDING`, `RELEASING`, `RELEASED`, `CANCELLED` or `SWEPT` (a residual's post-quantum
+  /// coin moved to the wallet).
   final String state;
 
   /// The height the claim confirmed at, 0 while unconfirmed.
@@ -539,15 +562,39 @@ class ClaimIntent {
   /// Blocks until then (0 once reached).
   final PlatformInt64 blocksUntilRelease;
 
-  /// The release can be built now.
+  /// The release can be built now — or, with [`ClaimIntent::pq_move`], the move.
   final bool releasable;
 
+  /// The residual was released to the vault owner's post-quantum key (quantum spec F-3) and
+  /// [`release_preview`] now builds the move of that coin into the wallet (one ~8 KB
+  /// post-quantum spend; its size-priced fee comes out of the coin).
+  final bool pqMove;
+
   /// The attestor set cancelled the claim: the collateral went back into the vault and the
-  /// claim's burn is not refunded (U-24).
+  /// claim's burn came back as YED to [`ClaimIntent::refund_address`] (CAN-1, U-24 revised); the
+  /// claim's YEC fees did not.
   final bool cancelled;
+
+  /// CAN-1, a claim this wallet made: the YED a cancel re-issues, cents (the claim's whole burn;
+  /// 0 when unknown or for a residual).
+  final PlatformInt64 refundCents;
+
+  /// Where it goes: the YED address (P2PKH `y…` or 53-character Falcon holder) of the token the
+  /// claim spent at its lowest-index YED input — the node's `refundHolder`. Empty when unknown.
+  final String refundAddress;
+
+  /// [`ClaimIntent::refund_address`] is one of this wallet's own addresses.
+  final bool refundOwn;
 
   /// The release date estimate (Unix seconds; `now + (releaseHeight − tip) · 75`).
   final PlatformInt64 releaseTimeSecs;
+
+  /// A residual of a cancelled claim that the vault now holds (CAN-3): the node refuses its
+  /// release until the vault is closed, or past its quiet period and not claimable.
+  final bool held;
+
+  /// Why it is held now (empty unless [`ClaimIntent::held`]); the text to show.
+  final String heldReason;
 
   /// The release (or the transaction that spent it), empty until known.
   final String spendTxid;
@@ -565,8 +612,14 @@ class ClaimIntent {
     required this.releaseHeight,
     required this.blocksUntilRelease,
     required this.releasable,
+    required this.pqMove,
     required this.cancelled,
+    required this.refundCents,
+    required this.refundAddress,
+    required this.refundOwn,
     required this.releaseTimeSecs,
+    required this.held,
+    required this.heldReason,
     required this.spendTxid,
     required this.note,
   });
@@ -582,8 +635,14 @@ class ClaimIntent {
       releaseHeight.hashCode ^
       blocksUntilRelease.hashCode ^
       releasable.hashCode ^
+      pqMove.hashCode ^
       cancelled.hashCode ^
+      refundCents.hashCode ^
+      refundAddress.hashCode ^
+      refundOwn.hashCode ^
       releaseTimeSecs.hashCode ^
+      held.hashCode ^
+      heldReason.hashCode ^
       spendTxid.hashCode ^
       note.hashCode;
 
@@ -601,8 +660,14 @@ class ClaimIntent {
           releaseHeight == other.releaseHeight &&
           blocksUntilRelease == other.blocksUntilRelease &&
           releasable == other.releasable &&
+          pqMove == other.pqMove &&
           cancelled == other.cancelled &&
+          refundCents == other.refundCents &&
+          refundAddress == other.refundAddress &&
+          refundOwn == other.refundOwn &&
           releaseTimeSecs == other.releaseTimeSecs &&
+          held == other.held &&
+          heldReason == other.heldReason &&
           spendTxid == other.spendTxid &&
           note == other.note;
 }
@@ -636,7 +701,8 @@ class ClaimableItem {
   /// The vault's mint txid.
   final String vaultTxid;
 
-  /// The owner, `ye…`.
+  /// The owner's post-quantum address as the server reports it (`ownerAddress`, 53
+  /// characters on rpcversion 7): it names the vault, never a payment address.
   final String ownerAddress;
 
   /// The debt to burn, cents (the wallet must hold at least this).
@@ -654,8 +720,14 @@ class ClaimableItem {
   /// `pClaim` at the node's tip, micro-USD per YEC.
   final PlatformInt64 pClaimMicroUsd;
 
-  /// The enforcement fee, zat.
+  /// The protocol fee, zat: FEE-1′ of the debt at the vault's `pMint` (rpcversion 8).
   final PlatformInt64 feeZat;
+
+  /// The protocol fee, US cents.
+  final PlatformInt64 protocolFeeCents;
+
+  /// The vault's stored mint price, µUSD per YEC.
+  final PlatformInt64 pMintMicroUsd;
 
   /// The attestor fee, zat.
   final PlatformInt64 attestFeeZat;
@@ -682,6 +754,17 @@ class ClaimableItem {
   /// The vault is still in its term (a claim now is a claim in term).
   final bool inTerm;
 
+  /// CAN-2 (`yed_listclaimable`): how many attestors must sign together to cancel a claim of
+  /// this vault confirmed in the next block (1 for a vault not cancelled lately; 0 from a node
+  /// that does not say).
+  final PlatformInt64 cancelsRequired;
+
+  /// The vault's recent (counted) cancels.
+  final PlatformInt64 cancelCount;
+
+  /// From this height a cancel needs one attestor again; 0 when never cancelled.
+  final PlatformInt64 cancelQuietUntil;
+
   const ClaimableItem({
     required this.vaultTxid,
     required this.ownerAddress,
@@ -691,6 +774,8 @@ class ClaimableItem {
     required this.claimPath,
     required this.pClaimMicroUsd,
     required this.feeZat,
+    required this.protocolFeeCents,
+    required this.pMintMicroUsd,
     required this.attestFeeZat,
     required this.residualZat,
     required this.claimantZat,
@@ -699,6 +784,9 @@ class ClaimableItem {
     required this.underwaterAtMicroUsd,
     required this.lockHeight,
     required this.inTerm,
+    required this.cancelsRequired,
+    required this.cancelCount,
+    required this.cancelQuietUntil,
   });
 
   @override
@@ -711,6 +799,8 @@ class ClaimableItem {
       claimPath.hashCode ^
       pClaimMicroUsd.hashCode ^
       feeZat.hashCode ^
+      protocolFeeCents.hashCode ^
+      pMintMicroUsd.hashCode ^
       attestFeeZat.hashCode ^
       residualZat.hashCode ^
       claimantZat.hashCode ^
@@ -718,7 +808,10 @@ class ClaimableItem {
       claimable.hashCode ^
       underwaterAtMicroUsd.hashCode ^
       lockHeight.hashCode ^
-      inTerm.hashCode;
+      inTerm.hashCode ^
+      cancelsRequired.hashCode ^
+      cancelCount.hashCode ^
+      cancelQuietUntil.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -733,6 +826,8 @@ class ClaimableItem {
           claimPath == other.claimPath &&
           pClaimMicroUsd == other.pClaimMicroUsd &&
           feeZat == other.feeZat &&
+          protocolFeeCents == other.protocolFeeCents &&
+          pMintMicroUsd == other.pMintMicroUsd &&
           attestFeeZat == other.attestFeeZat &&
           residualZat == other.residualZat &&
           claimantZat == other.claimantZat &&
@@ -740,7 +835,10 @@ class ClaimableItem {
           claimable == other.claimable &&
           underwaterAtMicroUsd == other.underwaterAtMicroUsd &&
           lockHeight == other.lockHeight &&
-          inTerm == other.inTerm;
+          inTerm == other.inTerm &&
+          cancelsRequired == other.cancelsRequired &&
+          cancelCount == other.cancelCount &&
+          cancelQuietUntil == other.cancelQuietUntil;
 }
 
 /// The result of [`create_wallet`].
@@ -752,7 +850,7 @@ class Created {
   /// keystore and shows it once for backup); `None` when the caller supplied the words.
   final String? seedWords;
 
-  /// The primary receive address, `ye…` form.
+  /// The primary receive address, `yb…` form.
   final String addressYe;
 
   const Created({
@@ -1110,14 +1208,19 @@ class MintEstimate {
   /// The collateral the MINT will lock (rounded as `BuildMint` does).
   final PlatformInt64 collateralZat;
 
-  /// The enforcement fee, zat (0 under FEE-0).
+  /// The protocol fee, zat (0 under FEE-0): FEE-1′ (rpcversion 8), the debt's dollars in marginal
+  /// bands (1 % to $1,000, 0.5 % to $10,000, 0.1 % above, at least $1) at `pMint`; a redeem of the
+  /// vault pays the same dollars again at the same price.
   final PlatformInt64 feeZat;
+
+  /// The protocol fee in US cents (shown even under FEE-0, where it is not paid).
+  final PlatformInt64 protocolFeeCents;
 
   /// The attestor fee, zat (0 under AFEE-0).
   final PlatformInt64 attestFeeZat;
 
-  /// The enforcement fee payee (`s…`), empty under FEE-0. The amount is checked against
-  /// FEE-1 locally; the payee's eligibility is the node's to judge (audit G-2).
+  /// The protocol fee payee (`s…`), empty under FEE-0. The amount is computed locally (FEE-1′);
+  /// the payee's eligibility is the node's to judge (audit G-2).
   final String payee;
 
   /// `CARRIER_VALUE`, zat.
@@ -1126,8 +1229,12 @@ class MintEstimate {
   /// `TOKEN_VALUE` for the new YED output, zat.
   final PlatformInt64 tokenZat;
 
-  /// The two network fees, zat.
+  /// The two network fees, zat: the carrier's flat fee and the MINT's Yellowback size fee
+  /// (dollars per KB at the attested price, rpcversion 8).
   final PlatformInt64 networkFeeZat;
+
+  /// `MAX_MINT`, cents ($100,000 on every network, D-Q-24).
+  final PlatformInt64 maxMintCents;
 
   /// Everything the two steps need from YEC, zat.
   final PlatformInt64 totalZat;
@@ -1158,11 +1265,13 @@ class MintEstimate {
     required this.requiredZat,
     required this.collateralZat,
     required this.feeZat,
+    required this.protocolFeeCents,
     required this.attestFeeZat,
     required this.payee,
     required this.carrierZat,
     required this.tokenZat,
     required this.networkFeeZat,
+    required this.maxMintCents,
     required this.totalZat,
     required this.availableZat,
     required this.affordable,
@@ -1183,11 +1292,13 @@ class MintEstimate {
       requiredZat.hashCode ^
       collateralZat.hashCode ^
       feeZat.hashCode ^
+      protocolFeeCents.hashCode ^
       attestFeeZat.hashCode ^
       payee.hashCode ^
       carrierZat.hashCode ^
       tokenZat.hashCode ^
       networkFeeZat.hashCode ^
+      maxMintCents.hashCode ^
       totalZat.hashCode ^
       availableZat.hashCode ^
       affordable.hashCode ^
@@ -1210,11 +1321,13 @@ class MintEstimate {
           requiredZat == other.requiredZat &&
           collateralZat == other.collateralZat &&
           feeZat == other.feeZat &&
+          protocolFeeCents == other.protocolFeeCents &&
           attestFeeZat == other.attestFeeZat &&
           payee == other.payee &&
           carrierZat == other.carrierZat &&
           tokenZat == other.tokenZat &&
           networkFeeZat == other.networkFeeZat &&
+          maxMintCents == other.maxMintCents &&
           totalZat == other.totalZat &&
           availableZat == other.availableZat &&
           affordable == other.affordable &&
@@ -1491,11 +1604,17 @@ class ParamsProgress {
   /// The last event: both files verified and in place.
   final bool finished;
 
+  /// The last event of a failed download: why (empty otherwise). A failure is reported only
+  /// here: flutter_rust_bridge hands a stream function's `Err` to a future the generated Dart
+  /// never awaits, so the app would never see it.
+  final String error;
+
   const ParamsProgress({
     required this.file,
     required this.doneBytes,
     required this.totalBytes,
     required this.finished,
+    required this.error,
   });
 
   @override
@@ -1503,7 +1622,8 @@ class ParamsProgress {
       file.hashCode ^
       doneBytes.hashCode ^
       totalBytes.hashCode ^
-      finished.hashCode;
+      finished.hashCode ^
+      error.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1513,7 +1633,8 @@ class ParamsProgress {
           file == other.file &&
           doneBytes == other.doneBytes &&
           totalBytes == other.totalBytes &&
-          finished == other.finished;
+          finished == other.finished &&
+          error == other.error;
 }
 
 /// [`params_status`]: the Sapling proving parameters on this device.
@@ -1563,13 +1684,13 @@ enum ReceiveKind {
   /// The private Sapling `ys1…` address (shielded YEC, memos).
   shielded,
 
-  /// The Yellowback `ye…` form of the transparent address (YED, mint).
+  /// The Yellowback `yb…` form of the transparent address (YED, mint).
   yed,
 }
 
 /// One recipient of a YED send.
 class Recipient {
-  /// `ye…` / `yr…` / `s…`.
+  /// `yb…` / `yr…` / `s…`.
   final String address;
 
   /// Cents.
@@ -1613,22 +1734,38 @@ class RedeemPreview {
   /// YED inputs spent.
   final int yedInputs;
 
-  /// What the fee output pays, zat: the enforcement fee (FEE-1, checked locally) plus the
+  /// What the fee output pays, zat: the protocol fee (FEE-1′, computed locally) plus the
   /// early-redeem fee.
   final PlatformInt64 feeZat;
 
-  /// The enforcement fee alone (FEE-1).
-  final PlatformInt64 enforcementFeeZat;
+  /// The protocol fee alone (FEE-1′ of the debt at the vault's `pMint`), zat.
+  final PlatformInt64 protocolFeeZat;
 
-  /// The early-redeem fee within `fee_zat` (IT-9): due when the redeem confirms before
-  /// `lockHeight`, 0 otherwise and under FEE-0. Shown before the slider.
+  /// The protocol fee, US cents (rpcversion 8: the same dollars the mint paid).
+  final PlatformInt64 protocolFeeCents;
+
+  /// The vault's stored mint price, µUSD per YEC: the price both fees are struck at.
+  final PlatformInt64 pMintMicroUsd;
+
+  /// The early-redeem fee within `fee_zat` (IT-9′, of the debt): due when the redeem confirms
+  /// before `lockHeight`, 0 otherwise and under FEE-0. Shown before the slider.
   final PlatformInt64 earlyRedeemFeeZat;
+
+  /// [`RedeemPreview::early_redeem_fee_zat`] in US cents: the debt's share, exact (0 when none).
+  final PlatformInt64 earlyRedeemFeeUsdCents;
 
   /// The vault's `lockHeight` (the end of the term).
   final PlatformInt64 lockHeight;
 
   /// The enforcement fee payee (`s…`), empty under FEE-0.
   final String payee;
+
+  /// The network fee taken from the collateral, zat: the Yellowback size fee of the ~8 KB
+  /// post-quantum owner spend (dollars per KB at the attested price, rpcversion 8).
+  final PlatformInt64 networkFeeZat;
+
+  /// [`RedeemPreview::network_fee_zat`] in US cents at the last sync's price (0 when unknown).
+  final PlatformInt64 networkFeeUsdCents;
 
   /// The collateral returned, zat.
   final PlatformInt64 collateralZat;
@@ -1654,10 +1791,15 @@ class RedeemPreview {
     required this.changeCents,
     required this.yedInputs,
     required this.feeZat,
-    required this.enforcementFeeZat,
+    required this.protocolFeeZat,
+    required this.protocolFeeCents,
+    required this.pMintMicroUsd,
     required this.earlyRedeemFeeZat,
+    required this.earlyRedeemFeeUsdCents,
     required this.lockHeight,
     required this.payee,
+    required this.networkFeeZat,
+    required this.networkFeeUsdCents,
     required this.collateralZat,
     required this.collateralAddress,
     required this.lockTime,
@@ -1675,10 +1817,15 @@ class RedeemPreview {
       changeCents.hashCode ^
       yedInputs.hashCode ^
       feeZat.hashCode ^
-      enforcementFeeZat.hashCode ^
+      protocolFeeZat.hashCode ^
+      protocolFeeCents.hashCode ^
+      pMintMicroUsd.hashCode ^
       earlyRedeemFeeZat.hashCode ^
+      earlyRedeemFeeUsdCents.hashCode ^
       lockHeight.hashCode ^
       payee.hashCode ^
+      networkFeeZat.hashCode ^
+      networkFeeUsdCents.hashCode ^
       collateralZat.hashCode ^
       collateralAddress.hashCode ^
       lockTime.hashCode ^
@@ -1698,10 +1845,15 @@ class RedeemPreview {
           changeCents == other.changeCents &&
           yedInputs == other.yedInputs &&
           feeZat == other.feeZat &&
-          enforcementFeeZat == other.enforcementFeeZat &&
+          protocolFeeZat == other.protocolFeeZat &&
+          protocolFeeCents == other.protocolFeeCents &&
+          pMintMicroUsd == other.pMintMicroUsd &&
           earlyRedeemFeeZat == other.earlyRedeemFeeZat &&
+          earlyRedeemFeeUsdCents == other.earlyRedeemFeeUsdCents &&
           lockHeight == other.lockHeight &&
           payee == other.payee &&
+          networkFeeZat == other.networkFeeZat &&
+          networkFeeUsdCents == other.networkFeeUsdCents &&
           collateralZat == other.collateralZat &&
           collateralAddress == other.collateralAddress &&
           lockTime == other.lockTime &&
@@ -1729,10 +1881,10 @@ class RedeemResult {
   /// YED change, cents.
   final PlatformInt64 changeCents;
 
-  /// The enforcement fee, zat.
+  /// The protocol fee plus any early-redeem fee, zat (the fee output).
   final PlatformInt64 feeZat;
 
-  /// The early-redeem fee within `fee_zat` (IT-9).
+  /// The early-redeem fee within `fee_zat` (IT-9′).
   final PlatformInt64 earlyRedeemFeeZat;
 
   /// The enforcement fee payee (`s…`), empty under FEE-0.
@@ -1802,21 +1954,27 @@ class RedeemResult {
           expiryHeight == other.expiryHeight;
 }
 
-/// [`release_preview`]: the signed RELEASE waiting for [`release_confirm`].
+/// [`release_preview`]: the signed RELEASE (or post-quantum move) waiting for [`release_confirm`].
 class ReleasePreview {
   /// Pass to [`release_confirm`].
   final String previewId;
 
-  /// The intent released, `txid:n`.
+  /// `release`, or `pq_move` (a released residual's post-quantum coin, or any own
+  /// post-quantum coin of [`Balances::pq_coins`], into the wallet).
+  final String kind;
+
+  /// The intent released (or the post-quantum coin moved), `txid:n`.
   final String intent;
 
-  /// What the release pays, zat.
+  /// What the recipient receives, zat.
   final PlatformInt64 valueZat;
 
-  /// The own address it pays.
+  /// The address it pays: an own `s…` key, or (a residual's release) the vault owner's
+  /// 53-character post-quantum address.
   final String recipientAddress;
 
-  /// The network fee, zat (from the wallet's YEC).
+  /// The network fee, zat: from the wallet's YEC (a release), or out of the coin, priced by
+  /// size (a move: `max(1,000, pqfeerate × size)`).
   final PlatformInt64 feeZat;
 
   /// The txid the broadcast will have.
@@ -1824,6 +1982,7 @@ class ReleasePreview {
 
   const ReleasePreview({
     required this.previewId,
+    required this.kind,
     required this.intent,
     required this.valueZat,
     required this.recipientAddress,
@@ -1834,6 +1993,7 @@ class ReleasePreview {
   @override
   int get hashCode =>
       previewId.hashCode ^
+      kind.hashCode ^
       intent.hashCode ^
       valueZat.hashCode ^
       recipientAddress.hashCode ^
@@ -1846,6 +2006,7 @@ class ReleasePreview {
       other is ReleasePreview &&
           runtimeType == other.runtimeType &&
           previewId == other.previewId &&
+          kind == other.kind &&
           intent == other.intent &&
           valueZat == other.valueZat &&
           recipientAddress == other.recipientAddress &&
@@ -2152,7 +2313,9 @@ class VaultSummary {
   /// `ACTIVE`, `VOID`, `CLOSED`, `CLAIMED`.
   final String status;
 
-  /// The owner address, `ye…` form (an own key).
+  /// The vault owner's post-quantum address (quantum spec §4, §6.2 `ownerAddress`: 53
+  /// characters, `yb…`/`yt…`/`yr…`): a vault identifier, **never** a receive address (client
+  /// survey C-10). YED and YEC go to the receive addresses.
   final String ownerAddress;
 
   /// The term class letter.
@@ -2195,13 +2358,27 @@ class VaultSummary {
   /// (IT-9).
   final bool earlyRedeem;
 
-  /// The early-redeem fee a redeem now would pay, zat: `collateral · earlyRedeemFeeBps[class] /
-  /// 10⁴` while [`VaultSummary::early_redeem`], else 0 (the preview's figure is the one signed:
-  /// it is 0 under FEE-0, which this offline summary cannot know).
+  /// The early-redeem fee a redeem now would pay, zat: `earlyRedeemFeeBps[class]` of the debt at
+  /// the vault's `pMint` (IT-9′, rpcversion 8) while [`VaultSummary::early_redeem`], else 0 (the
+  /// preview's figure is the one signed: it is 0 under FEE-0, which this offline summary cannot know).
   final PlatformInt64 earlyRedeemFeeZat;
 
-  /// The class's early-redeem fee rate, bps of the collateral (500 / 250 / 100).
+  /// The early-redeem fee in US cents: the debt's share, exact (it no longer moves with the price);
+  /// shown beside the debt, and gone at the end of the term (the lockup report's recommendation).
+  final PlatformInt64 earlyRedeemFeeUsdCents;
+
+  /// The class's early-redeem fee rate, bps of the debt (500 / 250 / 100).
   final PlatformInt64 earlyRedeemFeeBps;
+
+  /// The vault's stored mint price, µUSD per YEC (0 until a sync has read it): every fee of the
+  /// vault is struck at it.
+  final PlatformInt64 pMintMicroUsd;
+
+  /// The protocol fee a redeem pays, US cents (FEE-1′ of the debt; 0 for a vault that is not ACTIVE).
+  final PlatformInt64 protocolFeeCents;
+
+  /// [`VaultSummary::protocol_fee_cents`] in zat at `pMint` (0 when the price is unknown).
+  final PlatformInt64 protocolFeeZat;
 
   /// Claims are judged by the threshold at every height (in-term plan IT-2): always true on this
   /// build (the server's `inTermClaims` is checked at connect).
@@ -2234,7 +2411,10 @@ class VaultSummary {
   /// `closeHeight`, 0 while open.
   final PlatformInt64 closeHeight;
 
-  /// `closingTxid`, empty while open.
+  /// `closingTxid`, empty while open — except while a spend of the open vault is pending (a
+  /// redeem or release broadcast and not yet confirmed, or one the server reports in its
+  /// mempool): then that spend's txid, and `redeemable`, `releasable` and `renewable` are false
+  /// (the vault shows "redemption pending"; cf. DigiByte v9.26.7 00136af6).
   final String closingTxid;
 
   /// `voidReason`, empty unless VOID.
@@ -2277,6 +2457,30 @@ class VaultSummary {
   /// (U-24), the same position at a new outpoint (shown there; this row is history).
   final bool reopened;
 
+  /// `cancelCount` (the per-vault cancel limit, CAN-2): the claims of this position the
+  /// attestor set cancelled that still count (0 at the mint; it survives every re-creation).
+  final PlatformInt64 cancelCount;
+
+  /// `cancelsRequired`: how many attestors must sign together to cancel a claim of this vault
+  /// that confirms in the next block (1, one more for each recent cancel, at most 4; regtest 3).
+  /// 0 = not yet synced.
+  final PlatformInt64 cancelsRequired;
+
+  /// `cancelQuietUntil`: from this height the count starts again from one; 0 when the vault was
+  /// never cancelled.
+  final PlatformInt64 cancelQuietUntil;
+
+  /// Blocks until `cancel_quiet_until` (0 once reached, or never cancelled).
+  final PlatformInt64 blocksUntilQuietEnd;
+
+  /// `heldResiduals` (CAN-3): how many of the owner's leftovers (the residual intents of
+  /// cancelled claims) this vault holds.
+  final PlatformInt64 heldResiduals;
+
+  /// Why those leftovers cannot be released now (empty when none is held, or when the release
+  /// may pass): release needs the vault closed, or past its quiet period and not claimable.
+  final String heldReason;
+
   const VaultSummary({
     required this.vaultTxid,
     required this.status,
@@ -2294,7 +2498,11 @@ class VaultSummary {
     required this.blocksUntilTermEnd,
     required this.earlyRedeem,
     required this.earlyRedeemFeeZat,
+    required this.earlyRedeemFeeUsdCents,
     required this.earlyRedeemFeeBps,
+    required this.pMintMicroUsd,
+    required this.protocolFeeCents,
+    required this.protocolFeeZat,
     required this.inTermClaims,
     required this.claimThresholdBps,
     required this.claimPriceMicroUsd,
@@ -2315,6 +2523,12 @@ class VaultSummary {
     required this.claimOpen,
     required this.claiming,
     required this.reopened,
+    required this.cancelCount,
+    required this.cancelsRequired,
+    required this.cancelQuietUntil,
+    required this.blocksUntilQuietEnd,
+    required this.heldResiduals,
+    required this.heldReason,
   });
 
   @override
@@ -2335,7 +2549,11 @@ class VaultSummary {
       blocksUntilTermEnd.hashCode ^
       earlyRedeem.hashCode ^
       earlyRedeemFeeZat.hashCode ^
+      earlyRedeemFeeUsdCents.hashCode ^
       earlyRedeemFeeBps.hashCode ^
+      pMintMicroUsd.hashCode ^
+      protocolFeeCents.hashCode ^
+      protocolFeeZat.hashCode ^
       inTermClaims.hashCode ^
       claimThresholdBps.hashCode ^
       claimPriceMicroUsd.hashCode ^
@@ -2355,7 +2573,13 @@ class VaultSummary {
       claimWarning.hashCode ^
       claimOpen.hashCode ^
       claiming.hashCode ^
-      reopened.hashCode;
+      reopened.hashCode ^
+      cancelCount.hashCode ^
+      cancelsRequired.hashCode ^
+      cancelQuietUntil.hashCode ^
+      blocksUntilQuietEnd.hashCode ^
+      heldResiduals.hashCode ^
+      heldReason.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -2378,7 +2602,11 @@ class VaultSummary {
           blocksUntilTermEnd == other.blocksUntilTermEnd &&
           earlyRedeem == other.earlyRedeem &&
           earlyRedeemFeeZat == other.earlyRedeemFeeZat &&
+          earlyRedeemFeeUsdCents == other.earlyRedeemFeeUsdCents &&
           earlyRedeemFeeBps == other.earlyRedeemFeeBps &&
+          pMintMicroUsd == other.pMintMicroUsd &&
+          protocolFeeCents == other.protocolFeeCents &&
+          protocolFeeZat == other.protocolFeeZat &&
           inTermClaims == other.inTermClaims &&
           claimThresholdBps == other.claimThresholdBps &&
           claimPriceMicroUsd == other.claimPriceMicroUsd &&
@@ -2398,12 +2626,19 @@ class VaultSummary {
           claimWarning == other.claimWarning &&
           claimOpen == other.claimOpen &&
           claiming == other.claiming &&
-          reopened == other.reopened;
+          reopened == other.reopened &&
+          cancelCount == other.cancelCount &&
+          cancelsRequired == other.cancelsRequired &&
+          cancelQuietUntil == other.cancelQuietUntil &&
+          blocksUntilQuietEnd == other.blocksUntilQuietEnd &&
+          heldResiduals == other.heldResiduals &&
+          heldReason == other.heldReason;
 }
 
 /// [`export_wif`].
 class WifExport {
-  /// The address, `ye…` form.
+  /// The key's P2PKH address, `yb…` form (35 characters). Once Falcon is in force YED is
+  /// received at the key's Falcon holder instead, which has no WIF.
   final String addressYe;
 
   /// The address, `s…` form.
@@ -2580,8 +2815,12 @@ class YedPreview {
   /// Number of YEC inputs (fee).
   final int yecInputs;
 
-  /// The fee, zat.
+  /// The network fee, zat (rpcversion 8: the Yellowback size fee, dollars per KB at the attested
+  /// price).
   final PlatformInt64 feeZat;
+
+  /// [`YedPreview::fee_zat`] in US cents at the last sync's price (0 when unknown).
+  final PlatformInt64 feeUsdCents;
 
   /// YEC change, zat.
   final PlatformInt64 yecChangeZat;
@@ -2604,6 +2843,7 @@ class YedPreview {
     required this.changeCents,
     required this.yecInputs,
     required this.feeZat,
+    required this.feeUsdCents,
     required this.yecChangeZat,
     required this.expiryHeight,
     required this.txid,
@@ -2620,6 +2860,7 @@ class YedPreview {
       changeCents.hashCode ^
       yecInputs.hashCode ^
       feeZat.hashCode ^
+      feeUsdCents.hashCode ^
       yecChangeZat.hashCode ^
       expiryHeight.hashCode ^
       txid.hashCode ^
@@ -2638,6 +2879,7 @@ class YedPreview {
           changeCents == other.changeCents &&
           yecInputs == other.yecInputs &&
           feeZat == other.feeZat &&
+          feeUsdCents == other.feeUsdCents &&
           yecChangeZat == other.yecChangeZat &&
           expiryHeight == other.expiryHeight &&
           txid == other.txid &&

@@ -1,0 +1,450 @@
+{
+  "_comment": "Accepted Semgrep findings (contrib/semgrep/README.md, 'Accepting a finding'). findings: fingerprint -> {rule, path, reason, by, date}. rule_paths: [{rule (glob), paths (globs), reason, by, date}]. Every entry needs a reason a reviewer can check.",
+  "findings": {
+    "c9df666769c6ffab": {
+      "rule": "generic.secrets.gitleaks.generic-api-key",
+      "path": "app/test/fake_wallet_api.dart",
+      "reason": "app/test/fake_wallet_api.dart: fixed fake addresses for widget tests, not secrets. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "ead70942332053da": {
+      "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+      "path": "scripts/devnet-operator.py",
+      "reason": "scripts/devnet-operator.py runs the workspace's devnet tool with an argument list (no shell); developer devnet helper, never shipped. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "209f7f91f30d7a69": {
+      "rule": "python.lang.security.audit.dangerous-subprocess-use-tainted-env-args",
+      "path": "scripts/devnet-operator.py",
+      "reason": "scripts/devnet-operator.py: the devnet tool path comes from the developer's own YEW_DEVNET_TOOL; argument list, no shell; developer devnet helper, never shipped. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "0d9e05b3c0676415": {
+      "rule": "python.lang.security.audit.exec-detected",
+      "path": "scripts/vectors-in-term.py",
+      "reason": "scripts/vectors-in-term.py loads the workspace's own devnet tool (a script without a .py name) as a module to reuse its vector code; developer tool, never shipped. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "965677a547638afc": {
+      "rule": "rust.lang.security.args",
+      "path": "core/cli/src/main.rs",
+      "reason": "Developer tools (yew-cli, the pq_bench example) parsing their own command line; argv is not used for a security decision. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "8fa63df06ef64576": {
+      "rule": "rust.lang.security.args",
+      "path": "core/examples/pq_bench.rs",
+      "reason": "Developer tools (yew-cli, the pq_bench example) parsing their own command line; argv is not used for a security decision. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "26fcf7e47d812ea0": {
+      "rule": "rust.lang.security.temp-dir",
+      "path": "core/src/api.rs",
+      "reason": "Test code only (#[cfg(test)] mod tests or core/tests/devnet.rs): per-process scratch directories for test wallets. The app stores its wallet under the platform's app-private directory, passed from Dart. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "664d9e478c78660a": {
+      "rule": "rust.lang.security.temp-dir",
+      "path": "core/src/sapling_params.rs",
+      "reason": "Test code only (#[cfg(test)] mod tests or core/tests/devnet.rs): per-process scratch directories for test wallets. The app stores its wallet under the platform's app-private directory, passed from Dart. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "106120458bfbccf5": {
+      "rule": "rust.lang.security.temp-dir",
+      "path": "core/src/shielded.rs",
+      "reason": "Test code only (#[cfg(test)] mod tests or core/tests/devnet.rs): per-process scratch directories for test wallets. The app stores its wallet under the platform's app-private directory, passed from Dart. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "57ea02ec41a63750": {
+      "rule": "rust.lang.security.temp-dir",
+      "path": "core/src/store.rs",
+      "reason": "Test code only (#[cfg(test)] mod tests or core/tests/devnet.rs): per-process scratch directories for test wallets. The app stores its wallet under the platform's app-private directory, passed from Dart. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "a446a97c497d296e": {
+      "rule": "rust.lang.security.temp-dir",
+      "path": "core/tests/devnet.rs",
+      "reason": "Test code only (#[cfg(test)] mod tests or core/tests/devnet.rs): per-process scratch directories for test wallets. The app stores its wallet under the platform's app-private directory, passed from Dart. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "0c9266777d77aeee": {
+      "rule": "rust.lang.security.temp-dir",
+      "path": "core/tests/devnet.rs",
+      "reason": "Test code only (#[cfg(test)] mod tests or core/tests/devnet.rs): per-process scratch directories for test wallets. The app stores its wallet under the platform's app-private directory, passed from Dart. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "3fed42873e8664d5": {
+      "rule": "rust.lang.security.temp-dir",
+      "path": "core/tests/devnet.rs",
+      "reason": "Test code only (#[cfg(test)] mod tests or core/tests/devnet.rs): per-process scratch directories for test wallets. The app stores its wallet under the platform's app-private directory, passed from Dart. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "fc87574696358ce0": {
+      "rule": "rust.lang.security.temp-dir",
+      "path": "core/tests/devnet.rs",
+      "reason": "Test code only (#[cfg(test)] mod tests or core/tests/devnet.rs): per-process scratch directories for test wallets. The app stores its wallet under the platform's app-private directory, passed from Dart. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "8d873124f5d70c56": {
+      "rule": "rust.lang.security.temp-dir",
+      "path": "core/tests/devnet.rs",
+      "reason": "Test code only (#[cfg(test)] mod tests or core/tests/devnet.rs): per-process scratch directories for test wallets. The app stores its wallet under the platform's app-private directory, passed from Dart. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "69bb5b267126afd5": {
+      "rule": "rust.lang.security.temp-dir",
+      "path": "core/tests/devnet.rs",
+      "reason": "Test code only (#[cfg(test)] mod tests or core/tests/devnet.rs): per-process scratch directories for test wallets. The app stores its wallet under the platform's app-private directory, passed from Dart. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "2c1ca09aab0b8d7d": {
+      "rule": "rust.lang.security.temp-dir",
+      "path": "core/tests/devnet.rs",
+      "reason": "Test code only (#[cfg(test)] mod tests or core/tests/devnet.rs): per-process scratch directories for test wallets. The app stores its wallet under the platform's app-private directory, passed from Dart. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "69a234de0167a343": {
+      "rule": "rust.lang.security.temp-dir",
+      "path": "core/tests/devnet.rs",
+      "reason": "Test code only (#[cfg(test)] mod tests or core/tests/devnet.rs): per-process scratch directories for test wallets. The app stores its wallet under the platform's app-private directory, passed from Dart. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "6e2cc7d8e491f915": {
+      "rule": "rust.lang.security.temp-dir",
+      "path": "core/tests/devnet.rs",
+      "reason": "Test code only (#[cfg(test)] mod tests or core/tests/devnet.rs): per-process scratch directories for test wallets. The app stores its wallet under the platform's app-private directory, passed from Dart. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "2fccd257853a1257": {
+      "rule": "rust.lang.security.temp-dir",
+      "path": "core/tests/devnet.rs",
+      "reason": "Test code only (#[cfg(test)] mod tests or core/tests/devnet.rs): per-process scratch directories for test wallets. The app stores its wallet under the platform's app-private directory, passed from Dart. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "266ce8b0dcea95f3": {
+      "rule": "rust.lang.security.unsafe-usage",
+      "path": "core/src/keys.rs",
+      "reason": "The FFI boundary to the vendored Falcon-512 (core/pq-c, buffer sizes per ycash_falcon.h, each with a SAFETY comment) and keys::wipe's volatile zeroing of a borrowed u8. Reviewed 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "30e8cda34d62d050": {
+      "rule": "rust.lang.security.unsafe-usage",
+      "path": "core/src/pq.rs",
+      "reason": "The FFI boundary to the vendored Falcon-512 (core/pq-c, buffer sizes per ycash_falcon.h, each with a SAFETY comment) and keys::wipe's volatile zeroing of a borrowed u8. Reviewed 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "cebe2614816e5235": {
+      "rule": "rust.lang.security.unsafe-usage",
+      "path": "core/src/pq.rs",
+      "reason": "The FFI boundary to the vendored Falcon-512 (core/pq-c, buffer sizes per ycash_falcon.h, each with a SAFETY comment) and keys::wipe's volatile zeroing of a borrowed u8. Reviewed 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "fbf5131826d2e8ff": {
+      "rule": "rust.lang.security.unsafe-usage",
+      "path": "core/src/pq.rs",
+      "reason": "The FFI boundary to the vendored Falcon-512 (core/pq-c, buffer sizes per ycash_falcon.h, each with a SAFETY comment) and keys::wipe's volatile zeroing of a borrowed u8. Reviewed 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "f5b8bfa8cd5563bd": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "7e320c7ad845ba19": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "c515f1db0505ff79": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "7e320c7ad845ba19-1": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "d563c6eb7481d91c": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "7e320c7ad845ba19-2": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "3050d33fda1cdcfb": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "7e320c7ad845ba19-3": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "7e320c7ad845ba19-4": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "7e320c7ad845ba19-5": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "7e320c7ad845ba19-6": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "7e320c7ad845ba19-7": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "7e320c7ad845ba19-8": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "7e320c7ad845ba19-9": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "7e320c7ad845ba19-10": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "7e320c7ad845ba19-11": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "7e320c7ad845ba19-12": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "88618dc8ce99a0fc": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/keys.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "19d17f5c0896a4c5": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/keys.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "140182d00dbe94ef": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/keys.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "1e536ac9cf3e12e0": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/keys.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "77dab6d21ab77b35": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/keys.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "36201cb4980978a1": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/shielded.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "b9b86c5a8bd9999b": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/shielded.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "b9b86c5a8bd9999b-1": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/shielded.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "f3f001a7152231fa": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/shielded_keys.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "65cbe438e41cf826": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/tx.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "c0f7a6a9ca344d60": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/wallet.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "58619814039f1210": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/wallet.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "184a234b87b9e2a9": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/wallet.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "a9dbe26a1ac8ca27": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/wallet.rs",
+      "reason": "expect() on a local invariant, not on input: HMAC accepts any key length, a fixed-length slice converts to its array, a constant account id / script scheme is valid, or the value was set just above (in api.rs, the lightwalletd connection that ensure_conn opened on the line before). Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "30ea3ac83fd7f15c": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/shielded.rs",
+      "reason": "expect() on a local invariant, not on a server reply: the light wallet / prover opened or loaded just above, HMAC accepts any key length, an own HD Falcon row (from the wallet's store) has its chain and index, scheme 2 is registered. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "14d0ed3ae9614993": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/shielded.rs",
+      "reason": "expect() on a local invariant, not on a server reply: the light wallet / prover opened or loaded just above, HMAC accepts any key length, an own HD Falcon row (from the wallet's store) has its chain and index, scheme 2 is registered. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "14d0ed3ae9614993-1": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/shielded.rs",
+      "reason": "expect() on a local invariant, not on a server reply: the light wallet / prover opened or loaded just above, HMAC accepts any key length, an own HD Falcon row (from the wallet's store) has its chain and index, scheme 2 is registered. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "6abfd28fb67842fe": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/wallet.rs",
+      "reason": "expect() on a local invariant, not on a server reply: the light wallet / prover opened or loaded just above, HMAC accepts any key length, an own HD Falcon row (from the wallet's store) has its chain and index, scheme 2 is registered. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "def5e0966f09ea2c": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/wallet.rs",
+      "reason": "expect() on a local invariant, not on a server reply: the light wallet / prover opened or loaded just above, HMAC accepts any key length, an own HD Falcon row (from the wallet's store) has its chain and index, scheme 2 is registered. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "807350282a830c6b": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/wallet.rs",
+      "reason": "expect() on a local invariant, not on a server reply: the light wallet / prover opened or loaded just above, HMAC accepts any key length, an own HD Falcon row (from the wallet's store) has its chain and index, scheme 2 is registered. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    },
+    "73cf77e2805e399c": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/wallet.rs",
+      "reason": "expect() on a local invariant, not on a server reply: the light wallet / prover opened or loaded just above, HMAC accepts any key length, an own HD Falcon row (from the wallet's store) has its chain and index, scheme 2 is registered. Checked 2026-10-23.",
+      "by": "secops CI setup",
+      "date": "2026-10-23"
+    }
+  },
+  "rule_paths": [
+    {
+      "rule": "python.lang.security.audit.dangerous-subprocess-use-audit",
+      "paths": [
+        "contrib/secops/**"
+      ],
+      "reason": "contrib/secops/code-scanning-triage.py calls gh api with argv lists built from constants and the workflow-supplied repository name (no shell); it runs only in the code-scanning workflow with the job's own token.",
+      "by": "secops triage",
+      "date": "2026-10-24"
+    }
+  ]
+}

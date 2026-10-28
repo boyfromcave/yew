@@ -164,11 +164,14 @@ class _VaultTile extends StatelessWidget {
     final t = Theme.of(context).textTheme;
     final String when;
     if (v.claiming) {
-      when = 'being claimed (at ${v.closeHeight}): an attestor can still cancel the claim during the claim delay';
+      final who = v.cancelsRequired > 1 ? '${v.cancelsRequired} attestors signing together' : 'an attestor';
+      when = 'being claimed (at ${v.closeHeight}): $who can still cancel the claim during the claim delay';
     } else if (v.reopened) {
       when = 'claim cancelled by the attestor set: the vault continues at ${shorten(v.closingTxid)}';
     } else if (!v.open) {
       when = '${v.status.toLowerCase()} at ${v.closeHeight}';
+    } else if (v.closingTxid.isNotEmpty) {
+      when = 'redemption pending (${shorten(v.closingTxid)}): waiting for it to confirm';
     } else if (v.releasable) {
       when = 'void (${v.voidReason}) · release the collateral';
     } else if (v.claimable) {
@@ -180,6 +183,7 @@ class _VaultTile extends StatelessWidget {
     } else {
       when = 'redeemable in ${v.blocksUntilRedeem} block${v.blocksUntilRedeem == 1 ? '' : 's'}';
     }
+    final held = v.heldResiduals > 0 && v.heldReason.isNotEmpty ? ' · leftover from a cancelled claim held' : '';
     return Card(
       child: ListTile(
         key: Key('vault-${v.vaultTxid}'),
@@ -189,7 +193,7 @@ class _VaultTile extends StatelessWidget {
         ),
         title: Text('${formatYed(v.cents)} · ${formatYec(v.collateralZat)} YEC', style: t.titleMedium),
         subtitle: Text(
-          v.nearThreshold ? '$when\nWarning: the claim price is within ${formatBps(2500)} of it. Redeem to stop a claim.' : when,
+          v.nearThreshold ? '$when$held\nWarning: the claim price is within ${formatBps(2500)} of it. Redeem to stop a claim.' : '$when$held',
           style: v.claimWarning || v.underwater ? t.bodyMedium?.copyWith(color: c.danger) : null,
         ),
         isThreeLine: v.nearThreshold,

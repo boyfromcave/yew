@@ -1655,6 +1655,8 @@ impl SseDecode for crate::api::Balances {
         let mut var_yecShieldedPendingZat = <i64>::sse_decode(deserializer);
         let mut var_shieldedScannedHeight = <i64>::sse_decode(deserializer);
         let mut var_shieldedSendable = <bool>::sse_decode(deserializer);
+        let mut var_yecPqZat = <i64>::sse_decode(deserializer);
+        let mut var_pqCoins = <Vec<String>>::sse_decode(deserializer);
         return crate::api::Balances {
             yec_zat: var_yecZat,
             yec_reserved_zat: var_yecReservedZat,
@@ -1670,6 +1672,8 @@ impl SseDecode for crate::api::Balances {
             yec_shielded_pending_zat: var_yecShieldedPendingZat,
             shielded_scanned_height: var_shieldedScannedHeight,
             shielded_sendable: var_shieldedSendable,
+            yec_pq_zat: var_yecPqZat,
+            pq_coins: var_pqCoins,
         };
     }
 }
@@ -1693,8 +1697,14 @@ impl SseDecode for crate::api::ClaimIntent {
         let mut var_releaseHeight = <i64>::sse_decode(deserializer);
         let mut var_blocksUntilRelease = <i64>::sse_decode(deserializer);
         let mut var_releasable = <bool>::sse_decode(deserializer);
+        let mut var_pqMove = <bool>::sse_decode(deserializer);
         let mut var_cancelled = <bool>::sse_decode(deserializer);
+        let mut var_refundCents = <i64>::sse_decode(deserializer);
+        let mut var_refundAddress = <String>::sse_decode(deserializer);
+        let mut var_refundOwn = <bool>::sse_decode(deserializer);
         let mut var_releaseTimeSecs = <i64>::sse_decode(deserializer);
+        let mut var_held = <bool>::sse_decode(deserializer);
+        let mut var_heldReason = <String>::sse_decode(deserializer);
         let mut var_spendTxid = <String>::sse_decode(deserializer);
         let mut var_note = <String>::sse_decode(deserializer);
         return crate::api::ClaimIntent {
@@ -1707,8 +1717,14 @@ impl SseDecode for crate::api::ClaimIntent {
             release_height: var_releaseHeight,
             blocks_until_release: var_blocksUntilRelease,
             releasable: var_releasable,
+            pq_move: var_pqMove,
             cancelled: var_cancelled,
+            refund_cents: var_refundCents,
+            refund_address: var_refundAddress,
+            refund_own: var_refundOwn,
             release_time_secs: var_releaseTimeSecs,
+            held: var_held,
+            held_reason: var_heldReason,
             spend_txid: var_spendTxid,
             note: var_note,
         };
@@ -1738,6 +1754,8 @@ impl SseDecode for crate::api::ClaimableItem {
         let mut var_claimPath = <String>::sse_decode(deserializer);
         let mut var_pClaimMicroUsd = <i64>::sse_decode(deserializer);
         let mut var_feeZat = <i64>::sse_decode(deserializer);
+        let mut var_protocolFeeCents = <i64>::sse_decode(deserializer);
+        let mut var_pMintMicroUsd = <i64>::sse_decode(deserializer);
         let mut var_attestFeeZat = <i64>::sse_decode(deserializer);
         let mut var_residualZat = <i64>::sse_decode(deserializer);
         let mut var_claimantZat = <i64>::sse_decode(deserializer);
@@ -1746,6 +1764,9 @@ impl SseDecode for crate::api::ClaimableItem {
         let mut var_underwaterAtMicroUsd = <i64>::sse_decode(deserializer);
         let mut var_lockHeight = <i64>::sse_decode(deserializer);
         let mut var_inTerm = <bool>::sse_decode(deserializer);
+        let mut var_cancelsRequired = <i64>::sse_decode(deserializer);
+        let mut var_cancelCount = <i64>::sse_decode(deserializer);
+        let mut var_cancelQuietUntil = <i64>::sse_decode(deserializer);
         return crate::api::ClaimableItem {
             vault_txid: var_vaultTxid,
             owner_address: var_ownerAddress,
@@ -1755,6 +1776,8 @@ impl SseDecode for crate::api::ClaimableItem {
             claim_path: var_claimPath,
             p_claim_micro_usd: var_pClaimMicroUsd,
             fee_zat: var_feeZat,
+            protocol_fee_cents: var_protocolFeeCents,
+            p_mint_micro_usd: var_pMintMicroUsd,
             attest_fee_zat: var_attestFeeZat,
             residual_zat: var_residualZat,
             claimant_zat: var_claimantZat,
@@ -1763,6 +1786,9 @@ impl SseDecode for crate::api::ClaimableItem {
             underwater_at_micro_usd: var_underwaterAtMicroUsd,
             lock_height: var_lockHeight,
             in_term: var_inTerm,
+            cancels_required: var_cancelsRequired,
+            cancel_count: var_cancelCount,
+            cancel_quiet_until: var_cancelQuietUntil,
         };
     }
 }
@@ -2066,11 +2092,13 @@ impl SseDecode for crate::api::MintEstimate {
         let mut var_requiredZat = <i64>::sse_decode(deserializer);
         let mut var_collateralZat = <i64>::sse_decode(deserializer);
         let mut var_feeZat = <i64>::sse_decode(deserializer);
+        let mut var_protocolFeeCents = <i64>::sse_decode(deserializer);
         let mut var_attestFeeZat = <i64>::sse_decode(deserializer);
         let mut var_payee = <String>::sse_decode(deserializer);
         let mut var_carrierZat = <i64>::sse_decode(deserializer);
         let mut var_tokenZat = <i64>::sse_decode(deserializer);
         let mut var_networkFeeZat = <i64>::sse_decode(deserializer);
+        let mut var_maxMintCents = <i64>::sse_decode(deserializer);
         let mut var_totalZat = <i64>::sse_decode(deserializer);
         let mut var_availableZat = <i64>::sse_decode(deserializer);
         let mut var_affordable = <bool>::sse_decode(deserializer);
@@ -2088,11 +2116,13 @@ impl SseDecode for crate::api::MintEstimate {
             required_zat: var_requiredZat,
             collateral_zat: var_collateralZat,
             fee_zat: var_feeZat,
+            protocol_fee_cents: var_protocolFeeCents,
             attest_fee_zat: var_attestFeeZat,
             payee: var_payee,
             carrier_zat: var_carrierZat,
             token_zat: var_tokenZat,
             network_fee_zat: var_networkFeeZat,
+            max_mint_cents: var_maxMintCents,
             total_zat: var_totalZat,
             available_zat: var_availableZat,
             affordable: var_affordable,
@@ -2239,11 +2269,13 @@ impl SseDecode for crate::api::ParamsProgress {
         let mut var_doneBytes = <i64>::sse_decode(deserializer);
         let mut var_totalBytes = <i64>::sse_decode(deserializer);
         let mut var_finished = <bool>::sse_decode(deserializer);
+        let mut var_error = <String>::sse_decode(deserializer);
         return crate::api::ParamsProgress {
             file: var_file,
             done_bytes: var_doneBytes,
             total_bytes: var_totalBytes,
             finished: var_finished,
+            error: var_error,
         };
     }
 }
@@ -2300,10 +2332,15 @@ impl SseDecode for crate::api::RedeemPreview {
         let mut var_changeCents = <i64>::sse_decode(deserializer);
         let mut var_yedInputs = <u32>::sse_decode(deserializer);
         let mut var_feeZat = <i64>::sse_decode(deserializer);
-        let mut var_enforcementFeeZat = <i64>::sse_decode(deserializer);
+        let mut var_protocolFeeZat = <i64>::sse_decode(deserializer);
+        let mut var_protocolFeeCents = <i64>::sse_decode(deserializer);
+        let mut var_pMintMicroUsd = <i64>::sse_decode(deserializer);
         let mut var_earlyRedeemFeeZat = <i64>::sse_decode(deserializer);
+        let mut var_earlyRedeemFeeUsdCents = <i64>::sse_decode(deserializer);
         let mut var_lockHeight = <i64>::sse_decode(deserializer);
         let mut var_payee = <String>::sse_decode(deserializer);
+        let mut var_networkFeeZat = <i64>::sse_decode(deserializer);
+        let mut var_networkFeeUsdCents = <i64>::sse_decode(deserializer);
         let mut var_collateralZat = <i64>::sse_decode(deserializer);
         let mut var_collateralAddress = <String>::sse_decode(deserializer);
         let mut var_lockTime = <i64>::sse_decode(deserializer);
@@ -2318,10 +2355,15 @@ impl SseDecode for crate::api::RedeemPreview {
             change_cents: var_changeCents,
             yed_inputs: var_yedInputs,
             fee_zat: var_feeZat,
-            enforcement_fee_zat: var_enforcementFeeZat,
+            protocol_fee_zat: var_protocolFeeZat,
+            protocol_fee_cents: var_protocolFeeCents,
+            p_mint_micro_usd: var_pMintMicroUsd,
             early_redeem_fee_zat: var_earlyRedeemFeeZat,
+            early_redeem_fee_usd_cents: var_earlyRedeemFeeUsdCents,
             lock_height: var_lockHeight,
             payee: var_payee,
+            network_fee_zat: var_networkFeeZat,
+            network_fee_usd_cents: var_networkFeeUsdCents,
             collateral_zat: var_collateralZat,
             collateral_address: var_collateralAddress,
             lock_time: var_lockTime,
@@ -2369,6 +2411,7 @@ impl SseDecode for crate::api::ReleasePreview {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_previewId = <String>::sse_decode(deserializer);
+        let mut var_kind = <String>::sse_decode(deserializer);
         let mut var_intent = <String>::sse_decode(deserializer);
         let mut var_valueZat = <i64>::sse_decode(deserializer);
         let mut var_recipientAddress = <String>::sse_decode(deserializer);
@@ -2376,6 +2419,7 @@ impl SseDecode for crate::api::ReleasePreview {
         let mut var_txid = <String>::sse_decode(deserializer);
         return crate::api::ReleasePreview {
             preview_id: var_previewId,
+            kind: var_kind,
             intent: var_intent,
             value_zat: var_valueZat,
             recipient_address: var_recipientAddress,
@@ -2546,7 +2590,11 @@ impl SseDecode for crate::api::VaultSummary {
         let mut var_blocksUntilTermEnd = <i64>::sse_decode(deserializer);
         let mut var_earlyRedeem = <bool>::sse_decode(deserializer);
         let mut var_earlyRedeemFeeZat = <i64>::sse_decode(deserializer);
+        let mut var_earlyRedeemFeeUsdCents = <i64>::sse_decode(deserializer);
         let mut var_earlyRedeemFeeBps = <i64>::sse_decode(deserializer);
+        let mut var_pMintMicroUsd = <i64>::sse_decode(deserializer);
+        let mut var_protocolFeeCents = <i64>::sse_decode(deserializer);
+        let mut var_protocolFeeZat = <i64>::sse_decode(deserializer);
         let mut var_inTermClaims = <bool>::sse_decode(deserializer);
         let mut var_claimThresholdBps = <i64>::sse_decode(deserializer);
         let mut var_claimPriceMicroUsd = <i64>::sse_decode(deserializer);
@@ -2567,6 +2615,12 @@ impl SseDecode for crate::api::VaultSummary {
         let mut var_claimOpen = <bool>::sse_decode(deserializer);
         let mut var_claiming = <bool>::sse_decode(deserializer);
         let mut var_reopened = <bool>::sse_decode(deserializer);
+        let mut var_cancelCount = <i64>::sse_decode(deserializer);
+        let mut var_cancelsRequired = <i64>::sse_decode(deserializer);
+        let mut var_cancelQuietUntil = <i64>::sse_decode(deserializer);
+        let mut var_blocksUntilQuietEnd = <i64>::sse_decode(deserializer);
+        let mut var_heldResiduals = <i64>::sse_decode(deserializer);
+        let mut var_heldReason = <String>::sse_decode(deserializer);
         return crate::api::VaultSummary {
             vault_txid: var_vaultTxid,
             status: var_status,
@@ -2584,7 +2638,11 @@ impl SseDecode for crate::api::VaultSummary {
             blocks_until_term_end: var_blocksUntilTermEnd,
             early_redeem: var_earlyRedeem,
             early_redeem_fee_zat: var_earlyRedeemFeeZat,
+            early_redeem_fee_usd_cents: var_earlyRedeemFeeUsdCents,
             early_redeem_fee_bps: var_earlyRedeemFeeBps,
+            p_mint_micro_usd: var_pMintMicroUsd,
+            protocol_fee_cents: var_protocolFeeCents,
+            protocol_fee_zat: var_protocolFeeZat,
             in_term_claims: var_inTermClaims,
             claim_threshold_bps: var_claimThresholdBps,
             claim_price_micro_usd: var_claimPriceMicroUsd,
@@ -2605,6 +2663,12 @@ impl SseDecode for crate::api::VaultSummary {
             claim_open: var_claimOpen,
             claiming: var_claiming,
             reopened: var_reopened,
+            cancel_count: var_cancelCount,
+            cancels_required: var_cancelsRequired,
+            cancel_quiet_until: var_cancelQuietUntil,
+            blocks_until_quiet_end: var_blocksUntilQuietEnd,
+            held_residuals: var_heldResiduals,
+            held_reason: var_heldReason,
         };
     }
 }
@@ -2686,6 +2750,7 @@ impl SseDecode for crate::api::YedPreview {
         let mut var_changeCents = <i64>::sse_decode(deserializer);
         let mut var_yecInputs = <u32>::sse_decode(deserializer);
         let mut var_feeZat = <i64>::sse_decode(deserializer);
+        let mut var_feeUsdCents = <i64>::sse_decode(deserializer);
         let mut var_yecChangeZat = <i64>::sse_decode(deserializer);
         let mut var_expiryHeight = <u32>::sse_decode(deserializer);
         let mut var_txid = <String>::sse_decode(deserializer);
@@ -2699,6 +2764,7 @@ impl SseDecode for crate::api::YedPreview {
             change_cents: var_changeCents,
             yec_inputs: var_yecInputs,
             fee_zat: var_feeZat,
+            fee_usd_cents: var_feeUsdCents,
             yec_change_zat: var_yecChangeZat,
             expiry_height: var_expiryHeight,
             txid: var_txid,
@@ -2869,6 +2935,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::Balances {
             self.yec_shielded_pending_zat.into_into_dart().into_dart(),
             self.shielded_scanned_height.into_into_dart().into_dart(),
             self.shielded_sendable.into_into_dart().into_dart(),
+            self.yec_pq_zat.into_into_dart().into_dart(),
+            self.pq_coins.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -2892,8 +2960,14 @@ impl flutter_rust_bridge::IntoDart for crate::api::ClaimIntent {
             self.release_height.into_into_dart().into_dart(),
             self.blocks_until_release.into_into_dart().into_dart(),
             self.releasable.into_into_dart().into_dart(),
+            self.pq_move.into_into_dart().into_dart(),
             self.cancelled.into_into_dart().into_dart(),
+            self.refund_cents.into_into_dart().into_dart(),
+            self.refund_address.into_into_dart().into_dart(),
+            self.refund_own.into_into_dart().into_dart(),
             self.release_time_secs.into_into_dart().into_dart(),
+            self.held.into_into_dart().into_dart(),
+            self.held_reason.into_into_dart().into_dart(),
             self.spend_txid.into_into_dart().into_dart(),
             self.note.into_into_dart().into_dart(),
         ]
@@ -2934,6 +3008,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::ClaimableItem {
             self.claim_path.into_into_dart().into_dart(),
             self.p_claim_micro_usd.into_into_dart().into_dart(),
             self.fee_zat.into_into_dart().into_dart(),
+            self.protocol_fee_cents.into_into_dart().into_dart(),
+            self.p_mint_micro_usd.into_into_dart().into_dart(),
             self.attest_fee_zat.into_into_dart().into_dart(),
             self.residual_zat.into_into_dart().into_dart(),
             self.claimant_zat.into_into_dart().into_dart(),
@@ -2942,6 +3018,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::ClaimableItem {
             self.underwater_at_micro_usd.into_into_dart().into_dart(),
             self.lock_height.into_into_dart().into_dart(),
             self.in_term.into_into_dart().into_dart(),
+            self.cancels_required.into_into_dart().into_dart(),
+            self.cancel_count.into_into_dart().into_dart(),
+            self.cancel_quiet_until.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -3116,11 +3195,13 @@ impl flutter_rust_bridge::IntoDart for crate::api::MintEstimate {
             self.required_zat.into_into_dart().into_dart(),
             self.collateral_zat.into_into_dart().into_dart(),
             self.fee_zat.into_into_dart().into_dart(),
+            self.protocol_fee_cents.into_into_dart().into_dart(),
             self.attest_fee_zat.into_into_dart().into_dart(),
             self.payee.into_into_dart().into_dart(),
             self.carrier_zat.into_into_dart().into_dart(),
             self.token_zat.into_into_dart().into_dart(),
             self.network_fee_zat.into_into_dart().into_dart(),
+            self.max_mint_cents.into_into_dart().into_dart(),
             self.total_zat.into_into_dart().into_dart(),
             self.available_zat.into_into_dart().into_dart(),
             self.affordable.into_into_dart().into_dart(),
@@ -3239,6 +3320,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::ParamsProgress {
             self.done_bytes.into_into_dart().into_dart(),
             self.total_bytes.into_into_dart().into_dart(),
             self.finished.into_into_dart().into_dart(),
+            self.error.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -3312,10 +3394,15 @@ impl flutter_rust_bridge::IntoDart for crate::api::RedeemPreview {
             self.change_cents.into_into_dart().into_dart(),
             self.yed_inputs.into_into_dart().into_dart(),
             self.fee_zat.into_into_dart().into_dart(),
-            self.enforcement_fee_zat.into_into_dart().into_dart(),
+            self.protocol_fee_zat.into_into_dart().into_dart(),
+            self.protocol_fee_cents.into_into_dart().into_dart(),
+            self.p_mint_micro_usd.into_into_dart().into_dart(),
             self.early_redeem_fee_zat.into_into_dart().into_dart(),
+            self.early_redeem_fee_usd_cents.into_into_dart().into_dart(),
             self.lock_height.into_into_dart().into_dart(),
             self.payee.into_into_dart().into_dart(),
+            self.network_fee_zat.into_into_dart().into_dart(),
+            self.network_fee_usd_cents.into_into_dart().into_dart(),
             self.collateral_zat.into_into_dart().into_dart(),
             self.collateral_address.into_into_dart().into_dart(),
             self.lock_time.into_into_dart().into_dart(),
@@ -3363,6 +3450,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::ReleasePreview {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.preview_id.into_into_dart().into_dart(),
+            self.kind.into_into_dart().into_dart(),
             self.intent.into_into_dart().into_dart(),
             self.value_zat.into_into_dart().into_dart(),
             self.recipient_address.into_into_dart().into_dart(),
@@ -3522,7 +3610,11 @@ impl flutter_rust_bridge::IntoDart for crate::api::VaultSummary {
             self.blocks_until_term_end.into_into_dart().into_dart(),
             self.early_redeem.into_into_dart().into_dart(),
             self.early_redeem_fee_zat.into_into_dart().into_dart(),
+            self.early_redeem_fee_usd_cents.into_into_dart().into_dart(),
             self.early_redeem_fee_bps.into_into_dart().into_dart(),
+            self.p_mint_micro_usd.into_into_dart().into_dart(),
+            self.protocol_fee_cents.into_into_dart().into_dart(),
+            self.protocol_fee_zat.into_into_dart().into_dart(),
             self.in_term_claims.into_into_dart().into_dart(),
             self.claim_threshold_bps.into_into_dart().into_dart(),
             self.claim_price_micro_usd.into_into_dart().into_dart(),
@@ -3543,6 +3635,12 @@ impl flutter_rust_bridge::IntoDart for crate::api::VaultSummary {
             self.claim_open.into_into_dart().into_dart(),
             self.claiming.into_into_dart().into_dart(),
             self.reopened.into_into_dart().into_dart(),
+            self.cancel_count.into_into_dart().into_dart(),
+            self.cancels_required.into_into_dart().into_dart(),
+            self.cancel_quiet_until.into_into_dart().into_dart(),
+            self.blocks_until_quiet_end.into_into_dart().into_dart(),
+            self.held_residuals.into_into_dart().into_dart(),
+            self.held_reason.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -3628,6 +3726,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::YedPreview {
             self.change_cents.into_into_dart().into_dart(),
             self.yec_inputs.into_into_dart().into_dart(),
             self.fee_zat.into_into_dart().into_dart(),
+            self.fee_usd_cents.into_into_dart().into_dart(),
             self.yec_change_zat.into_into_dart().into_dart(),
             self.expiry_height.into_into_dart().into_dart(),
             self.txid.into_into_dart().into_dart(),
@@ -3751,6 +3850,8 @@ impl SseEncode for crate::api::Balances {
         <i64>::sse_encode(self.yec_shielded_pending_zat, serializer);
         <i64>::sse_encode(self.shielded_scanned_height, serializer);
         <bool>::sse_encode(self.shielded_sendable, serializer);
+        <i64>::sse_encode(self.yec_pq_zat, serializer);
+        <Vec<String>>::sse_encode(self.pq_coins, serializer);
     }
 }
 
@@ -3773,8 +3874,14 @@ impl SseEncode for crate::api::ClaimIntent {
         <i64>::sse_encode(self.release_height, serializer);
         <i64>::sse_encode(self.blocks_until_release, serializer);
         <bool>::sse_encode(self.releasable, serializer);
+        <bool>::sse_encode(self.pq_move, serializer);
         <bool>::sse_encode(self.cancelled, serializer);
+        <i64>::sse_encode(self.refund_cents, serializer);
+        <String>::sse_encode(self.refund_address, serializer);
+        <bool>::sse_encode(self.refund_own, serializer);
         <i64>::sse_encode(self.release_time_secs, serializer);
+        <bool>::sse_encode(self.held, serializer);
+        <String>::sse_encode(self.held_reason, serializer);
         <String>::sse_encode(self.spend_txid, serializer);
         <String>::sse_encode(self.note, serializer);
     }
@@ -3799,6 +3906,8 @@ impl SseEncode for crate::api::ClaimableItem {
         <String>::sse_encode(self.claim_path, serializer);
         <i64>::sse_encode(self.p_claim_micro_usd, serializer);
         <i64>::sse_encode(self.fee_zat, serializer);
+        <i64>::sse_encode(self.protocol_fee_cents, serializer);
+        <i64>::sse_encode(self.p_mint_micro_usd, serializer);
         <i64>::sse_encode(self.attest_fee_zat, serializer);
         <i64>::sse_encode(self.residual_zat, serializer);
         <i64>::sse_encode(self.claimant_zat, serializer);
@@ -3807,6 +3916,9 @@ impl SseEncode for crate::api::ClaimableItem {
         <i64>::sse_encode(self.underwater_at_micro_usd, serializer);
         <i64>::sse_encode(self.lock_height, serializer);
         <bool>::sse_encode(self.in_term, serializer);
+        <i64>::sse_encode(self.cancels_required, serializer);
+        <i64>::sse_encode(self.cancel_count, serializer);
+        <i64>::sse_encode(self.cancel_quiet_until, serializer);
     }
 }
 
@@ -4045,11 +4157,13 @@ impl SseEncode for crate::api::MintEstimate {
         <i64>::sse_encode(self.required_zat, serializer);
         <i64>::sse_encode(self.collateral_zat, serializer);
         <i64>::sse_encode(self.fee_zat, serializer);
+        <i64>::sse_encode(self.protocol_fee_cents, serializer);
         <i64>::sse_encode(self.attest_fee_zat, serializer);
         <String>::sse_encode(self.payee, serializer);
         <i64>::sse_encode(self.carrier_zat, serializer);
         <i64>::sse_encode(self.token_zat, serializer);
         <i64>::sse_encode(self.network_fee_zat, serializer);
+        <i64>::sse_encode(self.max_mint_cents, serializer);
         <i64>::sse_encode(self.total_zat, serializer);
         <i64>::sse_encode(self.available_zat, serializer);
         <bool>::sse_encode(self.affordable, serializer);
@@ -4164,6 +4278,7 @@ impl SseEncode for crate::api::ParamsProgress {
         <i64>::sse_encode(self.done_bytes, serializer);
         <i64>::sse_encode(self.total_bytes, serializer);
         <bool>::sse_encode(self.finished, serializer);
+        <String>::sse_encode(self.error, serializer);
     }
 }
 
@@ -4213,10 +4328,15 @@ impl SseEncode for crate::api::RedeemPreview {
         <i64>::sse_encode(self.change_cents, serializer);
         <u32>::sse_encode(self.yed_inputs, serializer);
         <i64>::sse_encode(self.fee_zat, serializer);
-        <i64>::sse_encode(self.enforcement_fee_zat, serializer);
+        <i64>::sse_encode(self.protocol_fee_zat, serializer);
+        <i64>::sse_encode(self.protocol_fee_cents, serializer);
+        <i64>::sse_encode(self.p_mint_micro_usd, serializer);
         <i64>::sse_encode(self.early_redeem_fee_zat, serializer);
+        <i64>::sse_encode(self.early_redeem_fee_usd_cents, serializer);
         <i64>::sse_encode(self.lock_height, serializer);
         <String>::sse_encode(self.payee, serializer);
+        <i64>::sse_encode(self.network_fee_zat, serializer);
+        <i64>::sse_encode(self.network_fee_usd_cents, serializer);
         <i64>::sse_encode(self.collateral_zat, serializer);
         <String>::sse_encode(self.collateral_address, serializer);
         <i64>::sse_encode(self.lock_time, serializer);
@@ -4248,6 +4368,7 @@ impl SseEncode for crate::api::ReleasePreview {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.preview_id, serializer);
+        <String>::sse_encode(self.kind, serializer);
         <String>::sse_encode(self.intent, serializer);
         <i64>::sse_encode(self.value_zat, serializer);
         <String>::sse_encode(self.recipient_address, serializer);
@@ -4378,7 +4499,11 @@ impl SseEncode for crate::api::VaultSummary {
         <i64>::sse_encode(self.blocks_until_term_end, serializer);
         <bool>::sse_encode(self.early_redeem, serializer);
         <i64>::sse_encode(self.early_redeem_fee_zat, serializer);
+        <i64>::sse_encode(self.early_redeem_fee_usd_cents, serializer);
         <i64>::sse_encode(self.early_redeem_fee_bps, serializer);
+        <i64>::sse_encode(self.p_mint_micro_usd, serializer);
+        <i64>::sse_encode(self.protocol_fee_cents, serializer);
+        <i64>::sse_encode(self.protocol_fee_zat, serializer);
         <bool>::sse_encode(self.in_term_claims, serializer);
         <i64>::sse_encode(self.claim_threshold_bps, serializer);
         <i64>::sse_encode(self.claim_price_micro_usd, serializer);
@@ -4399,6 +4524,12 @@ impl SseEncode for crate::api::VaultSummary {
         <bool>::sse_encode(self.claim_open, serializer);
         <bool>::sse_encode(self.claiming, serializer);
         <bool>::sse_encode(self.reopened, serializer);
+        <i64>::sse_encode(self.cancel_count, serializer);
+        <i64>::sse_encode(self.cancels_required, serializer);
+        <i64>::sse_encode(self.cancel_quiet_until, serializer);
+        <i64>::sse_encode(self.blocks_until_quiet_end, serializer);
+        <i64>::sse_encode(self.held_residuals, serializer);
+        <String>::sse_encode(self.held_reason, serializer);
     }
 }
 
@@ -4460,6 +4591,7 @@ impl SseEncode for crate::api::YedPreview {
         <i64>::sse_encode(self.change_cents, serializer);
         <u32>::sse_encode(self.yec_inputs, serializer);
         <i64>::sse_encode(self.fee_zat, serializer);
+        <i64>::sse_encode(self.fee_usd_cents, serializer);
         <i64>::sse_encode(self.yec_change_zat, serializer);
         <u32>::sse_encode(self.expiry_height, serializer);
         <String>::sse_encode(self.txid, serializer);

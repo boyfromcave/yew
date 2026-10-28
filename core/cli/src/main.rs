@@ -8,7 +8,7 @@
 //! yew-cli [--server host:port] [--plain] [--wallet PATH] [--network regtest|testnet|mainnet]
 //!         [--seed-file PATH | YEW_SEED=<mnemonic>] [--passphrase P | YEW_PASSPHRASE=P]
 //!         [--birthday H] <command>
-//! commands: status | yed-info | price | address [--new] [--shielded] | balance | sync | coins
+//! commands: status | yed-info | price | address [--new] [--shielded] [--falcon] | balance | sync | coins
 //!           | send-yec <addr> <zat> [--all] [--memo TEXT] | send-yed <addr> <cents> [<addr> <cents> ...]
 //!           | params-status | params-download <base-url>
 //!           | export-wif <addr> | import-wif <wif> | history | version
@@ -64,7 +64,7 @@ fn usage() -> ! {
     eprintln!(
         "usage: yew-cli [--server host:port] [--plain] [--ca-pem PATH] [--wallet PATH] [--network N] \
          [--seed-file PATH] [--passphrase P] [--birthday H] [--params DIR] <command>\n\
-         commands: status | yed-info | price | address [--new] [--shielded] | balance | sync | coins\n\
+         commands: status | yed-info | price | address [--new] [--shielded] [--falcon] | balance | sync | coins\n\
          \x20         | send-yec <addr> <zat> [--all] [--memo TEXT] | send-yed <addr> <cents> [<addr> <cents> ...]\n\
          \x20         | params-status | params-download <base-url>\n\
          \x20         | export-wif <addr> | import-wif <wif> | history | version\n\
@@ -473,7 +473,13 @@ async fn main() {
             let w = open_wallet(&o);
             let new = o.rest.iter().any(|a| a == "--new");
             let row = fail(w.receive_address(new));
-            println!("{}", row.address_ye);
+            // TOK-PQ: once Falcon is active (mainnet/testnet always; regtest from its height, or
+            // `--falcon`), the YED receive address is the key's Falcon holder (53 characters).
+            let falcon = o.rest.iter().any(|a| a == "--falcon") || w.falcon_now();
+            match w.falcon_holder_address(&row).filter(|_| falcon) {
+                Some(f) => println!("{f}"),
+                None => println!("{}", row.address_ye),
+            }
             println!("{}", row.address_s);
             println!("m/44'/347'/0'/{}/{}", row.chain, row.index);
         }

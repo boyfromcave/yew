@@ -8,7 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'fake_wallet_api.dart';
 
 void main() {
-  testWidgets('before the private balance has synced receive shows the ye… form, toggles to s…, and asks for a new address', (tester) async {
+  testWidgets('before the private balance has synced receive shows the yb… form, toggles to s…, and asks for a new address', (tester) async {
     final h = Harness(withWallet: true);
     await h.pump(tester);
     await tester.tap(find.byKey(const Key('receive')));
@@ -17,6 +17,9 @@ void main() {
     expect(find.text(fakeYe), findsOneWidget);
     expect(find.text(fakeS), findsNothing);
     expect(find.text("m/44'/347'/0'/0/0"), findsOneWidget);
+    // C-10: the YED receive form is the holder key, never the vault owner's post-quantum address.
+    expect(find.textContaining('A vault-owner address (53 characters) is never a receive address.'), findsOneWidget);
+    expect(find.text(fakeOwnerPq), findsNothing);
 
     await tester.tap(find.text('Public'));
     await tester.pumpAndSettle();

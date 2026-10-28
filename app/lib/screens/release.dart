@@ -5,8 +5,9 @@
 // Claims and their release (the vault upgrade, upgrade plan U-15, U-23, U-24): a claim moves
 // the vault's collateral into a claim intent; after the claim delay the wallet releases it to
 // itself (the release needs no signature on the intent, so the wallet just does it first). Until
-// then one attestor may cancel a wrong-price claim: the collateral goes back into the vault and
-// the claim's burn is not refunded. An own vault's RED-5 residual is an intent of the same kind.
+// then the attestor set may cancel a wrong-price claim: the collateral goes back into the vault and
+// the claim's burn comes back as YED to the holder of the claim's first YED input (CAN-1; the YEC
+// fees do not). An own vault's RED-5 residual is an intent of the same kind.
 import 'package:flutter/material.dart';
 
 import '../api/wallet_api.dart';
@@ -16,20 +17,37 @@ import '../theme.dart';
 import '../widgets/preview_card.dart';
 import '../widgets/slide_to_confirm.dart';
 
+/// CAN-1: where the YED a claim burned goes if the attestor set cancels the claim.
+String refundText(ClaimIntent i, {bool done = false}) {
+  final amount = i.refundCents > 0 ? formatYed(i.refundCents) : 'the YED you burned';
+  final verb = done ? 'came back' : 'returns';
+  if (i.refundAddress.isEmpty) return '$amount $verb to the address it came from';
+  final to = i.refundOwn ? 'your address ${shorten(i.refundAddress, head: 10, tail: 6)}' : shorten(i.refundAddress, head: 10, tail: 6);
+  return '$amount $verb to $to';
+}
+
 /// One line per intent state.
 String intentLabel(ClaimIntent i) {
   final what = i.role == 'residual' ? 'residual of your claimed vault' : 'claim';
   switch (i.state) {
     case 'PENDING':
       if (i.height == 0) return '$what · waiting for the claim to confirm';
-      if (i.releasable) return '$what · releasable now';
-      return '$what · released from height ${i.releaseHeight} · ${i.blocksUntilRelease} block${i.blocksUntilRelease == 1 ? '' : 's'} to go (${formatDate(i.releaseTimeSecs)})';
+      // CAN-3: the leftover of a cancelled claim, held by the vault until it closes, or past its
+      // quiet period while it cannot be claimed.
+      if (i.held) return 'your leftover from a cancelled claim · ${i.heldReason}';
+      // CAN-1: a claim this wallet made says where its burn returns if the attestor set cancels it.
+      final ifCancelled = i.role == 'claimant' ? ' · if this claim is cancelled, ${refundText(i)}' : '';
+      if (i.releasable) return '$what · releasable now$ifCancelled';
+      return '$what$ifCancelled · released from height ${i.releaseHeight} · ${i.blocksUntilRelease} block${i.blocksUntilRelease == 1 ? '' : 's'} to go (${formatDate(i.releaseTimeSecs)})';
     case 'RELEASING':
       return '$what · release sent → waiting for 1 confirmation';
     case 'RELEASED':
+      if (i.pqMove) return '$what · released to your vault-owner key · move it to your wallet';
       return '$what · released';
+    case 'SWEPT':
+      return '$what · released and moved to your wallet';
     case 'CANCELLED':
-      return 'claim cancelled by the attestor set: the collateral went back into the vault; the YED you burned is not refunded';
+      return 'claim cancelled by the attestor set: the collateral went back into the vault; ${refundText(i, done: true)}; the YEC fees are not returned';
   }
   return i.state;
 }
@@ -64,8 +82,18 @@ class IntentTile extends StatelessWidget {
 }
 
 class ReleaseScreen extends StatefulWidget {
-  const ReleaseScreen({super.key, required this.intent});
-  final ClaimIntent intent;
+  const ReleaseScreen({super.key, required ClaimIntent this.intent}) : coin = null;
+
+  /// The move of one own post-quantum coin (`Balances.pqCoins`, `txid:n`): YEC the sync found at
+  /// one of the wallet's `sq…` addresses (a Falcon holder's, or a vault owner's residual released
+  /// by someone else), moved to the wallet like a released residual.
+  const ReleaseScreen.pqCoin({super.key, required String this.coin}) : intent = null;
+
+  final ClaimIntent? intent;
+  final String? coin;
+
+  String get _id => intent?.intent ?? coin!;
+  bool get _pqMove => coin != null || intent!.pqMove;
 
   @override
   State<ReleaseScreen> createState() => _ReleaseScreenState();
@@ -90,7 +118,7 @@ class _ReleaseScreenState extends State<ReleaseScreen> {
       _error = null;
     });
     try {
-      final p = await app.api.releasePreview(intent: widget.intent.intent);
+      final p = await app.api.releasePreview(intent: widget._id);
       setState(() => _preview = p);
     } catch (e) {
       setState(() => _error = messageOf(e));
@@ -120,14 +148,18 @@ class _ReleaseScreenState extends State<ReleaseScreen> {
     final p = _preview;
     final r = _result;
     return Scaffold(
-      appBar: AppBar(title: const Text('Release')),
+      appBar: AppBar(title: Text(widget._pqMove ? 'Move to wallet' : 'Release')),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
           children: [
             Text(
-              widget.intent.role == 'residual'
-                  ? 'Your vault was claimed. The part of its collateral above the claim (the residual) waited out the claim delay and is yours to release.'
+              widget.coin != null
+                  ? 'YEC was paid to one of your post-quantum (sq…) addresses. Move it to your wallet: one post-quantum signature, its network fee paid out of the coin.'
+                  : widget.intent!.pqMove
+                  ? 'The residual was released to your vault-owner (post-quantum) key. Move it to your wallet: one post-quantum signature (about 8 KB), its network fee paid out of the residual.'
+                  : widget.intent!.role == 'residual'
+                  ? 'Your vault was claimed. The part of its collateral above the claim (the residual) waited out the claim delay and is yours to release. If the claim is cancelled, the residual stays held until the vault closes. After the quiet period it can be released only once the position is no longer claimable.'
                   : 'The claim delay is over and no attestor cancelled the claim: release the collateral to this wallet.',
               style: t.bodyMedium?.copyWith(color: c.pending),
             ),
@@ -166,14 +198,19 @@ class _ReleaseScreenState extends State<ReleaseScreen> {
                     children: [
                       PreviewRow('You receive', '${formatYec(p.valueZat)} YEC', emphasis: true, color: c.yec),
                       PreviewRow('To', shorten(p.recipientAddress, head: 10, tail: 6)),
-                      PreviewRow('Network fee', '${formatYec(p.feeZat)} YEC (from your YEC)'),
-                      PreviewRow('Intent', shorten(p.intent)),
+                      PreviewRow(
+                        'Network fee',
+                        p.kind == 'pq_move'
+                            ? '${formatYec(p.feeZat)} YEC (out of the ${widget.coin != null ? 'coin' : 'residual'}, priced by size)'
+                            : '${formatYec(p.feeZat)} YEC (from your YEC)',
+                      ),
+                      PreviewRow(widget.coin != null ? 'Coin' : 'Intent', shorten(p.intent)),
                     ],
                   ),
                 ),
               ),
               const SizedBox(height: 12),
-              SlideToConfirm(label: 'Slide to release', color: c.yec, onConfirmed: _confirm),
+              SlideToConfirm(label: p.kind == 'pq_move' ? 'Slide to move' : 'Slide to release', color: c.yec, onConfirmed: _confirm),
             ],
           ],
         ),

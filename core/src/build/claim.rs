@@ -13,8 +13,12 @@
 //! own YED inputs covering `mintedCents` (BURN stage allowed), YEC fee inputs, the carrier at
 //! `vin[last]`, and outputs claimant intent → fee → YED change → attestor fee → the owner's
 //! residual intent (RED-5) → payload → fee change, in the node's slot order ([`plan_claim`]).
-//! The claimant's intent is released after `CLAIM_DELAY` (`build::release`) unless one attestor
-//! cancels it first (then the burn is not refunded, U-24).
+//! The claimant's intent is released after `CLAIM_DELAY` (`build::release`) unless the attestor
+//! set cancels it first (CAN-2: one attestor for a vault's first cancel, more after recent ones).
+//! A cancel refunds the claim's whole burn (CAN-1, audit 03/H-1, U-24 revised) as one YED token to
+//! the holder of the token spent at the claim's lowest-index YED input; the claim's YEC fees are not
+//! returned. [`refund_holder_first`] orders the YED inputs so that holder is one of this wallet's
+//! Falcon (post-quantum) holders whenever it spends one.
 //!
 //! Translation source (plan §3.6): `ycash-dd/src/yellowback/txbuilder.cpp` — `BuildClaim`
 //! `:1301-1330`, `ClaimAt` `:845-884` (the residual; the client takes `residualZat`,
@@ -31,7 +35,9 @@ use crate::net::{CompactClient, YellowbackClient};
 use crate::params::{Network, CARRIER_VALUE, FEE_ZAT, SEQUENCE_LOCKTIME, TOKEN_VALUE};
 use crate::payload::{self, Assignment, Payload, FEE_VOUT_NONE};
 use crate::script;
-use crate::store::{HistoryRow, IntentRow, IntentState, MintKind, MintRow, MintState};
+use crate::store::{
+    HistoryRow, IntentRefund, IntentRow, IntentState, MintKind, MintRow, MintState,
+};
 use crate::tx::{txid_hex, OutPoint, Transaction, TxIn, TxOut};
 use crate::wallet::{dollars, Wallet, WalletError};
 
@@ -40,12 +46,42 @@ use super::redeem;
 use super::terms;
 use super::yec_send::MIN_CHANGE;
 
+/// CAN-1: a cancel of the claim refunds its burn to the holder of the token at the claim's
+/// lowest-index YED input (the claim spends the vault at `vin[0]` and its YED inputs right after,
+/// so that is the first of `inputs`). Put a Falcon (post-quantum) holder token first when the claim
+/// spends one, so a refund comes back to one of this wallet's post-quantum holders (TOK-PQ) rather
+/// than re-creating a P2PKH holding; the order is otherwise kept (a stable sort).
+pub fn refund_holder_first(inputs: &mut [Utxo]) {
+    inputs.sort_by_key(|u| crate::pq::pqpkh_of(&u.script).is_none());
+}
+
+/// This wallet's YED holders (P2PKH key hashes and Falcon holder ids), to tell an own refund holder.
+#[derive(Default)]
+pub(crate) struct OwnHolders {
+    pub(crate) p2pkh: std::collections::HashSet<[u8; 20]>,
+    pub(crate) falcon: std::collections::HashSet<crate::pq::PqKeyId>,
+}
+
+/// CAN-1: the YED address of a refund holder's script, and whether it is this wallet's.
+pub(crate) fn refund_address(script: &[u8], own: &OwnHolders, network: Network) -> (String, bool) {
+    if let Some(h) = crate::script::p2pkh_hash(script) {
+        (keys::encode_yellowback(network, &h), own.p2pkh.contains(&h))
+    } else if let Some(id) = crate::pq::pqpkh_of(script) {
+        (
+            keys::encode_pq_yellowback(network, &id).unwrap_or_default(),
+            own.falcon.contains(&id),
+        )
+    } else {
+        (String::new(), false)
+    }
+}
+
 /// One entry of `ListClaimable` as the Claimable screen shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Claimable {
     /// The vault's mint txid (display form).
     pub vault_txid: String,
-    /// The vault's owner (`ye…`).
+    /// The vault's owner (`yb…`).
     pub owner_address: String,
     /// The debt to burn, cents.
     pub minted_cents: u64,
@@ -66,23 +102,37 @@ pub struct Claimable {
     pub claim_path: String,
     /// `pClaim` at the node's tip.
     pub p_claim: i64,
-    /// The enforcement fee.
+    /// The protocol fee (FEE-1′ of the debt at the vault's `pMint`, rpcversion 8).
     pub fee_zat: i64,
+    /// The protocol fee in cents.
+    pub protocol_fee_cents: i64,
+    /// The vault's stored mint price, µUSD per YEC (the fee's price).
+    pub p_mint: i64,
     /// The attestor fee.
     pub attest_fee_zat: i64,
     /// RED-5's residual to the owner.
     pub residual_zat: i64,
     /// What the claimant keeps: collateral − fees − residual − network fee (+ the carrier).
     pub claimant_zat: i64,
-    /// The enforcement fee payee for `(R, vault)` (`s…`), empty under FEE-0 (audit G-2).
+    /// The protocol fee payee for `(R, vault)` (`s…`), empty under FEE-0 (audit G-2).
     pub payee: String,
+    /// The per-vault cancel limit (CAN-2; `yed_listclaimable`, additive): the vault's counted
+    /// cancels, the attestors a cancel of a claim confirmed in the next block needs, and the quiet
+    /// period's end (0 when never cancelled). `cancels_required` is 0 from a node without it.
+    pub cancel_count: i64,
+    pub cancels_required: i64,
+    pub cancel_quiet_until: i64,
 }
 
-/// `claimable` (plan §3.4): `ListClaimable` mapped for the screen. The fee is FEE-1 computed
-/// locally and the attestor fee AFEE-1 (audit G-2): a server quoting another figure is
+/// `claimable` (plan §3.4): `ListClaimable` mapped for the screen. The fee is FEE-1′ of the debt at
+/// the row's `pMint`, computed locally (rpcversion 8), and the attestor fee AFEE-1′ (audit G-2): a
+/// server quoting another figure is
 /// refused; the payee comes from `GetFeePayee` for the vault's selector at the index tip. The
-/// residual is RED-5 recomputed from the row's `pClaim` (`terms::check_claimable`, H-9.3),
-/// and the server's parameter set must be the network's (`terms::check_server_params`).
+/// residual is RED-5 recomputed from the row's `pClaim` on path (a) and from `pEmerg` on path
+/// (b) (`terms::check_claimable`, H-9.3, RED-5b A1). The `ListClaimable` row does not carry
+/// `pEmerg`; path (b) takes `min(GetPrice.xClaim, BuildBundle.aClaim)`, the node's
+/// `PriceCombine`, and is refused when that price cannot be known. The server's parameter set
+/// must be the network's (`terms::check_server_params`).
 pub async fn claimable(
     network: Network,
     yb: &mut YellowbackClient,
@@ -91,6 +141,9 @@ pub async fn claimable(
     terms::check_server_params(network, info.params.as_ref())?;
     let r = info.height as u32;
     let mut out = Vec::new();
+    // Path (b) sizes at pEmerg. The claimable row has neither pEmerg nor xClaim/aClaim; those
+    // come from GetPrice and the bundle the node would build for the vault (EstimateClaim).
+    let mut x_claim: Option<i64> = None;
     for c in yb.list_claimable().await? {
         let vault_txid = c.vault.split(':').next().unwrap_or("").to_string();
         let txid = crate::tx::txid_from_hex(&vault_txid)
@@ -117,21 +170,51 @@ pub async fn claimable(
                 underwater_at: c.underwater_at,
                 claim_path: String::new(),
                 p_claim: c.p_claim,
-                fee_zat: crate::params::fee_zat_for(network, c.collateral_zat),
+                fee_zat: crate::params::protocol_fee_zat(c.minted_cents.max(0) as u64, c.p_mint)
+                    .unwrap_or(0),
+                protocol_fee_cents: crate::params::protocol_fee_cents(c.minted_cents.max(0) as u64),
+                p_mint: c.p_mint,
                 attest_fee_zat: 0,
                 residual_zat: 0,
                 claimant_zat: 0,
                 payee: String::new(),
+                cancel_count: c.cancel_count,
+                cancels_required: c.cancels_required,
+                cancel_quiet_until: c.cancel_quiet_until,
             });
             continue;
         }
-        let residual_zat = terms::check_claimable(&c)?;
-        let (fee_zat, payee) = mint::fee_payee(network, yb, r, c.collateral_zat, &selector).await?;
+        let p_emerg = if c.claim_path == "b" {
+            if x_claim.is_none() {
+                let price = yb.price(r).await.map_err(|e| {
+                    WalletError::Other(format!(
+                        "pEmerg unknown: path (b) sizes the claimant cap at min(xClaim, aClaim), and GetPrice failed ({e})"
+                    ))
+                })?;
+                x_claim = Some(price.x_claim);
+            }
+            let built = yb
+                .build_bundle(r, &keys::hex(&selector))
+                .await
+                .map_err(|e| {
+                    WalletError::Other(format!(
+                        "pEmerg unknown for vault {}: path (b) needs aClaim from BuildBundle ({e})",
+                        c.vault
+                    ))
+                })?;
+            crate::params::emergency_price(x_claim.unwrap_or(0), built.a_claim)
+        } else {
+            None
+        };
+        let residual_zat = terms::check_claimable(&c, p_emerg)?;
+        let payee = mint::fee_payee(yb, r, &selector).await?;
+        let debt = c.minted_cents.max(0) as u64;
+        let fee_zat = terms::protocol_fee(debt, c.p_mint, &payee)?;
         if !payee.is_empty() && c.fee_zat != fee_zat {
             return Err(MintError::Inconsistent {
                 what: format!(
-                    "ListClaimable feeZat {} for collateral {} (FEE-1 gives {fee_zat})",
-                    c.fee_zat, c.collateral_zat
+                    "ListClaimable feeZat {} for a debt of {debt} cents at pMint {} (FEE-1′ gives {fee_zat})",
+                    c.fee_zat, c.p_mint
                 ),
             }
             .into());
@@ -164,6 +247,8 @@ pub async fn claimable(
             claim_path: c.claim_path,
             p_claim: c.p_claim,
             fee_zat,
+            protocol_fee_cents: crate::params::protocol_fee_cents(debt),
+            p_mint: c.p_mint,
             attest_fee_zat,
             residual_zat,
             claimant_zat: terms::claimant_take(
@@ -173,6 +258,9 @@ pub async fn claimable(
                 residual_zat,
             ),
             payee,
+            cancel_count: c.cancel_count,
+            cancels_required: c.cancels_required,
+            cancel_quiet_until: c.cancel_quiet_until,
         });
     }
     Ok(out)
@@ -218,6 +306,7 @@ pub async fn start(
             v.status
         )));
     }
+    super::redeem::check_no_pending_spend(&v)?;
     // The vault's script terms and debt, as the node reports them, checked (audit G-1); its V
     // script must be the YED vault this wallet rebuilds (U-23) — the one the claim spends.
     terms::check_vault(wallet.network, &v)?;
@@ -244,10 +333,8 @@ pub async fn start(
             yv.app_height()
         )));
     }
-    let owner_pubkey: [u8; 33] = unhex(&v.owner_pub_key)
-        .ok()
-        .and_then(|b| b.as_slice().try_into().ok())
-        .ok_or_else(|| MintError::Relay("vault ownerPubKey".into()))?;
+    // The vault's post-quantum owner (quantum spec §1): its residual is paid to PQPKH(owner).
+    let owner = terms::vault_owner(&v)?;
     // The YED to burn must be there before the carrier is funded, and (U-23: the vault's value
     // goes into intents) the YEC for the carrier and for the claim's fees.
     let (yed, change_cents, _, _) = redeem::select_yed_burn(wallet, entry.minted_cents)?;
@@ -272,9 +359,19 @@ pub async fn start(
     let b = yb.build_bundle(r, &keys::hex(&selector)).await?;
     let bundle_bytes = unhex(&b.hex).map_err(|e| MintError::Relay(format!("bundle hex: {e}")))?;
     let seqs = mint::verify_bundle(client, yb, &bundle_bytes).await?;
-    // FEE-1 locally (audit G-2); the payee must be the one the Claimable screen showed.
-    let (fee_zat, payee) =
-        mint::fee_payee(wallet.network, yb, r, v.collateral_zat, &selector).await?;
+    // FEE-1′ locally (audit G-2): the debt at the vault's stored pMint, which the row and GetVault
+    // (checked by check_vault) must agree on; the payee must be the one the Claimable screen showed.
+    if v.p_mint != entry.p_mint {
+        return Err(MintError::Inconsistent {
+            what: format!(
+                "GetVault pMint {} disagrees with ListClaimable pMint {}",
+                v.p_mint, entry.p_mint
+            ),
+        }
+        .into());
+    }
+    let payee = mint::fee_payee(yb, r, &selector).await?;
+    let fee_zat = terms::protocol_fee(entry.minted_cents, v.p_mint, &payee)?;
     if payee != entry.payee {
         return Err(MintError::TermsChanged {
             what: "fee payee",
@@ -298,48 +395,60 @@ pub async fn start(
             ),
         )?;
     }
-    let step =
-        mint::carrier_step(wallet, client, validator, &bundle_bytes, r, tip, branch_id).await?;
-    let row = MintRow {
-        id: 0,
-        kind: MintKind::Claim,
-        state: MintState::CarrierSent,
-        created_height: tip,
-        cents: entry.minted_cents,
-        lock_blocks: 0,
-        term_class: v.term_class,
-        ref_height: r,
-        lock_height: v.lock_height as u32,
-        claim_height: v.claim_height as u32,
-        collateral_zat: v.collateral_zat,
-        fee_zat,
-        payee,
-        attest_fee_zat,
-        attest_payee,
-        residual_zat: entry.residual_zat,
-        bundle: bundle_bytes,
-        bundle_seqs: seqs
-            .iter()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>()
-            .join(","),
-        carrier_hash160: step.carrier_hash160,
-        owner_hash160: keys::hash160(&owner_pubkey),
-        carrier_txid: step.txid,
-        carrier_vout: 0,
-        main_txid: [0; 32],
-        sweep_txid: [0; 32],
-        expiry_height: step.expiry_height,
-        vault_txid: *vault_txid,
-        owner_pubkey: owner_pubkey.to_vec(),
-        note: format!("clause {}", entry.claim_path),
+    let persist_row = |step: &mint::CarrierStep| -> Result<i64, WalletError> {
+        let row = MintRow {
+            id: 0,
+            kind: MintKind::Claim,
+            state: MintState::CarrierSent,
+            created_height: tip,
+            cents: entry.minted_cents,
+            lock_blocks: 0,
+            term_class: v.term_class,
+            ref_height: r,
+            lock_height: v.lock_height as u32,
+            claim_height: v.claim_height as u32,
+            collateral_zat: v.collateral_zat,
+            fee_zat,
+            payee,
+            attest_fee_zat,
+            attest_payee,
+            residual_zat: entry.residual_zat,
+            bundle: bundle_bytes.clone(),
+            bundle_seqs: seqs
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            carrier_hash160: step.carrier_hash160,
+            owner_hash160: keys::hash160(&owner.to_bytes()),
+            carrier_txid: step.txid,
+            carrier_vout: 0,
+            main_txid: [0; 32],
+            sweep_txid: [0; 32],
+            expiry_height: step.expiry_height,
+            vault_txid: *vault_txid,
+            owner: Some(owner),
+            note: format!("clause {}", entry.claim_path),
+        };
+        let id = wallet.store.insert_mint(&row)?;
+        if let Some(b) = bounds {
+            wallet
+                .store
+                .set_claim_bounds(id, b.max_burn_cents, b.min_out_zat)?;
+        }
+        Ok(id)
     };
-    let id = wallet.store.insert_mint(&row)?;
-    if let Some(b) = bounds {
-        wallet
-            .store
-            .set_claim_bounds(id, b.max_burn_cents, b.min_out_zat)?;
-    }
+    let (_, id) = mint::carrier_step(
+        wallet,
+        client,
+        validator,
+        &bundle_bytes,
+        r,
+        tip,
+        branch_id,
+        persist_row,
+    )
+    .await?;
     Ok(id)
 }
 
@@ -373,7 +482,7 @@ pub struct ClaimShape {
     pub attest_fee_zat: i64,
     /// RED-5's residual (0 = none): an intent paying `P2PKH(owner)`.
     pub residual_zat: i64,
-    /// `P2PKH(ownerPubKey)`, the residual intent's recipient.
+    /// `PQPKH(owner)` (35 bytes, quantum spec F-3), the residual intent's recipient.
     pub owner_script: Vec<u8>,
     /// The claimant intent's recipient (an own fresh P2PKH).
     pub claimant_script: Vec<u8>,
@@ -383,6 +492,8 @@ pub struct ClaimShape {
     pub funding_change_script: Vec<u8>,
     /// The carrier outpoint (`vin[last]`), whose `CARRIER_VALUE` joins the inputs.
     pub carrier: OutPoint,
+    /// The network fee: the Yellowback size fee (rpcversion 8, [`claim_network_fee`]).
+    pub network_fee: i64,
 }
 
 /// The planned CLAIM.
@@ -427,6 +538,22 @@ enum Slot {
     Residual,
     Payload,
     FundChange,
+}
+
+/// The network fee of a CLAIM (`BuildClaim`: `YedNetworkFee` over the YED inputs, raised by
+/// `PQFeeFollower` as fee coins are selected; rpcversion 8, dollars per KB at the attested price):
+/// the node's estimated size — 1,000 bytes, 150 per P2PKH input, a Falcon holder input at its
+/// spend size; the vault and the carrier are not counted.
+pub fn claim_network_fee(t: &super::terms::PqTerms, yed_inputs: &[Utxo], funding: &[Utxo]) -> i64 {
+    let mut pq = Vec::new();
+    let mut other = 0;
+    for u in yed_inputs.iter().chain(funding) {
+        match crate::pq::pqpkh_of(&u.script) {
+            Some(id) => pq.push(id.scheme),
+            None => other += 1,
+        }
+    }
+    t.yed_network_fee(other, &pq)
 }
 
 /// YEC the fee side of a claim needs from the claimant's own coins (U-23): the network fee, the
@@ -490,7 +617,7 @@ pub fn plan_claim(s: &ClaimShape) -> Result<ClaimPlan, WalletError> {
         ));
     }
     let spare = CARRIER_VALUE + yed_value + fund_value
-        - FEE_ZAT
+        - s.network_fee
         - if fee { s.fee_zat } else { 0 }
         - if attest { s.attest_fee_zat } else { 0 }
         - if change { TOKEN_VALUE } else { 0 };
@@ -634,11 +761,9 @@ pub async fn finish(
     m: &MintRow,
     branch_id: u32,
 ) -> Result<Finished, WalletError> {
-    let owner_pubkey: [u8; 33] = m
-        .owner_pubkey
-        .as_slice()
-        .try_into()
-        .map_err(|_| WalletError::Other("owner pubkey length".into()))?;
+    let owner = m.owner.filter(|o| o.is_known()).ok_or_else(|| {
+        WalletError::Other("the claim row's vault owner is not post-quantum".into())
+    })?;
     // The V the claim spends, re-read and checked (in-term IT-1: its branch heights come from the
     // vault's own mint, `refHeight + 1`, which the claim row does not hold).
     let (vt, yv) = {
@@ -647,10 +772,11 @@ pub async fn finish(
             .ok_or(gate::GateError::YellowbackAbsent)?;
         let vt = mint::vault_terms_now(wallet, yb).await?;
         let v = yb.vault(&txid_hex(&m.vault_txid)).await?;
-        if keys::unhex(&v.owner_pub_key).ok().as_deref() != Some(&m.owner_pubkey[..]) {
+        super::redeem::check_no_pending_spend(&v)?;
+        if terms::vault_owner(&v).ok() != Some(owner) {
             return Err(MintError::Inconsistent {
                 what: format!(
-                    "GetVault {}: ownerPubKey changed since the claim started",
+                    "GetVault {}: the owner changed since the claim started",
                     v.txid
                 ),
             }
@@ -674,98 +800,123 @@ pub async fn finish(
         n: 0,
     };
     let (carrier_op, redeem_script, carrier_key) = mint::carrier_of(wallet, m)?;
-    let (yed_inputs, change_cents, extra_burn, _stage) = redeem::select_yed_burn(wallet, m.cents)?;
+    let (mut yed_inputs, change_cents, extra_burn, _stage) =
+        redeem::select_yed_burn(wallet, m.cents)?;
+    refund_holder_first(&mut yed_inputs);
     let yed_value: i64 = yed_inputs.iter().map(|u| u.value).sum();
-    let needed = claim_funding_needed(
-        if m.payee.is_empty() { 0 } else { m.fee_zat },
-        if m.attest_payee.is_empty() {
-            0
-        } else {
-            m.attest_fee_zat
-        },
-        change_cents > 0,
-        yed_value,
-    );
-    let funding = if needed > 0 {
-        coins::select_yec(&wallet.spendable_utxos()?, needed, true)?
-    } else {
-        Vec::new()
-    };
+    // TOK-PQ (quantum spec F-7): from the Falcon height the YED change goes to a Falcon holder.
+    let falcon = wallet.pq_terms().falcon_at(m.ref_height as u64 + 1);
+    let pq_input = yed_inputs
+        .iter()
+        .any(|u| crate::pq::pqpkh_of(&u.script).is_some());
     let dest = mint::fresh_external(wallet)?;
     let change_row = if change_cents > 0 {
         Some(mint::fresh_external(wallet)?)
     } else {
         None
     };
+    let change_script = match &change_row {
+        Some(c) => wallet.yed_holder_script(c, falcon)?,
+        None => Vec::new(),
+    };
     // Peeked, not taken: the key is marked used only if the plan returns change to it.
     let fund_change_row = wallet.change_address()?;
-    let shape = ClaimShape {
-        vault_out,
-        vault: vault.clone(),
-        vault_script: vault_script.clone(),
-        vault_value: m.collateral_zat,
-        ref_height: m.ref_height,
-        yed_inputs: yed_inputs.clone(),
-        change_cents,
-        change_script: change_row
-            .as_ref()
-            .map(|c| script::p2pkh_script(&c.hash160))
-            .unwrap_or_default(),
-        payee_script: if m.payee.is_empty() {
-            None
-        } else {
-            Some(mint::p2pkh_of_address(wallet, &m.payee)?)
-        },
-        fee_zat: m.fee_zat,
-        attest_script: if m.attest_payee.is_empty() {
-            None
-        } else {
-            Some(mint::p2pkh_of_address(wallet, &m.attest_payee)?)
-        },
-        attest_fee_zat: m.attest_fee_zat,
-        residual_zat: m.residual_zat,
-        owner_script: script::p2pkh_script(&keys::hash160(&owner_pubkey)),
-        claimant_script: script::p2pkh_script(&dest.hash160),
-        funding: funding.clone(),
-        funding_change_script: script::p2pkh_script(&fund_change_row.hash160),
-        carrier: carrier_op,
-    };
-    let plan = plan_claim(&shape)?;
-    // H-9.3: refuse to sign a CLAIM whose debt or take moved past what the user confirmed
-    // (the row holds the checked figures; the burn's own remainder is the wallet's, not the
-    // server's, and is not bounded here).
-    if let Some((max_burn_cents, min_out_zat)) = wallet.store.claim_bounds(m.id)? {
-        let debt = (plan.burn_cents.max(0) as u64).saturating_sub(extra_burn);
-        terms::check_claim_bounds(
-            &terms::ClaimBounds {
-                max_burn_cents,
-                min_out_zat,
+    // The network fee (rpcversion 8): the Yellowback size fee at the node's estimated size, raised
+    // as fee coins are selected (`PQFeeFollower`).
+    let mut network_fee = claim_network_fee(&wallet.pq_terms(), &yed_inputs, &[]);
+    let (plan, tx, funding) = loop {
+        let needed = claim_funding_needed(
+            if m.payee.is_empty() { 0 } else { m.fee_zat },
+            if m.attest_payee.is_empty() {
+                0
+            } else {
+                m.attest_fee_zat
             },
-            debt,
-            terms::claimant_take(
-                m.collateral_zat,
-                m.fee_zat,
-                m.attest_fee_zat,
-                m.residual_zat,
-            ),
+            change_cents > 0,
+            yed_value,
+        ) + (network_fee - FEE_ZAT);
+        let funding = if needed > 0 {
+            coins::select_yec(&wallet.spendable_utxos()?, needed, true)?
+        } else {
+            Vec::new()
+        };
+        let shape = ClaimShape {
+            vault_out,
+            vault: vault.clone(),
+            vault_script: vault_script.clone(),
+            vault_value: m.collateral_zat,
+            ref_height: m.ref_height,
+            yed_inputs: yed_inputs.clone(),
+            change_cents,
+            change_script: change_script.clone(),
+            payee_script: if m.payee.is_empty() {
+                None
+            } else {
+                Some(mint::p2pkh_of_address(wallet, &m.payee)?)
+            },
+            fee_zat: m.fee_zat,
+            attest_script: if m.attest_payee.is_empty() {
+                None
+            } else {
+                Some(mint::p2pkh_of_address(wallet, &m.attest_payee)?)
+            },
+            attest_fee_zat: m.attest_fee_zat,
+            residual_zat: m.residual_zat,
+            owner_script: crate::pq::pqpkh_script(&owner).ok_or_else(|| {
+                WalletError::Other("the vault owner's scheme is not registered".into())
+            })?,
+            claimant_script: script::p2pkh_script(&dest.hash160),
+            funding: funding.clone(),
+            funding_change_script: script::p2pkh_script(&fund_change_row.hash160),
+            carrier: carrier_op,
+            network_fee,
+        };
+        let plan = plan_claim(&shape)?;
+        // H-9.3: refuse to sign a CLAIM whose debt or take moved past what the user confirmed
+        // (the row holds the checked figures; the burn's own remainder is the wallet's, not the
+        // server's, and is not bounded here).
+        if let Some((max_burn_cents, min_out_zat)) = wallet.store.claim_bounds(m.id)? {
+            let debt = (plan.burn_cents.max(0) as u64).saturating_sub(extra_burn);
+            terms::check_claim_bounds(
+                &terms::ClaimBounds {
+                    max_burn_cents,
+                    min_out_zat,
+                },
+                debt,
+                terms::claimant_take(
+                    m.collateral_zat,
+                    m.fee_zat,
+                    m.attest_fee_zat,
+                    m.residual_zat,
+                ),
+            )?;
+        }
+        let mut tx = Transaction::new_v4();
+        tx.lock_time = plan.lock_time;
+        tx.expiry_height = m.expiry_height;
+        tx.vin = plan.vin.clone();
+        tx.vout = plan.vout.clone();
+        let carrier_vin = tx.vin.len() - 1;
+        mint::sign_p2pkh_inputs(wallet, &mut tx, &yed_inputs, 1, branch_id)?;
+        mint::sign_p2pkh_inputs(wallet, &mut tx, &funding, 1 + yed_inputs.len(), branch_id)?;
+        mint::sign_carrier_input(
+            &mut tx,
+            carrier_vin,
+            &carrier_key,
+            &redeem_script,
+            &m.bundle,
+            branch_id,
         )?;
-    }
-    let mut tx = Transaction::new_v4();
-    tx.lock_time = plan.lock_time;
-    tx.expiry_height = m.expiry_height;
-    tx.vin = plan.vin.clone();
-    tx.vout = plan.vout.clone();
-    let carrier_vin = tx.vin.len() - 1;
-    mint::sign_p2pkh_inputs(wallet, &mut tx, &yed_inputs, 1, branch_id)?;
-    mint::sign_p2pkh_inputs(wallet, &mut tx, &funding, 1 + yed_inputs.len(), branch_id)?;
-    mint::sign_carrier_input(
-        &mut tx,
-        carrier_vin,
-        &carrier_key,
-        &redeem_script,
-        &m.bundle,
-        branch_id,
-    )?;
+        let priced = claim_network_fee(&wallet.pq_terms(), &yed_inputs, &funding);
+        if priced > network_fee {
+            network_fee = priced;
+            continue;
+        }
+        if pq_input {
+            tx.check_script_sig_sizes()?;
+        }
+        break (plan, tx, funding);
+    };
     let raw = tx.serialize()?;
     let txid = tx.txid()?;
     let (_, validation) = gate::confirm_burning(
@@ -777,7 +928,6 @@ pub async fn finish(
     )
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
-    mint::send(client, &raw, &txid).await?;
     let mut locked = yed_inputs.clone();
     locked.extend(funding.iter().cloned());
     locked.push(Utxo {
@@ -789,88 +939,108 @@ pub async fn finish(
         class: UtxoClass::Carrier,
         cents: 0,
     });
-    mint::record_broadcast(wallet, &txid, &raw, m.expiry_height, &locked)?;
-    for u in &yed_inputs {
-        wallet
-            .store
-            .insert_spent_token(&txid, &u.outpoint, u.cents)?;
-    }
-    if let Some(row) = &change_row {
-        let n = plan.change_vout as u32;
-        wallet.store.upsert_utxo(&Utxo {
-            outpoint: OutPoint { txid, n },
-            address: row.address_s.clone(),
-            script: script::p2pkh_script(&row.hash160),
-            value: TOKEN_VALUE,
-            height: 0,
-            class: UtxoClass::PendingToken,
-            cents: change_cents,
-        })?;
-        wallet
-            .store
-            .insert_own_output(&OutPoint { txid, n }, TOKEN_VALUE, &row.hash160)?;
-    }
-    if plan.funding_change_vout >= 0 {
-        wallet.store.mark_used(&fund_change_row.hash160)?;
-        wallet.ensure_gap()?;
-        wallet.store.insert_own_output(
-            &OutPoint {
-                txid,
-                n: plan.funding_change_vout as u32,
-            },
-            plan.funding_change,
-            &fund_change_row.hash160,
-        )?;
-    }
-    // The claimant intent: released after CLAIM_DELAY (build::release), or cancelled.
-    wallet.store.upsert_intent(&IntentRow {
+    let persist = || -> Result<(), WalletError> {
+        for u in &yed_inputs {
+            wallet
+                .store
+                .insert_spent_token(&txid, &u.outpoint, u.cents)?;
+        }
+        if let Some(row) = &change_row {
+            let n = plan.change_vout as u32;
+            wallet.store.upsert_utxo(&Utxo {
+                outpoint: OutPoint { txid, n },
+                address: super::yed_transfer::holder_address(wallet.network, &change_script),
+                script: change_script.clone(),
+                value: TOKEN_VALUE,
+                height: 0,
+                class: UtxoClass::PendingToken,
+                cents: change_cents,
+            })?;
+            wallet
+                .store
+                .insert_own_output(&OutPoint { txid, n }, TOKEN_VALUE, &row.hash160)?;
+        }
+        if plan.funding_change_vout >= 0 {
+            wallet.store.mark_used(&fund_change_row.hash160)?;
+            wallet.ensure_gap()?;
+            wallet.store.insert_own_output(
+                &OutPoint {
+                    txid,
+                    n: plan.funding_change_vout as u32,
+                },
+                plan.funding_change,
+                &fund_change_row.hash160,
+            )?;
+        }
+        // The claimant intent: released after CLAIM_DELAY (build::release), or cancelled.
+        wallet.store.upsert_intent(&IntentRow {
         outpoint: OutPoint { txid, n: 0 },
         vault_txid: m.vault_txid,
         role: ROLE_CLAIMANT.into(),
         value: plan.claimant_value,
-        recipient_script: shape.claimant_script.clone(),
+        recipient_script: script::p2pkh_script(&dest.hash160),
         intent_script: plan.claimant_intent.clone(),
         delay: vault.delay,
         height: 0,
         state: IntentState::Pending,
         spend_txid: [0; 32],
+        pq_spend_txid: [0; 32],
         note: format!(
-            "claim of vault {}: released {} blocks after it confirms unless an attestor cancels it",
+            "claim of vault {}: released {} blocks after it confirms unless the attestor set cancels it (then the YED you burned comes back)",
             &txid_hex(&m.vault_txid)[..8],
             vault.delay
         ),
+        // CAN-1: what a cancel would re-issue, and to whom (the sync replaces it with the node's
+        // `refundHolder` / `burnedCents` once the claim confirms).
+        refund: IntentRefund {
+            script: yed_inputs.first().map(|u| u.script.clone()).unwrap_or_default(),
+            cents: plan.burn_cents.max(0) as u64,
+        },
     })?;
-    let yed_spent: i64 = yed_inputs.iter().map(|u| u.value).sum();
-    let fund_spent: i64 = funding.iter().map(|u| u.value).sum();
-    wallet.store.upsert_history(&HistoryRow {
-        txid,
-        height: 0,
-        yec_delta: plan.funding_change + if change_cents > 0 { TOKEN_VALUE } else { 0 }
-            - yed_spent
-            - fund_spent
-            - CARRIER_VALUE,
-        has_payload: true,
-        pending: true,
-        shielded: false,
-        yed_delta: -plan.burn_cents,
-        kind: "claim".into(),
-        verdict: String::new(),
-        label: format!(
-            "claiming vault {}, burning {}{}; {} YEC pending release",
-            &txid_hex(&m.vault_txid)[..8],
-            dollars(plan.burn_cents),
-            if extra_burn > 0 {
-                format!(" (incl. {} remainder)", dollars(extra_burn as i64))
-            } else {
-                String::new()
-            },
-            crate::wallet::yec(plan.claimant_value)
-        ),
-        labelled: false,
-    })?;
-    wallet
-        .store
-        .set_mint_state(m.id, MintState::MainSent, Some(&txid), None, &m.note)?;
+        let yed_spent: i64 = yed_inputs.iter().map(|u| u.value).sum();
+        let fund_spent: i64 = funding.iter().map(|u| u.value).sum();
+        wallet.store.upsert_history(&HistoryRow {
+            txid,
+            height: 0,
+            yec_delta: plan.funding_change + if change_cents > 0 { TOKEN_VALUE } else { 0 }
+                - yed_spent
+                - fund_spent
+                - CARRIER_VALUE,
+            has_payload: true,
+            pending: true,
+            shielded: false,
+            yed_delta: -plan.burn_cents,
+            kind: "claim".into(),
+            verdict: String::new(),
+            label: format!(
+                "claiming vault {}, burning {}{}; {} YEC pending release",
+                &txid_hex(&m.vault_txid)[..8],
+                dollars(plan.burn_cents),
+                if extra_burn > 0 {
+                    format!(" (incl. {} remainder)", dollars(extra_burn as i64))
+                } else {
+                    String::new()
+                },
+                crate::wallet::yec(plan.claimant_value)
+            ),
+            labelled: false,
+        })?;
+        wallet
+            .store
+            .set_mint_state(m.id, MintState::MainSent, Some(&txid), None, &m.note)?;
+        Ok(())
+    };
+    mint::send_recorded(
+        wallet,
+        &txid,
+        &raw,
+        m.expiry_height,
+        &locked,
+        persist,
+        || mint::restore_step(wallet, m),
+        mint::send(client, &raw, &txid),
+    )
+    .await?;
     Ok(Finished {
         txid: txid_hex(&txid),
         validation,
@@ -951,7 +1121,11 @@ mod tests {
             attest_script: attest.then(|| script::p2pkh_script(&[7; 20])),
             attest_fee_zat: 12_500_000,
             residual_zat: residual,
-            owner_script: script::p2pkh_script(&[8; 20]),
+            owner_script: crate::pq::pqpkh_script(&crate::pq::PqKeyId {
+                scheme: 1,
+                hash: [8; 32],
+            })
+            .unwrap(),
             claimant_script: recipient,
             funding: if funding > 0 {
                 vec![utxo(3, funding, 0, UtxoClass::Yec)]
@@ -963,6 +1137,7 @@ mod tests {
                 txid: [0xca; 32],
                 n: 0,
             },
+            network_fee: FEE_ZAT,
         }
     }
 
@@ -1083,5 +1258,57 @@ mod tests {
         let mut s = shape(0, true, false, 0, 100_000_000);
         s.vault_script.push(0x51);
         assert!(plan_claim(&s).is_err());
+    }
+
+    /// CAN-1: the refund of a cancelled claim goes to the holder of its first YED input, so a
+    /// Falcon (post-quantum) holder token is put first; the rest keep their order.
+    #[test]
+    fn refund_holder_is_a_falcon_holder_when_one_is_spent() {
+        let falcon = |n: u8| {
+            let mut u = utxo(n, TOKEN_VALUE, 100, UtxoClass::Token);
+            u.script = crate::pq::pqpkh_script(&crate::pq::PqKeyId {
+                scheme: 2,
+                hash: [n; 32],
+            })
+            .unwrap();
+            u
+        };
+        let mut inputs = vec![
+            utxo(1, TOKEN_VALUE, 100, UtxoClass::Token),
+            utxo(2, TOKEN_VALUE, 200, UtxoClass::Token),
+            falcon(3),
+            falcon(4),
+        ];
+        refund_holder_first(&mut inputs);
+        let order: Vec<u8> = inputs.iter().map(|u| u.outpoint.txid[0]).collect();
+        assert_eq!(order, vec![3, 4, 1, 2]);
+        assert!(crate::pq::pqpkh_of(&inputs[0].script).is_some());
+        // Only P2PKH tokens: unchanged.
+        let mut plain = vec![
+            utxo(1, TOKEN_VALUE, 100, UtxoClass::Token),
+            utxo(2, TOKEN_VALUE, 200, UtxoClass::Token),
+        ];
+        refund_holder_first(&mut plain);
+        assert_eq!(plain[0].outpoint.txid[0], 1);
+    }
+
+    /// CAN-1: a refund holder's script as the YED address the screen names, and whether it is own.
+    #[test]
+    fn refund_address_names_the_holder() {
+        let id = crate::pq::PqKeyId {
+            scheme: 2,
+            hash: [7; 32],
+        };
+        let mut own = OwnHolders::default();
+        own.p2pkh.insert([5; 20]);
+        own.falcon.insert(id);
+        let n = Network::Regtest;
+        let (a, mine) = refund_address(&script::p2pkh_script(&[5; 20]), &own, n);
+        assert!(mine && a == keys::encode_yellowback(n, &[5; 20]));
+        let (a, mine) = refund_address(&crate::pq::pqpkh_script(&id).unwrap(), &own, n);
+        assert!(mine && a.len() == 53 && Some(a) == keys::encode_pq_yellowback(n, &id));
+        let (a, mine) = refund_address(&script::p2pkh_script(&[6; 20]), &own, n);
+        assert!(!mine && !a.is_empty());
+        assert_eq!(refund_address(&[], &own, n), (String::new(), false));
     }
 }

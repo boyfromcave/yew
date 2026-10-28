@@ -38,11 +38,18 @@ void main() {
     // In-term claims: the term's end, not a lock; claimable at the threshold at any height.
     expect(find.text('height 528'), findsOneWidget);
     expect(find.text('below 125 % of the debt'), findsOneWidget);
-    expect(find.text('0.00001000 YEC'), findsOneWidget); // enforcement fee
+    // the protocol fee in dollars and YEC, charged again at the redeem (rpcversion 8); maxMint $100,000
+    expect(find.text('\$1.00 · 0.00001000 YEC'), findsOneWidget);
+    expect(find.text('Amount to mint (up to \$100000.00)'), findsOneWidget);
     expect(find.text('0.95023000 YEC'), findsOneWidget); // total
     expect(find.text('480 · window closes at 520'), findsOneWidget);
     expect(find.text('0, 1, 2'), findsOneWidget);
     expect(h.api.calls.where((c) => c.startsWith('mintStart')), isEmpty);
+    // the fees in dollars below the promise: the redeem pays the protocol fee again (rpcversion 8)
+    await tester.scrollUntilVisible(find.byKey(const Key('fee-note')), 200, scrollable: find.byType(Scrollable).first);
+    expect(find.textContaining('Redeeming the vault pays the same \$1.00 again at that price'), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('start')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('start')));
     await tester.pumpAndSettle();
     expect(h.api.calls, contains('mintStart 2500 48'));
@@ -115,7 +122,7 @@ void main() {
 
   testWidgets('an unaffordable estimate disables the start and says how much YEC is missing', (tester) async {
     final h = Harness(withWallet: true);
-    h.api.balancesAnswer = const Balances(yecZat: 100000, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0, priceMicroUsd: 520000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false);
+    h.api.balancesAnswer = const Balances(yecZat: 100000, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0, priceMicroUsd: 520000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false, yecPqZat: 0, pqCoins: []);
     await openMint(tester, h);
     await tester.enterText(find.byKey(const Key('amount')), '25');
     await tester.tap(find.byKey(const Key('estimate')));

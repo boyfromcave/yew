@@ -27,11 +27,11 @@ void main() {
     ];
     await openYellowback(tester, h);
     expect(find.text('Claims and releases'), findsOneWidget);
-    expect(find.textContaining('claim · released from height 490 · 5 blocks to go'), findsOneWidget);
-    expect(find.text('claim · releasable now'), findsOneWidget);
+    expect(find.textContaining('· released from height 490 · 5 blocks to go'), findsOneWidget);
+    expect(find.textContaining('claim · releasable now'), findsOneWidget);
     expect(find.text('residual of your claimed vault · releasable now'), findsOneWidget);
     expect(find.textContaining('claim cancelled by the attestor set'), findsOneWidget);
-    expect(find.textContaining('the YED you burned is not refunded'), findsOneWidget);
+    expect(find.textContaining('the YED you burned came back to the address it came from; the YEC fees are not returned'), findsOneWidget);
     expect(find.text('claim · waiting for the claim to confirm'), findsOneWidget);
   });
 
@@ -50,6 +50,23 @@ void main() {
     expect(find.text('Released'), findsOneWidget);
   });
 
+  testWidgets('a residual released to the vault-owner key offers the move into the wallet (quantum F-3)', (tester) async {
+    final h = Harness(withWallet: true);
+    final i = h.api.intent(txid: 'a6' * 32, role: 'residual', state: 'RELEASED', height: 470, valueZat: 300000, pqMove: true);
+    h.api.intentsAnswer = [i, h.api.intent(txid: 'a7' * 32, role: 'residual', state: 'SWEPT', height: 460)];
+    await openYellowback(tester, h);
+    expect(find.text('residual of your claimed vault · released to your vault-owner key · move it to your wallet'), findsOneWidget);
+    expect(find.text('residual of your claimed vault · released and moved to your wallet'), findsOneWidget);
+    await tester.tap(find.byKey(Key('intent-${i.intent}')));
+    await tester.pumpAndSettle();
+    expect(find.text('Move to wallet'), findsOneWidget);
+    expect(find.textContaining('one post-quantum signature (about 8 KB)'), findsOneWidget);
+    expect(find.text('0.00001000 YEC (out of the residual, priced by size)'), findsOneWidget);
+    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('releaseConfirm rl-${i.intent}'));
+  });
+
   testWidgets('a pending (not yet mature) claim is not tappable; a claimed own vault reads CLAIMING', (tester) async {
     final h = Harness(withWallet: true);
     final i = h.api.intent(txid: 'a1' * 32, height: 480);
@@ -61,5 +78,26 @@ void main() {
     expect(h.api.calls.where((c) => c.startsWith('releasePreview')), isEmpty);
     expect(find.textContaining('being claimed'), findsOneWidget);
     expect(find.textContaining('claim cancelled by the attestor set: the vault continues at'), findsOneWidget);
+  });
+
+  testWidgets('a leftover held by its vault after a cancelled claim is listed as held, with why, and not releasable', (tester) async {
+    final h = Harness(withWallet: true);
+    const why = 'held while the vault can be claimed; it is released once the vault cannot be claimed, or once the vault is closed (redeem it)';
+    h.api.intentsAnswer = [h.api.intent(txid: 'a6' * 32, role: 'residual', height: 470, valueZat: 300000, heldReason: why)];
+    await openYellowback(tester, h);
+    expect(find.text('your leftover from a cancelled claim · $why'), findsOneWidget);
+    expect(h.api.intentsAnswer.single.releasable, isFalse);
+  });
+
+  testWidgets('CAN-1: a pending claim names where its burn returns if cancelled; a cancelled one says it came back', (tester) async {
+    final h = Harness(withWallet: true);
+    const to = 'yr2SfdhqKtnRSY3HebfoY5vXSPc781t1HrBi2JcZ26k4EXLCMboLq';
+    h.api.intentsAnswer = [
+      h.api.intent(txid: 'b1' * 32, height: 480, refundCents: 1000, refundAddress: to, refundOwn: true),
+      h.api.intent(txid: 'b2' * 32, state: 'CANCELLED', height: 460, refundCents: 1000, refundAddress: to, refundOwn: true),
+    ];
+    await openYellowback(tester, h);
+    expect(find.textContaining('claim · if this claim is cancelled, \$10.00 returns to your address yr2SfdhqKt…CMboLq'), findsOneWidget);
+    expect(find.textContaining('\$10.00 came back to your address yr2SfdhqKt…CMboLq; the YEC fees are not returned'), findsOneWidget);
   });
 }

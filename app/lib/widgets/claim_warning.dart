@@ -20,11 +20,44 @@ import '../theme.dart';
 String claimDeadlineText(VaultSummary v) {
   final at = v.underwaterAtMicroUsd > 0 ? formatUsdPerYec(v.underwaterAtMicroUsd) : 'an undefined price';
   final now = v.claimPriceMicroUsd > 0 ? ' (now ${formatUsdPerYec(v.claimPriceMicroUsd)})' : '';
-  final fee = v.earlyRedeem && v.earlyRedeemFeeBps > 0 ? ' Redeeming before the term ends costs the early-redeem fee of ${formatBps(v.earlyRedeemFeeBps)} of the collateral.' : '';
+  final fee = v.earlyRedeem && v.earlyRedeemFeeBps > 0 ? ' Redeeming before the term ends costs the early-redeem fee of ${formatBps(v.earlyRedeemFeeBps)} of the debt.' : '';
   if (v.claimable) {
     return 'CLAIMABLE NOW: its collateral is worth less than ${formatBps(v.claimThresholdBps)} of its debt at the claim price$now. Anyone may close it by paying its debt, and you would usually receive nothing back. Redeem now to stop it.$fee';
   }
   return 'Warning: the claim price$now is within ${formatBps(2500)} above $at, the price below which anyone may close this vault by paying its debt. Redeem to stop a claim.$fee';
+}
+
+// The per-vault cancel limit (CAN-2, CAN-3; the node's cancelCount, cancelsRequired,
+// cancelQuietUntil and heldResiduals, read by the core's sync). One attestor can cancel a
+// wrong-price claim on a vault; after each cancel, a cancel on the same vault needs one more
+// attestor signing together, until the quiet period ends. The owner's leftover from a cancelled
+// claim is held until the vault is closed, or past its quiet period while it cannot be claimed.
+
+/// How many attestors must sign together to cancel a claim of this vault now ('' before a sync).
+String cancelNeedsText(VaultSummary v) {
+  if (v.cancelsRequired <= 0) return '';
+  final n = v.cancelsRequired;
+  return n == 1 ? 'one attestor can cancel a wrong-price claim' : '$n attestors must sign together to cancel a claim';
+}
+
+/// The vault's recent cancels and when the quiet period ends ('' when it was never cancelled).
+String cancelQuietText(VaultSummary v) {
+  if (v.cancelQuietUntil <= 0) return '';
+  final cancels = '${v.cancelCount} cancelled claim${v.cancelCount == 1 ? '' : 's'}';
+  if (v.blocksUntilQuietEnd > 0) {
+    return '$cancels; back to one attestor from height ${v.cancelQuietUntil} (${v.blocksUntilQuietEnd} block${v.blocksUntilQuietEnd == 1 ? '' : 's'} to go)';
+  }
+  return 'the quiet period after a cancelled claim ended at height ${v.cancelQuietUntil}';
+}
+
+/// The owner's leftover from cancelled claims (CAN-3): held or releasable, and why ('' when none).
+String heldLeftoverText(VaultSummary v) {
+  if (v.heldResiduals <= 0) return '';
+  final what = v.heldResiduals == 1 ? 'Your leftover from a cancelled claim is' : 'Your leftovers from ${v.heldResiduals} cancelled claims are';
+  if (v.heldReason.isNotEmpty) {
+    return '$what held: ${v.heldReason}. Release needs the vault closed, or past its quiet period and not claimable.';
+  }
+  return '$what no longer held: you can release it now (the network still refuses while the vault could be claimed).';
 }
 
 class ClaimWarningBanner extends StatelessWidget {

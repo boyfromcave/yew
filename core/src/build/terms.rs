@@ -49,6 +49,39 @@ pub fn check_cents(network: Network, cents: u64) -> Result<(), MintError> {
     Ok(())
 }
 
+/// What the wallet says while the network has no mint price (`pMint` undefined, HALT-1).
+pub const WAITING_FOR_PRICE: &str = "Waiting for a price: the attestors have not published a YEC price the network can mint at yet. Try again in a few blocks; redeeming is not affected.";
+
+/// A `haltMask` name (`GetStats.haltMask`, the node's `HaltMaskNames`) in plain words, for the
+/// mint screen; an unknown name is shown as it is.
+pub fn halt_sentence(name: &str) -> String {
+    match name {
+        "NO_PRICE" => "there is no YEC price yet".into(),
+        "GLOBAL_RATIO" => "the system's collateral ratio is below its safety floor, so only the most collateralised term classes can mint".into(),
+        "DIVERGENCE" => "the short- and long-term YEC prices disagree too much to price a mint safely".into(),
+        "NOT_ACTIVE" => "Yellowback is not active yet".into(),
+        "PARTICIPATION" => "too few attestors are taking part".into(),
+        "ENFORCEMENT" => "the network's enforcement check is not satisfied".into(),
+        other => format!("an unrecognised halt ({other})"),
+    }
+}
+
+/// A mint refusal identifier (`yed_mint`'s `mintpol-*`, as `mintBlockedReason` carries it) in
+/// plain words; an unknown identifier is shown as it is.
+pub fn mint_blocked_sentence(identifier: &str) -> String {
+    let id = identifier.split(':').next().unwrap_or("").trim();
+    match id {
+        "mintpol-no-price" => WAITING_FOR_PRICE.into(),
+        "mintpol-unarmed" => "Minting is paused: the price feed is not armed yet. Redeeming and claiming are not affected.".into(),
+        "mintpol-global-ratio" => "Minting is paused for this term: the system's collateral ratio is below its safety floor, so only the most collateralised term classes can mint.".into(),
+        "mintpol-divergence" => "Minting is paused: the short- and long-term YEC prices disagree too much to price a mint safely. Try again later.".into(),
+        "mintpol-cap" => "Minting is paused: the YED supply cap is reached.".into(),
+        "mintpol-not-active" => "Minting is not possible: Yellowback is not active on the network now.".into(),
+        "" => "Minting is not possible now (the server gave no reason).".into(),
+        _ => format!("Minting is not possible now ({identifier})."),
+    }
+}
+
 /// The class `lock_blocks` falls in, or `bad-lock`.
 pub fn class_for(network: Network, lock_blocks: u32) -> Result<&'static TermClass, MintError> {
     network
@@ -70,6 +103,13 @@ pub fn check_estimate(
 ) -> Result<&'static TermClass, MintError> {
     check_cents(network, cents)?;
     let class = class_for(network, lock_blocks)?;
+    // The node's own verdict on this mint (`mintBlocked`, cf. DigiByte v9.26.7 e18654a3): the
+    // mint would be refused at the next block, so nothing else in the estimate is relied on.
+    if e.mint_blocked {
+        return Err(MintError::Blocked {
+            reason: mint_blocked_sentence(&e.mint_blocked_reason),
+        });
+    }
     if e.term_class != class.letter {
         return Err(inconsistent(format!(
             "termClass {:?} for a lock of {lock_blocks} blocks (class {})",
@@ -103,7 +143,10 @@ pub fn check_estimate(
         )));
     }
     if e.p_mint <= 0 {
-        return Err(inconsistent("pMint undefined"));
+        // No mint price yet (HALT-1): an honest state of the network, not a server fault.
+        return Err(MintError::Blocked {
+            reason: WAITING_FOR_PRICE.into(),
+        });
     }
     if e.armed {
         // PRICE-2 (revised): pMint = min(xMint, aMint).
@@ -154,6 +197,14 @@ pub fn check_estimate(
             e.required_zat
         )));
     }
+    // rpcversion 8: the estimate's protocol fee (FEE-1′ of the debt at its pMint), when reported.
+    check_protocol_fee(
+        "EstimateCollateral",
+        cents,
+        e.p_mint,
+        e.protocol_fee_cents,
+        e.protocol_fee_zat,
+    )?;
     Ok(class)
 }
 
@@ -175,28 +226,47 @@ pub fn check_bundle_price(p_mint: i64, bundle: &[Attestation]) -> Result<(), Min
     Ok(())
 }
 
-/// The enforcement fee a server quotes for `collateral_zat` (audit G-2): FEE-0 (no payee) ⇒
-/// 0; otherwise exactly `feeZat(collateralZat)` — less and the node refuses the transaction
-/// (MINT-8 ⇒ VOID), more and the surplus is the server's to direct.
-pub fn check_fee(
-    network: Network,
-    collateral_zat: i64,
-    payee: &str,
-    fee_zat: i64,
-) -> Result<i64, MintError> {
+/// FEE-1′ (rpcversion 8, D-Q-23) computed locally (audit G-2): the protocol fee of a debt of
+/// `debt_cents` at the vault's mint price `p_mint`, 0 under FEE-0 (no payee). The server is never
+/// asked for the figure; a server-reported one (`protocolFeeZat`, `feeZat`) is compared with
+/// [`check_protocol_fee`].
+pub fn protocol_fee(debt_cents: u64, p_mint: i64, payee: &str) -> Result<i64, MintError> {
     if payee.is_empty() {
         return Ok(0);
     }
-    let local = params::fee_zat_for(network, collateral_zat);
-    if fee_zat != local {
-        return Err(inconsistent(format!(
-            "feeZat {fee_zat} for collateral {collateral_zat} (FEE-1 gives {local})"
-        )));
-    }
-    Ok(fee_zat)
+    params::protocol_fee_zat(debt_cents, p_mint).ok_or_else(|| {
+        inconsistent(format!(
+            "pMint {p_mint} undefined: no protocol fee can be priced"
+        ))
+    })
 }
 
-/// The attestor fee for an enforcement fee (AFEE-1), computed locally.
+/// A server's protocol-fee figure against FEE-1′ (audit G-2). `reported` 0 is "not reported".
+pub fn check_protocol_fee(
+    what: &str,
+    debt_cents: u64,
+    p_mint: i64,
+    reported_cents: i64,
+    reported_zat: i64,
+) -> Result<(), MintError> {
+    let cents = params::protocol_fee_cents(debt_cents);
+    if reported_cents != 0 && reported_cents != cents {
+        return Err(inconsistent(format!(
+            "{what}: protocolFeeCents {reported_cents} for a debt of {debt_cents} cents (FEE-1′ gives {cents})"
+        )));
+    }
+    if reported_zat != 0 {
+        let local = params::protocol_fee_zat(debt_cents, p_mint).unwrap_or(-1);
+        if reported_zat != local {
+            return Err(inconsistent(format!(
+                "{what}: protocolFeeZat {reported_zat} for a debt of {debt_cents} cents at pMint {p_mint} (FEE-1′ gives {local})"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The attestor fee for a protocol fee (AFEE-1′), computed locally.
 pub fn attest_fee(network: Network, fee_zat: i64, seqs: &[u16]) -> i64 {
     if seqs.is_empty() {
         0
@@ -222,7 +292,7 @@ impl VaultTerms {
     /// R)`, in-term plan IT-1, D-IT-15): `ownerHeight = appHeight = R + 1`.
     pub fn mint_vault_params(
         &self,
-        owner: &[u8; 33],
+        owner: &crate::pq::PqKeyId,
         ref_height: u32,
     ) -> crate::vault::VaultParams {
         crate::vault::yed_mint_vault_params(
@@ -236,7 +306,7 @@ impl VaultTerms {
     /// The V scriptPubKey of a new mint by `owner` at reference height `ref_height`.
     pub fn mint_vault_script(
         &self,
-        owner: &[u8; 33],
+        owner: &crate::pq::PqKeyId,
         ref_height: u32,
     ) -> Result<Vec<u8>, MintError> {
         build_or_refuse(&self.mint_vault_params(owner, ref_height))
@@ -245,7 +315,7 @@ impl VaultTerms {
     /// The V of an existing vault with the given branch heights (`YedVaultScriptAt`).
     pub fn vault_params_at(
         &self,
-        owner: &[u8; 33],
+        owner: &crate::pq::PqKeyId,
         owner_height: u32,
         app_height: u32,
     ) -> crate::vault::VaultParams {
@@ -261,7 +331,7 @@ impl VaultTerms {
     /// The V scriptPubKey of an existing vault with the given branch heights.
     pub fn vault_script_at(
         &self,
-        owner: &[u8; 33],
+        owner: &crate::pq::PqKeyId,
         owner_height: u32,
         app_height: u32,
     ) -> Result<Vec<u8>, MintError> {
@@ -272,7 +342,7 @@ impl VaultTerms {
     /// `appHeight = lockHeight + GRACE`): minted before the in-term rule, still spendable.
     pub fn pre_plan_vault_params(
         &self,
-        owner: &[u8; 33],
+        owner: &crate::pq::PqKeyId,
         lock_height: u32,
     ) -> crate::vault::VaultParams {
         crate::vault::yed_vault_params(
@@ -381,6 +451,21 @@ pub fn vault_terms(network: Network, info: &rpc::YellowbackInfo) -> Result<Vault
     })
 }
 
+/// A `GetVault` record's post-quantum owner (quantum spec §1, §3.4, §6.2): `ownerScheme` (a
+/// registered scheme) and `ownerHash` (32 bytes, hex). **The one place the record's owner field
+/// is read.** rpcversion 7 removed `ownerPubKey`/`ownerKeyId`: no public key is on chain.
+pub fn vault_owner(v: &rpc::YedVault) -> Result<crate::pq::PqKeyId, MintError> {
+    let bad = || inconsistent(format!("vault {}: owner", v.txid));
+    let scheme = u8::try_from(v.owner_scheme).map_err(|_| bad())?;
+    let hash: [u8; 32] = crate::keys::unhex(&v.owner_hash)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .ok_or_else(bad)?;
+    Some(crate::pq::PqKeyId { scheme, hash })
+        .filter(|o| o.is_known())
+        .ok_or_else(bad)
+}
+
 /// A `GetVault` record's V script (rpcversion 5, U-23; rpcversion 6, in-term IT-1): the node's
 /// `scriptPubKey` must be the YED vault this wallet rebuilds from the owner key and the
 /// [`VaultTerms`] — the in-term mint's V (`ownerHeight = appHeight = refHeight + 1`) or, for a
@@ -388,10 +473,7 @@ pub fn vault_terms(network: Network, info: &rpc::YellowbackInfo) -> Result<Vault
 /// will sign against (owner) or name in its claim intents (claimant). Returns it with its
 /// branch heights.
 pub fn check_vault_script(t: &VaultTerms, v: &rpc::YedVault) -> Result<YedV, MintError> {
-    let owner: [u8; 33] = crate::keys::unhex(&v.owner_pub_key)
-        .ok()
-        .and_then(|b| b.as_slice().try_into().ok())
-        .ok_or_else(|| inconsistent(format!("vault {}: ownerPubKey", v.txid)))?;
+    let owner = vault_owner(v)?;
     let theirs = v.script_pub_key.to_ascii_lowercase();
     let mut candidates = Vec::new();
     if let Ok(r) = u32::try_from(v.ref_height) {
@@ -432,6 +514,34 @@ pub fn check_vault(network: Network, v: &rpc::YedVault) -> Result<(), MintError>
             v.txid, v.lock_height, v.claim_height
         )));
     }
+    // rpcversion 8: the stored mint price every fee of the vault is struck at. MINT-5 put at least
+    // `mintedCents · baseRatio · COIN / pMint` in the vault, so pMint ≥ that over the collateral: a
+    // server reporting a lower price (a higher fee in YEC) is refused; a higher one only makes the
+    // fee short, which the node's own check refuses before anything is sent.
+    if v.status == "ACTIVE" || v.status == "CLAIMING" {
+        if v.p_mint <= 0 || v.p_mint > params::PRICE_MAX_MICRO_USD {
+            return Err(inconsistent(format!(
+                "vault {}: pMint {} out of range (rpcversion 8)",
+                v.txid, v.p_mint
+            )));
+        }
+        if let Some(c) = network
+            .term_classes()
+            .iter()
+            .find(|c| c.letter == v.term_class)
+        {
+            let floor = (v.minted_cents.max(0) as u128)
+                * (c.base_ratio_bps as u128)
+                * (params::COIN as u128)
+                / (v.collateral_zat.max(1) as u128);
+            if (v.p_mint as u128) < floor {
+                return Err(inconsistent(format!(
+                    "vault {}: pMint {} below what its collateral {} backs {} cents at in class {} ({floor})",
+                    v.txid, v.p_mint, v.collateral_zat, v.minted_cents, c.letter
+                )));
+            }
+        }
+    }
     if v.status == "ACTIVE" {
         let lock_blocks = v.lock_height - v.ref_height;
         let class = u32::try_from(lock_blocks)
@@ -450,13 +560,301 @@ pub fn check_vault(network: Network, v: &rpc::YedVault) -> Result<(), MintError>
     Ok(())
 }
 
+/// The post-quantum and network-fee terms a server reports (`GetYellowbackInfo.params.pq`,
+/// `params.fees.network` and `attest.mintPayloadVersion`; rpcversion 7, 8; quantum spec §6.2, fees
+/// spec §3.1, client survey C-5): the size fee rates, the flat floor, the cap and the Falcon
+/// activation. Unlike the rest of the parameter set these are the node's *operator* settings
+/// (`-pqfeeusdperkb`, `-yellowbackfeeusdperkb`, `-pqfeerate`, `-yellowbackmaxtxfee`) at the attested
+/// tip price, and a height, so they are read, bounded and recomputed from their own inputs, not
+/// compared with a compiled value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PqTerms {
+    /// The plain post-quantum rate, zat/KB (`fees.network.plain.zatPerKB` = `pq.feeRateZatPerKB`):
+    /// a move of a post-quantum YEC coin.
+    pub fee_rate_zat_per_kb: i64,
+    /// The vault / Yellowback rate, zat/KB (`fees.network.yellowback.zatPerKB`): every transaction
+    /// the node's YED builder or a `vault_*` RPC would price (mint, redeem, claim, transfer, release).
+    pub yed_rate_zat_per_kb: i64,
+    /// The floor rate the owner path falls back to when the dollar-priced fee would take what the
+    /// vault has left (`YedFloorSizeFee`, review L-1): `max(floorZatPerKB, -pqfeerate)` with a price,
+    /// `-pqfeerate` without one.
+    pub floor_rate_zat_per_kb: i64,
+    /// The flat floor of one transaction (`fees.network.flatZat`, = `params.feeZat`).
+    pub flat_zat: i64,
+    /// The cap of a size-priced fee (`fees.network.yellowback.maxTxFeeZat`), never above
+    /// [`params::MAX_YED_TX_FEE_ZAT`].
+    pub max_fee_zat: i64,
+    /// `pq.falconHeight` (`None` = no activation height). Mainnet and testnet must report the
+    /// height compiled into this build ([`Network::pq_falcon_height`], `0` by the owner's decision
+    /// of 2026-10-10); [`pq_terms`] refuses a server that reports another.
+    pub falcon_height: Option<u64>,
+    /// `pq.falconActive` as the node judged it (at its next block).
+    pub falcon_active: bool,
+}
+
+impl Default for PqTerms {
+    /// Before a server has answered: the relay floor, the flat fee, the absolute cap, Falcon
+    /// unknown (treated as inactive; the node's dry run judges `TOK-PQ` before anything is sent).
+    fn default() -> PqTerms {
+        PqTerms {
+            fee_rate_zat_per_kb: params::RELAY_FLOOR_ZAT_PER_KB,
+            yed_rate_zat_per_kb: params::RELAY_FLOOR_ZAT_PER_KB,
+            floor_rate_zat_per_kb: params::RELAY_FLOOR_ZAT_PER_KB,
+            flat_zat: params::FEE_ZAT,
+            max_fee_zat: params::MAX_YED_TX_FEE_ZAT,
+            falcon_height: None,
+            falcon_active: false,
+        }
+    }
+}
+
+impl PqTerms {
+    /// The terms before any server has answered on `network`: [`PqTerms::default`] with the
+    /// network's compiled Falcon activation ([`Network::pq_falcon_height`]; mainnet and testnet
+    /// active from height 0, so an offline wallet's YED holder is a Falcon key from the start).
+    /// Regtest: Falcon unknown (inactive) until the server says otherwise.
+    pub fn default_for(network: Network) -> PqTerms {
+        let mut t = PqTerms::default();
+        if let Some(h) = network.pq_falcon_height() {
+            t.falcon_height = Some(h);
+            t.falcon_active = h == 0;
+        }
+        t
+    }
+
+    /// Falcon (scheme 2) and `TOK-PQ` apply to a transaction mined at `height`
+    /// (`IsPQFalconActive(params, nHeight)`: `nHeight >= pqFalconHeight`; R-A2), or the node
+    /// already said so.
+    pub fn falcon_at(&self, height: u64) -> bool {
+        self.falcon_active || self.falcon_height.is_some_and(|h| height >= h)
+    }
+
+    /// The network fee of a transaction of `size` bytes with a post-quantum input, at the plain
+    /// rate (`CWallet::CreateTransaction`: `min(max(DEFAULT_FEE, PQSizeFee), PQMaxTxFee())`).
+    pub fn fee(&self, size: usize) -> i64 {
+        params::pq_size_fee(self.flat_zat, self.fee_rate_zat_per_kb, size)
+            .min(self.max_fee_zat)
+            .max(self.flat_zat)
+    }
+
+    /// The network fee of a Yellowback transaction of `size` bytes (`YedNetworkFee`:
+    /// `max(flat, min(YedSizeFee(flat, size), YedMaxTxFee()))`), `size` as the node estimates it
+    /// ([`params::yed_estimated_size`]).
+    pub fn yed_fee(&self, size: usize) -> i64 {
+        params::rate_fee(self.yed_rate_zat_per_kb, size)
+            .max(self.flat_zat)
+            .min(self.max_fee_zat)
+            .max(self.flat_zat)
+    }
+
+    /// The network fee of a Yellowback transaction with `other_inputs` non-PQ inputs and the
+    /// post-quantum inputs `pq_schemes` (`YedNetworkFee`): [`PqTerms::yed_fee`] at
+    /// [`params::yed_estimated_size`], never below [`params::yed_conventional_fee_estimate`] (the
+    /// 6.20.0 line's ZIP-317 conventional fee, audit 04/N-1; 0 without a PQ input), which, as on
+    /// the node, stands outside the cap.
+    pub fn yed_network_fee(&self, other_inputs: usize, pq_schemes: &[u8]) -> i64 {
+        self.yed_fee(params::yed_estimated_size(other_inputs, pq_schemes))
+            .max(params::yed_conventional_fee_estimate(
+                other_inputs,
+                pq_schemes,
+            ))
+    }
+
+    /// The owner path's clamp (`YedFloorSizeFee`, review L-1): `max(flat, floor rate × size)`.
+    pub fn yed_floor_fee(&self, size: usize) -> i64 {
+        params::rate_fee(self.floor_rate_zat_per_kb, size).max(self.flat_zat)
+    }
+}
+
+/// Read and bound `params.pq` (rpcversion 7) and `params.fees.network` (rpcversion 8). Refused: no
+/// `pq` or no `fees.network` block; a scheme list without SLH-DSA (1), or with Falcon (2) while
+/// Falcon is inactive, or naming an unknown scheme; a MINT payload version other than this build's
+/// ([`crate::payload::MINT_VERSION`]); a dollar target above [`params::MAX_USD_PER_KB_MICRO`], a
+/// floor above [`params::MAX_FEE_FLOOR_ZAT_PER_KB`], a fallback rate outside
+/// `0..=`[`params::MAX_PQ_FEE_RATE_ZAT_PER_KB`], a price outside `PRICE_MAX`, a flat fee below
+/// `FEE_ZAT`; **a rate that is not its own inputs' `AttestedRateZatPerKB`** — so a server can
+/// report a high price target only in the open, never a padded zat figure; and on mainnet and
+/// testnet **a Falcon activation other than this build's** ([`check_falcon_activation`]).
+pub fn pq_terms(p: &rpc::YellowbackParams, network: Network) -> Result<PqTerms, MintError> {
+    let pq =
+        p.pq.as_ref()
+            .ok_or_else(|| inconsistent("params.pq missing (rpcversion 7)"))?;
+    check_falcon_activation(network, pq)?;
+    if !pq
+        .schemes
+        .contains(&(crate::pq::SCHEME_SLH_DSA_SHA2_128S as i64))
+        || pq
+            .schemes
+            .iter()
+            .any(|&s| !u8::try_from(s).is_ok_and(crate::pq::is_known_scheme))
+        || (pq.schemes.contains(&(crate::pq::SCHEME_FN_DSA_512 as i64)) && !pq.falcon_active)
+    {
+        return Err(inconsistent(format!(
+            "params.pq.schemes {:?} (falconActive {})",
+            pq.schemes, pq.falcon_active
+        )));
+    }
+    if let Some(a) = p.attest.as_ref() {
+        if a.mint_payload_version != crate::payload::MINT_VERSION as i64 {
+            return Err(inconsistent(format!(
+                "params.attest.mintPayloadVersion {} (this build writes {})",
+                a.mint_payload_version,
+                crate::payload::MINT_VERSION
+            )));
+        }
+    }
+    let n = p
+        .fees
+        .as_ref()
+        .and_then(|f| f.network.as_ref())
+        .ok_or_else(|| inconsistent("params.fees.network missing (rpcversion 8)"))?;
+    let bad = |what: String| Err(inconsistent(format!("params.fees.network.{what}")));
+    if n.fallback_zat_per_kb < 0 || n.fallback_zat_per_kb > params::MAX_PQ_FEE_RATE_ZAT_PER_KB {
+        return bad(format!(
+            "fallbackZatPerKB {} (YEW accepts 0..={})",
+            n.fallback_zat_per_kb,
+            params::MAX_PQ_FEE_RATE_ZAT_PER_KB
+        ));
+    }
+    if n.floor_zat_per_kb < 0 || n.floor_zat_per_kb > params::MAX_FEE_FLOOR_ZAT_PER_KB {
+        return bad(format!(
+            "floorZatPerKB {} (YEW accepts 0..={})",
+            n.floor_zat_per_kb,
+            params::MAX_FEE_FLOOR_ZAT_PER_KB
+        ));
+    }
+    if n.price_micro_usd < 0 || n.price_micro_usd > params::PRICE_MAX_MICRO_USD {
+        return bad(format!("priceMicroUsd {}", n.price_micro_usd));
+    }
+    if n.flat_zat < params::FEE_ZAT || n.flat_zat > params::MAX_YED_TX_FEE_ZAT {
+        return bad(format!(
+            "flatZat {} (at least {})",
+            n.flat_zat,
+            params::FEE_ZAT
+        ));
+    }
+    let floor_eff = n.floor_zat_per_kb.max(n.fallback_zat_per_kb);
+    // AttestedRateZatPerKB, or the -pqfeerate fallback without a price or a target (policy.cpp
+    // PlainPQFeeRate / YedFeeRate)
+    let rate_of = |what: &str, r: Option<&rpc::YellowbackNetworkRate>| -> Result<i64, MintError> {
+        let r = r.ok_or_else(|| inconsistent(format!("params.fees.network.{what} missing")))?;
+        if r.usd_per_kb_micro < 0 || r.usd_per_kb_micro > params::MAX_USD_PER_KB_MICRO {
+            return Err(inconsistent(format!(
+                "params.fees.network.{what}.usdPerKBMicro {} (YEW accepts 0..={})",
+                r.usd_per_kb_micro,
+                params::MAX_USD_PER_KB_MICRO
+            )));
+        }
+        let want = if n.price_micro_usd > 0 && r.usd_per_kb_micro > 0 {
+            params::attested_rate_zat_per_kb(r.usd_per_kb_micro, n.price_micro_usd, floor_eff)
+        } else {
+            n.fallback_zat_per_kb
+        };
+        if r.zat_per_kb != want {
+            return Err(inconsistent(format!(
+                "params.fees.network.{what}.zatPerKB {} (${}.{:06}/KB at {} µUSD gives {want})",
+                r.zat_per_kb,
+                r.usd_per_kb_micro / 1_000_000,
+                r.usd_per_kb_micro % 1_000_000,
+                n.price_micro_usd
+            )));
+        }
+        Ok(want.max(params::RELAY_FLOOR_ZAT_PER_KB))
+    };
+    let plain = rate_of("plain", n.plain.as_ref())?;
+    let yed = rate_of("yellowback", n.yellowback.as_ref())?;
+    // rpcversion 8: pq.feeRateZatPerKB is the plain rate, so rpcversion-7 readers keep working
+    if pq.fee_rate_zat_per_kb.max(params::RELAY_FLOOR_ZAT_PER_KB) != plain {
+        return Err(inconsistent(format!(
+            "params.pq.feeRateZatPerKB {} is not params.fees.network.plain.zatPerKB {plain}",
+            pq.fee_rate_zat_per_kb
+        )));
+    }
+    let cap = n.yellowback.as_ref().map(|y| y.max_tx_fee_zat).unwrap_or(0);
+    if cap < n.flat_zat {
+        return bad(format!(
+            "yellowback.maxTxFeeZat {cap} (below flatZat {})",
+            n.flat_zat
+        ));
+    }
+    Ok(PqTerms {
+        fee_rate_zat_per_kb: plain,
+        yed_rate_zat_per_kb: yed,
+        floor_rate_zat_per_kb: if n.price_micro_usd > 0 {
+            floor_eff
+        } else {
+            n.fallback_zat_per_kb
+        }
+        .max(params::RELAY_FLOOR_ZAT_PER_KB),
+        flat_zat: n.flat_zat,
+        max_fee_zat: cap.min(params::MAX_YED_TX_FEE_ZAT),
+        falcon_height: u64::try_from(pq.falcon_height).ok(),
+        falcon_active: pq.falcon_active,
+    })
+}
+
+/// The server's Falcon activation (`params.pq.falconHeight` / `falconActive`) against the height
+/// compiled into this build ([`Network::pq_falcon_height`]; ycash-dd and ycash6
+/// `chainparams.cpp` `pqFalconHeight`). Mainnet and testnet: the height must be the compiled one,
+/// and at height 0 Falcon must be active; anything else is [`MintError::Inconsistent`] — the
+/// wallet refuses the server's YED terms rather than override them (a server whose node does not
+/// enforce `TOK-PQ` would otherwise be handed Falcon holder shapes it does not accept, or the
+/// reverse). Regtest follows the server (`-pqfalconheight`).
+pub fn check_falcon_activation(
+    network: Network,
+    pq: &rpc::YellowbackPqParams,
+) -> Result<(), MintError> {
+    let Some(expected) = network.pq_falcon_height() else {
+        return Ok(());
+    };
+    let height = u64::try_from(pq.falcon_height).ok();
+    if height != Some(expected) || (expected == 0 && !pq.falcon_active) {
+        return Err(inconsistent(format!(
+            "params.pq.falconHeight {} / falconActive {} (this build expects {expected} / active on {})",
+            pq.falcon_height,
+            pq.falcon_active,
+            network.chain_name()
+        )));
+    }
+    Ok(())
+}
+
+/// A `params.fees` block before any attested price (both size rates `-pqfeerate` = `rate`), for
+/// tests that feed `Wallet::note_server_params`.
+#[cfg(test)]
+pub(crate) fn fallback_fee_params(rate: i64) -> rpc::YellowbackFeeParams {
+    rpc::YellowbackFeeParams {
+        network: Some(rpc::YellowbackNetworkFee {
+            price_source: "fallback".into(),
+            plain: Some(rpc::YellowbackNetworkRate {
+                usd_per_kb_micro: 20_000,
+                zat_per_kb: rate,
+                ..Default::default()
+            }),
+            yellowback: Some(rpc::YellowbackNetworkRate {
+                usd_per_kb_micro: 50_000,
+                zat_per_kb: rate,
+                max_tx_fee_zat: 10_000_000,
+                ..Default::default()
+            }),
+            floor_zat_per_kb: params::ATTESTED_FEE_FLOOR_ZAT_PER_KB,
+            fallback_zat_per_kb: rate,
+            flat_zat: params::FEE_ZAT,
+            max_tx_fee_zat: 10_000_000,
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 /// The parameter set a server reports (`GetYellowbackInfo.params`) against the one this build
 /// compiles for the network (audit G-1, G-2; hardening H-9.3 "recompute the fee floor and the
 /// height identities locally"). The wallet never prices a mint, a fee or a deadline from the
 /// server's figures; this check only refuses a server whose node runs another parameter set
 /// (a stale release, a hand-edited one, a lie), because every local check below would then
-/// disagree with the node that judges the transaction. Compared: `FEE_MIN`, `FEE_BPS`,
-/// `GRACE`, `REF_WINDOW`, `TOKEN_VALUE`, `ATTEST_FEE_BPS`, `RESIDUAL_MIN_ZAT` and each term
+/// disagree with the node that judges the transaction. Compared: the protocol fee's bands and
+/// floor (rpcversion 8, FEE-1′), `MAX_MINT`, `GRACE`, `REF_WINDOW`, `TOKEN_VALUE`, `ATTEST_FEE_BPS`,
+/// `RESIDUAL_MIN_ZAT`, the per-vault share (MINT-6b) and each term
 /// class's range and base ratio (a disabled class is reported with its empty range, H-5).
 /// Values a regtest flag sets (`startHeight`, `enforceUntilHeight`, `sigmaRefBps`,
 /// `supplyCapBps`) are not compared.
@@ -473,8 +871,56 @@ pub fn check_server_params(
         }
         Ok(())
     };
-    want("feeMinZat", p.fee_min_zat, params::FEE_MIN_ZAT)?;
-    want("feeBps", p.fee_bps, network.fee_bps())?;
+    // rpcversion 8 (D-Q-23, D-Q-24, D-Q-23a): FEE-1′'s bands and floor, maxMint, the vault share
+    want(
+        "maxMintCents",
+        p.max_mint_cents,
+        network.max_mint_cents() as i64,
+    )?;
+    let fees = p
+        .fees
+        .as_ref()
+        .ok_or_else(|| inconsistent("params.fees missing (rpcversion 8)"))?;
+    let protocol = fees
+        .protocol
+        .as_ref()
+        .ok_or_else(|| inconsistent("params.fees.protocol missing"))?;
+    let bands: Vec<(i64, i64)> = protocol
+        .bands
+        .iter()
+        .map(|b| (b.upto_cents, b.bps))
+        .collect();
+    let local_bands: Vec<(i64, i64)> = params::PROTOCOL_FEE_BANDS
+        .iter()
+        .map(|(u, b)| (*u as i64, *b))
+        .collect();
+    if bands != local_bands {
+        return Err(inconsistent(format!(
+            "params.fees.protocol.bands {bands:?} (this network's rule is {local_bands:?})"
+        )));
+    }
+    want(
+        "fees.protocol.floorCents",
+        protocol.floor_cents,
+        params::PROTOCOL_FEE_FLOOR_CENTS,
+    )?;
+    want(
+        "fees.protocol.attestFeeBps",
+        protocol.attest_fee_bps,
+        network.attest_fee_bps(),
+    )?;
+    if let Some(sc) = p.supply_cap.as_ref() {
+        want(
+            "supplyCap.maxVaultShareBps",
+            sc.max_vault_share_bps,
+            params::MAX_VAULT_SHARE_BPS,
+        )?;
+        want(
+            "supplyCap.vaultShareFloorCents",
+            sc.vault_share_floor_cents,
+            params::VAULT_SHARE_FLOOR_CENTS,
+        )?;
+    }
     want("grace", p.grace, network.grace() as i64)?;
     want("refWindow", p.ref_window, REF_WINDOW as i64)?;
     want("tokenValueZat", p.token_value_zat, params::TOKEN_VALUE)?;
@@ -505,6 +951,12 @@ pub fn check_server_params(
             p.early_redeem_fee_bps
         )));
     }
+    if fees.early_redeem_fee_bps != local {
+        return Err(inconsistent(format!(
+            "params.fees.earlyRedeemFeeBps {:?} (this network's rule is {local:?})",
+            fees.early_redeem_fee_bps
+        )));
+    }
     let a = p
         .attest
         .as_ref()
@@ -519,6 +971,9 @@ pub fn check_server_params(
         a.residual_min_zat,
         params::RESIDUAL_MIN_ZAT,
     )?;
+    // rpcversion 7, 8: the post-quantum and network-fee blocks must be present and sane (read and
+    // recomputed from their own inputs, not compared).
+    pq_terms(p, network)?;
     for c in network.term_classes() {
         let s = p
             .classes
@@ -600,6 +1055,8 @@ pub fn mint_gate(
         .upgrade
         .as_ref()
         .is_some_and(|a| a.status == crate::net::yellowback::STATUS_ACTIVE);
+    // TOK-PQ (quantum spec §3.6, F-7): from the Falcon height a MINT's token goes to the
+    // wallet's Falcon holder key (`build::mint::mint_token_script`); nothing blocks here.
     let blocked = if !info.enabled || !active {
         Some("Yellowback is not active on this server's node: nothing can be minted.".to_string())
     } else if requires_armed && !price.armed {
@@ -608,10 +1065,13 @@ pub fn mint_gate(
             if price.attest_status.is_empty() { "status unknown" } else { price.attest_status.as_str() }
         ))
     } else if mintable_classes.is_empty() {
-        Some(if !stats.halt_mask.is_empty() {
+        Some(if stats.halt_mask.iter().any(|h| h == "NO_PRICE") {
+            WAITING_FOR_PRICE.to_string()
+        } else if !stats.halt_mask.is_empty() {
+            let why: Vec<String> = stats.halt_mask.iter().map(|h| halt_sentence(h)).collect();
             format!(
-                "Minting is halted ({}): no term class is mintable now.",
-                stats.halt_mask.join(", ")
+                "Minting is paused: {}. No term class can mint now; redeeming is not affected.",
+                why.join("; ")
             )
         } else {
             // The cap (W20, H-10) or the recapitalisation floor (W16) leaves no class.
@@ -630,12 +1090,18 @@ pub fn mint_gate(
     })
 }
 
-/// A `ListClaimable` row's RED-5 residual against the vault's terms and the row's own `pClaim`
-/// (audit G-2; `ClaimAt`): a server inflating the residual moves the claimant's YEC to the
-/// owner. Returns the residual the CLAIM pays: the node builder's (`ClaimAt` drops a residual
-/// below `RESIDUAL_MIN_ZAT`; `yed_listclaimable` reports it unfloored, so both are accepted).
-/// Under clause (a) the vault must also be underwater at that `pClaim` (`IsUnderwater`).
-pub fn check_claimable(c: &rpc::YedClaimable) -> Result<i64, MintError> {
+/// A `ListClaimable` row's RED-5 residual against the vault's terms (audit G-2; `ClaimAt`): a
+/// server inflating the residual moves the claimant's YEC to the owner. Returns the residual the
+/// CLAIM pays: the node builder's (`ClaimAt` drops a residual below `RESIDUAL_MIN_ZAT`;
+/// `yed_listclaimable` reports it unfloored, so both are accepted).
+///
+/// Clause `"a"` sizes the claimant cap at the row's `pClaim` with `claimThresholdBps`, and the
+/// vault must also be underwater at that `pClaim` (`IsUnderwater`). Clause `"b"` sizes it at
+/// `p_emerg` (`min(xClaim, aClaim)`, RED-5b A1) with margin `10⁴` and does **not** cross-check
+/// the residual at `pClaim` — that figure rejects every honest path-(b) claim. `p_emerg` is
+/// `None` when the row carries neither `pEmerg` nor both inputs; the path-(b) build is then
+/// refused.
+pub fn check_claimable(c: &rpc::YedClaimable, p_emerg: Option<i64>) -> Result<i64, MintError> {
     // rpcversion 6 (in-term IT-7): a row above θ is listed with `claimable: false`, no claim path
     // and no residual; it is shown, never claimed, so nothing in it is relied on.
     if !c.claimable {
@@ -654,8 +1120,30 @@ pub fn check_claimable(c: &rpc::YedClaimable) -> Result<i64, MintError> {
         )));
     }
     let cents = c.minted_cents as u64;
-    let floored = params::residual_zat_for(c.collateral_zat, cents, c.p_claim, &c.claim_path)
-        .ok_or_else(|| inconsistent(format!("pClaim undefined for vault {}", c.vault)))?;
+    // RED-5b (A1): path (b) at pEmerg. The ListClaimable row does not carry pEmerg, xClaim or
+    // aClaim; the caller passes pEmerg computed as min(xClaim, aClaim) when those exist.
+    let price = if c.claim_path == "b" {
+        p_emerg.filter(|p| *p > 0).ok_or_else(|| {
+            inconsistent(format!(
+                "pEmerg unknown for vault {}: path (b) sizes the claimant cap at the emergency price min(xClaim, aClaim), not at pClaim, and that price cannot be known",
+                c.vault
+            ))
+        })?
+    } else {
+        c.p_claim
+    };
+    let floored = params::residual_zat_for(c.collateral_zat, cents, price, &c.claim_path)
+        .ok_or_else(|| {
+            inconsistent(format!(
+                "{} undefined for vault {}",
+                if c.claim_path == "b" {
+                    "pEmerg"
+                } else {
+                    "pClaim"
+                },
+                c.vault
+            ))
+        })?;
     let raw = if floored > 0 {
         floored
     } else {
@@ -666,17 +1154,22 @@ pub fn check_claimable(c: &rpc::YedClaimable) -> Result<i64, MintError> {
             params::BPS
         };
         let num = (cents as u128) * (margin as u128) * (params::COIN as u128);
-        let max = num.div_ceil(c.p_claim as u128);
+        let max = num.div_ceil(price as u128);
         i64::try_from(max)
             .ok()
             .filter(|m| c.collateral_zat > *m)
             .map(|m| c.collateral_zat - m)
             .unwrap_or(0)
     };
+    let price_name = if c.claim_path == "b" {
+        "pEmerg"
+    } else {
+        "pClaim"
+    };
     if c.residual_zat != floored && c.residual_zat != raw {
         return Err(inconsistent(format!(
-            "residualZat {} for vault {} (RED-5 at pClaim {} gives {floored})",
-            c.residual_zat, c.vault, c.p_claim
+            "residualZat {} for vault {} (RED-5 at {price_name} {price} gives {floored})",
+            c.residual_zat, c.vault
         )));
     }
     if c.claim_path == "a" {
@@ -767,7 +1260,11 @@ mod tests {
             sigma_mult_bps: 10_000,
             source: "attest".into(),
             term_class: "A".into(),
+            protocol_fee_cents: params::protocol_fee_cents(10_000),
+            protocol_fee_zat: params::protocol_fee_zat(10_000, 520_000).unwrap(),
             x_mint: 530_000,
+            mint_blocked: false,
+            mint_blocked_reason: String::new(),
         }
     }
 
@@ -894,7 +1391,6 @@ mod tests {
                 "pMint above min(xMint, aMint)",
                 Box::new(|e| e.p_mint = 600_000),
             ),
-            ("pMint undefined", Box::new(|e| e.p_mint = 0)),
             (
                 "base ratio of another class",
                 Box::new(|e| {
@@ -932,6 +1428,29 @@ mod tests {
                 other => panic!("{what}: {other:?}"),
             }
         }
+        // Y3: an undefined pMint is the network waiting for a price, not an inconsistent server.
+        let mut e = honest();
+        e.p_mint = 0;
+        match check(&e) {
+            Err(MintError::Blocked { reason }) => assert_eq!(reason, WAITING_FOR_PRICE),
+            other => panic!("pMint undefined: {other:?}"),
+        }
+        // The node's mintBlocked verdict (lightwalletd L1) is the refusal, in plain words.
+        let mut e = honest();
+        e.mint_blocked = true;
+        e.mint_blocked_reason = "mintpol-global-ratio".into();
+        match check(&e) {
+            Err(MintError::Blocked { reason }) => {
+                assert!(reason.contains("collateral ratio is below"), "{reason}")
+            }
+            other => panic!("mintBlocked: {other:?}"),
+        }
+        let mut e = honest();
+        e.mint_blocked = true;
+        e.mint_blocked_reason = "mintpol-no-price: no pMint at refHeight".into();
+        assert!(
+            matches!(check(&e), Err(MintError::Blocked { reason }) if reason == WAITING_FOR_PRICE)
+        );
         // The node's own rounding (up to 1,000 zat) is accepted.
         let mut e = honest();
         e.required_zat = 57_692_308_000;
@@ -959,21 +1478,24 @@ mod tests {
             Err(MintError::BadAmount { .. })
         ));
         assert!(check_cents(r, 10_000).is_ok());
-        assert!(check_cents(r, 1_000_000).is_ok());
+        assert!(check_cents(r, 10_000_000).is_ok());
         assert!(matches!(
-            check_cents(r, 1_000_001),
+            check_cents(r, 10_000_001),
             Err(MintError::BadAmount { .. })
         ));
         assert!(matches!(
             check_cents(r, u32::MAX as u64 + 1),
             Err(MintError::BadAmount { .. })
         ));
-        // H-12: $2,500 on mainnet and testnet.
+        // D-Q-24: $100,000 on every network (H-12's $2,500 guard reversed).
         for n in [Network::Mainnet, Network::Testnet] {
-            assert!(check_cents(n, 250_000).is_ok());
+            assert!(check_cents(n, 10_000_000).is_ok());
             assert!(matches!(
-                check_cents(n, 250_001),
-                Err(MintError::BadAmount { max: 250_000, .. })
+                check_cents(n, 10_000_001),
+                Err(MintError::BadAmount {
+                    max: 10_000_000,
+                    ..
+                })
             ));
         }
         // In-term D-IT-9: classes B and C are enabled on mainnet and testnet again (H-5 reversed).
@@ -1017,37 +1539,35 @@ mod tests {
         assert!(check_bundle_price(1, &[]).is_err());
     }
 
-    /// FEE-1 exactly, FEE-0 only with no payee (audit G-2).
+    /// FEE-1′ computed locally, FEE-0 only with no payee, a server's figure compared (audit G-2).
     #[test]
     fn hostile_fees_are_refused() {
         let payee = "s1payee";
+        // $1,000 at $1.99: 1 % = $10.00 = ⌈10⁷ · 10⁸ / 1,990,000⌉ zat.
+        assert_eq!(
+            protocol_fee(100_000, 1_990_000, payee).unwrap(),
+            502_512_563
+        );
+        // FEE-0: no payee, no fee.
+        assert_eq!(protocol_fee(100_000, 1_990_000, "").unwrap(), 0);
+        // an undefined price prices nothing
+        assert!(protocol_fee(100_000, 0, payee).is_err());
+        // a server's figure: right, or not reported (0), or refused
+        assert!(check_protocol_fee("t", 100_000, 1_990_000, 1_000, 502_512_563).is_ok());
+        assert!(check_protocol_fee("t", 100_000, 1_990_000, 0, 0).is_ok());
+        assert!(check_protocol_fee("t", 100_000, 1_990_000, 1_001, 502_512_563).is_err());
+        assert!(check_protocol_fee("t", 100_000, 1_990_000, 1_000, 502_512_564).is_err());
+        // the audit's scenario: most of the collateral as the fee
+        assert!(check_protocol_fee("t", 100_000, 1_990_000, 0, 250_000_000_000).is_err());
         let r = Network::Regtest;
-        assert_eq!(
-            check_fee(r, 1_000_000_000, payee, 50_000_000).unwrap(),
-            50_000_000
-        );
-        assert_eq!(
-            check_fee(r, 400_000_000_000, payee, 1_000_000_000).unwrap(),
-            1_000_000_000
-        );
-        // The audit's scenario: fee = collateral − 2,000 to the operator's pool.
-        assert!(check_fee(r, 1_000_000_000, payee, 999_998_000).is_err());
-        assert!(check_fee(r, 1_000_000_000, payee, 50_000_001).is_err());
-        assert!(check_fee(r, 1_000_000_000, payee, 49_999_999).is_err());
-        assert!(check_fee(r, 1_000_000_000, payee, 0).is_err());
-        // FEE-0: no payee, no fee, whatever number the server attached.
-        assert_eq!(check_fee(r, 1_000_000_000, "", 999_998_000).unwrap(), 0);
         assert_eq!(attest_fee(r, 50_000_000, &[0, 1]), 12_500_000);
         assert_eq!(attest_fee(r, 50_000_000, &[]), 0);
-        // H-4 on mainnet: 0.15 %, the attestor half. A server still quoting the v3 rate
-        // (0.25 %) is refused.
         let m = Network::Mainnet;
-        assert_eq!(
-            check_fee(m, 400_000_000_000, payee, 600_000_000).unwrap(),
-            600_000_000
-        );
-        assert!(check_fee(m, 400_000_000_000, payee, 1_000_000_000).is_err());
         assert_eq!(attest_fee(m, 600_000_000, &[0]), 300_000_000);
+        // an estimate whose protocol fee is not FEE-1′ at its own pMint is refused
+        let mut e = honest();
+        e.protocol_fee_zat += 1;
+        assert!(check_estimate(r, 484, 10_000, 48, &e).is_err());
     }
 
     /// `GetVault` with bent script terms (audit G-1, the sync side).
@@ -1060,9 +1580,20 @@ mod tests {
             ref_height: 480,
             lock_height: 528,
             claim_height: 552,
+            minted_cents: 10_000,
+            collateral_zat: 600_000_000_000,
+            p_mint: 50_000, // $100 at 300 % = 6,000 YEC at $0.05
             ..Default::default()
         };
         assert!(check_vault(Network::Regtest, &honest).is_ok());
+        // rpcversion 8: a stored mint price below what the collateral backs, or none, is refused
+        for p_mint in [0, 49_999] {
+            let v = rpc::YedVault {
+                p_mint,
+                ..honest.clone()
+            };
+            assert!(check_vault(Network::Regtest, &v).is_err(), "pMint {p_mint}");
+        }
         let void = rpc::YedVault {
             status: "VOID".into(),
             term_class: String::new(),
@@ -1105,8 +1636,6 @@ mod tests {
     /// The regtest parameter set as the node reports it (`yed_getinfo.params`).
     fn server_params(network: Network) -> rpc::YellowbackParams {
         rpc::YellowbackParams {
-            fee_min_zat: params::FEE_MIN_ZAT,
-            fee_bps: network.fee_bps(),
             grace: network.grace() as i64,
             ref_window: REF_WINDOW as i64,
             token_value_zat: params::TOKEN_VALUE,
@@ -1114,6 +1643,51 @@ mod tests {
             attest: Some(rpc::YellowbackAttestParams {
                 attest_fee_bps: network.attest_fee_bps(),
                 residual_min_zat: params::RESIDUAL_MIN_ZAT,
+                mint_payload_version: 4,
+                ..Default::default()
+            }),
+            // rpcversion 7 (quantum spec §6.2)
+            // (mainnet and testnet: Falcon from height 0, as both node lines' chainparams)
+            pq: Some(match network.pq_falcon_height() {
+                Some(h) => rpc::YellowbackPqParams {
+                    schemes: vec![1, 2],
+                    falcon_active: true,
+                    falcon_height: h as i64,
+                    fee_rate_zat_per_kb: 100,
+                },
+                None => rpc::YellowbackPqParams {
+                    schemes: vec![1],
+                    falcon_active: false,
+                    falcon_height: -1,
+                    fee_rate_zat_per_kb: 100,
+                },
+            }),
+            // rpcversion 8 (fees spec §3.4): the bands, the floor, the early fee; no attested price
+            // yet (priceSource "fallback"), so both size rates are -pqfeerate
+            max_mint_cents: network.max_mint_cents() as i64,
+            fees: Some(rpc::YellowbackFeeParams {
+                early_redeem_fee_bps: network
+                    .term_classes()
+                    .iter()
+                    .map(|c| c.early_redeem_fee_bps)
+                    .collect(),
+                protocol: Some(rpc::YellowbackProtocolFee {
+                    attest_fee_bps: network.attest_fee_bps(),
+                    bands: params::PROTOCOL_FEE_BANDS
+                        .iter()
+                        .map(|(u, b)| rpc::YellowbackFeeBand {
+                            upto_cents: *u as i64,
+                            bps: *b,
+                        })
+                        .collect(),
+                    floor_cents: params::PROTOCOL_FEE_FLOOR_CENTS,
+                    price_source: "pMint".into(),
+                }),
+                network: Some(fallback_network()),
+            }),
+            supply_cap: Some(rpc::YellowbackSupplyCap {
+                max_vault_share_bps: params::MAX_VAULT_SHARE_BPS,
+                vault_share_floor_cents: params::VAULT_SHARE_FLOOR_CENTS,
                 ..Default::default()
             }),
             classes: network
@@ -1140,6 +1714,209 @@ mod tests {
         }
     }
 
+    /// `params.fees.network` before any attested price: both rates are `-pqfeerate` (100).
+    fn fallback_network() -> rpc::YellowbackNetworkFee {
+        rpc::YellowbackNetworkFee {
+            price_micro_usd: 0,
+            price_source: "fallback".into(),
+            plain: Some(rpc::YellowbackNetworkRate {
+                usd_per_kb_micro: 20_000,
+                zat_per_kb: 100,
+                ..Default::default()
+            }),
+            yellowback: Some(rpc::YellowbackNetworkRate {
+                usd_per_kb_micro: 50_000,
+                zat_per_kb: 100,
+                max_tx_fee_usd_micro: 2_000_000,
+                max_tx_fee_ceiling_zat: 1_000_000_000,
+                max_tx_fee_zat: 10_000_000,
+            }),
+            floor_zat_per_kb: 5_000,
+            fallback_zat_per_kb: 100,
+            flat_zat: 1_000,
+            max_tx_fee_zat: 10_000_000,
+        }
+    }
+
+    /// `params.fees.network` at an attested $0.40 (the delta's example): $0.02/KB plain =
+    /// 5,000,000 zat/KB, $0.05/KB Yellowback = 12,500,000 zat/KB, the cap $2 = 5 YEC.
+    fn priced_network() -> rpc::YellowbackNetworkFee {
+        let mut n = fallback_network();
+        n.price_micro_usd = 400_000;
+        n.price_source = "tip".into();
+        n.plain.as_mut().unwrap().zat_per_kb = 5_000_000;
+        let y = n.yellowback.as_mut().unwrap();
+        y.zat_per_kb = 12_500_000;
+        y.max_tx_fee_zat = 500_000_000;
+        n
+    }
+
+    /// rpcversion 8: `params.fees.network` is read and recomputed from its own inputs; the size fees.
+    #[test]
+    fn network_fee_terms_are_recomputed() {
+        let mut p = server_params(Network::Regtest);
+        p.fees.as_mut().unwrap().network = Some(priced_network());
+        p.pq.as_mut().unwrap().fee_rate_zat_per_kb = 5_000_000;
+        let t = pq_terms(&p, Network::Regtest).unwrap();
+        assert_eq!(t.fee_rate_zat_per_kb, 5_000_000);
+        assert_eq!(t.yed_rate_zat_per_kb, 12_500_000);
+        assert_eq!(t.floor_rate_zat_per_kb, 5_000);
+        assert_eq!((t.flat_zat, t.max_fee_zat), (1_000, 500_000_000));
+        // a redeem: the SLH-DSA owner input (7,981 bytes) on the 1,000-byte base, $0.05/KB
+        let size = params::yed_estimated_size(0, &[1]);
+        assert_eq!(size, 8_981);
+        assert_eq!(t.yed_fee(size), 12_500_000 * 8_981 / 1000);
+        assert_eq!(t.yed_floor_fee(size), 5_000 * 8_981 / 1000);
+        // the cap, and the flat floor
+        assert_eq!(t.yed_fee(100_000), 500_000_000);
+        assert_eq!(t.yed_fee(0), 12_500_000, "CFeeRate: a 0 fee is the rate");
+        // a padded rate, a target out of bounds, a pq rate that is not the plain one: refused
+        let bent = |f: &dyn Fn(&mut rpc::YellowbackParams)| {
+            let mut q = p.clone();
+            f(&mut q);
+            pq_terms(&q, Network::Regtest).is_err()
+        };
+        fn net(q: &mut rpc::YellowbackParams) -> &mut rpc::YellowbackNetworkFee {
+            q.fees.as_mut().unwrap().network.as_mut().unwrap()
+        }
+        assert!(bent(
+            &|q| net(q).yellowback.as_mut().unwrap().zat_per_kb += 1
+        ));
+        assert!(bent(&|q| net(q).plain.as_mut().unwrap().zat_per_kb *= 2));
+        assert!(bent(&|q| net(q)
+            .yellowback
+            .as_mut()
+            .unwrap()
+            .usd_per_kb_micro = 2_000_000));
+        assert!(bent(&|q| net(q).floor_zat_per_kb = 1_000_000));
+        assert!(bent(&|q| net(q).flat_zat = 999));
+        assert!(bent(&|q| q.pq.as_mut().unwrap().fee_rate_zat_per_kb = 100));
+        assert!(bent(&|q| q.fees = None));
+        // the absolute ceiling: a server cap above 10 YEC is held at 10 YEC
+        let mut big = p.clone();
+        net(&mut big).yellowback.as_mut().unwrap().max_tx_fee_zat = 100 * params::COIN;
+        assert_eq!(
+            pq_terms(&big, Network::Regtest).unwrap().max_fee_zat,
+            params::MAX_YED_TX_FEE_ZAT
+        );
+    }
+
+    /// rpcversion 7: `params.pq` is read and bounded; Falcon by height.
+    #[test]
+    fn pq_terms_are_read_and_bounded() {
+        let base = server_params(Network::Regtest);
+        let t = pq_terms(&base, Network::Regtest).unwrap();
+        assert_eq!(
+            t,
+            PqTerms {
+                max_fee_zat: 10_000_000, // the fallback block's cap
+                ..PqTerms::default()
+            }
+        );
+        assert!(!t.falcon_at(1_000_000));
+        let with = |f: &dyn Fn(&mut rpc::YellowbackPqParams)| {
+            let mut p = base.clone();
+            f(p.pq.as_mut().unwrap());
+            p
+        };
+        // schemes: SLH required, Falcon only when active, nothing unknown
+        assert!(pq_terms(&with(&|q| q.schemes = vec![]), Network::Regtest).is_err());
+        assert!(pq_terms(&with(&|q| q.schemes = vec![1, 2]), Network::Regtest).is_err());
+        assert!(pq_terms(&with(&|q| q.schemes = vec![1, 3]), Network::Regtest).is_err());
+        let f = pq_terms(
+            &with(&|q| {
+                q.schemes = vec![1, 2];
+                q.falcon_active = true;
+                q.falcon_height = 200;
+            }),
+            Network::Regtest,
+        )
+        .unwrap();
+        assert!(f.falcon_active && f.falcon_at(0));
+        let h = pq_terms(&with(&|q| q.falcon_height = 300), Network::Regtest).unwrap();
+        assert_eq!(h.falcon_height, Some(300));
+        assert!(!h.falcon_at(299) && h.falcon_at(300));
+        // no pq block, or another MINT payload version: refused (and so is the parameter set)
+        let mut p = base.clone();
+        p.pq = None;
+        assert!(pq_terms(&p, Network::Regtest).is_err());
+        assert!(check_server_params(Network::Regtest, Some(&p)).is_err());
+        let mut p = base.clone();
+        p.attest.as_mut().unwrap().mint_payload_version = 3;
+        assert!(pq_terms(&p, Network::Regtest).is_err());
+        // the fee: max(1,000, rate × size), CFeeRate rounding, under the cap
+        let t = PqTerms {
+            fee_rate_zat_per_kb: 100,
+            ..PqTerms::default()
+        };
+        assert_eq!(t.fee(8_200), 1_000, "1x at the default: unchanged (C-5)");
+        let t5 = PqTerms {
+            fee_rate_zat_per_kb: 500,
+            ..t
+        };
+        assert_eq!(t5.fee(8_200), 4_100);
+        assert_eq!(
+            t5.fee(8_201),
+            4_100,
+            "integer division, as CFeeRate::GetFee"
+        );
+        assert_eq!(params::pq_size_fee(0, 100, 0), 100, "a 0 fee is the rate");
+    }
+
+    /// LOW-06-Y-4: mainnet and testnet compile Falcon from height 0 (`pqFalconHeight = 0` on both
+    /// node lines) and refuse a server that says otherwise; regtest follows the server.
+    #[test]
+    fn falcon_activation_is_checked_not_overridden() {
+        for n in [Network::Mainnet, Network::Testnet] {
+            let base = server_params(n);
+            let t = pq_terms(&base, n).unwrap();
+            assert_eq!((t.falcon_height, t.falcon_active), (Some(0), true));
+            let with = |f: &dyn Fn(&mut rpc::YellowbackPqParams)| {
+                let mut p = base.clone();
+                f(p.pq.as_mut().unwrap());
+                p
+            };
+            // another height
+            let moved = with(&|q| {
+                q.falcon_height = 300;
+                q.falcon_active = false;
+                q.schemes = vec![1];
+            });
+            assert!(matches!(
+                pq_terms(&moved, n),
+                Err(MintError::Inconsistent { .. })
+            ));
+            assert!(check_server_params(n, Some(&moved)).is_err());
+            // the case the old override masked: Falcon inactive, scheme 2 absent, height kept
+            let inactive = with(&|q| {
+                q.falcon_active = false;
+                q.schemes = vec![1];
+            });
+            let e = pq_terms(&inactive, n).unwrap_err().to_string();
+            assert!(e.contains("falconActive false"), "{e}");
+            // no activation height at all
+            assert!(pq_terms(&with(&|q| q.falcon_height = -1), n).is_err());
+            assert!(check_falcon_activation(n, base.pq.as_ref().unwrap()).is_ok());
+        }
+        // regtest: the server's height, whatever it is
+        let mut p = server_params(Network::Regtest);
+        p.pq.as_mut().unwrap().falcon_height = 300;
+        let t = pq_terms(&p, Network::Regtest).unwrap();
+        assert!(!t.falcon_at(299) && t.falcon_at(300));
+        // the offline defaults
+        for n in [Network::Mainnet, Network::Testnet] {
+            let d = PqTerms::default_for(n);
+            assert!(d.falcon_at(0) && d.falcon_active);
+            assert_eq!(
+                d.fee_rate_zat_per_kb,
+                PqTerms::default().fee_rate_zat_per_kb
+            );
+        }
+        assert_eq!(PqTerms::default_for(Network::Regtest), PqTerms::default());
+        assert_eq!(params::PQ_FALCON_HEIGHT_MAINNET, 0);
+        assert_eq!(params::PQ_FALCON_HEIGHT_TESTNET, 0);
+    }
+
     /// H-9.3: the server's parameter set must be the network's.
     #[test]
     fn server_params_are_the_networks() {
@@ -1152,8 +1929,40 @@ mod tests {
             check_server_params(Network::Mainnet, Some(&server_params(Network::Regtest))).is_err()
         );
         let bends: Vec<Bend<rpc::YellowbackParams>> = vec![
-            Box::new(|p| p.fee_min_zat = 1),
-            Box::new(|p| p.fee_bps = 100),
+            // rpcversion 8: FEE-1′'s bands and floor, maxMint, the early fee, the vault share
+            Box::new(|p| p.max_mint_cents = 250_000),
+            Box::new(|p| p.fees = None),
+            Box::new(|p| p.fees.as_mut().unwrap().protocol.as_mut().unwrap().bands[0].bps = 150),
+            Box::new(|p| {
+                p.fees
+                    .as_mut()
+                    .unwrap()
+                    .protocol
+                    .as_mut()
+                    .unwrap()
+                    .bands
+                    .truncate(2)
+            }),
+            Box::new(|p| {
+                p.fees
+                    .as_mut()
+                    .unwrap()
+                    .protocol
+                    .as_mut()
+                    .unwrap()
+                    .floor_cents = 500
+            }),
+            Box::new(|p| {
+                p.fees
+                    .as_mut()
+                    .unwrap()
+                    .protocol
+                    .as_mut()
+                    .unwrap()
+                    .attest_fee_bps = 2_500
+            }),
+            Box::new(|p| p.fees.as_mut().unwrap().early_redeem_fee_bps = vec![500, 250, 50]),
+            Box::new(|p| p.supply_cap.as_mut().unwrap().max_vault_share_bps = 5_000),
             Box::new(|p| p.grace = 1),
             Box::new(|p| p.ref_window = 400),
             Box::new(|p| p.token_value_zat = 20_000),
@@ -1247,11 +2056,21 @@ mod tests {
         )
         .unwrap();
         assert!(g.mintable_classes.is_empty());
-        assert!(g
-            .blocked
-            .as_deref()
-            .unwrap()
-            .contains("GLOBAL_RATIO, PARTICIPATION"));
+        // Y3: plain words, not the raw halt names.
+        let why = g.blocked.as_deref().unwrap();
+        assert!(
+            why.starts_with("Minting is paused: the system's collateral ratio"),
+            "{why}"
+        );
+        assert!(why.contains("too few attestors"), "{why}");
+        assert!(
+            !why.contains("GLOBAL_RATIO") && !why.contains("PARTICIPATION"),
+            "{why}"
+        );
+        // A missing price reads as waiting for one.
+        let g = mint_gate(m, &info(true), &price(true), &stats(&[], &["NO_PRICE"])).unwrap();
+        assert_eq!(g.blocked.as_deref(), Some(WAITING_FOR_PRICE));
+        assert_eq!(halt_sentence("NEW_BIT"), "an unrecognised halt (NEW_BIT)");
         let g = mint_gate(m, &info(true), &price(true), &stats(&[], &[])).unwrap();
         assert!(g
             .blocked
@@ -1269,13 +2088,25 @@ mod tests {
         i.upgrade.as_mut().unwrap().status = "pending".into();
         let g = mint_gate(r, &i, &price(true), &stats(&["A"], &[])).unwrap();
         assert!(g.blocked.as_deref().unwrap().contains("not active"));
+        // TOK-PQ: from the Falcon height the token goes to a Falcon holder; the gate stays open.
+        let mut i = info(false);
+        i.height = 299;
+        let mut p = server_params(Network::Regtest);
+        p.pq.as_mut().unwrap().falcon_height = 301;
+        i.params = Some(p.clone());
+        let g = mint_gate(r, &i, &price(true), &stats(&["A"], &[])).unwrap();
+        assert!(g.blocked.is_none(), "the next block (300) is before Falcon");
+        i.height = 300;
+        let g = mint_gate(r, &i, &price(true), &stats(&["A"], &[])).unwrap();
+        assert!(g.blocked.is_none(), "Falcon holders are built, not refused");
     }
 
-    /// RED-5 recomputed from `pClaim`, and the claim bounds (H-9.3).
+    /// RED-5 recomputed from `pClaim` on path (a) and from `pEmerg` on path (b), and the claim
+    /// bounds (H-9.3, RED-5b A1).
     #[test]
     fn claimable_residual_and_bounds() {
-        // $100 debt at pClaim $0.10/YEC: claimantMax = ⌈10⁴ · margin · 10⁸ / 10⁵⌉ — 1.25·10¹¹
-        // under clause (a) (θ 125 %, in-term D-IT-2), 10¹¹ under (b).
+        // $100 debt at $0.10/YEC: claimantMax = ⌈10⁴ · margin · 10⁸ / 10⁵⌉ — 1.25·10¹¹
+        // under clause (a) (θ 125 %, in-term D-IT-2), 10¹¹ under (b) at the same price.
         let (cm_a, cm_b) = (125_000_000_000i64, 100_000_000_000i64);
         let row = |path: &str, collateral: i64, residual: i64| rpc::YedClaimable {
             vault: format!("{}:0", "ab".repeat(32)),
@@ -1288,25 +2119,35 @@ mod tests {
             ..Default::default()
         };
         // Clause (a): underwater means collateral < claimantMax, so the residual is 0.
-        assert_eq!(check_claimable(&row("a", cm_a - 1_000, 0)).unwrap(), 0);
-        // An invented residual under (a): refused.
-        assert!(check_claimable(&row("a", cm_a - 1_000, 50_000_000)).is_err());
-        // Not underwater at the row's own pClaim: refused even with a matching residual.
-        assert!(check_claimable(&row("a", cm_a + 50_000_000, 50_000_000)).is_err());
-        // Clause (b): no margin; the residual is RED-5's.
         assert_eq!(
-            check_claimable(&row("b", cm_b + 70_000_000, 70_000_000)).unwrap(),
+            check_claimable(&row("a", cm_a - 1_000, 0), None).unwrap(),
+            0
+        );
+        // An invented residual under (a): refused.
+        assert!(check_claimable(&row("a", cm_a - 1_000, 50_000_000), None).is_err());
+        // Not underwater at the row's own pClaim: refused even with a matching residual.
+        assert!(check_claimable(&row("a", cm_a + 50_000_000, 50_000_000), None).is_err());
+        // Clause (b) at a known pEmerg (equal to the row's pClaim here): margin 10⁴, not θ.
+        let emerg = Some(100_000);
+        assert_eq!(
+            check_claimable(&row("b", cm_b + 70_000_000, 70_000_000), emerg).unwrap(),
             70_000_000
         );
-        assert!(check_claimable(&row("b", cm_b + 70_000_000, 80_000_000)).is_err());
-        assert!(check_claimable(&row("b", cm_b + 70_000_000, 60_000_000)).is_err());
+        assert!(check_claimable(&row("b", cm_b + 70_000_000, 80_000_000), emerg).is_err());
+        assert!(check_claimable(&row("b", cm_b + 70_000_000, 60_000_000), emerg).is_err());
         // A dust residual: the RPC's unfloored figure and 0 are both accepted; 0 is paid.
-        assert_eq!(check_claimable(&row("b", cm_b + 5_000, 5_000)).unwrap(), 0);
-        assert_eq!(check_claimable(&row("b", cm_b + 5_000, 0)).unwrap(), 0);
-        assert!(check_claimable(&row("c", cm_a - 1, 0)).is_err());
+        assert_eq!(
+            check_claimable(&row("b", cm_b + 5_000, 5_000), emerg).unwrap(),
+            0
+        );
+        assert_eq!(
+            check_claimable(&row("b", cm_b + 5_000, 0), emerg).unwrap(),
+            0
+        );
+        assert!(check_claimable(&row("c", cm_a - 1, 0), None).is_err());
         let mut undefined = row("a", cm_a - 1, 0);
         undefined.p_claim = 0;
-        assert!(check_claimable(&undefined).is_err());
+        assert!(check_claimable(&undefined, None).is_err());
         // rpcversion 6: a row listed above θ (claimable false, no path, pClaim maybe null) is
         // shown, not claimed: nothing in it is checked or relied on.
         let listed = rpc::YedClaimable {
@@ -1315,7 +2156,31 @@ mod tests {
             p_claim: 0,
             ..row("a", cm_a * 2, 0)
         };
-        assert_eq!(check_claimable(&listed).unwrap(), 0);
+        assert_eq!(check_claimable(&listed, None).unwrap(), 0);
+
+        // RED-5b (A1): path (b) at pEmerg 0.349, not at pClaim 0.42. $100,000 over 300,000 YEC.
+        let collateral = 300_000 * params::COIN;
+        let at_emerg = 1_346_704_871_060i64;
+        let at_claim = 6_190_476_190_476i64;
+        let mut a1 = row("b", collateral, at_emerg);
+        a1.minted_cents = 10_000_000;
+        a1.p_claim = 420_000;
+        assert_eq!(check_claimable(&a1, Some(349_000)).unwrap(), at_emerg);
+        // The pre-A1 residual (sized at pClaim) is inconsistent once path (b) uses pEmerg.
+        let mut sized_at_claim = a1.clone();
+        sized_at_claim.residual_zat = at_claim;
+        assert!(check_claimable(&sized_at_claim, Some(349_000)).is_err());
+        // No fallback to pClaim when pEmerg cannot be known.
+        match check_claimable(&a1, None) {
+            Err(MintError::Inconsistent { what }) => {
+                assert!(what.contains("pEmerg unknown"), "{what}")
+            }
+            other => panic!("expected pEmerg unknown, got {other:?}"),
+        }
+        assert!(check_claimable(&a1, Some(0)).is_err());
+        // pClaim on the row is not the sizing price: an undefined pClaim still passes at pEmerg.
+        a1.p_claim = 0;
+        assert_eq!(check_claimable(&a1, Some(349_000)).unwrap(), at_emerg);
 
         let take = claimant_take(10_000_000_000, 50_000_000, 12_500_000, 0);
         assert_eq!(
@@ -1388,17 +2253,18 @@ mod tests {
         // The vault script a server reports must be the one rebuilt from owner and refHeight
         // (in-term IT-1: ownerHeight = appHeight = R + 1) — or, for a vault minted before the
         // rule, from owner and lockHeight (ownerHeight = L, appHeight = L + GRACE).
-        let owner = secp256k1::PublicKey::from_secret_key(
-            &secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap(),
-        )
-        .serialize();
+        let owner = crate::pq::PqKeyId {
+            scheme: 1,
+            hash: [7; 32],
+        };
         let spk = t.mint_vault_script(&owner, 329).unwrap();
         let p = crate::vault::parse_vault(&spk).unwrap();
         assert_eq!(p.tag, crate::vault::YED_TAG);
         assert_eq!((p.owner_height, p.app_height, p.delay), (330, 330, 10));
         let mut v = rpc::YedVault {
             txid: "ab".repeat(32),
-            owner_pub_key: crate::keys::hex(&owner),
+            owner_scheme: owner.scheme.into(),
+            owner_hash: crate::keys::hex(&owner.hash),
             ref_height: 329,
             lock_height: 377,
             claim_height: 401,
@@ -1413,8 +2279,22 @@ mod tests {
         v.ref_height = 330;
         assert!(check_vault_script(&t, &v).is_err());
         v.ref_height = 329;
-        v.script_pub_key = crate::keys::hex(&t.mint_vault_script(&[2; 33], 329).unwrap());
+        let other = crate::pq::PqKeyId {
+            hash: [2; 32],
+            ..owner
+        };
+        v.script_pub_key = crate::keys::hex(&t.mint_vault_script(&other, 329).unwrap());
         assert!(check_vault_script(&t, &v).is_err());
+        // an unregistered scheme or a short owner field is not a vault owner
+        let mut w = v.clone();
+        w.owner_scheme = 3;
+        assert!(vault_owner(&w).is_err());
+        w.owner_scheme = 256 + 1;
+        assert!(vault_owner(&w).is_err());
+        w.owner_scheme = 1;
+        assert!(vault_owner(&w).is_ok());
+        w.owner_hash = "01".repeat(31);
+        assert!(vault_owner(&w).is_err());
         // A pre-plan vault (the upgrade line's V) is still recognised, with its own heights.
         let old = crate::vault::build_vault(&t.pre_plan_vault_params(&owner, 377)).unwrap();
         v.script_pub_key = crate::keys::hex(&old);

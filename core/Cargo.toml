@@ -83,12 +83,31 @@ zcash_transparent = { version = "=0.8.0", git = "https://github.com/boyfromcave/
 secp256k1_zcash = { package = "secp256k1", version = "=0.29.1", default-features = false, features = ["alloc"] }
 zcash_protocol = { version = "=0.9.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "4867cf85199a6fc734bf4027bd001e9e4fca0011", default-features = false, features = ["std"] }
 rand = { version = "=0.8.8", default-features = false, features = ["std", "std_rng", "getrandom"] }
+# Post-quantum vault owners (workspace docs/plans/yellowback-quantum-plan.md Q7, quantum spec §1-§4,
+# client survey yellowback-quantum-clients.md §1): SLH-DSA-SHA2-128s (FIPS 205 final, pure mode,
+# empty context, deterministic opt_rand = PK.seed), RustCrypto's pure-Rust implementation. 0.1.0 is
+# the version that resolves beside bip32's RustCrypto pre-release pins (0.2.0-rc.5 needs hmac
+# ^0.13 final); `core/src/pq.rs` proves it byte-identical to the node's golden vectors
+# (`tests/vectors/pq_vectors.json`, `vault_vectors.json` ownerSpends). Its sha2 0.10 / hmac 0.12 sit
+# beside YEW's pre-releases (different major), unused by YEW directly.
+# Cargo.lock holds its `signature` at 2.3.0-pre.4: slh-dsa 0.1.0 does not compile against the
+# 2.3.0-pre.7 a fresh resolve picks (rand_core 0.9's `CryptoRngCore` is gone); a `cargo update`
+# must keep `cargo update -p signature --precise 2.3.0-pre.4`.
+slh-dsa = { version = "=0.1.0", default-features = false, features = ["alloc"] }
 
 # flutter_rust_bridge's macros test `cfg(frb_expand)`.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
 
+# Tests only: the NIST PQC KAT generator's AES-256 CTR DRBG, to replay the Falcon round-3 KAT
+# (`pq.rs` `falcon_reproduces_the_nist_kats`); `aes` 0.8.4 is already in Cargo.lock.
+[dev-dependencies]
+aes = "=0.8.4"
+
 [build-dependencies]
+# The vendored Falcon C (`pq-c/falcon`, build.rs): the `cc` already in Cargo.lock (rusqlite's
+# bundled SQLite, ring and secp256k1-sys build with it).
+cc = "=1.4.7"
 tonic-prost-build = "=0.14.6"
 prost-build = "=0.14.4"
 
@@ -107,8 +126,8 @@ prost-build = "=0.14.4"
 # failed the handshake. `webpki-roots` is pinned here as a direct dependency so its version is
 # exact (plan §3.3 allow-list: scripts/allowed-deps.txt).
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "channel", "tls-ring", "tls-native-roots", "tls-webpki-roots"] }
-webpki-roots = "=1.0.9"
-tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+webpki-roots = "=1.0.10"
+tokio = { version = "=1.53.3", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 # The bridge (api.rs): the crate and flutter_rust_bridge_codegen are the same version (W0a); the
 # Dart package in app/pubspec.yaml is pinned to it too.
 flutter_rust_bridge = "=2.13.0"
@@ -122,7 +141,7 @@ tokio-rustls = { version = "=0.26.5", default-features = false, features = ["rin
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
 # 0.9 is the tonic 0.14 line (0.7 was tonic 0.13); MIT/Apache-2.0.
 tonic-web-wasm-client = "=0.9.2"
-tokio = { version = "=1.53.1", default-features = false, features = ["sync"] }
+tokio = { version = "=1.53.3", default-features = false, features = ["sync"] }
 wasm-bindgen-futures = "=0.4.78"
 # Both `getrandom` lines in the graph must be told to use the Web Crypto API: 0.2 (rand 0.8, the
 # librustzcash6 crates) by its `js` feature; 0.3 (secp256k1 0.33 -> rand 0.9) by `wasm_js` plus

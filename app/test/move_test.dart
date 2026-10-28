@@ -90,7 +90,7 @@ void main() {
 
   testWidgets('mint short of public YEC: the hint opens Move → To public with the shortfall', (tester) async {
     final h = Harness(withWallet: true);
-    h.api.balancesAnswer = const Balances(yecZat: 100000, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0, priceMicroUsd: 520000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 200000000, yecShieldedSpendableZat: 200000000, yecShieldedPendingZat: 0, shieldedScannedHeight: 484, shieldedSendable: true);
+    h.api.balancesAnswer = const Balances(yecZat: 100000, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0, priceMicroUsd: 520000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 200000000, yecShieldedSpendableZat: 200000000, yecShieldedPendingZat: 0, shieldedScannedHeight: 484, shieldedSendable: true, yecPqZat: 0, pqCoins: []);
     await h.pump(tester);
     await tester.tap(find.byKey(const Key('tab-yellowback')));
     await tester.pumpAndSettle();
@@ -117,7 +117,7 @@ void main() {
 
   testWidgets('a shortfall larger than the private balance opens Move all', (tester) async {
     final h = Harness(withWallet: true);
-    h.api.balancesAnswer = const Balances(yecZat: 100000, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0, priceMicroUsd: 520000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 50000000, yecShieldedSpendableZat: 50000000, yecShieldedPendingZat: 0, shieldedScannedHeight: 484, shieldedSendable: true);
+    h.api.balancesAnswer = const Balances(yecZat: 100000, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0, priceMicroUsd: 520000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 50000000, yecShieldedSpendableZat: 50000000, yecShieldedPendingZat: 0, shieldedScannedHeight: 484, shieldedSendable: true, yecPqZat: 0, pqCoins: []);
     await h.pump(tester);
     await tester.tap(find.byKey(const Key('tab-yellowback')));
     await tester.pumpAndSettle();
@@ -138,7 +138,7 @@ void main() {
 
   testWidgets('send YED without public fee money: the hint prefills the missing fee YEC', (tester) async {
     final h = Harness(withWallet: true);
-    h.api.balancesAnswer = const Balances(yecZat: 0, yecReservedZat: 0, yecPendingZat: 0, yedCents: 5000, yedPendingCents: 0, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 30000000, yecShieldedSpendableZat: 30000000, yecShieldedPendingZat: 0, shieldedScannedHeight: 484, shieldedSendable: true);
+    h.api.balancesAnswer = const Balances(yecZat: 0, yecReservedZat: 0, yecPendingZat: 0, yedCents: 5000, yedPendingCents: 0, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 30000000, yecShieldedSpendableZat: 30000000, yecShieldedPendingZat: 0, shieldedScannedHeight: 484, shieldedSendable: true, yecPqZat: 0, pqCoins: []);
     h.api.yedPreviewError = const YewError(kind: ErrorKind.needYecForFees, message: 'You need about 0.00021000 YEC to send YED. Receive YEC first.');
     await h.pump(tester);
     await tester.tap(find.byKey(const Key('send')));

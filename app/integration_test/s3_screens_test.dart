@@ -7,7 +7,7 @@
 // Written against the real core. Drives the private screens and prints two kinds of markers
 // for a host-side helper:
 //
-//   YEW-S3 FUND z=<ys1…> t=<s…> ye=<ye…>   fund these (node 0: z_sendmany with a memo to z,
+//   YEW-S3 FUND z=<ys1…> t=<s…> ye=<yb…>   fund these (node 0: z_sendmany with a memo to z,
 //                                          sendtoaddress to t, yed_send to ye), mine a block
 //   YEW-S3 MINE                            mine one block (the private change becomes spendable)
 //   YEW-S3 SHOT <name>                     the screen is ready: capture it now (4 s pause)

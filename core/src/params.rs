@@ -25,6 +25,13 @@
 //! 125 %, the σ multiplier pinned at 1, `CLAIM_DELAY` 12 h, the early-redeem fee per class). The server's own `GetYellowbackInfo.params` is compared against them
 //! (`build::terms::check_server_params`) and never used in their place (audit G-1, G-2).
 
+/// `pqFalconHeight` on mainnet: Falcon holders (`TOK-PQ`) from day one, owner decision D-Q-2
+/// (2026-10-10). ycash-dd `src/chainparams.cpp:148`, ycash6 `src/chainparams.cpp:159`.
+pub const PQ_FALCON_HEIGHT_MAINNET: u64 = 0;
+/// `pqFalconHeight` on testnet (D-Q-2). ycash-dd `src/chainparams.cpp:414`, ycash6
+/// `src/chainparams.cpp:463`.
+pub const PQ_FALCON_HEIGHT_TESTNET: u64 = 0;
+
 /// The three Ycash networks. The chain name is what `GetLightdInfo.chainName` reports
 /// (`"main"`, `"test"`, `"regtest"`) and what `yellowback::Params::network` holds
 /// (`ycash-dd/src/yellowback/params.cpp:140,154,186`).
@@ -87,14 +94,45 @@ impl Network {
     }
 
     /// Yellowback address version bytes: the same key hash as the `s…` P2PKH address under a
-    /// prefix that renders `ye…` / `yt…` / `yr…` (spec D10).
-    /// `ycash-dd/src/yellowback/params.cpp:142` (main `{0x1F,0xE4}`), `:156` (test
-    /// `{0x20,0x07}`), `:189` (regtest `{0x20,0x02}`).
+    /// prefix that renders `yb…` / `yt…` / `yr…` (spec D10; on the post-quantum line the mainnet
+    /// prefix is `yb…`, owner decision D-Q-21, superseding D10's `ye…` there).
+    /// Main `{0x1F,0xDD}` (D-Q-21; the node's `yellowback/params.cpp` still says `{0x1F,0xE4}` =
+    /// `ye…` until the plan's §8.1 Y-B sweep), test `{0x20,0x07}`, regtest `{0x20,0x02}`
+    /// (`ycash-dd/src/yellowback/params.cpp:156`, `:189`; unchanged).
     pub fn yellowback_prefix(self) -> [u8; 2] {
         match self {
-            Network::Mainnet => [0x1F, 0xE4],
+            Network::Mainnet => [0x1F, 0xDD],
             Network::Testnet => [0x20, 0x07],
             Network::Regtest => [0x20, 0x02],
+        }
+    }
+
+    /// Post-quantum Yellowback address version bytes (quantum spec §4, F-4): the 33-byte payload
+    /// `scheme ‖ keyHash` of a `CPQKeyID` renders `yb…` / `yt…` / `yr…` at 53 characters, beside
+    /// the 35-character 20-byte form. Main `{0x56,0xAB}` (D-Q-21; the node's
+    /// `pqAddressVersion` is `{0x56,0xBF}` = `ye…` until the Y-B sweep), test `{0x57,0x1E}`,
+    /// regtest `{0x57,0x10}` (`ycash-dd/src/yellowback/params.cpp` `pqAddressVersion`) — each
+    /// the lowest version whose whole payload interval keeps the prefix and the length.
+    pub fn pq_yellowback_prefix(self) -> [u8; 2] {
+        match self {
+            Network::Mainnet => [0x56, 0xAB],
+            Network::Testnet => [0x57, 0x1E],
+            Network::Regtest => [0x57, 0x10],
+        }
+    }
+
+    /// Post-quantum plain-YEC address version bytes (owner decision D-Q-20): the same 33-byte
+    /// `scheme ‖ keyHash` payload and the same `TX_PQPKH` script as the post-quantum Yellowback
+    /// form, rendered `sq…` / `tq…` / `rq…` (53 characters): main `{0x4D,0xD9}`, test
+    /// `{0x4F,0x61}`, regtest `{0x4C,0x51}` (the node's `key_io` `PlainPQAddressVersion`,
+    /// decoded chain-wide since the plan's §8.1 "SQ" step). YEW sends YEC to it
+    /// (`keys::parse_yec_destination`) and syncs its own keys' forms through lightwalletd's taddr
+    /// methods, which index `TX_PQPKH` under it.
+    pub fn pq_yec_prefix(self) -> [u8; 2] {
+        match self {
+            Network::Mainnet => [0x4D, 0xD9],
+            Network::Testnet => [0x4F, 0x61],
+            Network::Regtest => [0x4C, 0x51],
         }
     }
 
@@ -145,8 +183,8 @@ pub struct TermClass {
     pub max_blocks: u32,
     /// `baseRatioBps`: 300 %, 400 %, 500 % (in-term plan D-IT-4: the longer the term, the higher).
     pub base_ratio_bps: i64,
-    /// `earlyRedeemFeeBps` (in-term plan IT-9, D-IT-16): of the collateral, paid on top of FEE-1 by a
-    /// redeem before `lockHeight` — 5 %, 2.5 %, 1 %.
+    /// `earlyRedeemFeeBps` (in-term plan IT-9′, D-IT-16, D-Q-23): of the debt at the vault's mint price,
+    /// paid on top of FEE-1′ by a redeem before `lockHeight` — 5 %, 2.5 %, 1 %.
     pub early_redeem_fee_bps: i64,
 }
 
@@ -247,17 +285,7 @@ impl Network {
         self.term_classes().iter().filter(|c| c.enabled())
     }
 
-    /// `FEE_BPS`, the enforcement fee rate (FEE-1): 0.15 % on mainnet and testnet (hardening
-    /// H-4, `params.cpp:44`, was 25), 0.25 % on regtest (`RegtestParams` keeps the v3 value,
-    /// `params.cpp:222`).
-    pub fn fee_bps(self) -> i64 {
-        match self {
-            Network::Mainnet | Network::Testnet => 15,
-            Network::Regtest => 25,
-        }
-    }
-
-    /// `ATTEST_FEE_BPS`, the attestor fee as a share of the enforcement fee (AFEE-1): 50 % on
+    /// `ATTEST_FEE_BPS`, the attestor fee as a share of the protocol fee (AFEE-1′): 50 % on
     /// mainnet and testnet (H-4, `params.cpp:93`, D-3 had 2,500), 25 % on regtest (`:223`).
     pub fn attest_fee_bps(self) -> i64 {
         match self {
@@ -266,13 +294,11 @@ impl Network {
         }
     }
 
-    /// `MAX_MINT` (MINT-2): $2,500 on mainnet and testnet (hardening H-12, `params.cpp:17`),
-    /// $10,000 on regtest (`:224`).
+    /// `MAX_MINT` (MINT-2): $100,000 on every network (rpcversion 8, owner decision D-Q-24:
+    /// DigiByte's `maxMintAmount` restored; it reverses hardening H-12's $2,500 launch guard; the node's
+    /// `params.cpp` `p.maxMint = 10000000`, "bands, the floor and maxMint are mainnet's on every network").
     pub fn max_mint_cents(self) -> u64 {
-        match self {
-            Network::Mainnet | Network::Testnet => 250_000,
-            Network::Regtest => 1_000_000,
-        }
+        MAX_MINT_CENTS
     }
 
     /// `MINT_REQUIRES_ARMED` where the network fixes it (hardening H-1, `params.cpp:105`):
@@ -350,6 +376,20 @@ impl Network {
         self == Network::Regtest
     }
 
+    /// The Falcon (`TOK-PQ`, scheme 2) activation height compiled into this build
+    /// (`Consensus::Params::pqFalconHeight`): [`PQ_FALCON_HEIGHT_MAINNET`] /
+    /// [`PQ_FALCON_HEIGHT_TESTNET`]; `None` on regtest, which follows the server
+    /// (`-pqfalconheight`). A server reporting another height on mainnet or testnet is refused
+    /// (`build::terms::pq_terms`), never silently overridden: if a release ever moves the height,
+    /// YEW ships the new constant before connecting to such a node (`docs/release.md`).
+    pub fn pq_falcon_height(self) -> Option<u64> {
+        match self {
+            Network::Mainnet => Some(PQ_FALCON_HEIGHT_MAINNET),
+            Network::Testnet => Some(PQ_FALCON_HEIGHT_TESTNET),
+            Network::Regtest => None,
+        }
+    }
+
     /// The network's YED attestor set (U-22, `Params::attestorSetId`): unset on mainnet and
     /// testnet (YED is off there until a release sets it); regtest's comes from the server
     /// (`-yellowbackattestorset`).
@@ -382,6 +422,17 @@ pub enum BranchError {
     /// not know (mainnet / testnet before P8).
     #[error("branch-unknown: the server reports the vault upgrade active on {0}, which this build does not schedule")]
     UnscheduledVault(&'static str),
+    /// The chain tip is already under the Vault branch, but the server gave no vault activation
+    /// height (a lightwalletd without the Yellowback service, so no `GetChainInfo`): the wallet
+    /// cannot place the upgrade boundary, so nothing is signed. This is not a disagreement
+    /// between the server and the height rule; it is a missing input.
+    #[error("branch-no-activation: the chain tip at block {height} is under the vault upgrade ({tip:08x}), but the server reports no vault activation height (is lightwalletd serving --yellowback?)")]
+    VaultActivationUnknown {
+        /// The next block's height.
+        height: u64,
+        /// The chain tip's branch id (the Vault id).
+        tip: u32,
+    },
 }
 
 /// The branch id every transparent signature of a transaction for the **next block** commits to
@@ -414,6 +465,12 @@ pub fn signing_branch_id(
                 if !network.vault_activation_from_server() {
                     return Err(BranchError::UnscheduledVault(network.chain_name()));
                 }
+                if chaintip_branch == VAULT_BRANCH_ID && activation.is_none() {
+                    return Err(BranchError::VaultActivationUnknown {
+                        height: next_height,
+                        tip: chaintip_branch,
+                    });
+                }
                 return Err(BranchError::Mismatch {
                     height: next_height,
                     server: next_block_server.unwrap_or(chaintip_branch),
@@ -435,8 +492,62 @@ pub fn signing_branch_id(
     Ok(ours)
 }
 
-/// `FEE_MIN`: the enforcement fee floor, 0.5 YEC (`params.cpp:43`, V10).
-pub const FEE_MIN_ZAT: i64 = 50_000_000;
+/// `MAX_MINT`: $100,000 on every network (D-Q-24; [`Network::max_mint_cents`]).
+pub const MAX_MINT_CENTS: u64 = 10_000_000;
+
+/// **FEE-1′** (rpcversion 8, owner decision D-Q-23 Option D; `ycash-dd/src/yellowback/params.cpp`
+/// `feeBands`, branch `q/fees`): the protocol fee is the debt's dollars in marginal bands, like tax
+/// brackets — 1.0 % of the first $1,000, 0.5 % up to $10,000, 0.1 % above (`uptoCents` 0 = unbounded) —
+/// the same on every network.
+pub const PROTOCOL_FEE_BANDS: [(u64, i64); 3] = [(100_000, 100), (1_000_000, 50), (0, 10)];
+
+/// FEE-1′'s floor: $1 per action (mint, redeem, claim) (`params.cpp` `feeFloorCents = 100`).
+pub const PROTOCOL_FEE_FLOOR_CENTS: i64 = 100;
+
+/// MINT-6b (D-Q-23a): one mint's debt is at most max(`MAX_VAULT_SHARE_BPS` of the supply cap,
+/// `VAULT_SHARE_FLOOR_CENTS`) (`params.cpp` `maxVaultShareBps = 1000`, `vaultShareFloorCents = 1000000`).
+pub const MAX_VAULT_SHARE_BPS: i64 = 1_000;
+/// See [`MAX_VAULT_SHARE_BPS`].
+pub const VAULT_SHARE_FLOOR_CENTS: i64 = 1_000_000;
+
+/// FEE-1′ in cent-bps (`math.h` `ProtocolFeeUnits`): Σ over the bands of (the debt inside the band) ×
+/// its bps, at least `PROTOCOL_FEE_FLOOR_CENTS × 10⁴`.
+pub fn protocol_fee_units(debt_cents: u64) -> i64 {
+    if debt_cents == 0 {
+        return 0;
+    }
+    let debt = debt_cents.min(i64::MAX as u64) as i64;
+    let mut units: i64 = 0;
+    let mut lo: i64 = 0;
+    for (upto, bps) in PROTOCOL_FEE_BANDS {
+        let hi = upto as i64;
+        let in_band = if hi == 0 { debt } else { debt.min(hi) } - lo;
+        if in_band <= 0 {
+            break;
+        }
+        units = units.saturating_add(in_band.saturating_mul(bps.max(0)));
+        lo = hi;
+        if hi == 0 {
+            break;
+        }
+    }
+    units.max(PROTOCOL_FEE_FLOOR_CENTS * BPS)
+}
+
+/// FEE-1′ in cents for display and the RPC (`ProtocolFeeCents`): `⌈units / 10⁴⌉`.
+pub fn protocol_fee_cents(debt_cents: u64) -> i64 {
+    (protocol_fee_units(debt_cents) + BPS - 1) / BPS
+}
+
+/// FEE-1′ in zat at the vault's mint price (`ProtocolFeeZat`): `⌈units · COIN / pMint⌉`; `None` when
+/// `p_mint` is undefined (≤ 0).
+pub fn protocol_fee_zat(debt_cents: u64, p_mint: i64) -> Option<i64> {
+    if p_mint <= 0 {
+        return None;
+    }
+    let num = (protocol_fee_units(debt_cents) as u128) * (COIN as u128);
+    Some(i64::try_from(num.div_ceil(p_mint as u128)).unwrap_or(i64::MAX))
+}
 
 /// `MIN_MINT`: $100 (`params.cpp:16`, MINT-2).
 pub const MIN_MINT_CENTS: u64 = 10_000;
@@ -452,14 +563,8 @@ pub const SIGMA_MULT_MAX_BPS: i64 = 10_000;
 /// `ref/ycash/src/script/script.h` `LOCKTIME_THRESHOLD = 500000000`).
 pub const LOCKTIME_THRESHOLD: u32 = 500_000_000;
 
-/// **FEE-1**: `feeZat(collateralZat) = max(FEE_MIN, collateralZat · FEE_BPS / 10⁴)` with the
-/// network's `FEE_BPS` (spec §3.3; `ycash-dd/src/yellowback/math.h` `FeeZat`).
-pub fn fee_zat_for(network: Network, collateral_zat: i64) -> i64 {
-    FEE_MIN_ZAT.max(collateral_zat.max(0).saturating_mul(network.fee_bps()) / BPS)
-}
-
-/// **AFEE-1**: `attestFeeZat = feeZat · ATTEST_FEE_BPS / 10⁴` (spec §3.3 v3; `math.h`
-/// `AttestFeeZat`).
+/// **AFEE-1′**: `attestFeeZat = feeZat · ATTEST_FEE_BPS / 10⁴` of the protocol fee (spec §3.3 v3;
+/// `math.h` `AttestFeeZat`).
 pub fn attest_fee_zat_for(network: Network, fee_zat: i64) -> i64 {
     if fee_zat <= 0 {
         return 0;
@@ -479,16 +584,27 @@ pub const CLAIM_THRESHOLD_BPS: i64 = 12_500;
 /// margin as YecWallet's `YellowbackPositionsModel::WARN_MARGIN_BPS`.
 pub const WARN_MARGIN_BPS: i64 = 2_500;
 
-/// The early-redeem fee of IT-9 (`ycash-dd/src/yellowback/math.h` `EarlyRedeemFeeZat`, branch
-/// `upgrade/vault-in-term`): `collateral · earlyRedeemFeeBps / 10⁴`, floor, no minimum; 0 for a
-/// negative collateral or a class without a fee. Charged (RED-3, `bad-redeem-early-fee`) on an
-/// owner redeem mined at a height below `lockHeight`, on top of FEE-1, on the FEE-1 payee's
-/// output; not due under FEE-0 (no eligible payee).
-pub fn early_redeem_fee_zat(collateral_zat: i64, early_redeem_fee_bps: i64) -> i64 {
-    if collateral_zat < 0 || early_redeem_fee_bps <= 0 {
+/// The early-redeem fee of IT-9′ (rpcversion 8; `ycash-dd/src/yellowback/math.h` `EarlyRedeemFeeZat`,
+/// branch `q/fees`): `earlyRedeemFeeBps` of the **debt** at the vault's mint price,
+/// `⌈debt · bps · COIN / pMint⌉`, no floor; 0 for a class without a fee or an undefined price.
+/// Charged (RED-3′, `bad-redeem-early-fee`) on an owner redeem mined below `lockHeight`, on top of
+/// FEE-1′, on the FEE-1′ payee's output; not due under FEE-0 (no eligible payee).
+pub fn early_redeem_fee_zat(debt_cents: u64, early_redeem_fee_bps: i64, p_mint: i64) -> i64 {
+    if debt_cents == 0 || early_redeem_fee_bps <= 0 || p_mint <= 0 {
         return 0;
     }
-    let f = (collateral_zat as u128) * (early_redeem_fee_bps as u128) / (BPS as u128);
+    let f = ((debt_cents as u128) * (early_redeem_fee_bps as u128) * (COIN as u128))
+        .div_ceil(p_mint as u128);
+    i64::try_from(f).unwrap_or(i64::MAX)
+}
+
+/// The early-redeem fee in dollars (`yed_estimateredeem.earlyRedeemFeeCents`): `⌈debt · bps / 10⁴⌉`
+/// cents; what YEW shows beside the debt (the lockup report's recommendation).
+pub fn early_redeem_fee_cents(debt_cents: u64, early_redeem_fee_bps: i64) -> i64 {
+    if debt_cents == 0 || early_redeem_fee_bps <= 0 {
+        return 0;
+    }
+    let f = (debt_cents as u128 * early_redeem_fee_bps as u128).div_ceil(BPS as u128);
     i64::try_from(f).unwrap_or(i64::MAX)
 }
 
@@ -505,19 +621,30 @@ pub fn near_threshold(p_claim: i64, underwater_at: i64) -> bool {
 /// `RESIDUAL_MIN_ZAT`: 0.001 YEC (`params.cpp:92`, RED-5): a smaller residual is not paid.
 pub const RESIDUAL_MIN_ZAT: i64 = 100_000;
 
-/// **RED-5**: the residual a CLAIM returns to the owner, from the vault's terms and `pClaim`
-/// (`ycash-dd/src/yellowback/txbuilder.cpp` `ClaimAt` `:917-919`, `math.h` `ClaimantMaxZat`,
-/// `ResidualZat`): `claimantMax = ⌈cents · margin · COIN / pClaim⌉` with `margin` =
-/// `CLAIM_THRESHOLD_BPS` under clause `"a"` and `10⁴` under `"b"` (R1: no margin under the
-/// emergency clause); `residual = collateral − claimantMax` when positive and at least
-/// `RESIDUAL_MIN_ZAT`, else 0. `None` when `pClaim` is undefined (the claim is refused).
+/// **RED-5b (A1)**: `pEmerg = min(xClaim, aClaim)`, the node's `PriceCombine` when both
+/// prices are defined. `None` when either is undefined (≤ 0). Path (b) sizes the claimant cap
+/// at this price; it is not `pClaim`.
+pub fn emergency_price(x_claim: i64, a_claim: i64) -> Option<i64> {
+    if x_claim <= 0 || a_claim <= 0 {
+        return None;
+    }
+    Some(x_claim.min(a_claim))
+}
+
+/// **RED-5**: the residual a CLAIM returns to the owner (`math.h` `ClaimantMaxZat`,
+/// `ResidualZat`). `claimantMax = ⌈cents · margin · COIN / price⌉` with `margin` =
+/// `CLAIM_THRESHOLD_BPS` under clause `"a"` and `10⁴` under `"b"` (no extra margin).
+/// **RED-5b (A1):** `price` is `pClaim` under `"a"` and `pEmerg` ([`emergency_price`]) under
+/// `"b"` — the same margin as before, the emergency price instead of `pClaim`.
+/// `residual = collateral − claimantMax` when positive and at least `RESIDUAL_MIN_ZAT`, else 0.
+/// `None` when the sizing price is undefined (the claim is refused).
 pub fn residual_zat_for(
     collateral_zat: i64,
     minted_cents: u64,
-    p_claim: i64,
+    price: i64,
     claim_path: &str,
 ) -> Option<i64> {
-    if p_claim <= 0 || minted_cents == 0 {
+    if price <= 0 || minted_cents == 0 {
         return None;
     }
     let margin = if claim_path == "a" {
@@ -526,7 +653,7 @@ pub fn residual_zat_for(
         BPS
     };
     let num = (minted_cents as u128) * (margin as u128) * (COIN as u128);
-    let claimant_max = num.div_ceil(p_claim as u128);
+    let claimant_max = num.div_ceil(price as u128);
     let residual = match i64::try_from(claimant_max) {
         Ok(m) if collateral_zat > m => collateral_zat - m,
         _ => 0,
@@ -583,6 +710,150 @@ pub const GAP_LIMIT: u32 = 20;
 /// - `yed_getinfo` exposes it as `params.feeZat` (`src/rpc/yellowback.cpp:669`); confirmed on
 ///   the regtest devnet in Phase W1 (`scripts/devnet-w1.sh`).
 pub const FEE_ZAT: i64 = 1_000;
+
+/// `zat` of YEC in US cents at `price_micro_usd` (µUSD per YEC), rounded down: `zat · price /
+/// 10¹²` (10⁸ zat per YEC, 10⁴ µUSD per cent). 0 for an unknown (≤ 0) price. Display only (the
+/// early-redeem fee in dollars, the lockup investigation's recommendation); nothing is priced by it.
+pub fn zat_to_usd_cents(zat: i64, price_micro_usd: i64) -> i64 {
+    if price_micro_usd <= 0 || zat <= 0 {
+        return 0;
+    }
+    ((zat as i128 * price_micro_usd as i128) / 1_000_000_000_000) as i64
+}
+
+/// The relay floor, zatoshi per 1,000 bytes (`ycash-dd/src/main.h:68` `DEFAULT_MIN_RELAY_TX_FEE`,
+/// the same on ycash6): the lowest size rate YEW ever charges, whatever a server reports.
+pub const RELAY_FLOOR_ZAT_PER_KB: i64 = 100;
+
+/// The highest `params.pq.feeRateZatPerKB` YEW accepts from a server: 100× the relay floor
+/// (an 8 KB SLH-DSA owner spend would then cost 80,000 zat). A server reporting more is refused
+/// as inconsistent rather than allowed to drain fees (the quantum plan's Q8 release multiplier
+/// is expected to be a small single digit).
+pub const MAX_PQ_FEE_RATE_ZAT_PER_KB: i64 = 100 * RELAY_FLOOR_ZAT_PER_KB;
+
+/// The network fee of a transaction of `size` bytes that spends a post-quantum input (quantum
+/// plan §4.5, client survey C-5): `max(floor, rate × size)`, with `CFeeRate::GetFee`'s rounding
+/// (`ycash-dd/src/amount.cpp:27-35`: `rate · size / 1000`, and the rate itself when that is 0),
+/// exactly the node's `PQSizeFee` (`ycash-dd/src/policy/policy.cpp` `PQSizeFee`, upgrade/quantum-vaults).
+///
+/// `rate` is the server's `params.pq.feeRateZatPerKB` (at least [`RELAY_FLOOR_ZAT_PER_KB`]).
+/// Callers also take the max with [`zip317_conventional_fee`] (audit 04/N-1: both node lines'
+/// wallets pay the 6.20.0 conventional fee for a post-quantum input, which a ycash6 relay that
+/// opts into ZIP-317 demands and every ycash6 limiter's eviction order rewards).
+pub fn pq_size_fee(floor: i64, rate_zat_per_kb: i64, size: usize) -> i64 {
+    let rate = rate_zat_per_kb.max(RELAY_FLOOR_ZAT_PER_KB);
+    let mut f = rate.saturating_mul(size as i64) / 1000;
+    if f == 0 {
+        f = rate;
+    }
+    floor.max(f)
+}
+
+/// `CFeeRate::GetFee` (`ycash-dd/src/amount.cpp:27-35`): `rate · size / 1000`, and the rate itself
+/// when that rounds to 0 for a positive rate.
+pub fn rate_fee(rate_zat_per_kb: i64, size: usize) -> i64 {
+    let f = rate_zat_per_kb.max(0).saturating_mul(size as i64) / 1000;
+    if f == 0 && rate_zat_per_kb > 0 {
+        rate_zat_per_kb
+    } else {
+        f
+    }
+}
+
+/// The attested fee floor (rpcversion 8, D-Q-23a; `ycash-dd/src/policy/policy.h`
+/// `DEFAULT_ATTESTED_FEE_FLOOR_PER_KB`): no dollar-priced rate goes below 5,000 zat/KB.
+pub const ATTESTED_FEE_FLOOR_ZAT_PER_KB: i64 = 5_000;
+
+/// The highest dollars-per-KB target (µUSD/KB) YEW believes from a server: $1/KB (the defaults are
+/// $0.02 plain and $0.05 Yellowback, D-Q-26).
+pub const MAX_USD_PER_KB_MICRO: i64 = 1_000_000;
+
+/// The highest attested-fee floor (zat/KB) YEW believes from a server: 20× the default.
+pub const MAX_FEE_FLOOR_ZAT_PER_KB: i64 = 20 * ATTESTED_FEE_FLOOR_ZAT_PER_KB;
+
+/// The absolute ceiling of a vault / Yellowback network fee (`-yellowbackmaxtxfee`, default 10 YEC;
+/// review M-1): whatever cap a server reports, YEW never pays more for one transaction.
+pub const MAX_YED_TX_FEE_ZAT: i64 = 10 * COIN;
+
+/// `PRICE_MAX` (owner decision D-Q-22): `UINT32_MAX` µUSD.
+pub const PRICE_MAX_MICRO_USD: i64 = 4_294_967_295;
+
+/// `AttestedRateZatPerKB` (`policy.cpp`): the zat/KB rate of a dollar target at a price,
+/// `max(floor, ⌈usdPerKBMicro · COIN / price⌉)`; the floor when either is ≤ 0.
+pub fn attested_rate_zat_per_kb(usd_per_kb_micro: i64, price_micro_usd: i64, floor: i64) -> i64 {
+    if usd_per_kb_micro <= 0 || price_micro_usd <= 0 {
+        return floor.max(0);
+    }
+    let r = ((usd_per_kb_micro as u128) * (COIN as u128)).div_ceil(price_micro_usd as u128);
+    i64::try_from(r).unwrap_or(i64::MAX).max(floor.max(0))
+}
+
+/// `PQSpendInputSize` (`ycash-dd/src/policy/policy.cpp`): one post-quantum input's serialized size —
+/// the outpoint and sequence (40), the scriptSig's compact size and the chunked pushes. SLH-DSA 7,981.
+pub fn pq_spend_input_size(scheme: u8) -> usize {
+    match crate::pq::pq_sig_pushes_size(scheme) {
+        Some(ss) => 40 + if ss > 252 { 3 } else { 1 } + ss,
+        None => 0,
+    }
+}
+
+/// `YedEstimatedSize` (`ycash-dd/src/yellowback/txbuilder.cpp`): the size the node's YED builder prices
+/// a Yellowback transaction at before signing — 1,000 bytes, 150 per non-PQ input, and each PQ input
+/// (a Falcon holder, the vault owner) at [`pq_spend_input_size`].
+pub fn yed_estimated_size(other_inputs: usize, pq_schemes: &[u8]) -> usize {
+    1000 + 150 * other_inputs
+        + pq_schemes
+            .iter()
+            .map(|s| pq_spend_input_size(*s))
+            .sum::<usize>()
+}
+
+/// `ZIP317_MARGINAL_FEE` (`ycash-dd/src/policy/policy.h`, ycash6 `src/zip317.h` `MARGINAL_FEE`):
+/// zat per ZIP-317 logical action.
+pub const ZIP317_MARGINAL_FEE: i64 = 500;
+/// `ZIP317_GRACE_ACTIONS`: the fewest actions a transaction is charged.
+pub const ZIP317_GRACE_ACTIONS: usize = 2;
+/// `ZIP317_INPUT_SIZE` (`P2PKH_STANDARD_INPUT_SIZE`): transparent input bytes per action.
+pub const ZIP317_INPUT_SIZE: usize = 150;
+/// `ZIP317_OUTPUT_SIZE` (`P2PKH_STANDARD_OUTPUT_SIZE`): transparent output bytes per action.
+pub const ZIP317_OUTPUT_SIZE: usize = 34;
+
+/// `Zip317ConventionalFee(txInBytes, txOutBytes, shieldedActions)` (`ycash-dd/src/policy/policy.cpp`,
+/// audit 04/N-1): the 6.20.0 line's ZIP-317 conventional fee,
+/// `500 · max(2, max(⌈in/150⌉, ⌈out/34⌉) + shielded)`. `in_bytes` / `out_bytes` are the serialized
+/// `vin` / `vout` without their count prefixes. A post-quantum input counts by its bytes (SLH-DSA
+/// ~54 actions, Falcon ~11): a ycash6 node started with `-txunpaidactionlimit=0` refuses a
+/// transaction paying less, and every ycash6 node's ZIP-401 limiter ranks it first for eviction,
+/// so YEW pays at least this for every transaction with a post-quantum input (as both node lines'
+/// wallets and builders do).
+pub fn zip317_conventional_fee(in_bytes: usize, out_bytes: usize, shielded_actions: usize) -> i64 {
+    let actions = in_bytes
+        .div_ceil(ZIP317_INPUT_SIZE)
+        .max(out_bytes.div_ceil(ZIP317_OUTPUT_SIZE))
+        + shielded_actions;
+    ZIP317_MARGINAL_FEE.saturating_mul(actions.max(ZIP317_GRACE_ACTIONS) as i64)
+}
+
+/// `YED_OUTPUT_BYTES_ESTIMATE` (`ycash-dd/src/yellowback/txbuilder.h`): the `vout` bytes the YED
+/// builders' conventional-fee estimate assumes, above any YED transaction's outputs.
+pub const YED_OUTPUT_BYTES_ESTIMATE: usize = 600;
+
+/// `YedConventionalFeeEstimate` (`ycash-dd/src/yellowback/txbuilder.cpp`, audit 04/N-1): the
+/// ZIP-317 conventional fee a YED transaction with these inputs pays at least, estimated before
+/// signing — each post-quantum input at [`pq_spend_input_size`], 150 bytes per other input plus
+/// one the caller may not list (the V on the claim path, a carrier), the outputs at
+/// [`YED_OUTPUT_BYTES_ESTIMATE`]. 0 without a post-quantum input (the flat and size fees stand).
+pub fn yed_conventional_fee_estimate(other_inputs: usize, pq_schemes: &[u8]) -> i64 {
+    if pq_schemes.is_empty() {
+        return 0;
+    }
+    let in_bytes = 150 * (other_inputs + 1)
+        + pq_schemes
+            .iter()
+            .map(|s| pq_spend_input_size(*s))
+            .sum::<usize>();
+    zip317_conventional_fee(in_bytes, YED_OUTPUT_BYTES_ESTIMATE, 0)
+}
 
 /// The floor of the YEC fee reserve (plan §3.7, "Fee reserve" item 1):
 /// `reserveZat = max(RESERVE_MIN, RESERVE_K · (FEE_ZAT + 2 · TOKEN_VALUE))`.
@@ -664,9 +935,43 @@ pub const COIN: i64 = 100_000_000;
 /// `SIGHASH_ALL`, the only hash type YEW signs with.
 pub const SIGHASH_ALL: u32 = 1;
 
+/// `SIGHASH_ALL | SIGHASH_ANYONECANPAY` (`0x81`), the hash type every set signature is made over
+/// (`OP_CHECKSETSIG`, audit 01/V-2: a fee input added after the set signed does not break it).
+/// YEW never makes a set signature (sets sign through the node's `set_sign*` RPCs); the constant
+/// is here so the vector replay checks the node's set-signature digests.
+pub const SET_SIGHASH: u32 = SIGHASH_ALL | 0x80;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// audit 04/N-1: the 6.20.0 conventional fee (`pq_conventional_fee` in the node's
+    /// `pq_wallet_tests.cpp`): the grace floor, bytes per action on either side, shielded actions
+    /// added, and the YED builders' estimate is 0 without a PQ input.
+    #[test]
+    fn zip317_conventional_fee_matches_the_node() {
+        assert_eq!(zip317_conventional_fee(0, 0, 0), 1_000);
+        assert_eq!(zip317_conventional_fee(150, 34, 0), 1_000);
+        assert_eq!(zip317_conventional_fee(451, 34, 0), 2_000);
+        assert_eq!(zip317_conventional_fee(150, 35 * 34, 0), 17_500);
+        assert_eq!(zip317_conventional_fee(150, 34, 3), 2_000);
+        // an SLH-DSA input (7,981 bytes) is 54 actions; a Falcon one (1,620) 11
+        assert_eq!(
+            zip317_conventional_fee(pq_spend_input_size(1), 34, 0),
+            27_000
+        );
+        assert_eq!(
+            zip317_conventional_fee(pq_spend_input_size(2), 34, 0),
+            5_500
+        );
+        assert_eq!(yed_conventional_fee_estimate(3, &[]), 0);
+        // one SLH-DSA owner + one Falcon holder + 2 P2PKH (+1 unlisted): 7,981 + 1,620 + 450
+        assert_eq!(
+            yed_conventional_fee_estimate(2, &[1, 2]),
+            500 * (7_981 + 1_620 + 450usize).div_ceil(150) as i64
+        );
+        assert_eq!(SET_SIGHASH, 0x81);
+    }
 
     #[test]
     fn reserve_is_five_transfers() {
@@ -700,17 +1005,15 @@ mod tests {
                 .map(|c| c.early_redeem_fee_bps)
                 .collect();
             assert_eq!(fees, [500, 250, 100]);
-            assert_eq!(n.fee_bps(), 15);
             assert_eq!(n.attest_fee_bps(), 5_000);
-            assert_eq!(n.max_mint_cents(), 250_000);
+            assert_eq!(n.max_mint_cents(), 10_000_000);
             assert_eq!(n.mint_requires_armed(), Some(true));
             assert_eq!(n.day_blocks(), 1_152);
             assert_eq!(n.day_blocks() as i64 * n.target_spacing_secs(), 86_400);
         }
         assert_eq!(Network::Regtest.enabled_classes().count(), 3);
-        assert_eq!(Network::Regtest.fee_bps(), 25);
         assert_eq!(Network::Regtest.attest_fee_bps(), 2_500);
-        assert_eq!(Network::Regtest.max_mint_cents(), 1_000_000);
+        assert_eq!(Network::Regtest.max_mint_cents(), 10_000_000);
         assert_eq!(Network::Regtest.mint_requires_armed(), None);
         assert_eq!(Network::Regtest.day_blocks(), 1);
         assert_eq!(Network::Regtest.grace(), 24);
@@ -732,14 +1035,21 @@ mod tests {
         );
         assert!(Network::Regtest.class_for_lock_blocks(47).is_none());
         assert!(Network::Regtest.class_for_lock_blocks(241).is_none());
-        // FEE-1 / AFEE-1, per network.
+        // FEE-1′ (every network) / AFEE-1′ (per network).
+        assert_eq!(protocol_fee_cents(100_000), 1_000); // 1 % of $1,000
+        assert_eq!(protocol_fee_cents(10_000), 100); // the $1 floor
+        assert_eq!(protocol_fee_cents(1), 100);
+        assert_eq!(protocol_fee_cents(0), 0);
+        assert_eq!(protocol_fee_cents(1_000_000), 5_500); // $10 + 0.5 % of $9,000
+        assert_eq!(protocol_fee_cents(10_000_000), 14_500); // $55 + 0.1 % of $90,000
+        assert_eq!(protocol_fee_cents(100_001), 1_001); // ⌈⌉
+                                                        // The node's yed_estimatefee example: $1 at $0.018 = ⌈10⁶ · 10⁸ / 18,000⌉.
+        assert_eq!(protocol_fee_zat(10_000, 18_000), Some(5_555_555_556));
+        assert_eq!(protocol_fee_zat(100_000, 1_990_000), Some(502_512_563));
+        assert_eq!(protocol_fee_zat(100_000, 0), None);
         let r = Network::Regtest;
-        assert_eq!(fee_zat_for(r, 1_000_000_000), 50_000_000);
-        assert_eq!(fee_zat_for(r, 400_000_000_000), 1_000_000_000);
         assert_eq!(attest_fee_zat_for(r, 50_000_000), 12_500_000);
         let m = Network::Mainnet;
-        assert_eq!(fee_zat_for(m, 1_000_000_000), 50_000_000);
-        assert_eq!(fee_zat_for(m, 400_000_000_000), 600_000_000);
         assert_eq!(attest_fee_zat_for(m, 50_000_000), 25_000_000);
         assert_eq!(attest_fee_zat_for(m, 0), 0);
         // RED-5: $100 at $0.52 under clause (a): claimantMax = ⌈10⁴ · 1.25 · 10⁸ / 520,000⌉.
@@ -751,11 +1061,28 @@ mod tests {
         assert_eq!(residual_zat_for(cm + 99_999, 10_000, 520_000, "a"), Some(0));
         assert_eq!(residual_zat_for(cm - 1, 10_000, 520_000, "a"), Some(0));
         let cb = (10_000u128 * 10_000 * 100_000_000).div_ceil(520_000) as i64;
+        // Path (b) at a known pEmerg (here equal to the figure passed in): margin stays 10⁴.
         assert_eq!(
             residual_zat_for(cb + 500_000, 10_000, 520_000, "b"),
             Some(500_000)
         );
         assert_eq!(residual_zat_for(cb, 10_000, 0, "a"), None);
+        assert_eq!(emergency_price(420_000, 349_000), Some(349_000));
+        assert_eq!(emergency_price(349_000, 420_000), Some(349_000));
+        assert_eq!(emergency_price(420_000, 0), None);
+        assert_eq!(emergency_price(0, 349_000), None);
+        // RED-5b A1 worked example: $100,000, 300,000 YEC, pClaim 0.42, pEmerg 0.349.
+        // Path (b) residual is 13,467.0487106 YEC. Sizing that row at pClaim is 61,904.76190476 YEC.
+        let collateral = 300_000 * COIN;
+        let cents = 10_000_000u64;
+        assert_eq!(
+            residual_zat_for(collateral, cents, 349_000, "b"),
+            Some(1_346_704_871_060)
+        );
+        assert_eq!(
+            residual_zat_for(collateral, cents, 420_000, "b"),
+            Some(6_190_476_190_476)
+        );
         // The spec's worked example: $100 at 300 % and $0.05/YEC = 6,000 YEC.
         assert_eq!(required_zat(10_000, 30_000, 50_000), Some(600_000_000_000));
         assert_eq!(required_zat(10_000, 30_000, 0), None);
@@ -783,13 +1110,14 @@ mod tests {
 
     #[test]
     fn early_redeem_fee_is_the_nodes() {
-        // math.h EarlyRedeemFeeZat (yellowback_math_tests.cpp): 5 % of 6,000 YEC = 300 YEC; floor.
-        assert_eq!(early_redeem_fee_zat(600_000_000_000, 500), 30_000_000_000);
-        assert_eq!(early_redeem_fee_zat(600_000_000_000, 0), 0);
-        assert_eq!(early_redeem_fee_zat(-1, 500), 0);
-        assert_eq!(early_redeem_fee_zat(19_999, 500), 999);
-        assert_eq!(early_redeem_fee_zat(251_889_169_000, 500), 12_594_458_450); // the in-term contract's sample
-        assert_eq!(early_redeem_fee_zat(i64::MAX, 10_000), i64::MAX);
+        // math.h EarlyRedeemFeeZat (IT-9′): 5 % of the $1,000 debt at $1.99 = ⌈5·10¹⁵ / 1,990,000⌉.
+        assert_eq!(early_redeem_fee_zat(100_000, 500, 1_990_000), 2_512_562_815);
+        assert_eq!(early_redeem_fee_zat(100_000, 0, 1_990_000), 0);
+        assert_eq!(early_redeem_fee_zat(0, 500, 1_990_000), 0);
+        assert_eq!(early_redeem_fee_zat(100_000, 500, 0), 0);
+        assert_eq!(early_redeem_fee_zat(u64::MAX, 10_000, 1), i64::MAX);
+        assert_eq!(early_redeem_fee_cents(100_000, 500), 5_000);
+        assert_eq!(early_redeem_fee_cents(100_001, 250), 2_501);
     }
 
     #[test]
@@ -829,6 +1157,21 @@ mod tests {
         assert!(matches!(
             signing_branch_id(r, CANOPY, 150, None, Some(VAULT_BRANCH_ID)),
             Err(BranchError::Mismatch { .. })
+        ));
+        // Vault already on the chain tip but no activation height from the server (no Yellowback
+        // service): its own error, never a "mismatch" of an id with itself, and nothing signed.
+        let e = signing_branch_id(r, VAULT_BRANCH_ID, 200, None, None).unwrap_err();
+        assert_eq!(
+            e,
+            BranchError::VaultActivationUnknown {
+                height: 200,
+                tip: VAULT_BRANCH_ID
+            }
+        );
+        assert!(e.to_string().starts_with("branch-no-activation:"));
+        assert!(matches!(
+            signing_branch_id(r, VAULT_BRANCH_ID, 200, None, Some(VAULT_BRANCH_ID)),
+            Err(BranchError::VaultActivationUnknown { .. })
         ));
         // A disagreeing server is refused.
         assert!(matches!(

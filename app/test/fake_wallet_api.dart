@@ -17,6 +17,8 @@ import 'package:yew_app/state/secrets.dart';
 
 const fakeYe = 'yr1qkfcjyqz9y4d3qz9v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8';
 const fakeS = 'smV6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v';
+/// A regtest post-quantum vault-owner address (53 characters, rpcversion 7).
+const fakeOwnerPq = 'yrPq8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8vOwn';
 const fakeZ = 'yregtestsapling1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfake';
 const fakeZ2 = 'yregtestsapling1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzsecond';
 const fakeWords = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -34,6 +36,8 @@ class FakeWalletApi implements WalletApi {
     heldCount: 0,
     syncHeight: 484,
     yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false,
+    yecPqZat: 0,
+    pqCoins: [],
   );
   List<HistoryItem> historyAnswer = const [];
   Object? yedPreviewError;
@@ -51,8 +55,8 @@ class FakeWalletApi implements WalletApi {
   bool paramsNeeded = false;
   Object? yecConfirmError;
   List<ParamsProgress> paramsEvents = const [
-    ParamsProgress(file: 'sapling-spend.params', doneBytes: 25000000, totalBytes: 51551256, finished: false),
-    ParamsProgress(file: 'sapling-output.params', doneBytes: 51551256, totalBytes: 51551256, finished: true),
+    ParamsProgress(file: 'sapling-spend.params', doneBytes: 25000000, totalBytes: 51551256, finished: false, error: ''),
+    ParamsProgress(file: 'sapling-output.params', doneBytes: 51551256, totalBytes: 51551256, finished: true, error: ''),
   ];
   Object? paramsError;
   StreamController<ParamsProgress>? paramsController;
@@ -124,10 +128,10 @@ class FakeWalletApi implements WalletApi {
 
   // In-term claims (rpcversion 6): the core's semantics — redeemable from the block after the mint,
   // the early-redeem fee (class A 5 %) before lockHeight, the warning within 25 % above underwaterAt.
-  VaultSummary vault({required String txid, String status = 'ACTIVE', int cents = 2500, int lockHeight = 528, int tip = 484, bool underwater = false, String voidReason = '', int grace = 20, int claimPrice = 520000}) => VaultSummary(
+  VaultSummary vault({required String txid, String status = 'ACTIVE', int cents = 2500, int lockHeight = 528, int tip = 484, bool underwater = false, String voidReason = '', int grace = 20, int claimPrice = 520000, int cancelCount = 0, int cancelQuietUntil = 0, int heldResiduals = 0}) => VaultSummary(
     vaultTxid: txid,
     status: status,
-    ownerAddress: fakeYe,
+    ownerAddress: fakeOwnerPq,
     termClass: 'A',
     cents: cents,
     collateralZat: 950000000,
@@ -140,8 +144,13 @@ class FakeWalletApi implements WalletApi {
     blocksUntilRedeem: 483 > tip ? 483 - tip : 0,
     blocksUntilTermEnd: lockHeight > tip ? lockHeight - tip : 0,
     earlyRedeem: status == 'ACTIVE' && tip + 1 < lockHeight,
+    // rpcversion 8 (IT-9′): 5 % of the debt, in dollars exactly, in YEC at the vault's pMint
     earlyRedeemFeeZat: status == 'ACTIVE' && tip + 1 < lockHeight ? 47500000 : 0,
+    earlyRedeemFeeUsdCents: status == 'ACTIVE' && tip + 1 < lockHeight ? cents * 500 ~/ 10000 : 0,
     earlyRedeemFeeBps: 500,
+    pMintMicroUsd: 520000,
+    protocolFeeCents: status == 'ACTIVE' ? 100 : 0,
+    protocolFeeZat: status == 'ACTIVE' ? 50000000 : 0,
     inTermClaims: true,
     claimThresholdBps: 12500,
     claimPriceMicroUsd: claimPrice,
@@ -162,9 +171,23 @@ class FakeWalletApi implements WalletApi {
     claimOpen: status == 'ACTIVE',
     claiming: status == 'CLAIMING',
     reopened: status == 'REOPENED',
+    // The per-vault cancel limit (CAN-2, CAN-3), the core's semantics: one more co-signer per recent
+    // cancel (at most 3 on regtest), the leftover held while inside the quiet period or claimable.
+    cancelCount: cancelCount,
+    cancelsRequired: (cancelQuietUntil > tip + 1 ? cancelCount + 1 : 1).clamp(1, 3),
+    cancelQuietUntil: cancelQuietUntil,
+    blocksUntilQuietEnd: cancelQuietUntil > tip + 1 ? cancelQuietUntil - (tip + 1) : 0,
+    heldResiduals: heldResiduals,
+    heldReason: heldResiduals == 0 || status == 'CLOSED' || status == 'CLAIMED'
+        ? ''
+        : cancelQuietUntil > tip + 1
+            ? 'held after a cancelled claim until height $cancelQuietUntil (the quiet period), and after that only while the vault cannot be claimed; redeeming the vault releases it'
+            : underwater
+                ? 'held while the vault can be claimed; it is released once the vault cannot be claimed, or once the vault is closed (redeem it)'
+                : '',
   );
 
-  ClaimIntent intent({required String txid, String role = 'claimant', String state = 'PENDING', int height = 480, int delay = 10, int tip = 484, int valueZat = 937499000}) {
+  ClaimIntent intent({required String txid, String role = 'claimant', String state = 'PENDING', int height = 480, int delay = 10, int tip = 484, int valueZat = 937499000, bool pqMove = false, String heldReason = '', int refundCents = 0, String refundAddress = '', bool refundOwn = false}) {
     final release = height == 0 ? 0 : height + delay;
     return ClaimIntent(
       intent: '$txid:0',
@@ -175,9 +198,15 @@ class FakeWalletApi implements WalletApi {
       height: height,
       releaseHeight: release,
       blocksUntilRelease: release == 0 ? 0 : (release - (tip + 1)).clamp(0, 1 << 30),
-      releasable: state == 'PENDING' && height > 0 && release <= tip + 1,
+      releasable: pqMove || (state == 'PENDING' && height > 0 && release <= tip + 1 && heldReason.isEmpty),
+      pqMove: pqMove,
       cancelled: state == 'CANCELLED',
+      refundCents: refundCents,
+      refundAddress: refundAddress,
+      refundOwn: refundOwn,
       releaseTimeSecs: nowSecs + (release - tip) * 75,
+      held: heldReason.isNotEmpty,
+      heldReason: heldReason,
       spendTxid: '',
       note: '',
     );
@@ -219,11 +248,13 @@ class FakeWalletApi implements WalletApi {
       requiredZat: collateral - 500,
       collateralZat: collateral,
       feeZat: 1000,
+      protocolFeeCents: 100,
       attestFeeZat: 0,
       payee: payee,
       carrierZat: 10000,
       tokenZat: 10000,
       networkFeeZat: 2000,
+      maxMintCents: 10000000,
       totalZat: total,
       availableZat: available,
       affordable: available >= total,
@@ -287,10 +318,15 @@ class FakeWalletApi implements WalletApi {
       changeCents: v.releasable ? 0 : balancesAnswer.yedCents - v.cents,
       yedInputs: v.releasable ? 0 : 1,
       feeZat: v.releasable ? 0 : 50000000 + early,
-      enforcementFeeZat: v.releasable ? 0 : 50000000,
+      protocolFeeZat: v.releasable ? 0 : 50000000,
+      protocolFeeCents: v.releasable ? 0 : 100,
+      pMintMicroUsd: v.releasable ? 0 : 520000,
       earlyRedeemFeeZat: early,
+      earlyRedeemFeeUsdCents: early > 0 ? v.earlyRedeemFeeUsdCents : 0,
       lockHeight: v.lockHeight,
       payee: v.releasable ? '' : payee,
+      networkFeeZat: 1000,
+      networkFeeUsdCents: 0,
       collateralZat: v.collateralZat - (v.releasable ? 1000 : 50001000 + early),
       collateralAddress: fakeS,
       lockTime: v.lockHeight,
@@ -347,19 +383,26 @@ class FakeWalletApi implements WalletApi {
   Future<ReleasePreview> releasePreview({required String intent}) async {
     calls.add('releasePreview $intent');
     if (releaseError != null) throw releaseError!;
+    // An own post-quantum coin (Balances.pqCoins): the core moves it like a released residual.
+    if (balancesAnswer.pqCoins.contains(intent)) {
+      return ReleasePreview(previewId: 'rl-$intent', kind: 'pq_move', intent: intent, valueZat: balancesAnswer.yecPqZat - 3000, recipientAddress: fakeS, feeZat: 3000, txid: 're' * 32);
+    }
     final i = intentsAnswer.firstWhere((x) => x.intent == intent);
-    return ReleasePreview(previewId: 'rl-$intent', intent: intent, valueZat: i.valueZat, recipientAddress: fakeS, feeZat: 1000, txid: 're' * 32);
+    return ReleasePreview(previewId: 'rl-$intent', kind: i.pqMove ? 'pq_move' : 'release', intent: intent, valueZat: i.pqMove ? i.valueZat - 1000 : i.valueZat, recipientAddress: i.pqMove || i.role != 'residual' ? fakeS : fakeOwnerPq, feeZat: 1000, txid: 're' * 32);
   }
 
   @override
   Future<ReleaseResult> releaseConfirm({required String previewId}) async {
     calls.add('releaseConfirm $previewId');
     final intent = previewId.substring(3);
+    if (balancesAnswer.pqCoins.contains(intent)) {
+      return ReleaseResult(txid: 're' * 32, verdict: 'ok', valueZat: balancesAnswer.yecPqZat - 3000);
+    }
     final i = intentsAnswer.firstWhere((x) => x.intent == intent);
     intentsAnswer = [
       for (final x in intentsAnswer)
         if (x.intent == intent)
-          ClaimIntent(intent: x.intent, vaultTxid: x.vaultTxid, role: x.role, valueZat: x.valueZat, state: 'RELEASING', height: x.height, releaseHeight: x.releaseHeight, blocksUntilRelease: 0, releasable: false, cancelled: false, releaseTimeSecs: x.releaseTimeSecs, spendTxid: 're' * 32, note: '')
+          ClaimIntent(intent: x.intent, vaultTxid: x.vaultTxid, role: x.role, valueZat: x.valueZat, state: 'RELEASING', height: x.height, releaseHeight: x.releaseHeight, blocksUntilRelease: 0, releasable: false, pqMove: false, cancelled: false, refundCents: x.refundCents, refundAddress: x.refundAddress, refundOwn: x.refundOwn, releaseTimeSecs: x.releaseTimeSecs, held: false, heldReason: '', spendTxid: 're' * 32, note: '')
         else
           x,
     ];
@@ -508,7 +551,7 @@ class FakeWalletApi implements WalletApi {
     calls.add('yedPreview ${recipients.map((r) => '${r.address}:${r.cents}').join(',')}');
     if (yedPreviewError != null) throw yedPreviewError!;
     final total = recipients.fold<int>(0, (a, r) => a + r.cents);
-    return YedPreview(previewId: 'p2', recipients: recipients, totalCents: total, stage: 'single', yedInputs: 1, changeCents: 5000 - total, yecInputs: 1, feeZat: 1000, yecChangeZat: 84000, expiryHeight: 524, txid: 'bb' * 32, dryRun: dryRun);
+    return YedPreview(previewId: 'p2', recipients: recipients, totalCents: total, stage: 'single', yedInputs: 1, changeCents: 5000 - total, yecInputs: 1, feeZat: 1000, feeUsdCents: 1, yecChangeZat: 84000, expiryHeight: 524, txid: 'bb' * 32, dryRun: dryRun);
   }
 
   @override
@@ -554,6 +597,14 @@ class FakeWalletApi implements WalletApi {
   @override
   AddressCheck validateAddress({required NetworkId network, required String address}) => address.startsWith('yregtestsapling1')
       ? const AddressCheck(valid: true, kind: 'sapling', yellowbackForm: false, message: '')
+      // The 53-character post-quantum regtest forms (the core's kinds; vectors: a q/attest node's
+      // vault_getnewowner pairs): rq… plain YEC, yr2V… a Falcon YED holder, yr2U… an SLH-DSA owner.
+      : address.length == 53 && address.startsWith('rq')
+      ? const AddressCheck(valid: true, kind: 'pq_yec', yellowbackForm: false, message: '')
+      : address.length == 53 && address.startsWith('yr2V')
+      ? const AddressCheck(valid: true, kind: 'pq', yellowbackForm: true, message: '')
+      : address.length == 53 && address.startsWith('yr2U')
+      ? AddressCheck(valid: false, kind: 'pq_owner', yellowbackForm: true, message: '$address is a post-quantum vault-owner address, not a payment address')
       : address.startsWith('yr1') || address.startsWith('sm')
       ? AddressCheck(valid: true, kind: 'p2pkh', yellowbackForm: address.startsWith('yr1'), message: '')
       : const AddressCheck(valid: false, kind: '', yellowbackForm: false, message: 'not a Regtest address: bad base58check');

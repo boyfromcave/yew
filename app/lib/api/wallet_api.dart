@@ -93,7 +93,7 @@ abstract class WalletApi {
 
   Future<Balances> balances();
 
-  /// The receive address of [kind]: `s…` (transparent), `ye…` (YED) or `ys1…` (private).
+  /// The receive address of [kind]: `s…` (transparent), `yb…` (YED) or `ys1…` (private).
   Future<AddressPair> receiveAddress({ReceiveKind kind = ReceiveKind.transparent, required bool fresh});
 
   /// A new private address of the same private balance (Receive → "New private address").

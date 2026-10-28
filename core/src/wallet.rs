@@ -13,7 +13,7 @@
 //! light client. The two sides never share an input: every transparent builder and the gate's
 //! transparent paths see only the UTXO table, the shielded path only notes.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
 
@@ -97,6 +97,11 @@ pub struct Balances {
     pub yed_pending_cents: u64,
     /// `GetPrice.pMint` at the last sync, micro-USD per YEC, when defined.
     pub price_micro_usd: Option<i64>,
+    /// YEC at the wallet's own post-quantum keys (class `PQ_OWNED`), zat: in neither balance
+    /// above, moved one coin at a time (`build::release::build_pq_coin_move`).
+    pub yec_pq_zat: i64,
+    /// Those coins (unlocked), oldest first.
+    pub pq_coins: Vec<crate::tx::OutPoint>,
 }
 
 /// An open wallet.
@@ -108,8 +113,33 @@ pub struct Wallet {
     keyring: KeyRing,
     /// Wrapping key for imported secrets: `HMAC-SHA256("yew-wrap", seed)`.
     wrap_secret: WrapSecret,
+    /// The post-quantum seed root (`HKDF-Extract("", BIP39 seed)`, quantum spec A-12): every
+    /// vault owner key is expanded from it ([`Wallet::pq_owner_key`]).
+    pq_root: crate::pq::PqSeedRoot,
+    /// Owner ids already derived, by external index (SLH-DSA key generation is not free).
+    pq_ids: std::sync::Mutex<HashMap<u32, crate::pq::PqKeyId>>,
+    /// Falcon holder ids already derived, by holder index ([`falcon_holder_index`]).
+    falcon_ids: std::sync::Mutex<HashMap<u32, crate::pq::PqKeyId>>,
+    /// The server's post-quantum terms as last read (`params.pq`, rpcversion 7): the size fee
+    /// rate and the Falcon activation ([`Wallet::pq_terms`]).
+    pq_terms: std::sync::Mutex<crate::build::terms::PqTerms>,
     /// The Sapling side (`None` for a wallet over an in-memory store, as the unit tests use).
     pub shielded: Option<Shielded>,
+}
+
+/// The Falcon holder index of an HD key (YEW's own index space; the derivation is the node's
+/// `DerivePQSeed(seed, 2, index)`): external key `i` → `i`, change key `i` → `2³¹ + i`. One Falcon
+/// holder per HD address, so the gap scan of the address chains is also the gap scan of the
+/// holders and a restore that finds the address finds its Falcon YED. `None` past `2³¹`.
+pub fn falcon_holder_index(chain: Chain, index: u32) -> Option<u32> {
+    const CHANGE: u32 = 0x8000_0000;
+    if index >= CHANGE {
+        return None;
+    }
+    Some(match chain {
+        Chain::External => index,
+        Chain::Change => CHANGE | index,
+    })
 }
 
 /// The wrapping key, wiped on drop (`Wallet` itself stays `Drop`-free so a test can move its
@@ -121,6 +151,9 @@ impl Drop for WrapSecret {
         keys::wipe(&mut self.0);
     }
 }
+
+/// YEC `(available, reserved)` zat and YED `(cents, pending cents)`: [`Wallet::spendable_balances`].
+pub type SpendableBalances = ((i64, i64), (u64, u64));
 
 impl std::fmt::Debug for Wallet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -231,11 +264,16 @@ impl Wallet {
             m.update(seed);
             WrapSecret(m.finalize().into_bytes().into())
         };
+        let stored_terms = Wallet::stored_pq_terms(&store, network);
         let w = Wallet {
             network,
             store,
             keyring,
             wrap_secret,
+            pq_root: crate::pq::PqSeedRoot::from_seed(seed),
+            pq_ids: std::sync::Mutex::new(HashMap::new()),
+            falcon_ids: std::sync::Mutex::new(HashMap::new()),
+            pq_terms: std::sync::Mutex::new(stored_terms),
             shielded: None,
         };
         w.ensure_gap()?;
@@ -361,6 +399,306 @@ impl Wallet {
         Ok(Some(k))
     }
 
+    /// The SLH-DSA vault-owner key paired with the external (receive) key at `index`
+    /// (quantum plan Q7; spec A-12 derivation): `DerivePQSeed(BIP39 seed, scheme 1, index)`.
+    ///
+    /// **Pairing rule (YEW).** A mint's token goes to a fresh external P2PKH key (spec §3.6: the
+    /// holder is no longer the owner), and its vault owner is the PQ key of the *same index*. So
+    /// the owner chain needs no index of its own, no store record, and no separate gap scan: a
+    /// restore that finds the external keys finds the owners. The key is re-derived on every use
+    /// (it is never stored); [`Wallet::pq_owner_id`] caches the public id.
+    pub fn pq_owner_key(&self, index: u32) -> crate::pq::PqKey {
+        self.pq_root.slh_key(index)
+    }
+
+    /// The owner id of [`Wallet::pq_owner_key`]`(index)`, cached in memory and in the store's
+    /// `pq_owners` table (schema v5): an SLH-DSA key generation costs ~68 ms in a dev build, so a
+    /// gap-limit set is ~1.4 s the first time and free on every later open. The id is public; a
+    /// signing path re-derives the key and checks its id ([`Wallet::pq_key_for_owner`]), so a
+    /// stale cache entry can never sign for the wrong owner.
+    pub fn pq_owner_id(&self, index: u32) -> crate::pq::PqKeyId {
+        let mut cache = self.pq_ids.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(id) = cache.get(&index) {
+            return *id;
+        }
+        let id = match self.store.pq_owner(index) {
+            Ok(Some(id)) => id,
+            _ => {
+                let id = self.pq_root.slh_key(index).id();
+                // A failed cache write only costs the derivation again next time.
+                let _ = self.store.set_pq_owner(index, &id);
+                id
+            }
+        };
+        cache.insert(index, id);
+        id
+    }
+
+    /// The PQ owner paired with an own external HD key hash (`None` for a change or imported
+    /// key, or a hash that is not ours).
+    pub fn pq_owner_for_hash(
+        &self,
+        hash160: &[u8; 20],
+    ) -> Result<Option<(u32, crate::pq::PqKeyId)>, WalletError> {
+        Ok(self
+            .store
+            .addresses()?
+            .into_iter()
+            .find(|r| r.hash160 == *hash160 && r.hd_chain() == Some(Chain::External))
+            .map(|r| (r.index, self.pq_owner_id(r.index))))
+    }
+
+    /// Every PQ owner this wallet can sign for, with the external key hash it is paired with:
+    /// the owner of each derived external address (the gap-scanned set, so a restore sees the
+    /// vaults of every used receive key).
+    pub fn own_pq_owners(&self) -> Result<HashMap<crate::pq::PqKeyId, [u8; 20]>, WalletError> {
+        Ok(self
+            .store
+            .addresses()?
+            .into_iter()
+            .filter(|r| r.hd_chain() == Some(Chain::External))
+            .map(|r| (self.pq_owner_id(r.index), r.hash160))
+            .collect())
+    }
+
+    /// The signing key of an own PQ owner, found through its paired external key (and checked
+    /// against the id).
+    pub fn pq_key_for_owner(
+        &self,
+        owner: &crate::pq::PqKeyId,
+        paired_hash160: &[u8; 20],
+    ) -> Result<Option<crate::pq::PqKey>, WalletError> {
+        let Some((index, id)) = self.pq_owner_for_hash(paired_hash160)? else {
+            return Ok(None);
+        };
+        if id != *owner {
+            return Ok(None);
+        }
+        let key = self.pq_owner_key(index);
+        if key.id() != *owner {
+            return Err(WalletError::Other(format!(
+                "the cached post-quantum owner of key {index} does not match its key; delete the wallet cache and resync"
+            )));
+        }
+        Ok(Some(key))
+    }
+
+    // ---- Falcon YED holders (TOK-PQ)
+
+    /// The Falcon (scheme 2) YED holder id paired with the HD address `row` (`None` for an
+    /// imported key, which has no seed-derived pair), cached in memory and in the store's
+    /// `pq_holders` table (a Falcon key generation is ~10 ms; the gap-limit set is derived once
+    /// per wallet). The id is public; [`Wallet::falcon_key_for_id`] re-derives and checks it.
+    pub fn falcon_holder_id(&self, row: &AddressRow) -> Option<crate::pq::PqKeyId> {
+        let idx = falcon_holder_index(row.hd_chain()?, row.index)?;
+        let mut cache = self.falcon_ids.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(id) = cache.get(&idx) {
+            return Some(*id);
+        }
+        let id = match self.store.pq_holder(idx) {
+            Ok(Some(id)) if id.scheme == crate::pq::SCHEME_FN_DSA_512 => id,
+            _ => {
+                let id = self.pq_root.falcon_key(idx).id();
+                // A failed cache write only costs the derivation again next time.
+                let _ = self.store.set_pq_holder(idx, &id);
+                id
+            }
+        };
+        cache.insert(idx, id);
+        Some(id)
+    }
+
+    /// The Falcon holder address (53 characters, `yb…`/`yt…`/`yr…`) paired with `row`.
+    pub fn falcon_holder_address(&self, row: &AddressRow) -> Option<String> {
+        keys::encode_pq_yellowback(self.network, &self.falcon_holder_id(row)?)
+    }
+
+    /// Every own Falcon holder id with the HD address row it is paired with (the gap-scanned
+    /// set of both chains, so a restore finds the YED of every derived key).
+    pub fn own_falcon_holders(
+        &self,
+    ) -> Result<HashMap<crate::pq::PqKeyId, AddressRow>, WalletError> {
+        Ok(self
+            .store
+            .addresses()?
+            .into_iter()
+            .filter_map(|r| Some((self.falcon_holder_id(&r)?, r)))
+            .collect())
+    }
+
+    /// [`Wallet::own_falcon_holders`] when `tx` pays any `TX_PQPKH` (else empty: no Falcon key
+    /// is derived for a transaction that cannot pay one).
+    pub fn own_falcon_holders_for(
+        &self,
+        tx: &crate::tx::Transaction,
+    ) -> Result<HashMap<crate::pq::PqKeyId, AddressRow>, WalletError> {
+        if tx
+            .vout
+            .iter()
+            .any(|o| crate::pq::pqpkh_of(&o.script_pubkey).is_some())
+        {
+            self.own_falcon_holders()
+        } else {
+            Ok(HashMap::new())
+        }
+    }
+
+    /// The signing key of an own Falcon holder id: found through its paired address row,
+    /// re-derived, and checked against the id (`None` when the id is not this wallet's).
+    pub fn falcon_key_for_id(
+        &self,
+        id: &crate::pq::PqKeyId,
+    ) -> Result<Option<crate::pq::PqKey>, WalletError> {
+        if id.scheme != crate::pq::SCHEME_FN_DSA_512 {
+            return Ok(None);
+        }
+        let Some(row) = self.own_falcon_holders()?.remove(id) else {
+            return Ok(None);
+        };
+        let idx = falcon_holder_index(row.hd_chain().expect("HD row"), row.index)
+            .expect("an HD row with a holder id has a holder index");
+        let key = self.pq_root.falcon_key(idx);
+        if key.id() != *id {
+            return Err(WalletError::Other(format!(
+                "the cached Falcon holder of key {idx} does not match its key; delete the wallet cache and resync"
+            )));
+        }
+        Ok(Some(key))
+    }
+
+    /// The YED holder output for an own fresh key `row` under the holder rule of the block the
+    /// transaction will be mined in (`falcon`: TOK-PQ in force): the Falcon `TX_PQPKH` paired
+    /// with `row` once Falcon is active (the default holder from day one on mainnet), a P2PKH
+    /// to `row` before it (regtest/devnet pre-Falcon only).
+    pub fn yed_holder_script(
+        &self,
+        row: &AddressRow,
+        falcon: bool,
+    ) -> Result<Vec<u8>, WalletError> {
+        if !falcon {
+            return Ok(crate::script::p2pkh_script(&row.hash160));
+        }
+        let id = self.falcon_holder_id(row).ok_or_else(|| {
+            WalletError::Other("an imported key has no Falcon holder pair".into())
+        })?;
+        Ok(crate::pq::pqpkh_script(&id).expect("scheme 2 is registered"))
+    }
+
+    /// True when `script` pays this wallet as a YED holder: a P2PKH to an own key, or a
+    /// `TX_PQPKH` to an own Falcon holder id (in `falcon`, from [`Wallet::own_falcon_holders`]).
+    pub fn is_own_holder_script(
+        script: &[u8],
+        own: &HashSet<[u8; 20]>,
+        falcon: &HashMap<crate::pq::PqKeyId, AddressRow>,
+    ) -> bool {
+        if let Some(h) = crate::script::p2pkh_hash(script) {
+            return own.contains(&h);
+        }
+        crate::pq::pqpkh_of(script).is_some_and(|id| falcon.contains_key(&id))
+    }
+
+    /// The server's post-quantum terms as last read and accepted ([`Wallet::note_server_params`]);
+    /// before any server has answered, [`PqTerms::default_for`] the network.
+    ///
+    /// **Mainnet and testnet: Falcon from day one** (owner decision 2026-10-10: `pqFalconHeight
+    /// = 0`, [`crate::params::PQ_FALCON_HEIGHT_MAINNET`]). The expectation is compiled in and
+    /// *checked*, not asserted over the server's answer: the offline default already says Falcon
+    /// is active (so a YED holder is a Falcon key from the first block: receive address, change,
+    /// mint tokens), and a server reporting another activation is refused
+    /// ([`crate::build::terms::check_falcon_activation`]), leaving these terms unchanged. Regtest
+    /// follows the server (`-pqfalconheight`), so the P2PKH holder paths stay testable before
+    /// Falcon.
+    ///
+    /// [`PqTerms::default_for`]: crate::build::terms::PqTerms::default_for
+    pub fn pq_terms(&self) -> crate::build::terms::PqTerms {
+        *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// TOK-PQ is in force for the next block as far as this wallet knows (the last synced tip
+    /// and the server's terms): its YED receive address is then its Falcon holder address.
+    pub fn falcon_now(&self) -> bool {
+        let tip = self.store.meta_u64("last_synced_height").unwrap_or(0);
+        self.pq_terms().falcon_at(tip + 1)
+    }
+
+    /// Remember the post-quantum terms of a `GetYellowbackInfo.params` (rpcversion 7); refused
+    /// (and nothing remembered) when they are missing or out of bounds, or (mainnet, testnet) when
+    /// the Falcon activation is not this build's.
+    pub fn note_server_params(
+        &self,
+        p: Option<&crate::net::rpc::YellowbackParams>,
+    ) -> Result<crate::build::terms::PqTerms, crate::build::mint::MintError> {
+        let t = crate::build::terms::pq_terms(
+            p.ok_or_else(|| crate::build::mint::MintError::Inconsistent {
+                what: "GetYellowbackInfo carries no params".into(),
+            })?,
+            self.network,
+        )?;
+        *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner()) = t;
+        // Remembered for an offline open (the receive address, the CLI): a failed write only
+        // costs the default until the next server answer.
+        let _ = self.store.set_meta(
+            "pq_terms",
+            &format!(
+                "{} {} {} {} {} {} {}",
+                t.fee_rate_zat_per_kb,
+                t.falcon_height.map(|h| h as i64).unwrap_or(-1),
+                u8::from(t.falcon_active),
+                t.yed_rate_zat_per_kb,
+                t.floor_rate_zat_per_kb,
+                t.flat_zat,
+                t.max_fee_zat
+            ),
+        );
+        Ok(t)
+    }
+
+    /// The terms [`Wallet::note_server_params`] last remembered in the store, else
+    /// [`crate::build::terms::PqTerms::default_for`] the network. On mainnet and testnet the
+    /// Falcon activation is always the compiled one (a value an older build stored from a server
+    /// it did not check is not believed).
+    fn stored_pq_terms(store: &Store, network: Network) -> crate::build::terms::PqTerms {
+        let dflt = crate::build::terms::PqTerms::default_for(network);
+        let Some(mut t) = Wallet::stored_pq_terms_raw(store) else {
+            return dflt;
+        };
+        if network.pq_falcon_height().is_some()
+            && (t.falcon_height, t.falcon_active) != (dflt.falcon_height, dflt.falcon_active)
+        {
+            t.falcon_height = dflt.falcon_height;
+            t.falcon_active = dflt.falcon_active;
+        }
+        t
+    }
+
+    /// The stored terms as written. A value written before rpcversion 8 (three fields) reads
+    /// with the default rates for the rest.
+    fn stored_pq_terms_raw(store: &Store) -> Option<crate::build::terms::PqTerms> {
+        let v = store.meta("pq_terms").ok()??;
+        let mut it = v.split(' ');
+        let rate: i64 = it.next()?.parse().ok()?;
+        let height: i64 = it.next()?.parse().ok()?;
+        let active: u8 = it.next()?.parse().ok()?;
+        let d = crate::build::terms::PqTerms::default();
+        let mut next =
+            |dflt: i64| -> i64 { it.next().and_then(|x| x.parse().ok()).unwrap_or(dflt) };
+        let floor = crate::params::RELAY_FLOOR_ZAT_PER_KB;
+        let yed = next(d.yed_rate_zat_per_kb).max(floor);
+        let floor_rate = next(d.floor_rate_zat_per_kb).max(floor);
+        let flat =
+            next(d.flat_zat).clamp(crate::params::FEE_ZAT, crate::params::MAX_YED_TX_FEE_ZAT);
+        let cap = next(d.max_fee_zat).clamp(flat, crate::params::MAX_YED_TX_FEE_ZAT);
+        Some(crate::build::terms::PqTerms {
+            fee_rate_zat_per_kb: rate.max(floor),
+            yed_rate_zat_per_kb: yed,
+            floor_rate_zat_per_kb: floor_rate,
+            flat_zat: flat,
+            max_fee_zat: cap,
+            falcon_height: u64::try_from(height).ok(),
+            falcon_active: active != 0,
+        })
+    }
+
     /// Export the WIF of an own address (D-W-11).
     pub fn export_wif(&self, address: &str) -> Result<String, WalletError> {
         let row = self.row_for_address(address)?.ok_or_else(|| {
@@ -398,8 +736,8 @@ impl Wallet {
     pub fn balances(&self) -> Result<Balances, WalletError> {
         let utxos = self.store.utxos()?;
         let spendable = self.spendable_utxos()?;
-        let (yec_zat, yec_reserved_zat) = coins::yec_balances(&spendable);
-        let (yed_cents, yed_pending_cents) = coins::yed_balances(&spendable);
+        let ((yec_zat, yec_reserved_zat), (yed_cents, yed_pending_cents)) =
+            Self::spendable_balances_of(&spendable);
         let mut yec_pending_zat = 0;
         for (txid, _, _) in self.store.pending_txs()? {
             let pending_tokens: HashSet<u32> = utxos
@@ -414,7 +752,14 @@ impl Wallet {
             }
         }
         let price = self.store.meta_u64("price_micro_usd")?;
+        let mut pq: Vec<&Utxo> = spendable
+            .iter()
+            .filter(|u| u.class == coins::UtxoClass::PqOwned)
+            .collect();
+        pq.sort_by_key(|u| (u.height, u.outpoint.txid, u.outpoint.n));
         Ok(Balances {
+            yec_pq_zat: coins::pq_yec_balance(&spendable),
+            pq_coins: pq.iter().map(|u| u.outpoint).collect(),
             yec_zat,
             yec_reserved_zat,
             yec_pending_zat,
@@ -571,9 +916,20 @@ impl Wallet {
         tip: u64,
         branch_id: u32,
     ) -> Result<crate::build::release::ReleaseBuild, WalletError> {
-        let row = self.store.intent(intent)?.ok_or_else(|| {
-            WalletError::Other("intent-unknown: not an intent of this wallet".into())
-        })?;
+        let Some(row) = self.store.intent(intent)? else {
+            // Not an intent: an own post-quantum coin the sync found (`PQ_OWNED`) is moved the
+            // same way as a released residual's.
+            if self
+                .store
+                .utxo_class(intent)?
+                .is_some_and(|c| c == crate::coins::UtxoClass::PqOwned)
+            {
+                return crate::build::release::build_pq_coin_move(self, intent, tip, branch_id);
+            }
+            return Err(WalletError::Other(
+                "intent-unknown: not an intent of this wallet".into(),
+            ));
+        };
         crate::build::release::build_release(self, &row, tip, branch_id)
     }
 
@@ -592,6 +948,22 @@ impl Wallet {
     pub async fn mint_gate(&self, validator: &mut Validator) -> Result<MintGate, WalletError> {
         let yb = validator.client_mut().ok_or(GateError::YellowbackAbsent)?;
         mint::gate_now(self.network, yb).await
+    }
+
+    /// The YEC `(available, reserved)` zat and YED `(cents, pending cents)` the wallet can spend
+    /// now: locked outputs left out, so a token a pending transaction of this wallet spends
+    /// (locked `spent-by`) is not counted (cf. DigiByte v9.26.7's spendable figure; the node's
+    /// `confirmedCents` counts it). The pending change of such a transaction is the pending
+    /// figure (`PendingToken`), not the spendable one.
+    pub fn spendable_balances(&self) -> Result<SpendableBalances, WalletError> {
+        Ok(Self::spendable_balances_of(&self.spendable_utxos()?))
+    }
+
+    fn spendable_balances_of(spendable: &[Utxo]) -> SpendableBalances {
+        (
+            coins::yec_balances(spendable),
+            coins::yed_balances(spendable),
+        )
     }
 
     /// The UTXOs that are not locked (the input set every builder selects from).
@@ -626,6 +998,135 @@ mod tests {
             Some(5),
         )
         .unwrap()
+    }
+
+    /// Falcon YED holders (TOK-PQ): one per HD key (external i → i, change i → 2³¹ + i), from
+    /// `DerivePQSeed(seed, 2, index)`, cached in the store, found back from their id, and the
+    /// holder output follows the Falcon rule; an imported key has none.
+    #[test]
+    fn falcon_holders_pair_with_hd_keys() {
+        assert_eq!(falcon_holder_index(Chain::External, 7), Some(7));
+        assert_eq!(falcon_holder_index(Chain::Change, 7), Some(0x8000_0007));
+        assert_eq!(falcon_holder_index(Chain::Change, 0x8000_0000), None);
+        let w = wallet();
+        let rows = w.addresses().unwrap();
+        let ext0 = rows.iter().find(|r| r.chain == 0 && r.index == 0).unwrap();
+        let chg0 = rows.iter().find(|r| r.chain == 1 && r.index == 0).unwrap();
+        let a = w.falcon_holder_id(ext0).unwrap();
+        let b = w.falcon_holder_id(chg0).unwrap();
+        assert_eq!((a.scheme, b.scheme), (2, 2));
+        assert_ne!(a, b);
+        assert_eq!(a, w.pq_root.falcon_key(0).id());
+        assert_eq!(b, w.pq_root.falcon_key(0x8000_0000).id());
+        assert_eq!(w.store.pq_holder(0).unwrap(), Some(a));
+        let addr = w.falcon_holder_address(ext0).unwrap();
+        assert_eq!(addr.len(), 53);
+        assert!(addr.starts_with("yr"));
+        let key = w.falcon_key_for_id(&a).unwrap().unwrap();
+        assert_eq!(key.id(), a);
+        assert!(w
+            .falcon_key_for_id(&crate::pq::PqKeyId {
+                scheme: 2,
+                hash: [1; 32]
+            })
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            w.yed_holder_script(ext0, true).unwrap(),
+            crate::pq::pqpkh_script(&a).unwrap()
+        );
+        assert_eq!(
+            w.yed_holder_script(ext0, false).unwrap(),
+            crate::script::p2pkh_script(&ext0.hash160)
+        );
+        let own: HashSet<[u8; 20]> = rows.iter().map(|r| r.hash160).collect();
+        let falcon = w.own_falcon_holders().unwrap();
+        assert_eq!(falcon.len(), rows.len());
+        assert!(Wallet::is_own_holder_script(
+            &crate::pq::pqpkh_script(&b).unwrap(),
+            &own,
+            &falcon
+        ));
+        assert!(!Wallet::is_own_holder_script(
+            &crate::pq::pqpkh_script(&crate::pq::PqKeyId {
+                scheme: 2,
+                hash: [1; 32]
+            })
+            .unwrap(),
+            &own,
+            &falcon
+        ));
+        // An imported key has no Falcon pair.
+        let wif = keys::encode_wif(
+            Network::Regtest,
+            &secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap(),
+        );
+        let imp = w.import_wif(&wif).unwrap();
+        assert!(w.falcon_holder_id(&imp).is_none());
+        assert!(w.yed_holder_script(&imp, true).is_err());
+    }
+
+    /// The server's terms survive an offline reopen; mainnet and testnet are Falcon from day one
+    /// (owner decision 2026-10-10) by the compiled default, and a server that disagrees is refused
+    /// (LOW-06-Y-4), not overridden; regtest follows the server.
+    #[test]
+    fn pq_terms_persist_and_mainnet_is_falcon_from_day_one() {
+        let seed = keys::seed_from_mnemonic(PHRASE, "").unwrap();
+        let w = wallet();
+        assert!(!w.falcon_now());
+        let p = crate::net::rpc::YellowbackParams {
+            pq: Some(crate::net::rpc::YellowbackPqParams {
+                schemes: vec![1],
+                falcon_active: false,
+                falcon_height: 0,
+                fee_rate_zat_per_kb: 300,
+            }),
+            fees: Some(crate::build::terms::fallback_fee_params(300)),
+            ..Default::default()
+        };
+        w.note_server_params(Some(&p)).unwrap();
+        assert!(w.falcon_now());
+        let store = w.store;
+        let w2 = Wallet::from_parts(store, Network::Regtest, &seed, None).unwrap();
+        assert_eq!(w2.pq_terms().fee_rate_zat_per_kb, 300);
+        assert!(w2.falcon_now());
+        for net in [Network::Mainnet, Network::Testnet] {
+            let m = Wallet::from_parts(Store::open_in_memory().unwrap(), net, &seed, None).unwrap();
+            // offline: the compiled default, Falcon from height 0; the YED holder is a Falcon key
+            assert!(m.falcon_now() && m.pq_terms().falcon_at(0) && m.pq_terms().falcon_at(1));
+            assert_eq!(m.pq_terms(), crate::build::terms::PqTerms::default_for(net));
+            let primary = m.receive_address(false).unwrap();
+            let falcon = m.falcon_holder_id(&primary).unwrap();
+            assert_eq!(
+                m.yed_holder_script(&primary, m.falcon_now()).unwrap(),
+                crate::pq::pqpkh_script(&falcon).unwrap()
+            );
+            // a server reporting Falcon inactive with scheme 2 absent (what the old override
+            // masked): refused, and the wallet's terms do not change
+            let err = m.note_server_params(Some(&p)).unwrap_err();
+            assert!(
+                matches!(err, crate::build::mint::MintError::Inconsistent { .. }),
+                "{err}"
+            );
+            assert_eq!(m.pq_terms(), crate::build::terms::PqTerms::default_for(net));
+            assert!(m.falcon_now());
+            // a server reporting the compiled activation: accepted, its rates taken
+            let mut good = p.clone();
+            let q = good.pq.as_mut().unwrap();
+            q.schemes = vec![1, 2];
+            q.falcon_active = true;
+            m.note_server_params(Some(&good)).unwrap();
+            assert_eq!(m.pq_terms().fee_rate_zat_per_kb, 300);
+            assert!(m.falcon_now());
+            // a value an older build stored unchecked is not believed on reopen
+            m.store
+                .set_meta("pq_terms", "300 -1 0 300 300 1000 10000000")
+                .unwrap();
+            let store = m.store;
+            let r = Wallet::from_parts(store, net, &seed, None).unwrap();
+            assert!(r.falcon_now() && r.pq_terms().falcon_at(0));
+            assert_eq!(r.pq_terms().fee_rate_zat_per_kb, 300);
+        }
     }
 
     #[test]
@@ -682,6 +1183,39 @@ mod tests {
         assert_eq!(dollars(-250), "-$2.50");
     }
 
+    /// The PQ owner chain (A-12 over the BIP39 seed, paired with the external index): the same
+    /// mnemonic gives the same owners (restore), the key matches its cached id, and a change or
+    /// foreign key has no owner.
+    #[test]
+    fn pq_owners_are_deterministic_and_paired_with_external_keys() {
+        let w = wallet();
+        let first = w.receive_address(false).unwrap();
+        let (i, id) = w.pq_owner_for_hash(&first.hash160).unwrap().unwrap();
+        assert_eq!(i, 0);
+        // the seed is the 64-byte BIP39 seed: HKDF over it directly
+        let seed = keys::seed_from_mnemonic(PHRASE, "").unwrap();
+        let direct = crate::pq::PqSeedRoot::from_seed(&seed).slh_key(0);
+        assert_eq!(direct.id(), id);
+        let k = w.pq_key_for_owner(&id, &first.hash160).unwrap().unwrap();
+        assert_eq!(k.id(), id);
+        assert_eq!(w.pq_owner_id(1), w.pq_owner_key(1).id());
+        assert_ne!(w.pq_owner_id(1), id);
+        assert_eq!(
+            wallet().pq_owner_id(0),
+            id,
+            "restore derives the same owner"
+        );
+        let change = w.change_address().unwrap();
+        assert_eq!(w.pq_owner_for_hash(&change.hash160).unwrap(), None);
+        assert!(w
+            .pq_key_for_owner(&w.pq_owner_id(1), &first.hash160)
+            .unwrap()
+            .is_none());
+        let owners = w.own_pq_owners().unwrap();
+        assert_eq!(owners.get(&id), Some(&first.hash160));
+        assert_eq!(owners.len(), GAP_LIMIT as usize);
+    }
+
     #[test]
     fn wrong_seed_or_network_is_refused() {
         let seed = keys::seed_from_mnemonic(PHRASE, "").unwrap();
@@ -693,5 +1227,42 @@ mod tests {
         let w = Wallet::from_parts(store, Network::Regtest, &seed, None).unwrap();
         let other = keys::seed_from_mnemonic(PHRASE, "x").unwrap();
         assert!(Wallet::from_parts(w.store, Network::Regtest, &other, None).is_err());
+    }
+
+    /// Y4: a token a pending transaction of this wallet spends (locked `spent-by`) is not
+    /// spendable YED, in `balances` and in the sync's figure (`spendable_balances`); its change
+    /// is the pending figure.
+    #[test]
+    fn tokens_spent_by_a_pending_transaction_are_not_spendable() {
+        use crate::coins::{Utxo, UtxoClass};
+        let mut w = wallet();
+        let token = |n: u32, cents: u64, class| Utxo {
+            outpoint: crate::tx::OutPoint {
+                txid: [0x10; 32],
+                n,
+            },
+            address: String::new(),
+            script: Vec::new(),
+            value: crate::params::TOKEN_VALUE,
+            height: if class == UtxoClass::Token { 100 } else { 0 },
+            class,
+            cents,
+        };
+        w.store
+            .replace_utxos(&[
+                token(0, 10_000, UtxoClass::Token),
+                token(1, 2_500, UtxoClass::Token),
+                token(2, 6_000, UtxoClass::PendingToken),
+            ])
+            .unwrap();
+        let b = w.balances().unwrap();
+        assert_eq!((b.yed_cents, b.yed_pending_cents), (12_500, 6_000));
+        // Send $40 from the $100 token: it is locked spent-by the pending transfer.
+        w.store
+            .lock(&token(0, 0, UtxoClass::Token).outpoint, "spent-by:aa", 530)
+            .unwrap();
+        let b = w.balances().unwrap();
+        assert_eq!((b.yed_cents, b.yed_pending_cents), (2_500, 6_000));
+        assert_eq!(w.spendable_balances().unwrap().1, (2_500, 6_000));
     }
 }

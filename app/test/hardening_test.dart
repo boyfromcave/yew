@@ -121,6 +121,7 @@ void main() {
     await tester.tap(find.byKey(const Key('renew')));
     await tester.pumpAndSettle();
     expect(h.api.calls, contains('redeemPreview $txid'));
+    await tester.scrollUntilVisible(find.byKey(const Key('renew-step')), 200, scrollable: find.byType(Scrollable).first);
     expect(find.byKey(const Key('renew-step')), findsOneWidget);
     expect(find.text('Slide to renew: burn \$30.00, pay 0.50000000 YEC fee'), findsOneWidget);
     await tester.longPress(find.byKey(const Key('slide-to-confirm')));
@@ -147,6 +148,7 @@ void main() {
     await tester.tap(find.byKey(const Key('preview')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('renew-step')), findsNothing);
+    await tester.scrollUntilVisible(find.byKey(const Key('slide-to-confirm')), 200, scrollable: find.byType(Scrollable).first); // below the cancel-limit rows
     await tester.longPress(find.byKey(const Key('slide-to-confirm')));
     await tester.pumpAndSettle();
     expect(find.text('Vault redeemed'), findsOneWidget);

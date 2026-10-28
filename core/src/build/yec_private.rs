@@ -124,8 +124,11 @@ pub fn plan_yec_send(
     }
     // Validate the transparent recipient before looking at notes, so a bad address is an
     // input error whichever pool would have paid.
-    crate::keys::parse_address(wallet.network, to)?;
-    if !send_everything {
+    let dest = crate::keys::parse_yec_destination(wallet.network, to)?;
+    // The private side's builder pays only a P2PKH/P2SH transparent recipient: a post-quantum
+    // `sq…` (a `TX_PQPKH`, D-Q-20) is paid from the transparent balance.
+    let pq_recipient = matches!(dest, crate::keys::YecDestination::Pq(_));
+    if !send_everything && !pq_recipient {
         if let Some(sh) = wallet.shielded.as_mut() {
             let b = sh.balance()?;
             if b.sendable && b.spendable_zat >= amount as u64 {

@@ -21,7 +21,18 @@
 //! relay: `EstimateCollateral`, `BuildBundle`, `GetFeePayee`, `ListAttestors`, and the node's
 //! dry run through the gate (D-W-5).
 //!
-//! Differences from the node, recorded: the carrier and owner keys are the next unused
+//! **Post-quantum owner (quantum spec §3.6, C-1).** The vault owner is an SLH-DSA key and the
+//! MINT payload is version 4 (`ownerScheme ‖ ownerHash`); the token (`vout[1]`) goes to the
+//! fresh external P2PKH key — the holder is no longer the owner (an SLH-DSA holder would cost an
+//! 8 KB scriptSig per transfer). The owner is the PQ key paired with that external key's index
+//! ([`crate::wallet::Wallet::pq_owner_key`]), and FEE-W's selector is the payload's 33 owner
+//! bytes, as the node's `BuildMint` (ycash-dd `q/yed` `txbuilder.cpp:1300-1304`). From
+//! `pqFalconHeight` (`TOK-PQ`; mainnet and testnet from the vault upgrade's first block) the
+//! token goes to the Falcon holder paired with that same external key
+//! ([`crate::wallet::Wallet::yed_holder_script`]): a `TX_PQPKH` scheme 2, judged for the block
+//! after `refHeight` (the earliest the MINT can confirm).
+//!
+//! Differences from the node, recorded: the carrier and holder keys are the next unused
 //! change / external HD keys (the node draws from its keypool); the YEC side selects from the
 //! wallet's classes (`FEE_RESERVE` first, then `YEC`); the attestor payee is the node's
 //! `DefaultAttestPayee` pick over the block hash the relay serves (AFEE-1 accepts any `seq` of
@@ -34,10 +45,9 @@ use crate::bundle::{self, Seated};
 use crate::coins::{self, Utxo, UtxoClass};
 use crate::gate::{self, Validator};
 use crate::keys::{self, unhex};
-use crate::net::{CompactClient, Validation, YellowbackClient};
+use crate::net::{CompactClient, NetError, Validation, YellowbackClient};
 use crate::params::{
-    CARRIER_VALUE, FEE_MIN_ZAT, FEE_ZAT, REF_WINDOW, TOKEN_VALUE, TX_EXPIRING_SOON_THRESHOLD,
-    TX_EXPIRY_DELTA,
+    CARRIER_VALUE, FEE_ZAT, REF_WINDOW, TOKEN_VALUE, TX_EXPIRING_SOON_THRESHOLD, TX_EXPIRY_DELTA,
 };
 use crate::payload::{self, Payload, FEE_VOUT_NONE};
 use crate::script;
@@ -185,17 +195,24 @@ pub struct MintEstimate {
     pub claim_height: u32,
     /// `requiredZat` as the node reports it.
     pub required_zat: i64,
-    /// The collateral the MINT will carry: `max(required, 4·feeMin)` rounded up to 1,000 zat.
+    /// The collateral the MINT will carry: `requiredZat` rounded up to 1,000 zat (MINT-5′,
+    /// rpcversion 8: the `4 · FEE_MIN` floor is gone).
     pub collateral_zat: i64,
-    /// The enforcement fee for that collateral (0 under FEE-0).
+    /// The protocol fee (FEE-1′, rpcversion 8): the debt's dollars in bands at `p_mint`, in zat
+    /// (0 under FEE-0).
     pub fee_zat: i64,
+    /// The protocol fee in cents (`ProtocolFeeCents`; shown even under FEE-0, where it is not paid).
+    pub protocol_fee_cents: i64,
+    /// The network fees of the two transactions: the carrier's flat fee and the MINT's
+    /// Yellowback size fee at one funding input (dollars per KB at the attested price).
+    pub network_fee_zat: i64,
     /// The attestor fee (0 under AFEE-0).
     pub attest_fee_zat: i64,
-    /// The enforcement fee payee for `(R, ownerPubKey)` (`s…`), empty under FEE-0. Checked
-    /// against FEE-1 locally; its eligibility cannot be (`docs/trust.md`).
+    /// The protocol fee payee for `(R, owner)` (`s…`), empty under FEE-0. The fee is FEE-1′
+    /// computed locally; the payee's eligibility cannot be checked (`docs/trust.md`).
     pub payee: String,
-    /// The owner key the estimate was made for (the next unused external key); `start`
-    /// takes the same key.
+    /// The holder key the estimate was made for (the next unused external key; the vault owner
+    /// is the PQ key paired with it); `start` takes the same key.
     pub owner_hash160: [u8; 20],
     /// `pMint` at `R`, micro-USD per YEC.
     pub p_mint: i64,
@@ -229,28 +246,34 @@ pub struct CarrierStep {
     pub validation: Validation,
 }
 
-/// `FeeZat(collateral, feeMin, feeBps)` and the payee for `(R, selector)`, from `GetFeePayee`:
-/// `(fee_zat, payee)`; `payee` empty under FEE-0 (no eligible pool). The fee is checked against
-/// FEE-1 locally (`terms::check_fee`, audit G-2); the payee's eligibility cannot be.
+/// The protocol fee's payee for `(R, selector)`, from `GetFeePayee` (rpcversion 8: the RPC quotes no
+/// fee; FEE-1′ is computed locally from the debt and the price, [`terms::protocol_fee`]); empty under
+/// FEE-0 (no eligible pool). The payee's eligibility cannot be checked locally (`docs/trust.md`).
 pub(crate) async fn fee_payee(
-    network: crate::params::Network,
     yb: &mut YellowbackClient,
     ref_height: u32,
-    collateral_zat: i64,
     selector: &[u8],
-) -> Result<(i64, String), WalletError> {
-    let p = yb
-        .fee_payee(ref_height, collateral_zat, &keys::hex(selector))
-        .await?;
-    let payee = if !p.preferred.is_empty() {
+) -> Result<String, WalletError> {
+    let p = yb.fee_payee(ref_height, &keys::hex(selector)).await?;
+    Ok(if !p.preferred.is_empty() {
         p.preferred
     } else if let Some(d) = p.default {
         d.payout_address
     } else {
         String::new()
-    };
-    let fee = terms::check_fee(network, collateral_zat, &payee, p.fee_zat)?;
-    Ok((fee, payee))
+    })
+}
+
+/// The network fee of a MINT funded by `funding_inputs` P2PKH coins (`BuildMint`: `YedNetworkFee`
+/// raised by `PQFeeFollower` as coins are selected — every selected input counts 150 bytes on the
+/// 1,000-byte base, a post-quantum one its spend size; the carrier is not counted).
+pub fn mint_network_fee(wallet: &Wallet, funding: &[Utxo]) -> i64 {
+    let pq: Vec<u8> = funding
+        .iter()
+        .filter_map(|u| crate::pq::pqpkh_of(&u.script).map(|id| id.scheme))
+        .collect();
+    let other = funding.len() - pq.len();
+    wallet.pq_terms().yed_network_fee(other, &pq)
 }
 
 /// The seated set for bundle verification: `seq → attestorPubKey` from `ListAttestors`.
@@ -332,10 +355,10 @@ pub async fn attest_payee(
     Ok((addr, terms::attest_fee(network, fee_zat, seqs)))
 }
 
-/// `BuildMint:1105-1106`: `max(required, 4 · FEE_MIN)` rounded up to 1,000 zat (MINT-5, K14);
-/// `FEE_MIN` is the local constant (audit G-2).
+/// `BuildMint`: the requirement rounded up to 1,000 zat (MINT-5′, rpcversion 8: the `4 · FEE_MIN`
+/// floor of MINT-5 is gone, `requiredZatFloored = requiredZat`).
 pub fn collateral_for(required_zat: i64) -> i64 {
-    let mut c = required_zat.max(4 * FEE_MIN_ZAT);
+    let mut c = required_zat;
     if c % 1000 != 0 {
         c += 1000 - c % 1000;
     }
@@ -344,7 +367,8 @@ pub fn collateral_for(required_zat: i64) -> i64 {
 
 /// `mint_estimate` (plan §3.4): the numbers the Mint screen shows, from `EstimateCollateral`
 /// and `GetFeePayee`, each checked against the spec's rules for the network before it is
-/// shown (`terms::check_estimate`, audit G-1). Nothing is signed or reserved; the owner key
+/// shown (`terms::check_estimate`, audit G-1); the protocol fee is FEE-1′ of `cents` at the
+/// estimate's `pMint`, computed here (rpcversion 8). Nothing is signed or reserved; the owner key
 /// is the next unused external key, which `start` then takes.
 pub async fn estimate(
     wallet: &Wallet,
@@ -384,21 +408,21 @@ pub async fn estimate(
     }
     let collateral_zat = collateral_for(e.required_zat);
     let owner_row = wallet.receive_address(false)?;
-    let owner_key = wallet
-        .key_for_hash(&owner_row.hash160)?
+    let (_, owner) = wallet
+        .pq_owner_for_hash(&owner_row.hash160)?
         .ok_or_else(|| WalletError::Other("owner key".into()))?;
-    let (fee_zat, payee) = fee_payee(
-        wallet.network,
-        yb,
-        e.ref_height as u32,
-        collateral_zat,
-        &owner_key.pubkey,
-    )
-    .await?;
+    let payee = fee_payee(yb, e.ref_height as u32, &owner.to_bytes()).await?;
+    let fee_zat = terms::protocol_fee(cents, e.p_mint, &payee)?;
     let bundle_seqs: Vec<u16> = e.bundle_seqs.iter().map(|s| *s as u16).collect();
     let attest_fee_zat = terms::attest_fee(wallet.network, fee_zat, &bundle_seqs);
+    // The carrier pays the flat fee (`BuildCarrier`); the MINT the Yellowback size fee, here at one
+    // P2PKH funding input (more inputs raise it at `finish`, from the reserve).
+    let network_fee_zat = wallet.pq_terms().flat_zat
+        + wallet
+            .pq_terms()
+            .yed_fee(crate::params::yed_estimated_size(1, &[]));
     let total_zat =
-        collateral_zat + TOKEN_VALUE + fee_zat + attest_fee_zat + CARRIER_VALUE + 2 * FEE_ZAT;
+        collateral_zat + TOKEN_VALUE + fee_zat + attest_fee_zat + CARRIER_VALUE + network_fee_zat;
     let (avail, reserved) = coins::yec_balances(&wallet.spendable_utxos()?);
     Ok(MintEstimate {
         cents,
@@ -410,6 +434,8 @@ pub async fn estimate(
         required_zat: e.required_zat,
         collateral_zat,
         fee_zat,
+        protocol_fee_cents: crate::params::protocol_fee_cents(cents),
+        network_fee_zat,
         attest_fee_zat,
         payee,
         owner_hash160: owner_row.hash160,
@@ -445,6 +471,7 @@ pub async fn vault_terms_now(
 ) -> Result<terms::VaultTerms, WalletError> {
     let info = yb.info().await?;
     terms::check_server_params(wallet.network, info.params.as_ref())?;
+    wallet.note_server_params(info.params.as_ref())?;
     let t = terms::vault_terms(wallet.network, &info)?;
     let hex = keys::hex(&t.attestor_set_id);
     match wallet.store.meta("attestor_set_id")? {
@@ -490,7 +517,13 @@ pub(crate) fn fresh_external(wallet: &Wallet) -> Result<AddressRow, WalletError>
 /// The carrier step (`BuildCarrier`; `build_carrier_tx`): fund `P2SH(carrierScript(fresh key,
 /// SHA256(bundle)))` of `CARRIER_VALUE` from `FEE_RESERVE` then `YEC`, change to a fresh change
 /// key, `nExpiryHeight = R + REF_WINDOW`, both gate layers, broadcast, locks, pending record.
-pub async fn carrier_step(
+///
+/// `persist_row` records the caller's `mints` row for the step and returns its id; it runs
+/// before `SendTransaction` (DigiByte v9.26.7 38895edb's order), so the bundle the carrier's
+/// script commits to is on disk before the carrier can reach the chain. A refused send deletes
+/// the row again ([`send_recorded`]).
+#[allow(clippy::too_many_arguments)]
+pub async fn carrier_step<R>(
     wallet: &Wallet,
     client: &mut CompactClient,
     validator: &mut Validator,
@@ -498,7 +531,11 @@ pub async fn carrier_step(
     ref_height: u32,
     tip: u64,
     branch_id: u32,
-) -> Result<CarrierStep, WalletError> {
+    persist_row: R,
+) -> Result<(CarrierStep, i64), WalletError>
+where
+    R: FnOnce(&CarrierStep) -> Result<i64, WalletError>,
+{
     let expiry_height = ref_height + REF_WINDOW;
     if !window_open(tip, expiry_height) {
         return Err(MintError::Lapsed {
@@ -514,7 +551,8 @@ pub async fn carrier_step(
         .ok_or_else(|| WalletError::Other("carrier key".into()))?;
     let redeem = script::carrier_script(&carrier_key.pubkey, &bundle::bundle_hash(bundle))
         .map_err(MintError::Script)?;
-    let needed = CARRIER_VALUE + FEE_ZAT;
+    // `BuildCarrier`: the flat Yellowback fee (`g_yellowbackFee`, `fees.network.flatZat`)
+    let needed = CARRIER_VALUE + wallet.pq_terms().flat_zat;
     let spendable = wallet.spendable_utxos()?;
     let inputs = coins::select_yec(&spendable, needed, true)?;
     let selected: i64 = inputs.iter().map(|u| u.value).sum();
@@ -551,32 +589,52 @@ pub async fn carrier_step(
     })
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
-    send(client, &raw, &txid).await?;
-    record_broadcast(wallet, &txid, &raw, expiry_height, &inputs)?;
-    wallet.store.upsert_history(&HistoryRow {
-        txid,
-        height: 0,
-        yec_delta: change - selected,
-        has_payload: false,
-        pending: true,
-        shielded: false,
-        yed_delta: 0,
-        kind: "carrier".into(),
-        verdict: String::new(),
-        label: "funding carrier".into(),
-        labelled: true,
-    })?;
-    if let Some(row) = change_row {
-        wallet
-            .store
-            .insert_own_output(&OutPoint { txid, n: 1 }, change, &row.hash160)?;
-    }
-    Ok(CarrierStep {
+    let step = CarrierStep {
         txid,
         carrier_hash160: carrier_row.hash160,
         expiry_height,
         validation,
-    })
+    };
+    let row_id = std::cell::Cell::new(None);
+    send_recorded(
+        wallet,
+        &txid,
+        &raw,
+        expiry_height,
+        &inputs,
+        || {
+            wallet.store.upsert_history(&HistoryRow {
+                txid,
+                height: 0,
+                yec_delta: change - selected,
+                has_payload: false,
+                pending: true,
+                shielded: false,
+                yed_delta: 0,
+                kind: "carrier".into(),
+                verdict: String::new(),
+                label: "funding carrier".into(),
+                labelled: true,
+            })?;
+            if let Some(row) = &change_row {
+                wallet
+                    .store
+                    .insert_own_output(&OutPoint { txid, n: 1 }, change, &row.hash160)?;
+            }
+            row_id.set(Some(persist_row(&step)?));
+            Ok(())
+        },
+        || match row_id.get() {
+            Some(id) => Ok(wallet.store.delete_mint(id)?),
+            None => Ok(()),
+        },
+        send(client, &raw, &txid),
+    )
+    .await?;
+    let id = row_id
+        .get()
+        .ok_or_else(|| WalletError::Other("carrier row not recorded".into()))?;
+    Ok((step, id))
 }
 
 /// `mint_start` (plan §3.4): estimate (checked), bundle (verified, and `pMint` checked against
@@ -606,7 +664,7 @@ pub async fn start(
             need: est.total_zat,
             collateral: est.collateral_zat,
             token: TOKEN_VALUE,
-            fees: est.fee_zat + est.attest_fee_zat + 2 * FEE_ZAT,
+            fees: est.fee_zat + est.attest_fee_zat + est.network_fee_zat,
             carrier: CARRIER_VALUE,
             have: est.available_zat,
         }
@@ -634,49 +692,62 @@ pub async fn start(
         }
         .into());
     }
-    let owner_key = wallet
-        .key_for_hash(&owner_row.hash160)?
+    let (_, owner) = wallet
+        .pq_owner_for_hash(&owner_row.hash160)?
         .ok_or_else(|| WalletError::Other("owner key".into()))?;
-    // The fee payee for (R, ownerPubKey) is the estimate's (BuildMint:1121).
+    // The fee payee for (R, owner bytes) is the estimate's (BuildMint:1121).
     let (fee_zat, payee) = (est.fee_zat, est.payee.clone());
     let (attest_payee_addr, attest_fee_zat) =
         attest_payee(wallet.network, client, yb, r, &[], &seqs, fee_zat).await?;
-    let step = carrier_step(wallet, client, validator, &bundle_bytes, r, tip, branch_id).await?;
-    let row = MintRow {
-        id: 0,
-        kind: MintKind::Mint,
-        state: MintState::CarrierSent,
-        created_height: tip,
-        cents,
-        lock_blocks,
-        term_class: est.term_class,
-        ref_height: r,
-        lock_height: est.lock_height,
-        claim_height: est.claim_height,
-        collateral_zat: est.collateral_zat,
-        fee_zat,
-        payee,
-        attest_fee_zat,
-        attest_payee: attest_payee_addr,
-        residual_zat: 0,
-        bundle: bundle_bytes,
-        bundle_seqs: seqs
-            .iter()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>()
-            .join(","),
-        carrier_hash160: step.carrier_hash160,
-        owner_hash160: owner_row.hash160,
-        carrier_txid: step.txid,
-        carrier_vout: 0,
-        main_txid: [0; 32],
-        sweep_txid: [0; 32],
-        expiry_height: step.expiry_height,
-        vault_txid: [0; 32],
-        owner_pubkey: owner_key.pubkey.to_vec(),
-        note: String::new(),
+    let persist_row = |step: &CarrierStep| -> Result<i64, WalletError> {
+        let row = MintRow {
+            id: 0,
+            kind: MintKind::Mint,
+            state: MintState::CarrierSent,
+            created_height: tip,
+            cents,
+            lock_blocks,
+            term_class: est.term_class,
+            ref_height: r,
+            lock_height: est.lock_height,
+            claim_height: est.claim_height,
+            collateral_zat: est.collateral_zat,
+            fee_zat,
+            payee,
+            attest_fee_zat,
+            attest_payee: attest_payee_addr,
+            residual_zat: 0,
+            bundle: bundle_bytes.clone(),
+            bundle_seqs: seqs
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            carrier_hash160: step.carrier_hash160,
+            owner_hash160: owner_row.hash160,
+            carrier_txid: step.txid,
+            carrier_vout: 0,
+            main_txid: [0; 32],
+            sweep_txid: [0; 32],
+            expiry_height: step.expiry_height,
+            vault_txid: [0; 32],
+            owner: Some(owner),
+            note: String::new(),
+        };
+        Ok(wallet.store.insert_mint(&row)?)
     };
-    Ok(wallet.store.insert_mint(&row)?)
+    let (_, id) = carrier_step(
+        wallet,
+        client,
+        validator,
+        &bundle_bytes,
+        r,
+        tip,
+        branch_id,
+        persist_row,
+    )
+    .await?;
+    Ok(id)
 }
 
 /// The estimate at `start` against the one the user confirmed (audit G-2).
@@ -698,7 +769,7 @@ fn check_confirmed(c: &ConfirmedTerms, est: &MintEstimate) -> Result<(), MintErr
     }
     if est.fee_zat != c.fee_zat {
         return Err(changed(
-            "enforcement fee",
+            "protocol fee",
             c.fee_zat.to_string(),
             est.fee_zat.to_string(),
         ));
@@ -755,7 +826,9 @@ pub fn sign_carrier_input(
     Ok(())
 }
 
-/// Sign `inputs` (P2PKH, own keys) at `vin[first..]`.
+/// Sign `inputs` (own keys) at `vin[first..]`: a P2PKH input with its secp256k1 key, a Falcon
+/// `TX_PQPKH` YED holder input (TOK-PQ) with its Falcon key and the chunked scriptSig
+/// (`<sig_1> <sig_2> OP_2 <pk_1> <pk_2> OP_2`, 1,577 bytes).
 pub(crate) fn sign_p2pkh_inputs(
     wallet: &Wallet,
     tx: &mut Transaction,
@@ -764,6 +837,16 @@ pub(crate) fn sign_p2pkh_inputs(
     branch_id: u32,
 ) -> Result<(), WalletError> {
     for (i, u) in inputs.iter().enumerate() {
+        if let Some(id) = crate::pq::pqpkh_of(&u.script) {
+            let key = wallet.falcon_key_for_id(&id)?.ok_or_else(|| {
+                WalletError::Other(format!(
+                    "no post-quantum key for input {}",
+                    u.outpoint.display()
+                ))
+            })?;
+            tx.sign_pqpkh_input(first + i, &key, &u.script, u.value, branch_id)?;
+            continue;
+        }
         let h = script::p2pkh_hash(&u.script).ok_or_else(|| {
             WalletError::Other(format!("input {} is not P2PKH", u.outpoint.display()))
         })?;
@@ -811,6 +894,108 @@ pub(crate) fn record_broadcast(
     Ok(())
 }
 
+/// Whether a failed `SendTransaction` certainly put nothing on the network: the server refused
+/// the transaction (`SendRejected`, the node's verdict), the connection never carried the
+/// request (`Transport`), or the server refused the call itself (a gRPC status such as a rate
+/// limit or a malformed request). A timeout, a cancel, an unavailable or internal status, or a
+/// reply naming another txid may follow a broadcast that reached the node: what was recorded
+/// then stays, and the sync settles it (the transaction confirms, or its expiry releases it).
+pub(crate) fn send_refused(e: &WalletError) -> bool {
+    use tonic::Code;
+    match e {
+        WalletError::Net(NetError::SendRejected { .. })
+        | WalletError::Net(NetError::Transport(_)) => true,
+        WalletError::Net(NetError::Status(s)) => matches!(
+            s.code(),
+            Code::InvalidArgument
+                | Code::FailedPrecondition
+                | Code::ResourceExhausted
+                | Code::PermissionDenied
+                | Code::Unauthenticated
+                | Code::Unimplemented
+                | Code::OutOfRange
+                | Code::NotFound
+        ),
+        _ => false,
+    }
+}
+
+/// Record, then send (cf. DigiByte v9.26.7 38895edb: the mint is written before it is
+/// broadcast, and a failed write sends nothing). Locks the inputs and records the transaction
+/// pending ([`record_broadcast`]), runs `persist` (the builder's own rows: history, own outputs,
+/// pre-locked change, the `mints` row or its step), and only then awaits `send` — the
+/// `SendTransaction` future, which does nothing until it is polled. An app killed at any point
+/// therefore leaves either nothing sent or a complete record the sync settles (the transaction
+/// confirms; or its expiry releases the locks and fails or lapses the row): never a carrier on
+/// the chain whose bundle the wallet lost, nor inputs the next send could pick again.
+///
+/// A write that fails, or a send the server certainly refused ([`send_refused`]), is undone: the
+/// inputs' locks are put back as they were, [`crate::store::Store::forget_tx`] drops the
+/// transaction's rows, and `undo` reverses the builder's change to its `mints` row. The error is
+/// returned either way.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn send_recorded<P, U, S>(
+    wallet: &Wallet,
+    txid: &[u8; 32],
+    raw: &[u8],
+    expiry_height: u32,
+    inputs: &[Utxo],
+    persist: P,
+    undo: U,
+    send: S,
+) -> Result<(), WalletError>
+where
+    P: FnOnce() -> Result<(), WalletError>,
+    U: FnOnce() -> Result<(), WalletError>,
+    S: std::future::Future<Output = Result<(), WalletError>>,
+{
+    let ops: std::collections::HashSet<OutPoint> = inputs.iter().map(|u| u.outpoint).collect();
+    let before: Vec<crate::store::LockRow> = wallet
+        .store
+        .locks()?
+        .into_iter()
+        .filter(|l| ops.contains(&l.outpoint))
+        .collect();
+    let rollback = |undo: U, cause: WalletError| -> WalletError {
+        let undone = (|| -> Result<(), WalletError> {
+            for u in inputs {
+                wallet.store.unlock(&u.outpoint)?;
+            }
+            for l in &before {
+                wallet.store.lock(&l.outpoint, &l.reason, l.expiry_height)?;
+            }
+            wallet.store.forget_tx(txid)?;
+            undo()
+        })();
+        match undone {
+            Ok(()) => cause,
+            Err(e) => WalletError::Other(format!(
+                "{cause}; undoing the record of {} also failed: {e}",
+                txid_hex(txid)
+            )),
+        }
+    };
+    if let Err(e) =
+        record_broadcast(wallet, txid, raw, expiry_height, inputs).and_then(|()| persist())
+    {
+        return Err(rollback(undo, e));
+    }
+    match send.await {
+        Ok(()) => Ok(()),
+        Err(e) if send_refused(&e) => Err(rollback(undo, e)),
+        Err(e) => Err(e),
+    }
+}
+
+/// Put a two-step row's step back as `m` had it (the undo of a `set_mint_state` whose broadcast
+/// was refused).
+pub(crate) fn restore_step(wallet: &Wallet, m: &MintRow) -> Result<(), WalletError> {
+    wallet
+        .store
+        .restore_mint_step(m.id, m.state, &m.main_txid, &m.sweep_txid, &m.note)?;
+    Ok(())
+}
+
 /// The MINT outputs (`MintOutputs`): vault, token, payload, [fee], [attestor fee]. Since the
 /// vault upgrade `vout[0]` is the bare V template of the YED vault (U-23: tag `YED\0`, the
 /// attestor set as both sets, `CLAIM_DELAY`; since the in-term plan's IT-1 and D-IT-15
@@ -819,10 +1004,26 @@ pub(crate) fn record_broadcast(
 /// the early-redeem fee, no longer a CLTV); the v2 P2SH vault script and the pre-plan V
 /// (`ownerHeight = lockHeight`, `appHeight = lockHeight + GRACE`) are refused for new mints
 /// (MINT-3, `bad-mint-vault-script`).
+/// The MINT token's holder (`vout[1]`): the fresh external key of the row (`owner_hash160`), as
+/// a P2PKH before the Falcon height and as its paired Falcon `TX_PQPKH` from it (TOK-PQ, judged at
+/// `refHeight + 1`).
+pub fn mint_token_script(wallet: &Wallet, m: &MintRow) -> Result<Vec<u8>, WalletError> {
+    let falcon = wallet.pq_terms().falcon_at(m.ref_height as u64 + 1);
+    if !falcon {
+        return Ok(script::p2pkh_script(&m.owner_hash160));
+    }
+    let row = wallet
+        .addresses()?
+        .into_iter()
+        .find(|r| r.hash160 == m.owner_hash160)
+        .ok_or_else(|| WalletError::Other("the mint's holder key is not in this wallet".into()))?;
+    wallet.yed_holder_script(&row, true)
+}
+
 pub fn mint_outputs(
     wallet: &Wallet,
     m: &MintRow,
-    owner_pubkey: &[u8; 33],
+    owner: &crate::pq::PqKeyId,
     vt: &terms::VaultTerms,
 ) -> Result<Vec<TxOut>, WalletError> {
     if m.claim_height != m.lock_height + vt.grace {
@@ -834,7 +1035,7 @@ pub fn mint_outputs(
         }
         .into());
     }
-    let vault = vt.mint_vault_script(owner_pubkey, m.ref_height)?;
+    let vault = vt.mint_vault_script(owner, m.ref_height)?;
     let fee_vout = if m.payee.is_empty() { FEE_VOUT_NONE } else { 3 };
     let attest_fee_vout = if m.attest_payee.is_empty() {
         FEE_VOUT_NONE
@@ -854,7 +1055,7 @@ pub fn mint_outputs(
         cents: m.cents as u32,
         lock_height: m.lock_height,
         ref_height: m.ref_height,
-        owner_key: *owner_pubkey,
+        owner: *owner,
         fee_vout,
         attest_fee_vout,
     })
@@ -866,7 +1067,7 @@ pub fn mint_outputs(
         },
         TxOut {
             value: TOKEN_VALUE,
-            script_pubkey: script::p2pkh_script(&m.owner_hash160),
+            script_pubkey: mint_token_script(wallet, m)?,
         },
         TxOut {
             value: 0,
@@ -888,7 +1089,7 @@ pub fn mint_outputs(
     Ok(vout)
 }
 
-/// The P2PKH script of an `s…` / `ye…` address.
+/// The P2PKH script of an `s…` / `yb…` address.
 pub(crate) fn p2pkh_of_address(wallet: &Wallet, address: &str) -> Result<Vec<u8>, WalletError> {
     match keys::parse_address(wallet.network, address)?.kind {
         keys::AddressKind::P2pkh(h) => Ok(script::p2pkh_script(&h)),
@@ -946,8 +1147,16 @@ pub async fn finish(
     if m.kind == MintKind::Claim {
         return super::claim::finish(wallet, client, validator, &m, branch_id).await;
     }
-    let owner_key = wallet
-        .key_for_hash(&m.owner_hash160)?
+    let owner = m
+        .owner
+        .filter(|o| {
+            wallet
+                .pq_owner_for_hash(&m.owner_hash160)
+                .ok()
+                .flatten()
+                .map(|x| x.1)
+                == Some(*o)
+        })
         .ok_or_else(|| WalletError::Other("owner key missing".into()))?;
     let (carrier_op, redeem, carrier_key) = carrier_of(wallet, &m)?;
     let vt = {
@@ -958,12 +1167,21 @@ pub async fn finish(
     };
     let mut tx = Transaction::new_v4();
     tx.expiry_height = m.expiry_height;
-    tx.vout = mint_outputs(wallet, &m, &owner_key.pubkey, &vt)?;
+    tx.vout = mint_outputs(wallet, &m, &owner, &vt)?;
     let outputs: i64 = tx.vout.iter().map(|o| o.value).sum();
-    // needed = outputs + fee − CARRIER_VALUE: the carrier input pays CARRIER_VALUE (:1136).
-    let needed = outputs + FEE_ZAT - CARRIER_VALUE;
+    // needed = outputs + fee − CARRIER_VALUE: the carrier input pays CARRIER_VALUE (:1136). The fee
+    // is the Yellowback size fee (rpcversion 8), raised as the selection grows (`PQFeeFollower`).
     let spendable = wallet.spendable_utxos()?;
-    let inputs = coins::select_yec(&spendable, needed, true)?;
+    let mut fee = mint_network_fee(wallet, &[]);
+    let inputs = loop {
+        let sel = coins::select_yec(&spendable, outputs + fee - CARRIER_VALUE, true)?;
+        let next = mint_network_fee(wallet, &sel);
+        if next <= fee {
+            break sel;
+        }
+        fee = next;
+    };
+    let needed = outputs + fee - CARRIER_VALUE;
     let selected: i64 = inputs.iter().map(|u| u.value).sum();
     let mut change = selected - needed;
     if change == TOKEN_VALUE {
@@ -1003,7 +1221,6 @@ pub async fn finish(
     })
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
-    send(client, &raw, &txid).await?;
     let mut locked = inputs.clone();
     locked.push(Utxo {
         outpoint: carrier_op,
@@ -1014,42 +1231,59 @@ pub async fn finish(
         class: UtxoClass::Carrier,
         cents: 0,
     });
-    record_broadcast(wallet, &txid, &raw, m.expiry_height, &locked)?;
     // PreLock: vout[1] is the minted cents, pending until the server lists it.
-    wallet.store.upsert_utxo(&Utxo {
-        outpoint: OutPoint { txid, n: 1 },
-        address: keys::encode_p2pkh(wallet.network, &m.owner_hash160),
-        script: script::p2pkh_script(&m.owner_hash160),
-        value: TOKEN_VALUE,
-        height: 0,
-        class: UtxoClass::PendingToken,
-        cents: m.cents,
-    })?;
-    wallet
-        .store
-        .insert_own_output(&OutPoint { txid, n: 1 }, TOKEN_VALUE, &m.owner_hash160)?;
-    if let Some(row) = change_row {
-        let n = (tx.vout.len() - 1) as u32;
-        wallet
-            .store
-            .insert_own_output(&OutPoint { txid, n }, change, &row.hash160)?;
-    }
-    wallet.store.upsert_history(&HistoryRow {
-        txid,
-        height: 0,
-        yec_delta: change + TOKEN_VALUE - selected - CARRIER_VALUE,
-        has_payload: true,
-        pending: true,
-        shielded: false,
-        yed_delta: m.cents as i64,
-        kind: "mint".into(),
-        verdict: String::new(),
-        label: format!("minting {}", dollars(m.cents as i64)),
-        labelled: false,
-    })?;
-    wallet
-        .store
-        .set_mint_state(id, MintState::MainSent, Some(&txid), None, "")?;
+    let token_script = mint_token_script(wallet, &m)?;
+    let change_n = (tx.vout.len() - 1) as u32;
+    send_recorded(
+        wallet,
+        &txid,
+        &raw,
+        m.expiry_height,
+        &locked,
+        || {
+            wallet.store.upsert_utxo(&Utxo {
+                outpoint: OutPoint { txid, n: 1 },
+                address: super::yed_transfer::holder_address(wallet.network, &token_script),
+                script: token_script.clone(),
+                value: TOKEN_VALUE,
+                height: 0,
+                class: UtxoClass::PendingToken,
+                cents: m.cents,
+            })?;
+            wallet.store.insert_own_output(
+                &OutPoint { txid, n: 1 },
+                TOKEN_VALUE,
+                &m.owner_hash160,
+            )?;
+            if let Some(row) = &change_row {
+                wallet.store.insert_own_output(
+                    &OutPoint { txid, n: change_n },
+                    change,
+                    &row.hash160,
+                )?;
+            }
+            wallet.store.upsert_history(&HistoryRow {
+                txid,
+                height: 0,
+                yec_delta: change + TOKEN_VALUE - selected - CARRIER_VALUE,
+                has_payload: true,
+                pending: true,
+                shielded: false,
+                yed_delta: m.cents as i64,
+                kind: "mint".into(),
+                verdict: String::new(),
+                label: format!("minting {}", dollars(m.cents as i64)),
+                labelled: false,
+            })?;
+            wallet
+                .store
+                .set_mint_state(id, MintState::MainSent, Some(&txid), None, "")?;
+            Ok(())
+        },
+        || restore_step(wallet, &m),
+        send(client, &raw, &txid),
+    )
+    .await?;
     Ok(Finished {
         txid: txid_hex(&txid),
         validation,
@@ -1097,7 +1331,6 @@ pub async fn sweep(
     })
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
-    send(client, &raw, &txid).await?;
     let carrier = Utxo {
         outpoint: carrier_op,
         address: String::new(),
@@ -1107,32 +1340,38 @@ pub async fn sweep(
         class: UtxoClass::Carrier,
         cents: 0,
     };
-    record_broadcast(
+    send_recorded(
         wallet,
         &txid,
         &raw,
         tx.expiry_height,
         std::slice::from_ref(&carrier),
-    )?;
-    wallet
-        .store
-        .insert_own_output(&OutPoint { txid, n: 0 }, value, &dest.hash160)?;
-    wallet.store.upsert_history(&HistoryRow {
-        txid,
-        height: 0,
-        yec_delta: value - CARRIER_VALUE,
-        has_payload: false,
-        pending: true,
-        shielded: false,
-        yed_delta: 0,
-        kind: "sweep".into(),
-        verdict: String::new(),
-        label: "sweeping lapsed carrier".into(),
-        labelled: true,
-    })?;
-    wallet
-        .store
-        .set_mint_state(id, MintState::SweepSent, None, Some(&txid), "")?;
+        || {
+            wallet
+                .store
+                .insert_own_output(&OutPoint { txid, n: 0 }, value, &dest.hash160)?;
+            wallet.store.upsert_history(&HistoryRow {
+                txid,
+                height: 0,
+                yec_delta: value - CARRIER_VALUE,
+                has_payload: false,
+                pending: true,
+                shielded: false,
+                yed_delta: 0,
+                kind: "sweep".into(),
+                verdict: String::new(),
+                label: "sweeping lapsed carrier".into(),
+                labelled: true,
+            })?;
+            wallet
+                .store
+                .set_mint_state(id, MintState::SweepSent, None, Some(&txid), "")?;
+            Ok(())
+        },
+        || restore_step(wallet, &m),
+        send(client, &raw, &txid),
+    )
+    .await?;
     Ok(Finished {
         txid: txid_hex(&txid),
         validation,
@@ -1148,7 +1387,7 @@ mod tests {
     fn collateral_floor_and_rounding() {
         assert_eq!(collateral_for(1_000_000_000), 1_000_000_000);
         assert_eq!(collateral_for(1_000_000_001), 1_000_001_000);
-        assert_eq!(collateral_for(1), 200_000_000);
+        assert_eq!(collateral_for(1), 1_000); // MINT-5′: no 4 · FEE_MIN floor (rpcversion 8)
         assert!(window_open(480, 520));
         assert!(window_open(516, 520));
         assert!(!window_open(517, 520));
@@ -1166,8 +1405,10 @@ mod tests {
             claim_height: 552,
             required_zat: 96_153_846_154,
             collateral_zat: 96_153_847_000,
-            fee_zat: 240_384_617,
-            attest_fee_zat: 60_096_154,
+            fee_zat: 192_307_693, // FEE-1′: $1.00 (the floor of a $100 debt) at $0.52
+            protocol_fee_cents: 100,
+            network_fee_zat: 2_000,
+            attest_fee_zat: 48_076_923,
             payee: "s1pool".into(),
             owner_hash160: [1; 20],
             p_mint: 520_000,
@@ -1205,6 +1446,345 @@ mod tests {
                 check_confirmed(&bent, &est),
                 Err(MintError::TermsChanged { .. })
             ));
+        }
+    }
+
+    // ---- Y1: record before SendTransaction, undo on a certain refusal (DigiByte 38895edb)
+
+    mod record_then_send {
+        use super::super::*;
+        use crate::params::Network;
+        use crate::store::Store;
+        use std::cell::Cell;
+
+        const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        const TXID: [u8; 32] = [0x7a; 32];
+
+        fn wallet() -> Wallet {
+            let seed = keys::seed_from_mnemonic(PHRASE, "").unwrap();
+            Wallet::from_parts(
+                Store::open_in_memory().unwrap(),
+                Network::Regtest,
+                &seed,
+                None,
+            )
+            .unwrap()
+        }
+
+        fn utxo(n: u32, class: UtxoClass) -> Utxo {
+            Utxo {
+                outpoint: OutPoint {
+                    txid: [0x11; 32],
+                    n,
+                },
+                address: String::new(),
+                script: Vec::new(),
+                value: 1_000_000,
+                height: 100,
+                class,
+                cents: 0,
+            }
+        }
+
+        fn row() -> MintRow {
+            MintRow {
+                id: 0,
+                kind: MintKind::Mint,
+                state: MintState::CarrierSent,
+                created_height: 480,
+                cents: 10_000,
+                lock_blocks: 48,
+                term_class: "A".into(),
+                ref_height: 478,
+                lock_height: 526,
+                claim_height: 550,
+                collateral_zat: 1_000_000_000,
+                fee_zat: 50_000_000,
+                payee: "smX".into(),
+                attest_fee_zat: 12_500_000,
+                attest_payee: "smY".into(),
+                residual_zat: 0,
+                bundle: vec![0x59, 0x41, 1, 0],
+                bundle_seqs: "0,1".into(),
+                carrier_hash160: [1; 20],
+                owner_hash160: [2; 20],
+                carrier_txid: TXID,
+                carrier_vout: 0,
+                main_txid: [0; 32],
+                sweep_txid: [0; 32],
+                expiry_height: 518,
+                vault_txid: [0; 32],
+                owner: None,
+                note: String::new(),
+            }
+        }
+
+        fn history() -> HistoryRow {
+            HistoryRow {
+                txid: TXID,
+                height: 0,
+                yec_delta: -10_000,
+                has_payload: false,
+                pending: true,
+                shielded: false,
+                yed_delta: 0,
+                kind: "carrier".into(),
+                verdict: String::new(),
+                label: "funding carrier".into(),
+                labelled: true,
+            }
+        }
+
+        /// The carrier step's shape: inputs (one already locked for another reason), the history
+        /// row, an own change output and the `mints` row (with its bundle) persisted first.
+        fn setup() -> (Wallet, Vec<Utxo>) {
+            let mut w = wallet();
+            let inputs = vec![utxo(0, UtxoClass::Yec), utxo(1, UtxoClass::Carrier)];
+            w.store.replace_utxos(&inputs).unwrap();
+            w.store.lock(&inputs[1].outpoint, "carrier:9", 0).unwrap();
+            (w, inputs)
+        }
+
+        fn persist<'a>(
+            w: &'a Wallet,
+            id: &'a Cell<Option<i64>>,
+        ) -> impl FnOnce() -> Result<(), WalletError> + 'a {
+            move || {
+                w.store.upsert_history(&history())?;
+                w.store
+                    .insert_own_output(&OutPoint { txid: TXID, n: 1 }, 5_000, &[3; 20])?;
+                id.set(Some(w.store.insert_mint(&row())?));
+                Ok(())
+            }
+        }
+
+        fn undo<'a>(
+            w: &'a Wallet,
+            id: &'a Cell<Option<i64>>,
+        ) -> impl FnOnce() -> Result<(), WalletError> + 'a {
+            move || match id.get() {
+                Some(id) => Ok(w.store.delete_mint(id)?),
+                None => Ok(()),
+            }
+        }
+
+        fn spent_by(w: &Wallet) -> usize {
+            let reason = format!("spent-by:{}", txid_hex(&TXID));
+            w.store
+                .locks()
+                .unwrap()
+                .iter()
+                .filter(|l| l.reason == reason)
+                .count()
+        }
+
+        fn recorded(w: &Wallet) -> bool {
+            let pending = w
+                .store
+                .pending_txs()
+                .unwrap()
+                .iter()
+                .any(|(t, _, _)| *t == TXID);
+            let history = w.store.history_row(&TXID).unwrap().is_some();
+            let mint = w
+                .store
+                .mints()
+                .unwrap()
+                .iter()
+                .any(|m| m.bundle == row().bundle);
+            let own = !w.store.own_outputs_of(&TXID).unwrap().is_empty();
+            assert_eq!(pending, history, "partial record");
+            assert_eq!(pending, mint, "partial record");
+            assert_eq!(pending, own, "partial record");
+            assert_eq!(spent_by(w), if pending { 2 } else { 0 }, "locks");
+            pending
+        }
+
+        /// Everything is on disk before the send future is first polled: a kill during the send
+        /// leaves a record the sync settles, never a carrier without its bundle.
+        #[tokio::test]
+        async fn the_record_precedes_the_send() {
+            let (w, inputs) = setup();
+            let id = Cell::new(None);
+            let polled = Cell::new(false);
+            send_recorded(
+                &w,
+                &TXID,
+                &[4, 0, 0, 0x80],
+                518,
+                &inputs,
+                persist(&w, &id),
+                undo(&w, &id),
+                async {
+                    polled.set(true);
+                    assert!(recorded(&w), "nothing recorded when the send began");
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+            assert!(polled.get() && recorded(&w));
+            assert!(
+                w.spendable_utxos().unwrap().is_empty(),
+                "the inputs stay locked"
+            );
+        }
+
+        /// The app killed while the send is in flight (the future dropped unfinished): the
+        /// record stays, the inputs stay locked.
+        #[tokio::test]
+        async fn a_kill_during_the_send_keeps_the_record() {
+            let (w, inputs) = setup();
+            let id = Cell::new(None);
+            let killed = tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                send_recorded(
+                    &w,
+                    &TXID,
+                    &[1],
+                    518,
+                    &inputs,
+                    persist(&w, &id),
+                    undo(&w, &id),
+                    std::future::pending(),
+                ),
+            )
+            .await;
+            assert!(killed.is_err());
+            assert!(recorded(&w));
+            assert!(w.spendable_utxos().unwrap().is_empty());
+        }
+
+        /// A refusal by the node (`SendRejected`) undoes everything: no pending record, history,
+        /// own output or `mints` row, the spent-by locks gone and the earlier lock back.
+        #[tokio::test]
+        async fn a_refused_send_is_rolled_back() {
+            let (w, inputs) = setup();
+            let id = Cell::new(None);
+            let e = send_recorded(
+                &w,
+                &TXID,
+                &[1],
+                518,
+                &inputs,
+                persist(&w, &id),
+                undo(&w, &id),
+                async {
+                    Err(WalletError::Net(NetError::SendRejected {
+                        code: -26,
+                        message: "bad-txns-inputs-spent".into(),
+                    }))
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(e.to_string().contains("bad-txns-inputs-spent"), "{e}");
+            assert!(!recorded(&w));
+            assert!(w.store.mints().unwrap().is_empty());
+            let locks = w.store.locks().unwrap();
+            assert_eq!(locks.len(), 1);
+            assert_eq!(
+                (locks[0].outpoint, locks[0].reason.as_str()),
+                (inputs[1].outpoint, "carrier:9")
+            );
+            assert_eq!(w.spendable_utxos().unwrap(), vec![inputs[0].clone()]);
+            // A server refusing the call itself (rate limit) is as certain.
+            let id = Cell::new(None);
+            let _ = send_recorded(
+                &w,
+                &TXID,
+                &[1],
+                518,
+                &inputs,
+                persist(&w, &id),
+                undo(&w, &id),
+                async {
+                    Err(WalletError::Net(NetError::Status(
+                        tonic::Status::resource_exhausted("slow down"),
+                    )))
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(!recorded(&w));
+        }
+
+        /// A failure that may follow a broadcast (a timeout) keeps the record: the sync settles
+        /// it, as for a kill.
+        #[tokio::test]
+        async fn an_ambiguous_failure_keeps_the_record() {
+            for status in [
+                tonic::Status::deadline_exceeded("timeout"),
+                tonic::Status::unavailable("reset"),
+                tonic::Status::unknown("?"),
+            ] {
+                let (w, inputs) = setup();
+                let id = Cell::new(None);
+                let r = send_recorded(
+                    &w,
+                    &TXID,
+                    &[1],
+                    518,
+                    &inputs,
+                    persist(&w, &id),
+                    undo(&w, &id),
+                    async { Err(WalletError::Net(NetError::Status(status))) },
+                )
+                .await;
+                assert!(r.is_err());
+                assert!(recorded(&w));
+            }
+        }
+
+        /// A write that fails sends nothing ("Nothing was sent") and leaves nothing behind.
+        #[tokio::test]
+        async fn a_failed_write_sends_nothing() {
+            let (w, inputs) = setup();
+            let id = Cell::new(None);
+            let polled = Cell::new(false);
+            let e = send_recorded(
+                &w,
+                &TXID,
+                &[1],
+                518,
+                &inputs,
+                || {
+                    w.store.upsert_history(&history())?;
+                    Err(WalletError::Other("disk full".into()))
+                },
+                undo(&w, &id),
+                async {
+                    polled.set(true);
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(e.to_string().contains("disk full"));
+            assert!(!polled.get(), "the send ran after a failed write");
+            assert!(w.store.history_row(&TXID).unwrap().is_none());
+            assert!(w.store.pending_txs().unwrap().is_empty());
+            assert_eq!(spent_by(&w), 0);
+        }
+
+        /// A refused MINT puts the row's step back (CARRIER_CONFIRMED, no main txid).
+        #[test]
+        fn restore_step_puts_the_row_back() {
+            let w = wallet();
+            let id = w
+                .store
+                .insert_mint(&MintRow {
+                    state: MintState::CarrierConfirmed,
+                    note: "n".into(),
+                    ..row()
+                })
+                .unwrap();
+            let m = w.store.mint(id).unwrap().unwrap();
+            w.store
+                .set_mint_state(id, MintState::MainSent, Some(&[9; 32]), None, "")
+                .unwrap();
+            restore_step(&w, &m).unwrap();
+            assert_eq!(w.store.mint(id).unwrap().unwrap(), m);
         }
     }
 }

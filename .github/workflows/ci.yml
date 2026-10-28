@@ -3,7 +3,9 @@
 #
 # Push / PR tier (every push and pull request on the branches below), four parallel jobs:
 #   core-linux   fmt, clippy (-D warnings), cargo test; the proto pin against lightwalletd-dd at the
-#                commit proto/PIN records; the dependency allow-list; the licence listing
+#                commit proto/PIN records; the node vectors (core/tests/vectors/) against ycash-dd
+#                and ycash6 at the commits core/tests/vectors/PIN records (fails, never skips); the
+#                dependency allow-list; the licence listing
 #   audit        cargo audit (W5; blocks only on advisories with a fix, scripts/audit.sh)
 #   core-macos   clippy and cargo test on macOS (the platform code paths); the iOS core build
 #   app          Flutter analyze / test; the app import and trust-text checks; the bridge is
@@ -16,10 +18,11 @@
 #                (../librustzcash6-web, ../x402-web, both `up/web`, plan W0.1) until those are
 #                pushed and the patches become git revs: the job clones the siblings when the
 #                branches exist upstream and otherwise skips the build (reported, not failed).
-# Not in CI: the devnet acceptance suites (scripts/devnet-*.sh). They need the whole workspace
-# devnet: an ARMED devnet (attestor nodes and the attest agent built from ycash-dd), lightwalletd-dd
-# built and serving --yellowback, the Python test framework; more than 60 min from cold on a runner.
-# They stay nightly on the owner's machine (README, "Tests").
+# Not in this workflow: the devnet acceptance suites (scripts/devnet-*.sh). They need a workspace
+# devnet (an ARMED devnet from ycash-dd, the attest agent, lightwalletd-dd serving --yellowback,
+# the Python test framework), so they run nightly, non-gating, in devnet-nightly.yml: its `hosted`
+# job on a GitHub-hosted runner (ycashd from the node's CI artifact, at most 60 min), its
+# `self-hosted` job on the owner's machine by manual dispatch (SECURITY-CI.md, "Devnet tiers").
 #
 # Third-party actions are pinned by commit, never by tag; the comment carries the tag (bump both).
 name: ci
@@ -27,14 +30,15 @@ name: ci
 on:
   push:
     # The one branch list: harden/yellowback (P1 hardening), upgrade/vault (the network upgrade),
-    # upgrade/vault-in-term (in-term claims, rpcversion 6), main (the branch of record, AGENTS.md rule 2).
-    branches: &branches [main, harden/yellowback, upgrade/vault, upgrade/vault-in-term]
+    # upgrade/vault-in-term (in-term claims, rpcversion 6), upgrade/quantum-vaults (post-quantum owners,
+    # rpcversion 7; proto/PIN names lightwalletd-dd's upgrade/quantum-vaults commit, so lightwalletd-dd
+    # is pushed first), main (the branch of record, AGENTS.md rule 2).
+    branches: &branches [main, harden/yellowback, upgrade/vault, upgrade/vault-in-term, upgrade/quantum-vaults]
   pull_request:
     branches: *branches
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -55,6 +59,8 @@ jobs:
     name: core (ubuntu)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -76,6 +82,9 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
       - run: cargo fmt --all -- --check
       - run: scripts/check-proto-pin.sh
+      # The node's golden vectors, fetched at core/tests/vectors/PIN from both node lines and
+      # compared byte for byte with the copies the tests replay. No skip path: a failed fetch fails.
+      - run: scripts/check-node-vectors.sh
       - run: scripts/check-deps.sh
       - run: scripts/check-licenses.sh
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -84,6 +93,8 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -107,6 +118,8 @@ jobs:
     name: core (macos)
     runs-on: macos-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -127,6 +140,8 @@ jobs:
     name: app (macos)
     runs-on: macos-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -134,6 +149,7 @@ jobs:
       - name: versions (Flutter from README.md, the bridge codegen from core/Cargo.toml)
         id: v
         run: |
+          # shellcheck disable=SC2016 # the backticks are literal Markdown in the sed pattern
           echo "flutter=$(sed -n 's/^| Flutter *| `\([0-9.]*\)`.*/\1/p' README.md | head -1)" >> "$GITHUB_OUTPUT"
           echo "frb=$(sed -n 's/^flutter_rust_bridge = "=\(.*\)"/\1/p' core/Cargo.toml)" >> "$GITHUB_OUTPUT"
       # The SDK and the pub cache, keyed by the action on OS, channel, version, arch and pubspec.lock.

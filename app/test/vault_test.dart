@@ -25,22 +25,32 @@ void main() {
     expect(find.text('\$25.00'), findsOneWidget);
     expect(find.text('minted against 9.50000000 YEC'), findsOneWidget);
     expect(
-      find.text('Redeemable now, before the term ends at height 528 (44 blocks to go): an early redeem also pays the early-redeem fee of 5 % of the collateral (synced to 484)'),
+      find.text('Redeemable now, before the term ends at height 528 (44 blocks to go): an early redeem also pays the early-redeem fee of 5 % of the debt (synced to 484)'),
       findsOneWidget,
     );
     expect(find.byKey(const Key('locked')), findsNothing);
     // The claimable-at price and the claim price now (in-term IT-8); no warning at $0.52 over $0.40.
     expect(find.text('\$0.40 per YEC (under 125 % of the debt)'), findsOneWidget);
-    expect(find.text('\$0.52 per YEC'), findsOneWidget);
+    expect(find.text('\$0.52 per YEC'), findsNWidgets(2)); // the claim price now and the vault's mint price
     expect(find.byKey(const Key('claim-warning')), findsNothing);
-    expect(find.text('5 % · about 0.47500000 YEC'), findsOneWidget);
+    // rpcversion 8: the early fee in dollars of the debt and in YEC at the vault's mint price;
+    // gone at the end of the term (the lockup report's recommendation)
+    expect(find.text('\$1.25 of the \$25.00 debt (5 %) · 0.47500000 YEC; none from height 528, the end of the term'), findsOneWidget);
+    expect(find.text('\$0.52 per YEC'), findsWidgets); // the mint price (and the claim price)
+    expect(find.text('\$1.00 · 0.50000000 YEC'), findsOneWidget); // the protocol fee a redeem pays
+    // The owner is the vault's post-quantum address, labelled as such (C-10).
+    expect(find.text('Vault owner (post-quantum)'), findsOneWidget);
+    expect(find.text('Owner'), findsNothing);
     // Nothing is sent until the preview is on screen (audit G-2).
     await tester.tap(find.byKey(const Key('preview')));
     await tester.pumpAndSettle();
     expect(h.api.calls, contains('redeemPreview $txid'));
     expect(find.byKey(const Key('early-fee')), findsOneWidget);
-    expect(find.text('0.47500000 YEC (redeeming before the term ends at height 528)'), findsOneWidget);
-    expect(find.text('0.50000000 YEC'), findsOneWidget); // the enforcement fee alone
+    expect(find.text('\$1.25 of the debt · 0.47500000 YEC (redeeming before the term ends at height 528; at or after it there is none)'), findsOneWidget);
+    // The size-priced network fee of the post-quantum owner spend.
+    expect(find.text('0.00001000 YEC (a post-quantum signature, ~8 KB, dollars per KB)'), findsOneWidget);
+    expect(find.text('\$1.00 · 0.50000000 YEC'), findsWidgets); // the protocol fee alone
+    await tester.scrollUntilVisible(find.byKey(const Key('slide-to-confirm')), 200, scrollable: find.byType(Scrollable).first);
     expect(find.text('Slide to redeem: burn \$25.00, pay 0.97500000 YEC in fees, early-redeem fee included'), findsOneWidget);
     expect(h.api.calls.where((c) => c.startsWith('redeemConfirm')), isEmpty);
     await tester.longPress(find.byKey(const Key('slide-to-confirm')));
@@ -65,6 +75,7 @@ void main() {
     expect(find.textContaining('CLAIMABLE NOW'), findsWidgets);
     expect(find.text('YES: redeem to stop it'), findsOneWidget);
     // Redeeming is still offered: it stops the claim.
+    await tester.scrollUntilVisible(find.byKey(const Key('preview')), 200, scrollable: find.byType(Scrollable).first);
     expect(tester.widget<FilledButton>(find.byKey(const Key('preview'))).onPressed, isNotNull);
   });
 
@@ -82,10 +93,11 @@ void main() {
     expect(h.api.calls, contains('redeemPreview $txid'));
     expect(h.api.calls.where((c) => c.startsWith('redeemConfirm')), isEmpty);
     expect(find.byKey(const Key('redeem-preview')), findsOneWidget);
-    expect(find.text('0.50000000 YEC'), findsOneWidget); // the enforcement fee, FEE_MIN
+    expect(find.text('\$1.00 · 0.50000000 YEC'), findsWidgets); // the protocol fee (vault card and preview)
     expect(find.text('Fees paid to'), findsOneWidget);
     expect(find.byKey(const Key('early-fee')), findsNothing);
     expect(find.text('8.99999000 YEC'), findsOneWidget); // collateral back
+    await tester.scrollUntilVisible(find.byKey(const Key('slide-to-confirm')), 200, scrollable: find.byType(Scrollable).first); // below the cancel-limit rows
     expect(find.text('Slide to redeem: burn \$30.00, pay 0.50000000 YEC fee'), findsOneWidget);
     await tester.longPress(find.byKey(const Key('slide-to-confirm')));
     await tester.pumpAndSettle();
@@ -137,5 +149,32 @@ void main() {
     expect(find.text('Redeeming burns \$99.00 of YED; this wallet holds \$50.00.'), findsOneWidget);
     expect(tester.widget<FilledButton>(find.byKey(const Key('preview'))).onPressed, isNull);
     expect(h.api.calls.where((c) => c.startsWith('redeem')), isEmpty);
+  });
+
+  testWidgets('the per-vault cancel limit: who can cancel a claim, the quiet period, the held leftover and why', (tester) async {
+    final h = Harness(withWallet: true);
+    final txid = 'vc' * 32;
+    // Never cancelled: one attestor can cancel a wrong-price claim; no quiet period, nothing held.
+    h.api.vaultsAnswer = [h.api.vault(txid: txid, lockHeight: 528)];
+    await openVault(tester, h, txid);
+    expect(find.text('one attestor can cancel a wrong-price claim'), findsOneWidget);
+    expect(find.byKey(const Key('cancel-quiet')), findsNothing);
+    expect(find.byKey(const Key('held-leftover')), findsNothing);
+    // Cancelled twice, inside the quiet period (until 520; synced to 484), one leftover held.
+    h.api.vaultsAnswer = [h.api.vault(txid: txid, lockHeight: 528, cancelCount: 2, cancelQuietUntil: 520, heldResiduals: 1)];
+    await h.state.refresh();
+    await tester.pumpAndSettle();
+    expect(find.text('3 attestors must sign together to cancel a claim'), findsOneWidget);
+    expect(find.text('2 cancelled claims; back to one attestor from height 520 (35 blocks to go)'), findsOneWidget);
+    expect(find.byKey(const Key('held-leftover')), findsOneWidget);
+    expect(find.textContaining('Your leftover from a cancelled claim is held: held after a cancelled claim until height 520'), findsOneWidget);
+    expect(find.textContaining('Release needs the vault closed, or past its quiet period and not claimable.'), findsOneWidget);
+    // Past the quiet period and not claimable: back to one attestor, the leftover can be released.
+    h.api.vaultsAnswer = [h.api.vault(txid: txid, lockHeight: 528, tip: 530, cancelCount: 2, cancelQuietUntil: 520, heldResiduals: 1)];
+    await h.state.refresh();
+    await tester.pumpAndSettle();
+    expect(find.text('one attestor can cancel a wrong-price claim'), findsOneWidget);
+    expect(find.text('the quiet period after a cancelled claim ended at height 520'), findsOneWidget);
+    expect(find.textContaining('no longer held: you can release it now'), findsOneWidget);
   });
 }

@@ -24,9 +24,10 @@ use thiserror::Error;
 use crate::coins::{self, Utxo, UtxoClass};
 use crate::coinselect::{self, Alternatives, SelectStage};
 use crate::gate::{self, Validator};
-use crate::keys::{self, AddressKind};
+use crate::keys::{self, YedDestination};
 use crate::net::{CompactClient, Validation};
-use crate::params::{FEE_ZAT, MAX_INPUTS, MIN_OUTPUT_CENTS, TOKEN_VALUE, TX_EXPIRY_DELTA};
+use crate::params::Network;
+use crate::params::{MAX_INPUTS, MIN_OUTPUT_CENTS, TOKEN_VALUE, TX_EXPIRY_DELTA};
 use crate::payload::{self, Assignment, Payload, MAX_ASSIGNMENTS};
 use crate::script;
 use crate::store::HistoryRow;
@@ -80,6 +81,16 @@ pub enum TransferError {
     /// The payload could not be encoded.
     #[error("cannot encode the transfer payload")]
     Payload,
+    /// `non-standard-token`: a YED input whose coin is not worth exactly `TOKEN_VALUE`.
+    #[error(
+        "non-standard-token: a YED input is not a standard token carrier; refusing to spend it"
+    )]
+    NonStandardToken,
+    /// `TOK-PQ` (quantum spec F-7): Falcon is active, so every output that receives YED must be a
+    /// Falcon (scheme 2) post-quantum key: a P2PKH or SLH-DSA recipient is refused (YEW's own
+    /// change goes to its Falcon holder keys).
+    #[error("falcon-holder-required: Falcon is active, so YED can only go to a Falcon post-quantum address: {0}")]
+    FalconHolderRequired(String),
 }
 
 /// What the screen renders and what will be broadcast, unchanged.
@@ -153,6 +164,9 @@ pub fn assemble(
         .collect();
     let payload_bytes = payload::encode(&Payload::Transfer { assignments })
         .ok_or(WalletError::Transfer(TransferError::Payload))?;
+    if yed_inputs.iter().any(|u| u.value != TOKEN_VALUE) {
+        return Err(WalletError::Transfer(TransferError::NonStandardToken));
+    }
 
     let mut tx = Transaction::new_v4();
     tx.expiry_height = (tip as u32).saturating_add(TX_EXPIRY_DELTA);
@@ -174,12 +188,34 @@ pub fn assemble(
     // the fee (txbuilder.cpp:1250-1253).
     let token_in = yed_inputs.len() as i64 * TOKEN_VALUE;
     let token_out = token_outputs.len() as i64 * TOKEN_VALUE;
-    let mut fee = FEE_ZAT;
-    let yec_needed = token_out + fee - token_in;
     let spendable = wallet.spendable_utxos()?;
-    let yec_inputs = coins::select_yec(&spendable, yec_needed, true)?;
-    let selected_yec: i64 = yec_inputs.iter().map(|u| u.value).sum();
-    let mut yec_change = selected_yec - yec_needed;
+    // rpcversion 8 (D-Q-23 (b)): a YED transfer is a Yellowback transaction, priced by size at the
+    // Yellowback rate (dollars per KB at the attested price) whether or not it has a post-quantum
+    // input — the node's `YedNetworkFee` over the YED inputs, raised as YEC inputs are selected
+    // (`PQFeeFollower`): 1,000 bytes, 150 per P2PKH input, a Falcon holder input at its spend size.
+    let priced_for = |inputs: &[Utxo]| -> i64 {
+        let mut pq = Vec::new();
+        let mut other = 0;
+        for u in yed_inputs.iter().chain(inputs) {
+            match crate::pq::pqpkh_of(&u.script) {
+                Some(id) => pq.push(id.scheme),
+                None => other += 1,
+            }
+        }
+        wallet.pq_terms().yed_network_fee(other, &pq)
+    };
+    let mut base_fee = priced_for(&[]);
+    let (yec_inputs, mut fee, mut yec_change) = loop {
+        let yec_needed = token_out + base_fee - token_in;
+        let yec_inputs = coins::select_yec(&spendable, yec_needed, true)?;
+        let priced = priced_for(&yec_inputs);
+        if priced > base_fee {
+            base_fee = priced;
+            continue;
+        }
+        let selected_yec: i64 = yec_inputs.iter().map(|u| u.value).sum();
+        break (yec_inputs, base_fee, selected_yec - yec_needed);
+    };
     if yec_change == TOKEN_VALUE {
         yec_change -= 1;
         fee += 1;
@@ -198,17 +234,9 @@ pub fn assemble(
         });
     }
 
-    // Sign YED inputs (P2PKH, own) then YEC inputs (txbuilder.cpp:1265-1271).
-    let all: Vec<&Utxo> = yed_inputs.iter().chain(yec_inputs.iter()).collect();
-    for (i, u) in all.iter().enumerate() {
-        let h = script::p2pkh_hash(&u.script).ok_or_else(|| {
-            WalletError::Other(format!("input {} is not P2PKH", u.outpoint.display()))
-        })?;
-        let key = wallet.key_for_hash(&h)?.ok_or_else(|| {
-            WalletError::Other(format!("no key for input {}", u.outpoint.display()))
-        })?;
-        tx.sign_p2pkh_input(i, &key.secret, &u.script, u.value, branch_id)?;
-    }
+    // Sign YED inputs (P2PKH or Falcon PQPKH, own) then YEC inputs (txbuilder.cpp:1265-1271).
+    super::mint::sign_p2pkh_inputs(wallet, &mut tx, yed_inputs, 0, branch_id)?;
+    super::mint::sign_p2pkh_inputs(wallet, &mut tx, &yec_inputs, yed_inputs.len(), branch_id)?;
     let raw = tx.serialize()?;
     let txid = tx.txid()?;
     Ok(Assembled {
@@ -262,7 +290,47 @@ pub fn select_yed(
     Ok((sel, s.stage, s.change as u64))
 }
 
-/// Build and sign a transfer of `recipients` (`address`, `cents`) — `ye…`, `yr…`, `yt…` or the
+/// The token output for a YED recipient `to` (rpcversion 7 `yed_send`: either address form),
+/// under the holder rule of the next block (`falcon`: TOK-PQ is in force):
+/// - before Falcon: a P2PKH key (`yb…`/`yt…`/`yr…` 35 characters or its `s…` form). A
+///   53-character SLH-DSA address is a vault owner, never a YED receive address (C-10), and a
+///   Falcon address is non-standard until Falcon activates (spec §2.3 A-6): both refused;
+/// - from Falcon: only a Falcon (scheme 2) post-quantum address; a P2PKH or SLH-DSA one would
+///   make the transaction invalid (TOK-PQ), so it is refused here with the reason.
+///
+/// A P2SH address or a post-quantum YEC address (`sq…`) is never a YED destination.
+pub fn yed_holder_script(network: Network, to: &str, falcon: bool) -> Result<Vec<u8>, WalletError> {
+    let dest = keys::parse_yed_destination(network, to).map_err(|e| match e {
+        keys::KeyError::WrongNetwork(..) if keys::parse_address(network, to).is_ok() => {
+            WalletError::Other(format!(
+                "not-a-yellowback-address: {to} is a script address; YED goes to a key"
+            ))
+        }
+        e => e.into(),
+    })?;
+    match dest {
+        YedDestination::P2pkh(_) if falcon => Err(TransferError::FalconHolderRequired(format!(
+            "{to} is a P2PKH address"
+        ))
+        .into()),
+        YedDestination::P2pkh(h) => Ok(script::p2pkh_script(&h)),
+        YedDestination::Pq(id) if id.scheme == crate::pq::SCHEME_FN_DSA_512 && falcon => {
+            crate::pq::pqpkh_script(&id).ok_or_else(|| keys::KeyError::PqOwnerAddress(to.into()).into())
+        }
+        YedDestination::Pq(id) if id.scheme == crate::pq::SCHEME_FN_DSA_512 => {
+            Err(WalletError::Other(format!(
+                "falcon-not-active: {to} is a Falcon address; it can receive YED only after Falcon activates"
+            )))
+        }
+        YedDestination::Pq(_) if falcon => Err(TransferError::FalconHolderRequired(format!(
+            "{to} is a vault-owner (SLH-DSA) address"
+        ))
+        .into()),
+        YedDestination::Pq(_) => Err(keys::KeyError::PqOwnerAddress(to.into()).into()),
+    }
+}
+
+/// Build and sign a transfer of `recipients` (`address`, `cents`) — `yb…`, `yr…`, `yt…` or the
 /// `s…` form, the same key hash — from this wallet (`BuildTransfer`).
 pub fn build_yed_transfer(
     wallet: &Wallet,
@@ -276,29 +344,25 @@ pub fn build_yed_transfer(
     if recipients.len() > MAX_RECIPIENTS {
         return Err(TransferError::TooManyRecipients.into());
     }
+    // TOK-PQ (quantum spec F-7; Q4 as implemented): from the Falcon height every output that
+    // receives YED must be a Falcon (scheme 2) TX_PQPKH, or the transaction is invalid.
+    let falcon = wallet.pq_terms().falcon_at(tip + 1);
     let mut needed = 0u64;
     let mut token_outputs: Vec<(Vec<u8>, u32)> = Vec::with_capacity(recipients.len() + 1);
     for (to, cents) in recipients {
         if *cents < MIN_OUTPUT_CENTS || *cents > MAX_OUTPUT_CENTS {
             return Err(TransferError::BadAmount(*cents).into());
         }
-        let dest = keys::parse_address(wallet.network, to)?;
-        let script_pubkey = match dest.kind {
-            AddressKind::P2pkh(h) => script::p2pkh_script(&h),
-            AddressKind::P2sh(_) => {
-                return Err(WalletError::Other(format!(
-                    "not-a-yellowback-address: {to} is a script address; YED goes to a key"
-                )))
-            }
-        };
+        let script_pubkey = yed_holder_script(wallet.network, to, falcon)?;
         needed += cents;
         token_outputs.push((script_pubkey, *cents as u32));
     }
     let (yed_inputs, stage, change_cents) = select_yed(wallet, needed)?;
     let change_row = wallet.change_address()?;
     if change_cents > 0 {
+        // From the Falcon height the YED change goes to the change key's Falcon holder.
         token_outputs.push((
-            script::p2pkh_script(&change_row.hash160),
+            wallet.yed_holder_script(&change_row, falcon)?,
             change_cents as u32,
         ));
     }
@@ -373,11 +437,12 @@ pub async fn broadcast(
     // now, so the balance shows them as pending before the next sync.
     let (tx, _) = Transaction::parse(&preview.raw)?;
     let own = wallet.own_hashes()?;
-    for (n, cents) in coins::pre_lock(&tx, |h| own.contains(h)) {
+    let own_falcon = wallet.own_falcon_holders_for(&tx)?;
+    for (n, cents) in
+        coins::pre_lock_scripts(&tx, |s| Wallet::is_own_holder_script(s, &own, &own_falcon))
+    {
         let script_pubkey = tx.vout[n as usize].script_pubkey.clone();
-        let address = script::p2pkh_hash(&script_pubkey)
-            .map(|h| keys::encode_p2pkh(wallet.network, &h))
-            .unwrap_or_default();
+        let address = holder_address(wallet.network, &script_pubkey);
         wallet.store.upsert_utxo(&Utxo {
             outpoint: OutPoint {
                 txid: preview.txid,
@@ -443,6 +508,17 @@ pub async fn broadcast(
     Ok((txid_str, validation))
 }
 
+/// The address a holder output is listed under: the `s…` form of a P2PKH, the 53-character
+/// post-quantum YED form of a `TX_PQPKH` (as `GetAddressTokens` names it), else empty.
+pub fn holder_address(network: Network, script_pubkey: &[u8]) -> String {
+    if let Some(h) = script::p2pkh_hash(script_pubkey) {
+        return keys::encode_p2pkh(network, &h);
+    }
+    crate::pq::pqpkh_of(script_pubkey)
+        .and_then(|id| keys::encode_pq_yellowback(network, &id))
+        .unwrap_or_default()
+}
+
 /// The classes a transfer may spend, for the CLI's explanation of a refusal.
 pub fn spendable_classes() -> [UtxoClass; 3] {
     [UtxoClass::Token, UtxoClass::FeeReserve, UtxoClass::Yec]
@@ -452,6 +528,7 @@ pub fn spendable_classes() -> [UtxoClass; 3] {
 mod tests {
     use super::*;
     use crate::params::Network;
+    use crate::params::FEE_ZAT;
     use crate::store::Store;
 
     const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -492,6 +569,195 @@ mod tests {
 
     fn dest() -> String {
         keys::encode_yellowback(Network::Regtest, &[0x42; 20])
+    }
+
+    /// The server's post-quantum terms with Falcon from `height` (`None`: no activation).
+    fn note_falcon(w: &Wallet, height: Option<i64>) {
+        let p = crate::net::rpc::YellowbackParams {
+            pq: Some(crate::net::rpc::YellowbackPqParams {
+                schemes: vec![1],
+                falcon_active: false,
+                falcon_height: height.unwrap_or(-1),
+                fee_rate_zat_per_kb: 100,
+            }),
+            fees: Some(crate::build::terms::fallback_fee_params(100)),
+            ..Default::default()
+        };
+        w.note_server_params(Some(&p)).unwrap();
+    }
+
+    /// The holder rule per destination form (rpcversion 7 `yed_send` takes either form; C-10;
+    /// TOK-PQ after Falcon), and the change rule after Falcon.
+    #[test]
+    fn yed_destinations_follow_the_holder_rule() {
+        let r = Network::Regtest;
+        let slh = keys::encode_pq_yellowback(
+            r,
+            &crate::pq::PqKeyId {
+                scheme: 1,
+                hash: [5; 32],
+            },
+        )
+        .unwrap();
+        let falcon_id = crate::pq::PqKeyId {
+            scheme: 2,
+            hash: [6; 32],
+        };
+        let falcon_addr = keys::encode_pq_yellowback(r, &falcon_id).unwrap();
+        let sq = keys::encode_pq_yec(r, &falcon_id).unwrap();
+        // Before Falcon: P2PKH only.
+        assert_eq!(
+            yed_holder_script(r, &dest(), false).unwrap(),
+            script::p2pkh_script(&[0x42; 20])
+        );
+        let e = yed_holder_script(r, &slh, false).unwrap_err().to_string();
+        assert!(e.contains("vault-owner address"), "{e}");
+        let e = yed_holder_script(r, &falcon_addr, false)
+            .unwrap_err()
+            .to_string();
+        assert!(e.starts_with("falcon-not-active"), "{e}");
+        let e = yed_holder_script(r, &sq, false).unwrap_err().to_string();
+        assert!(e.contains("post-quantum YEC address"), "{e}");
+        let e = yed_holder_script(r, &keys::encode_p2sh(r, &[1; 20]), false)
+            .unwrap_err()
+            .to_string();
+        assert!(e.starts_with("not-a-yellowback-address"), "{e}");
+        // From Falcon: a Falcon address only.
+        assert_eq!(
+            yed_holder_script(r, &falcon_addr, true).unwrap(),
+            crate::pq::pqpkh_script(&falcon_id).unwrap()
+        );
+        for to in [dest(), slh.clone()] {
+            assert!(matches!(
+                yed_holder_script(r, &to, true).unwrap_err(),
+                WalletError::Transfer(TransferError::FalconHolderRequired(_))
+            ));
+        }
+
+        let w = wallet_with(&[
+            (TOKEN_VALUE, UtxoClass::Token, 10_000),
+            (50_000, UtxoClass::Yec, 0),
+        ]);
+        // Falcon from height 102: built at tip 100 the next block (101) is before it.
+        note_falcon(&w, Some(102));
+        assert!(build_yed_transfer(&w, &[(dest(), 4_000)], 100, 1).is_ok());
+        // At tip 101 the next block is 102: P2PKH refused; a Falcon recipient with change builds,
+        // the change going to the change key's own Falcon holder; the exact amount builds too.
+        let e = build_yed_transfer(&w, &[(dest(), 4_000)], 101, 1).unwrap_err();
+        assert!(e.to_string().starts_with("falcon-holder-required"), "{e}");
+        let p = build_yed_transfer(&w, &[(falcon_addr.clone(), 4_000)], 101, 1).unwrap();
+        assert_eq!(p.change_cents, 6_000);
+        let (tx, _) = Transaction::parse(&p.raw).unwrap();
+        let change_row = w.change_address().unwrap();
+        let own_falcon = w.falcon_holder_id(&change_row).unwrap();
+        assert_eq!(own_falcon.scheme, 2);
+        assert_eq!(
+            tx.vout[1].script_pubkey,
+            crate::pq::pqpkh_script(&own_falcon).unwrap()
+        );
+        let p = build_yed_transfer(&w, &[(falcon_addr.clone(), 10_000)], 101, 1).unwrap();
+        assert_eq!(p.change_cents, 0);
+        let (tx, _) = Transaction::parse(&p.raw).unwrap();
+        assert_eq!(
+            tx.vout[0].script_pubkey,
+            crate::pq::pqpkh_script(&falcon_id).unwrap()
+        );
+        note_falcon(&w, None);
+        assert!(build_yed_transfer(&w, &[(dest(), 4_000)], 101, 1).is_ok());
+    }
+
+    /// A Falcon holder token (TOK-PQ) is spent with the wallet's Falcon key: the chunked
+    /// scriptSig (`s = 2`, `p = 2`, 1,577 bytes) carries a signature that verifies over the
+    /// input's ZIP-243 sighash, the change goes back to a Falcon holder, the fee is size-priced
+    /// (`max(FEE_ZAT, rate × size)`), and the gate's class rules accept the input.
+    #[test]
+    fn falcon_holder_tokens_are_spent_with_falcon_keys() {
+        let mut w = wallet_with(&[(50_000, UtxoClass::Yec, 0)]);
+        note_falcon(&w, Some(0));
+        let row = w.addresses().unwrap()[1].clone();
+        let id = w.falcon_holder_id(&row).unwrap();
+        let spk = crate::pq::pqpkh_script(&id).unwrap();
+        let mut utxos = w.store.utxos().unwrap();
+        utxos.push(Utxo {
+            outpoint: OutPoint {
+                txid: [0xf1; 32],
+                n: 1,
+            },
+            address: keys::encode_pq_yellowback(Network::Regtest, &id).unwrap(),
+            script: spk.clone(),
+            value: TOKEN_VALUE,
+            height: 10,
+            class: UtxoClass::Token,
+            cents: 10_000,
+        });
+        w.store.replace_utxos(&utxos).unwrap();
+        let to = crate::pq::PqKeyId {
+            scheme: 2,
+            hash: [6; 32],
+        };
+        let to_addr = keys::encode_pq_yellowback(Network::Regtest, &to).unwrap();
+        let branch = 0x6d5b_7a31;
+        let p = build_yed_transfer(&w, &[(to_addr, 2_500)], 100, branch).unwrap();
+        assert_eq!(p.change_cents, 7_500);
+        let (tx, _) = Transaction::parse(&p.raw).unwrap();
+        assert_eq!(tx.vin[0].prevout.txid, [0xf1; 32]);
+        let ss = &tx.vin[0].script_sig;
+        assert_eq!(ss.len(), 1_577);
+        let ops = script::ops(ss).unwrap();
+        assert_eq!(ops.len(), 6);
+        assert_eq!((ops[2].opcode, ops[5].opcode), (0x52, 0x52));
+        let (sig, pk) = crate::pq::parse_pqpkh_script_sig(ss).unwrap();
+        assert_eq!((sig.len(), *sig.last().unwrap()), (667, 1));
+        assert_eq!(crate::pq::PqKeyId::of(2, &pk), id);
+        let digest = tx
+            .sighash(0, &spk, TOKEN_VALUE, crate::params::SIGHASH_ALL, branch)
+            .unwrap();
+        assert!(crate::pq::verify(2, &pk, &sig[..666], &digest));
+        assert!(!crate::pq::verify(2, &pk, &sig[..666], &[0; 32]));
+        // YED change: an own Falcon holder; YEC input signed with ECDSA.
+        let change = crate::pq::pqpkh_of(&tx.vout[1].script_pubkey).unwrap();
+        assert!(w.own_falcon_holders().unwrap().contains_key(&change));
+        assert!(tx.vin[1].script_sig.len() <= crate::tx::MAX_P2PKH_SCRIPT_SIG);
+        tx.check_script_sig_sizes().unwrap();
+        // rpcversion 8: the Yellowback size fee at the node's estimated size (1,000 bytes, 150 per
+        // P2PKH input, the Falcon input at its spend size): at 1× (100 zat/kB) under FEE_ZAT; the
+        // Falcon input raises it to the 6.20.0 conventional-fee estimate (04/N-1,
+        // `YedConventionalFeeEstimate`: 600 vout bytes are 18 actions), 9,000 zat.
+        assert_eq!(
+            p.fee,
+            crate::params::yed_conventional_fee_estimate(p.yec_inputs.len(), &[2])
+        );
+        assert_eq!(p.fee, 9_000);
+        let rich = crate::net::rpc::YellowbackParams {
+            pq: Some(crate::net::rpc::YellowbackPqParams {
+                schemes: vec![1],
+                falcon_active: false,
+                falcon_height: 0,
+                fee_rate_zat_per_kb: 10_000,
+            }),
+            fees: Some(crate::build::terms::fallback_fee_params(10_000)),
+            ..Default::default()
+        };
+        w.note_server_params(Some(&rich)).unwrap();
+        let q = build_yed_transfer(
+            &w,
+            &[(
+                keys::encode_pq_yellowback(Network::Regtest, &to).unwrap(),
+                2_500,
+            )],
+            100,
+            branch,
+        )
+        .unwrap();
+        let size = crate::params::yed_estimated_size(q.yec_inputs.len(), &[2]);
+        assert_eq!(crate::params::pq_spend_input_size(2), 1_620);
+        // folded change may add a little on top of the priced fee
+        assert!(
+            q.fee >= 10_000 * size as i64 / 1000,
+            "{} for {size} bytes",
+            q.fee
+        );
+        assert!(q.fee < 10_000 * size as i64 / 1000 + crate::build::yec_send::MIN_CHANGE);
     }
 
     #[test]
@@ -608,6 +874,17 @@ mod tests {
             build_yed_transfer(&poor, &[(dest(), 10_000)], 100, 1).unwrap_err(),
             WalletError::Coins(_)
         ));
+    }
+
+    #[test]
+    fn mis_listed_coin_is_refused_not_burned_as_fee() {
+        let w = wallet_with(&[
+            (5_000_000_000, UtxoClass::Token, 50),
+            (TOKEN_VALUE, UtxoClass::Token, 500),
+            (1_000_000, UtxoClass::Yec, 0),
+        ]);
+        let e = build_yed_transfer(&w, &[(dest(), 450)], 100, 1).unwrap_err();
+        assert!(e.to_string().starts_with("non-standard-token"), "{e}");
     }
 
     #[test]

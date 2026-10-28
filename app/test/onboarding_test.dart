@@ -4,6 +4,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:yew_app/screens/seed_backup.dart';
 import 'package:yew_app/trust_text.dart';
 
 import 'fake_wallet_api.dart';
@@ -60,6 +61,10 @@ void main() {
     // A generated seed is shown once and must be acknowledged.
     expect(find.text('Recovery phrase'), findsOneWidget);
     expect(find.text('12. about'), findsOneWidget);
+    // LOW-06-Y-4: the words restore the post-quantum keys in YEW only.
+    expect(find.byKey(const Key('seed-restores-yew-only')), findsOneWidget);
+    expect(find.text(seedRestoresYewOnly), findsOneWidget);
+    expect(seedRestoresYewOnly, contains('Restore this phrase in YEW'));
     expect(tester.widget<FilledButton>(find.byKey(const Key('done'))).onPressed, isNull);
     await tester.tap(find.byKey(const Key('written')));
     await tester.pumpAndSettle();
@@ -81,6 +86,7 @@ void main() {
     await h.pump(tester);
     await tester.tap(find.byKey(const Key('restore')));
     await tester.pumpAndSettle();
+    expect(find.byKey(const Key('restore-yew-only')), findsOneWidget);
     expect(tester.widget<FilledButton>(find.byKey(const Key('next'))).onPressed, isNull);
     await tester.enterText(find.byKey(const Key('words')), fakeWords);
     await tester.enterText(find.byKey(const Key('birthday')), '120');
