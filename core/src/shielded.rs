@@ -1050,7 +1050,9 @@ impl Shielded {
     ) -> Result<SpendBuilt, ShieldedError> {
         let params_millis = self.load_prover(params_dir)?;
         let t1 = now_ms();
-        let (_, prover) = self.prover.take().expect("loaded above");
+        let Some((_, prover)) = self.prover.take() else {
+            return Err(ParamsError::Missing("no prover loaded".into()).into());
+        };
         let usk = x402_ycash_light::keys::usk_from_extsk(&self.account.extended_spending_key());
         let params = self.params;
         let created = create_proposed_transactions::<

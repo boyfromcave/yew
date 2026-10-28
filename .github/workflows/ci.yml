@@ -10,9 +10,9 @@
 #   core-macos   clippy and cargo test on macOS (the platform code paths); the iOS core build
 #   app          Flutter analyze / test; the app import and trust-text checks; the bridge is
 #                regenerated and must equal the committed one
-#   web          yew/web (plan W3): the import rule, tsc, vitest, then web/scripts/build-release.sh
+#   web          yew/web (plan W3): the import rule, vitest, then web/scripts/build-release.sh
 #                — the wasm module and the Vite bundle each built twice and compared file by file
-#                (fails on non-determinism), BUNDLE-SHA256SUMS written — and verify-bundle.sh
+#                (fails on non-determinism), tsc once the module exists, BUNDLE-SHA256SUMS written — and verify-bundle.sh
 #                against the built dist served locally (the sums and the SRI attributes).
 #                librustzcash6 and x402-ycash come by git rev (their `up/web` branches), as
 #                in the root manifest.
@@ -204,9 +204,11 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: shell checks (imports, tsc, vitest)
+      # tsc needs the wasm-bindgen output (src/worker.ts imports ./wasm/yew_web_core.js, which is
+      # gitignored), so it runs inside build-release.sh once the module is built, not here.
+      - name: shell checks (imports, vitest)
         working-directory: web
-        run: npm ci && npm run check
+        run: npm ci && scripts/check-web-imports.sh && npx vitest run
       - name: Rust toolchain + wasm32 target
         run: rustup show active-toolchain && rustup target add wasm32-unknown-unknown
       - name: "Install clang (wasm32 C: secp256k1-sys, sqlite)"
