@@ -829,7 +829,7 @@ dependencies = [
 [[package]]
 name = "equihash"
 version = "0.3.0"
-source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=774de4e5f904ce89ae850c7100082af64a1e31e1#774de4e5f904ce89ae850c7100082af64a1e31e1"
+source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=cc6068eac5aa19a9ce3ae71e7386094262c407ee#cc6068eac5aa19a9ce3ae71e7386094262c407ee"
 dependencies = [
  "blake2b_simd",
  "corez",
@@ -854,7 +854,7 @@ dependencies = [
 [[package]]
 name = "f4jumble"
 version = "0.1.1"
-source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=774de4e5f904ce89ae850c7100082af64a1e31e1#774de4e5f904ce89ae850c7100082af64a1e31e1"
+source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=cc6068eac5aa19a9ce3ae71e7386094262c407ee#cc6068eac5aa19a9ce3ae71e7386094262c407ee"
 dependencies = [
  "blake2b_simd",
 ]
@@ -2685,7 +2685,7 @@ dependencies = [
 [[package]]
 name = "schemerz-rusqlite"
 version = "0.370.0"
-source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=774de4e5f904ce89ae850c7100082af64a1e31e1#774de4e5f904ce89ae850c7100082af64a1e31e1"
+source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=cc6068eac5aa19a9ce3ae71e7386094262c407ee#cc6068eac5aa19a9ce3ae71e7386094262c407ee"
 dependencies = [
  "rusqlite",
  "schemerz",
@@ -3100,7 +3100,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -3845,7 +3845,7 @@ dependencies = [
 [[package]]
 name = "x402-ycash-light"
 version = "0.1.0"
-source = "git+https://github.com/boyfromcave/x402-ycash.git?rev=191091fa3c866fe3f0b0ee605e693487692bcf76#191091fa3c866fe3f0b0ee605e693487692bcf76"
+source = "git+https://github.com/boyfromcave/x402-ycash.git?rev=334d74c75ad4498b6ecc2380cea6d13820b74765#334d74c75ad4498b6ecc2380cea6d13820b74765"
 dependencies = [
  "bip0039",
  "bytes",
@@ -3961,7 +3961,7 @@ dependencies = [
 [[package]]
 name = "zcash_address"
 version = "0.12.0"
-source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=774de4e5f904ce89ae850c7100082af64a1e31e1#774de4e5f904ce89ae850c7100082af64a1e31e1"
+source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=cc6068eac5aa19a9ce3ae71e7386094262c407ee#cc6068eac5aa19a9ce3ae71e7386094262c407ee"
 dependencies = [
  "bech32",
  "bs58",
@@ -3974,7 +3974,7 @@ dependencies = [
 [[package]]
 name = "zcash_client_backend"
 version = "0.22.0"
-source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=774de4e5f904ce89ae850c7100082af64a1e31e1#774de4e5f904ce89ae850c7100082af64a1e31e1"
+source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=cc6068eac5aa19a9ce3ae71e7386094262c407ee#cc6068eac5aa19a9ce3ae71e7386094262c407ee"
 dependencies = [
  "base64 0.22.1",
  "bech32",
@@ -4017,7 +4017,7 @@ dependencies = [
 [[package]]
 name = "zcash_client_sqlite"
 version = "0.20.2"
-source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=774de4e5f904ce89ae850c7100082af64a1e31e1#774de4e5f904ce89ae850c7100082af64a1e31e1"
+source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=cc6068eac5aa19a9ce3ae71e7386094262c407ee#cc6068eac5aa19a9ce3ae71e7386094262c407ee"
 dependencies = [
  "bitflags",
  "bs58",
@@ -4059,7 +4059,7 @@ dependencies = [
 [[package]]
 name = "zcash_encoding"
 version = "0.4.0"
-source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=774de4e5f904ce89ae850c7100082af64a1e31e1#774de4e5f904ce89ae850c7100082af64a1e31e1"
+source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=cc6068eac5aa19a9ce3ae71e7386094262c407ee#cc6068eac5aa19a9ce3ae71e7386094262c407ee"
 dependencies = [
  "corez",
  "hex",
@@ -4069,7 +4069,7 @@ dependencies = [
 [[package]]
 name = "zcash_keys"
 version = "0.14.0"
-source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=774de4e5f904ce89ae850c7100082af64a1e31e1#774de4e5f904ce89ae850c7100082af64a1e31e1"
+source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=cc6068eac5aa19a9ce3ae71e7386094262c407ee#cc6068eac5aa19a9ce3ae71e7386094262c407ee"
 dependencies = [
  "bech32",
  "blake2b_simd",
@@ -4110,7 +4110,7 @@ dependencies = [
 [[package]]
 name = "zcash_primitives"
 version = "0.28.0"
-source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=774de4e5f904ce89ae850c7100082af64a1e31e1#774de4e5f904ce89ae850c7100082af64a1e31e1"
+source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=cc6068eac5aa19a9ce3ae71e7386094262c407ee#cc6068eac5aa19a9ce3ae71e7386094262c407ee"
 dependencies = [
  "blake2b_simd",
  "block-buffer 0.11.0-rc.3",
@@ -4140,7 +4140,7 @@ dependencies = [
 [[package]]
 name = "zcash_proofs"
 version = "0.28.0"
-source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=774de4e5f904ce89ae850c7100082af64a1e31e1#774de4e5f904ce89ae850c7100082af64a1e31e1"
+source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=cc6068eac5aa19a9ce3ae71e7386094262c407ee#cc6068eac5aa19a9ce3ae71e7386094262c407ee"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -4161,7 +4161,7 @@ dependencies = [
 [[package]]
 name = "zcash_protocol"
 version = "0.9.0"
-source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=774de4e5f904ce89ae850c7100082af64a1e31e1#774de4e5f904ce89ae850c7100082af64a1e31e1"
+source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=cc6068eac5aa19a9ce3ae71e7386094262c407ee#cc6068eac5aa19a9ce3ae71e7386094262c407ee"
 dependencies = [
  "corez",
  "document-features",
@@ -4199,7 +4199,7 @@ dependencies = [
 [[package]]
 name = "zcash_transparent"
 version = "0.8.0"
-source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=774de4e5f904ce89ae850c7100082af64a1e31e1#774de4e5f904ce89ae850c7100082af64a1e31e1"
+source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=cc6068eac5aa19a9ce3ae71e7386094262c407ee#cc6068eac5aa19a9ce3ae71e7386094262c407ee"
 dependencies = [
  "bip32",
  "bs58",
@@ -4296,7 +4296,7 @@ dependencies = [
 [[package]]
 name = "zip321"
 version = "0.8.0"
-source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=774de4e5f904ce89ae850c7100082af64a1e31e1#774de4e5f904ce89ae850c7100082af64a1e31e1"
+source = "git+https://github.com/boyfromcave/librustzcash6.git?rev=cc6068eac5aa19a9ce3ae71e7386094262c407ee#cc6068eac5aa19a9ce3ae71e7386094262c407ee"
 dependencies = [
  "base64 0.22.1",
  "nom",

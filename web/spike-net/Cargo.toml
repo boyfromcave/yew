@@ -29,5 +29,5 @@ overflow-checks = false
 
 # As in the root Cargo.toml (patches do not propagate through dependencies).
 [patch.crates-io]
-schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1" }
+schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee" }
 

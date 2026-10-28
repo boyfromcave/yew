@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [workspace]
 
 [dependencies]
-zcash_client_sqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1", default-features = false }
+zcash_client_sqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false }
 rusqlite = { version = "0.39", default-features = false }
 sqlite-wasm-rs = { version = "0.5", default-features = false }
 sqlite-wasm-vfs = { version = "0.2", default-features = false }
@@ -21,10 +21,10 @@ wasm-bindgen-futures = "0.4"
 getrandom = { version = "0.2", features = ["js"] }
 rand = "0.8"
 js-sys = "0.3"
-zcash_protocol = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1" }
+zcash_protocol = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee" }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
 
 [patch.crates-io]
-schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1" }
+schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee" }

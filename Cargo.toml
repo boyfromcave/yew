@@ -27,7 +27,7 @@ overflow-checks = false
 # rusqlite 0.39 (yew/web plan §2, owner decisions 2026-10-09): schemerz-rusqlite has no release for
 # it; librustzcash6 carries the 0.370 source with its requirement raised (components/).
 [patch.crates-io]
-schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1" }
+schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee" }
 # tonic-web-wasm-client 0.9.2 answers "malformed response" to a Trailers-Only gRPC-web reply
 # (grpc-status in the HTTP headers, empty body) — what Envoy Gateway sends for an empty server
 # stream (the kind cluster's yindex `GetTaddressTxids` for an address with no history) — so the

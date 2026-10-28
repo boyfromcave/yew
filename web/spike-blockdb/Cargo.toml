@@ -13,11 +13,11 @@ crate-type = ["cdylib", "rlib"]
 [workspace]
 
 [dependencies]
-zcash_client_sqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1", default-features = false }
-zcash_client_backend = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1", default-features = false }
-zcash_keys = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1", features = ["sapling"] }
-zcash_primitives = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1", default-features = false }
-zcash_protocol = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1", features = ["local-consensus"] }
+zcash_client_sqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false }
+zcash_client_backend = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false }
+zcash_keys = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", features = ["sapling"] }
+zcash_primitives = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false }
+zcash_protocol = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", features = ["local-consensus"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false, features = ["std"] }
 zcash_note_encryption = "0.4"
 zip32 = "0.2"
@@ -37,7 +37,7 @@ js-sys = "0.3"
 wasm-bindgen-test = "0.3"
 
 [patch.crates-io]
-schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "774de4e5f904ce89ae850c7100082af64a1e31e1" }
+schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee" }
 
 # As the yew root manifest does for its own crates: trial decryption, the shard tree and SQLite at
 # opt-level 0 overrun wasm-bindgen-test's per-test timeout; keep the dependencies optimised in the
