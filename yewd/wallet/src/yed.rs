@@ -28,7 +28,15 @@ use crate::rpc::invalid;
 use crate::{code, txid_hex, RpcError, Wallet};
 
 /// The R6 builders S2 serves.
-pub const SERVED: &[&str] = &["yed_send", "yed_sendmany", "yed_estimatesend", "yed_lockcoins", "yed_unlockcoin"];
+pub const SERVED: &[&str] = &[
+    "yed_send",
+    "yed_sendmany",
+    "yed_estimatesend",
+    "yed_lockcoins",
+    "yed_unlockcoin",
+    "yed_redeem",
+    "yed_estimateredeem",
+];
 
 /// `maxOutput` (XFER-1): $100,000 per output.
 pub const MAX_OUTPUT_CENTS: i64 = 10_000_000;
@@ -135,6 +143,8 @@ impl Wallet {
             "yed_estimatesend" => self.yed_estimatesend(node, p).await,
             "yed_lockcoins" => self.yed_lockcoins(node, p).await,
             "yed_unlockcoin" => self.yed_unlockcoin(node, p).await,
+            "yed_redeem" => self.yed_redeem(node, p).await,
+            "yed_estimateredeem" => self.yed_estimateredeem(node, p).await,
             _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
         }
     }
@@ -506,5 +516,304 @@ impl Wallet {
             .with("unlocked", true)
             .with("wasYellowbackLocked", was)
             .with("cents", cents))
+    }
+
+    // ------------------------------------------------------------------ redeem
+
+    /// The vault record (`yed_getvault`), `vault-not-found` as ycashd.
+    async fn yed_vault(node: &dyn Node, txid: &str) -> Result<Value, RpcError> {
+        match node::call(node, "yed_getvault", serde_json::json!([txid])).await {
+            Ok(v) => Ok(v),
+            Err(crate::node::NodeError::Rpc { message, .. }) if message.contains("vault-not-found") => {
+                Err(invalid(format!("vault-not-found: no vault at {txid}:0")))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// The txid of a mempool transaction spending `op`, if any (`MempoolSpenderOf`).
+    async fn mempool_spender(node: &dyn Node, op: &OutPoint) -> Result<Option<String>, RpcError> {
+        if crate::build::node_coin(node, op).await?.is_some() {
+            return Ok(None);
+        }
+        let ids = node::mempool(node).await?;
+        for t in ids {
+            if let Some(raw) = node::raw_tx(node, &t).await? {
+                if let Ok((tx, _)) = Transaction::parse(&raw) {
+                    if tx.vin.iter().any(|i| i.prevout == *op) {
+                        return Ok(Some(t));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// FEE-W's payee for a vault spend at `r` (`yed_getfeepayee r <outpoint selector>`); `None`
+    /// under FEE-0 (no eligible payee).
+    async fn spend_payee(node: &dyn Node, r: i64, op: &OutPoint) -> Result<Option<String>, RpcError> {
+        let mut sel = op.txid.to_vec();
+        sel.extend_from_slice(&op.n.to_le_bytes());
+        match node::call(node, "yed_getfeepayee", serde_json::json!([r, hex::encode(sel)])).await {
+            Ok(v) => Ok(v["preferred"].as_str().or_else(|| v["default"]["payoutAddress"].as_str()).map(str::to_string)),
+            Err(crate::node::NodeError::Rpc { message, .. }) if message.contains("fee-no-eligible-payee") => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// IT-9': the early-redeem fee of an ACTIVE vault redeemed at `r + 1` (0 at or past lockHeight,
+    /// under FEE-0, for an unknown class).
+    async fn early_fee(node: &dyn Node, v: &Value, r: i64, payee: bool) -> Result<(i64, i64, i64), RpcError> {
+        let info = node::call(node, "yed_getinfo", serde_json::json!([])).await?;
+        let class = v["termClass"].as_str().unwrap_or("");
+        let idx = match class {
+            "A" => 0,
+            "B" => 1,
+            "C" => 2,
+            _ => usize::MAX,
+        };
+        let bps = info["params"]["earlyRedeemFeeBps"].get(idx).and_then(|b| b.as_i64()).unwrap_or(0);
+        let minted = v["mintedCents"].as_i64().unwrap_or(0);
+        let p_mint = v["pMint"].as_i64().unwrap_or(0);
+        let active = v["status"].as_str() == Some("ACTIVE");
+        if !active || !payee || r + 1 >= v["lockHeight"].as_i64().unwrap_or(0) || idx == usize::MAX {
+            return Ok((0, 0, bps));
+        }
+        let zat = yew_core::params::early_redeem_fee_zat(minted as u64, bps, p_mint);
+        let cents = (minted * bps + 9_999) / 10_000;
+        Ok((zat, cents, bps))
+    }
+
+    /// `yed_redeem "vaultTxid" ( "to" )` (`BuildRedeem` → `BuildVaultSpend`, owner path).
+    async fn yed_redeem(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
+        if p.is_empty() || p.len() > 2 {
+            return Err(RpcError::new(code::MISC_ERROR, "yed_redeem \"vaultTxid\" ( \"to\" )"));
+        }
+        let txid_s = p[0].as_str().unwrap_or("").to_lowercase();
+        let txid = yew_core::tx::txid_from_hex(&txid_s).map_err(|_| invalid("vaultTxid must be hexadecimal string of length 64"))?;
+        let op = OutPoint { txid, n: 0 };
+        let to = p.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        // N1: a pending spend is refused before coin selection
+        if let Some(sp) = Self::mempool_spender(node, &op).await? {
+            return Err(RpcError::new(code::WALLET_ERROR, format!("vault-spend-pending: the vault {txid_s}:0 already has a spend in the mempool ({sp}); wait for it to confirm or expire")));
+        }
+        let v = Self::yed_vault(node, &txid_s).await?;
+        let info = yed_info(node).await?;
+        let next = next_block(node).await?;
+        let status = v["status"].as_str().unwrap_or("").to_string();
+        if status != "ACTIVE" && status != "VOID" {
+            return Err(build_error(format!("vault-not-active: the vault is {status}")));
+        }
+        let owner = yew_core::pq::PqKeyId {
+            scheme: v["ownerScheme"].as_u64().unwrap_or(0) as u8,
+            hash: hex::decode(v["ownerHash"].as_str().unwrap_or("")).ok().and_then(|b| b.try_into().ok()).unwrap_or([0; 32]),
+        };
+        let owner_key = self
+            .owner_ref(&owner, yew_core::vault::SEL_OWNER)
+            .ok_or_else(|| build_error("vault-not-owned: the vault owner key is not in this wallet".into()))?;
+        let owner_height = v["ownerHeight"].as_i64().or_else(|| {
+            // the V template's ownerHeight (U-23): parse it from the script
+            hex::decode(v["scriptPubKey"].as_str().unwrap_or("")).ok().and_then(|s| yew_core::vault::parse_vault(&s)).map(|vp| vp.owner_height)
+        }).unwrap_or(0);
+        if info.index_height < owner_height {
+            return Err(RpcError::new(-26, format!("vault-locked: the vault is locked until height {owner_height} (tip {})", info.index_height)));
+        }
+        let vault_script = hex::decode(v["scriptPubKey"].as_str().unwrap_or("")).map_err(|_| build_error("vault-not-found: cannot reconstruct the vault script".into()))?;
+        let vp = yew_core::vault::parse_vault(&vault_script).ok_or_else(|| build_error("vault-not-found: cannot reconstruct the vault script".into()))?;
+        let r = info.index_height;
+        let active = status == "ACTIVE";
+        let minted = v["mintedCents"].as_i64().unwrap_or(0);
+        let collateral = v["collateralZat"].as_i64().unwrap_or(0);
+        let (mut yed_inputs, mut change, mut extra_burn) = (Vec::new(), 0i64, 0i64);
+        let mut payee: Option<String> = None;
+        let mut fee_zat = 0i64;
+        let mut early = 0i64;
+        if active {
+            let coins = self.ranked_coins(node).await?;
+            let cents: Vec<i64> = coins.iter().map(|c| c.cents).collect();
+            let have: i64 = cents.iter().sum();
+            let s = coinselect::select_floor_aware(&cents, minted, MIN_OUTPUT_CENTS as i64, MAX_INPUTS, true);
+            if !s.ok {
+                if s.insufficient {
+                    return Err(build_error(format!("insufficient-yed: need {minted} cents, have {have} confirmed and spendable")));
+                }
+                return Err(build_error(format!("too-many-inputs: more than {MAX_INPUTS} YED inputs would be needed; consolidate first")));
+            }
+            yed_inputs = s.inputs.iter().map(|&i| coins[i].clone()).collect();
+            change = s.change;
+            extra_burn = s.extra_burn;
+            payee = Self::spend_payee(node, r, &op).await?;
+            if let Some(py) = &payee {
+                fee_zat = yew_core::build::terms::protocol_fee(minted as u64, v["pMint"].as_i64().unwrap_or(0), py).map_err(|e| build_error(e.to_string()))?;
+            }
+            let (e, _, _) = Self::early_fee(node, &v, r, payee.is_some()).await?;
+            early = e;
+            fee_zat += early;
+        }
+        let change_script = if change > 0 { self.fresh_holder()? } else { Vec::new() };
+        let collateral_script = if to.is_empty() {
+            let pk = self.new_wallet_key()?;
+            yew_core::script::p2pkh_script(&yew_core::keys::hash160(&pk))
+        } else if let Some(sc) = crate::rpc::parse_taddr_script(self.network, &to).filter(|sc| yew_core::script::p2pkh_hash(sc).is_some()) {
+            sc
+        } else if to.starts_with("ys") || to.starts_with("zregtestsapling") || to.starts_with("zs") {
+            return Err(RpcError::new(code::WALLET_ERROR, "yewd: a Sapling destination for the collateral is built in the signer (plan K-24), not served yet; pass a transparent address"));
+        } else {
+            return Err(build_error("bad-address: to: not a transparent (s1…) or Sapling (ys1…) address of this network".into()));
+        };
+        let utxos: Vec<yew_core::coins::Utxo> = yed_inputs
+            .iter()
+            .map(|c| yew_core::coins::Utxo {
+                outpoint: c.outpoint,
+                address: String::new(),
+                script: c.script.clone(),
+                value: c.value,
+                height: 0,
+                class: yew_core::coins::UtxoClass::Token,
+                cents: c.cents as u64,
+            })
+            .collect();
+        let payee_script = match &payee {
+            Some(a) => Some(crate::rpc::parse_taddr_script(self.network, a).ok_or_else(|| build_error(format!("the payee {a} is not an address")))?),
+            None => None,
+        };
+        let yed_scripts: Vec<&[u8]> = yed_inputs.iter().map(|c| c.script.as_slice()).collect();
+        let mut shape = yew_core::build::redeem::VaultSpendShape {
+            vault_out: op,
+            vault_value: collateral,
+            lock_height: v["lockHeight"].as_u64().unwrap_or(0) as u32,
+            claim_height: v["claimHeight"].as_u64().unwrap_or(0) as u32,
+            owner_height: vp.owner_height as u32,
+            app_height: vp.app_height as u32,
+            owner_path: true,
+            with_payload: active,
+            ref_height: r as u32,
+            yed_inputs: utxos,
+            change_cents: change as u64,
+            change_script,
+            payee_script,
+            fee_zat,
+            attest_script: None,
+            attest_fee_zat: 0,
+            residual_zat: 0,
+            owner_script: yew_core::pq::pqpkh_script(&owner).unwrap_or_default(),
+            carrier_value: 0,
+            collateral_script: collateral_script.clone(),
+            network_fee: 0,
+        };
+        // B L-1: the owner's PQ spend priced by size; clamped for a small vault (review L-1)
+        let owner_bytes = pq_input_size(owner.scheme);
+        let bytes = 1000 + owner_bytes as i64 + yed_scripts.iter().map(|s| input_bytes(s) as i64).sum::<i64>();
+        let priced = info.flat_fee.max((info.rate_per_kb * bytes / 1000).min(info.max_fee));
+        let yed_value: i64 = yed_inputs.iter().map(|c| c.value).sum();
+        let spendable = collateral + yed_value - if payee.is_some() { fee_zat } else { 0 } - if change > 0 { TOKEN_VALUE } else { 0 };
+        let floor_fee = info.flat_fee.max(5_000 * bytes / 1000);
+        shape.network_fee = if spendable - priced > 54 { priced } else { priced.min(floor_fee) };
+        let expiry = (r + info.ref_window) as u32;
+        if expiry < next.height + EXPIRING_SOON {
+            return Err(build_error("expiring-too-soon: the transaction would expire too soon; the index is too far behind the chain".into()));
+        }
+        let mut keys = vec![owner_key];
+        keys.extend(yed_inputs.iter().map(|c| self.key_of_script(&c.script).unwrap_or(KeyRef::None)));
+        let mut prevs = vec![NodeCoin { value: collateral, script: vault_script.clone(), height: None, coinbase: false }];
+        prevs.extend(yed_inputs.iter().map(|c| NodeCoin { value: c.value, script: c.script.clone(), height: None, coinbase: false }));
+        let mut signed;
+        let mut plan;
+        let mut pass = 0;
+        loop {
+            plan = yew_core::build::redeem::plan_vault_spend(&shape).map_err(|e| build_error(e.to_string()))?;
+            let mut tx = Transaction::new_v4();
+            tx.lock_time = plan.lock_time;
+            tx.expiry_height = expiry;
+            tx.vin = plan.vin.clone();
+            tx.vout = plan.vout.clone();
+            let cap = collateral + yed_value + 1;
+            signed = self.sign_inputs(&tx, &prevs, &keys, &[], GatePath::Owner, cap, next.branch).await?;
+            // P-2: never below the ZIP-317 conventional fee of the signed shape
+            let sizes: Vec<usize> = signed.vin.iter().map(|i| i.script_sig.len()).collect();
+            let conventional = signed.zip317_conventional_fee(&sizes).unwrap_or(0);
+            pass += 1;
+            if conventional <= shape.network_fee || pass >= 3 {
+                break;
+            }
+            shape.network_fee = conventional;
+        }
+        // MP-1 (K7): an enforcing miner's verdict on the spend, before it is committed
+        let raw = crate::build::tx_hex(&signed)?;
+        if let Ok(val) = node::call(node, "yed_validaterawtransaction", serde_json::json!([raw])).await {
+            if val["wouldBeRejected"].as_bool() == Some(true) {
+                let verdict = val["verdict"].as_str().unwrap_or("rejected");
+                return Err(RpcError::new(-26, format!("mempool-check-failed:{verdict}: an enforcing miner would refuse this vault spend (MP-1)")));
+            }
+        }
+        let txid = self.broadcast(node, &signed, None).await?;
+        let to_text = crate::keys::script_address(self.network, &collateral_script).unwrap_or_default();
+        Ok(J::obj()
+            .with("txid", txid)
+            .with("burnedCents", (plan.burn_cents - extra_burn).max(0))
+            .with("feeZat", if payee.is_some() { fee_zat } else { 0 })
+            .with("earlyRedeemFeeZat", early)
+            .with("payee", payee.map(J::Str).unwrap_or(J::Null))
+            .with("collateralOut", plan.collateral_out)
+            .with("to", to_text)
+            .with("extraBurnCents", extra_burn))
+    }
+
+    /// `yed_estimateredeem "vaultTxid"`.
+    async fn yed_estimateredeem(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
+        if p.len() != 1 {
+            return Err(RpcError::new(code::MISC_ERROR, "yed_estimateredeem \"vaultTxid\""));
+        }
+        let txid_s = p[0].as_str().unwrap_or("").to_lowercase();
+        let txid = yew_core::tx::txid_from_hex(&txid_s).map_err(|_| invalid("vaultTxid must be hexadecimal string of length 64"))?;
+        let op = OutPoint { txid, n: 0 };
+        let v = Self::yed_vault(node, &txid_s).await?;
+        let info = yed_info(node).await?;
+        let tip = info.index_height;
+        let status = v["status"].as_str().unwrap_or("").to_string();
+        let active = status == "ACTIVE";
+        let minted = v["mintedCents"].as_i64().unwrap_or(0);
+        let p_mint = v["pMint"].as_i64().unwrap_or(0);
+        let payee = Self::spend_payee(node, tip, &op).await?;
+        let (early, early_cents, bps) = Self::early_fee(node, &v, tip, payee.is_some()).await?;
+        let fee1 = if active && payee.is_some() { yew_core::params::protocol_fee_zat(minted as u64, p_mint).unwrap_or(crate::build::MAX_MONEY) } else { 0 };
+        let owner = yew_core::pq::PqKeyId {
+            scheme: v["ownerScheme"].as_u64().unwrap_or(0) as u8,
+            hash: hex::decode(v["ownerHash"].as_str().unwrap_or("")).ok().and_then(|b| b.try_into().ok()).unwrap_or([0; 32]),
+        };
+        let owner_height = hex::decode(v["scriptPubKey"].as_str().unwrap_or("")).ok().and_then(|s| yew_core::vault::parse_vault(&s)).map(|vp| vp.owner_height).unwrap_or(0);
+        let spendable: i64 = self.ranked_coins(node).await?.iter().map(|c| c.cents).sum();
+        let error = if !(active || status == "VOID") {
+            format!("vault-not-active: the vault is {status}")
+        } else if self.book.pq_by_id(&owner).is_none() {
+            "vault-not-owned: the vault owner key is not in this wallet".to_string()
+        } else if tip < owner_height {
+            format!("vault-locked: the vault is locked until height {owner_height} (tip {tip})")
+        } else if let Some(sp) = Self::mempool_spender(node, &op).await? {
+            format!("vault-spend-pending: the vault {txid_s}:0 already has a spend in the mempool ({sp}); wait for it to confirm or expire")
+        } else if active && spendable < minted {
+            format!("insufficient-yed: the redeem burns {minted} cents; the wallet can spend {spendable} now ({spendable} confirmed)")
+        } else {
+            String::new()
+        };
+        Ok(J::obj()
+            .with("vault", format!("{txid_s}:0"))
+            .with("status", status)
+            .with("termClass", v["termClass"].as_str().unwrap_or("").to_string())
+            .with("lockHeight", v["lockHeight"].as_i64().unwrap_or(0))
+            .with("height", tip + 1)
+            .with("early", active && tip + 1 < v["lockHeight"].as_i64().unwrap_or(0))
+            .with("burnedCents", if active { minted } else { 0 })
+            .with("collateralZat", v["collateralZat"].as_i64().unwrap_or(0))
+            .with("pMint", p_mint)
+            .with("protocolFeeCents", if active && payee.is_some() { yew_core::params::protocol_fee_cents(minted as u64) as i64 } else { 0 })
+            .with("protocolFeeZat", fee1)
+            .with("feeZat", fee1 + early)
+            .with("earlyRedeemFeeBps", bps)
+            .with("earlyRedeemFeeCents", early_cents)
+            .with("earlyRedeemFeeZat", early)
+            .with("payee", if active { payee.map(J::Str).unwrap_or(J::Null) } else { J::Null })
+            .with("canRedeem", error.is_empty())
+            .with("error", error))
     }
 }

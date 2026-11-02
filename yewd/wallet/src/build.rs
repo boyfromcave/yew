@@ -482,7 +482,18 @@ impl Wallet {
             keys.push(if template { KeyRef::None } else { self.key_of_script(&p.script).unwrap_or(KeyRef::None) });
             coins.push(p);
         }
-        self.sign_inputs(tx, &coins, &keys, &[], path, cap, next.branch).await
+        // a SET_JOIN bond of a member key this wallet holds is its own output (HandoffSend's rule)
+        let mut own = Vec::new();
+        for o in &tx.vout {
+            if let Ok(a) = yewd_proto::act::decode(&o.script_pubkey) {
+                if let yewd_proto::act::Body::Join { member_key, bond_locktime, bond_vout, .. } = a.body {
+                    if let Some(k) = self.key_of_pubkey(&member_key) {
+                        own.push(OwnOutput { n: bond_vout as u32, key: k, bond_locktime: Some(bond_locktime) });
+                    }
+                }
+            }
+        }
+        self.sign_inputs(tx, &coins, &keys, &own, path, cap, next.branch).await
     }
 
     /// `Broadcast`: the vault/Yellowback fee cap (`absurdly-high-fee`), then the node's

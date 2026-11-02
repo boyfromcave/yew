@@ -702,9 +702,14 @@ impl Wallet {
         Ok((tx, a))
     }
 
-    async fn sign_send(&mut self, node: &dyn Node, tx: &Transaction, next: Next) -> Result<String, RpcError> {
+    /// Sign this wallet's inputs of a one-shot build and broadcast it (`SignWalletInputs` +
+    /// `Broadcast`). The signer's outflow cap is what the request itself spends: `spend` (a vault's
+    /// amount) plus the flat fee and a change remainder folded into it.
+    async fn sign_send(&mut self, node: &dyn Node, tx: &Transaction, next: Next, spend: i64) -> Result<String, RpcError> {
         let cap = self.max_tx_fee(node).await;
-        let signed = self.sign_wallet_inputs(node, tx, GatePath::Vault, cap, next).await?;
+        let signed = self
+            .sign_wallet_inputs(node, tx, GatePath::Vault, spend + VAULT_RPC_FEE + VAULT_RPC_MIN_CHANGE, next)
+            .await?;
         self.broadcast(node, &signed, Some(cap)).await
     }
 
@@ -714,7 +719,7 @@ impl Wallet {
         want_params(p, 1, 1, "set_create {params}")?;
         let next = self.ensure_vault_active(node).await?;
         let (tx, a) = self.build_act_from_params(node, act::SET_CREATE, &p[0]).await?;
-        let txid = self.sign_send(node, &tx, next).await?;
+        let txid = self.sign_send(node, &tx, next, 0).await?;
         let Body::Create(c) = &a.body else { unreachable!() };
         Ok(J::obj().with("txid", txid.clone()).with("setid", txid).with("admitkey", hex::encode(c.admit_key)))
     }
@@ -736,7 +741,7 @@ impl Wallet {
         let (missing, required) = self.sign_act_in_place(node, &mut tx, ai, &mut decoded).await?;
         let mut r = J::obj();
         if missing == 0 {
-            let txid = self.sign_send(node, &tx, next).await?;
+            let txid = self.sign_send(node, &tx, next, 0).await?;
             r.push("txid", J::Str(txid));
         } else {
             self.remember_build(&tx.vin[0].prevout.clone(), &tx)?;
@@ -780,7 +785,7 @@ impl Wallet {
         let mut tx = self.build_act_tx(node, &a, vec![]).await?;
         let (ai, mut decoded) = find_act(&tx)?;
         self.sign_act_in_place(node, &mut tx, ai, &mut decoded).await?;
-        let txid = self.sign_send(node, &tx, next).await?;
+        let txid = self.sign_send(node, &tx, next, 0).await?;
         Ok(J::obj().with("txid", txid).with("memberkey", hex::encode(key)))
     }
 
@@ -801,7 +806,7 @@ impl Wallet {
         };
         decoded.sigs = sigs.sigs.iter().filter_map(|s| hex::decode(s).ok()?.try_into().ok()).collect();
         tx.vout[ai].script_pubkey = act::encode(&decoded);
-        let txid = self.sign_send(node, &tx, next).await?;
+        let txid = self.sign_send(node, &tx, next, 0).await?;
         Ok(J::obj()
             .with("txid", txid)
             .with("memberkey", hex::encode(key))
@@ -867,7 +872,7 @@ impl Wallet {
         want_params(p, 1, 1, "set_equivocation {proof}")?;
         let next = self.ensure_vault_active(node).await?;
         let (tx, _) = self.build_act_from_params(node, act::SET_EQUIVOCATION, &p[0]).await?;
-        Ok(J::Str(self.sign_send(node, &tx, next).await?))
+        Ok(J::Str(self.sign_send(node, &tx, next, 0).await?))
     }
 
     /// `HandoffSend`.
@@ -1070,7 +1075,7 @@ impl Wallet {
         let mut tx = new_tx();
         tx.vout.push(TxOut { value: amount, script_pubkey: spk.clone() });
         self.fund(node, &mut tx, 0, VAULT_RPC_FEE, FundMode::LargestFirst).await?;
-        let txid = self.sign_send(node, &tx, next).await?;
+        let txid = self.sign_send(node, &tx, next, amount).await?;
         Ok(J::obj()
             .with("txid", txid.clone())
             .with("vout", 0i64)
@@ -1144,7 +1149,7 @@ impl Wallet {
         split.vout.push(TxOut { value, script_pubkey: yew_core::script::p2pkh_script(&yew_core::keys::hash160(&k)) });
         self.fund(node, &mut split, 0, VAULT_RPC_FEE, FundMode::LargestFirst).await?;
         let next = next_block(node).await?;
-        let txid = self.sign_send(node, &split, next).await?;
+        let txid = self.sign_send(node, &split, next, 0).await?;
         let op = OutPoint { txid: yew_core::tx::txid_from_hex(&txid).map_err(|e| RpcError::new(code::INTERNAL_ERROR, e))?, n: 0 };
         self.lock_coin(&op);
         self.persist_state()?;
@@ -1690,7 +1695,7 @@ impl Wallet {
         tx.vin.push(vin);
         tx.vout.push(TxOut { value: coin.value, script_pubkey: dest });
         self.fund(node, &mut tx, coin.value, VAULT_RPC_FEE, FundMode::LargestFirst).await?;
-        Ok(J::Str(self.sign_send(node, &tx, next).await?))
+        Ok(J::Str(self.sign_send(node, &tx, next, 0).await?))
     }
 
     /// The owner spend's network fee: max(the flat fee, the ZIP-317 conventional fee, the
@@ -1759,7 +1764,7 @@ impl Wallet {
                 return Err(invalid(format!("the output does not cover the fee {} and a non-dust output", money(fee))));
             }
             tx.vout[0].value = coin.value - fee;
-            signed = self.sign_inputs(&tx, std::slice::from_ref(&coin), &[key], &[], GatePath::Owner, cap.max(fee), next.branch).await?;
+            signed = self.sign_inputs(&tx, std::slice::from_ref(&coin), &[key], &[], GatePath::Owner, coin.value, next.branch).await?;
             let size = signed.serialize().map(|b| b.len()).unwrap_or(0);
             let sizes: Vec<usize> = signed.vin.iter().map(|i| i.script_sig.len()).collect();
             let conventional = signed.zip317_conventional_fee(&sizes).unwrap_or(VAULT_RPC_FEE);
