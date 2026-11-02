@@ -372,7 +372,15 @@ impl SignerCore {
             Request::SignAttestation(a) => self.sign_attestation(a).map(Response::Attestation),
             Request::CancelCosign(c) => self.cancel_cosign(c).map(Response::Cosign),
             Request::SignMessage(m) => self.sign_message(m).map(Response::MessageSig),
-            Request::ImportKey(i) => self.import_key(&i.wif).map(Response::ImportedKey),
+            Request::ImportKey(i) => self
+                .import_key(&i.wif, i.members.as_deref())
+                .map(Response::ImportedKey),
+            Request::JoinsSeen(h) => {
+                let mut o = self.lock();
+                o.joins_seen(h)
+                    .map(|_| Response::Acknowledged(o.list()))
+                    .map_err(|e| (refuse::FAILED, e))
+            }
             Request::DumpKey(k) => self.dump_key(k).map(Response::Dumped),
         };
         r.unwrap_or_else(|(c, m)| Response::refused(c, m))
@@ -1129,9 +1137,14 @@ impl SignerCore {
         Ok(hex::encode(act::sign_recoverable(&sk, &h)))
     }
 
-    /// `importprivkey`: a compressed WIF of this network into the store; the sign-once restore
-    /// marker is set for a new key (it brings no sign-once history, 07/F-5).
-    pub fn import_key(&self, wif: &str) -> Result<ImportedKey, Refused> {
+    /// `importprivkey`: a compressed WIF of this network into the store; a new key brings no
+    /// sign-once history (07/F-5): the restore marker is set for a set member, any other new key
+    /// is watched for its `SET_JOIN` ([`crate::signonce::SignOnce::key_imported`]).
+    pub fn import_key(
+        &self,
+        wif: &str,
+        members: Option<&[String]>,
+    ) -> Result<ImportedKey, Refused> {
         drop(self.keys()?);
         let k = keys::decode_wif(self.network, wif.trim()).map_err(|_| {
             (
@@ -1144,7 +1157,8 @@ impl SignerCore {
             .add(k.secret)
             .map_err(|e| (refuse::FAILED, format!("Error adding key to wallet: {e}")))?;
         if new {
-            self.lock().mark_restored().map_err(|e| {
+            let hash = hex::encode(keys::hash160(&k.pubkey));
+            self.lock().key_imported(&hash, members).map_err(|e| {
                 (
                     refuse::FAILED,
                     format!("cannot write the vault sign-once restore marker: {e}"),

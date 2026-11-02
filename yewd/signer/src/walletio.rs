@@ -370,13 +370,18 @@ impl SignerCore {
                 Err(_) => bad = true,
             }
         }
-        if out.keys.iter().any(|(k, _)| k.new) {
-            self.lock().mark_restored().map_err(|e| {
-                (
-                    refuse::FAILED,
-                    format!("cannot write the vault sign-once restore marker: {e}"),
-                )
-            })?;
+        for (k, _) in out.keys.iter().filter(|(k, _)| k.new) {
+            let hash = hex::decode(&k.pubkey)
+                .map(|p| hex::encode(keys::hash160(&p)))
+                .unwrap_or_default();
+            self.lock()
+                .key_imported(&hash, r.members.as_deref())
+                .map_err(|e| {
+                    (
+                        refuse::FAILED,
+                        format!("cannot write the vault sign-once restore marker: {e}"),
+                    )
+                })?;
         }
         if !records.is_empty() {
             let mut o = self.lock();

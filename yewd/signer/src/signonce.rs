@@ -8,7 +8,7 @@
 //! signer, so a signer restart keeps every record and a second, different sighash for one
 //! `(setid, prevout)` is refused.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,9 @@ struct OnDisk {
     format: String,
     restored: bool,
     records: Vec<SignedRecord>,
+    /// Imported keys (hash160 hex) not yet a set member: a later `SET_JOIN` of one sets the marker.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pending: BTreeSet<String>,
 }
 
 /// The records, keyed by `(setid, prevout)`.
@@ -30,6 +33,7 @@ pub struct SignOnce {
     path: PathBuf,
     pub restored: bool,
     records: BTreeMap<(String, String), (u8, String)>,
+    pending: BTreeSet<String>,
 }
 
 /// What [`SignOnce::check`] found.
@@ -62,6 +66,7 @@ impl SignOnce {
                     path,
                     restored: d.restored,
                     records,
+                    pending: d.pending,
                 })
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -69,6 +74,7 @@ impl SignOnce {
                     path,
                     restored: restored_if_new,
                     records: BTreeMap::new(),
+                    pending: BTreeSet::new(),
                 };
                 s.save()?;
                 Ok(s)
@@ -136,6 +142,33 @@ impl SignOnce {
         self.save()
     }
 
+    /// A new key came into the store (`importprivkey`, a dump; ycash6 `MarkVaultKeyImported`):
+    /// a current set member (`members` lists their hash160s) sets the marker, any other key is
+    /// kept pending for its `SET_JOIN`; `members: None` (the chain was not read) sets the marker.
+    pub fn key_imported(&mut self, hash: &str, members: Option<&[String]>) -> Result<(), String> {
+        match members {
+            Some(m) if !m.iter().any(|h| h == hash) => {
+                if self.pending.insert(hash.to_string()) {
+                    self.save()?;
+                }
+                Ok(())
+            }
+            _ => self.mark_restored(),
+        }
+    }
+
+    /// `SET_JOIN`s of these member keys connected (ycash6 `VaultCheckJoins`): a pending key
+    /// among them sets the marker and is no longer watched.
+    pub fn joins_seen(&mut self, hashes: &[String]) -> Result<(), String> {
+        let before = self.pending.len();
+        self.pending.retain(|h| !hashes.contains(h));
+        if self.pending.len() == before {
+            return Ok(());
+        }
+        self.restored = true;
+        self.save()
+    }
+
     pub fn acknowledge(&mut self) -> Result<(), String> {
         self.restored = false;
         self.save()
@@ -143,6 +176,7 @@ impl SignOnce {
 
     pub fn list(&self) -> SignedRecords {
         SignedRecords {
+            pending: self.pending.len() as u32,
             restored: self.restored,
             records: self
                 .records
@@ -163,6 +197,7 @@ impl SignOnce {
             format: FORMAT.into(),
             restored: self.restored,
             records: self.list().records,
+            pending: self.pending.clone(),
         };
         let text = serde_json::to_vec_pretty(&d).map_err(|e| e.to_string())?;
         let tmp = self.path.with_extension("json.tmp");

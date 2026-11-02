@@ -7,7 +7,7 @@
 //! Commands:
 //!
 //! ```text
-//! yewd-signer -datadir=<dir> [-regtest|-testnet] init [-mnemonic="<words>"] [-birthday=<h>]
+//! yewd-signer -datadir=<dir> [-regtest|-testnet] init [-mnemonic="<words>" | -mnemonicfile=<file>] [-birthday=<h>]
 //! yewd-signer -datadir=<dir> [-regtest|-testnet] public [-pq=<scheme>:<from>:<count>]...
 //! yewd-signer -datadir=<dir> [-regtest|-testnet] serve [-socket=<path>] [-watchstdin]
 //! yewd-signer -datadir=<dir> [-regtest|-testnet] restore -from=<backup> [-salvage]
@@ -28,7 +28,7 @@ use yewd_signer::{init, Keystore};
 
 fn usage() -> ! {
     eprintln!(
-        "usage: yewd-signer -datadir=<dir> [-regtest|-testnet] init [-mnemonic=\"<words>\"] [-birthday=<h>]\n       \
+        "usage: yewd-signer -datadir=<dir> [-regtest|-testnet] init [-mnemonic=\"<words>\" | -mnemonicfile=<file>] [-birthday=<h>]\n       \
          yewd-signer -datadir=<dir> [-regtest|-testnet] public [-pq=<scheme>:<from>:<count>]...\n       \
          yewd-signer -datadir=<dir> [-regtest|-testnet] serve [-socket=<path>] [-watchstdin]\n       \
          yewd-signer -datadir=<dir> [-regtest|-testnet] restore -from=<backup> [-salvage]\n       \
@@ -74,6 +74,13 @@ fn main() {
             "regtest" => network = Network::Regtest,
             "testnet" => network = Network::Testnet,
             "mnemonic" => mnemonic = Some(value),
+            // ycashd's -mnemonicfile: the phrase read here, never on the façade's command line
+            "mnemonicfile" => {
+                match yewd_signer::read_recovery_phrase_file(&PathBuf::from(&value)) {
+                    Ok(p) => mnemonic = Some(p),
+                    Err(e) => fail(format!("-mnemonicfile: {e}")),
+                }
+            }
             "socket" => socket = Some(PathBuf::from(value)),
             "watchstdin" => watch_stdin = true,
             "from" => from = Some(PathBuf::from(value)),

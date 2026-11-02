@@ -142,6 +142,44 @@ pub fn init(
     Ok(true)
 }
 
+/// The recovery phrase of a `-mnemonicfile` (ycashd's `ReadRecoveryPhraseFile`, 6.20.0): the
+/// phrase on a line of its own, or a `z_exportwallet` file's `# - recovery_phrase="…"` line with
+/// its `# - language=…` line (English when none is given; the only language yew-core reads). The
+/// signer reads the file itself, so the phrase never passes through the façade or a command line.
+pub fn read_recovery_phrase_file(path: &Path) -> Result<String, SignerError> {
+    const PHRASE_KEY: &str = "recovery_phrase=\"";
+    const LANGUAGE_KEY: &str = "# - language=";
+    let text = std::fs::read_to_string(path)
+        .map_err(|_| SignerError(format!("cannot open {}", path.display())))?;
+    let mut phrase = String::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(at) = line.find(PHRASE_KEY) {
+            let rest = &line[at + PHRASE_KEY.len()..];
+            if let Some(end) = rest.find('"') {
+                phrase = rest[..end].to_string();
+            }
+        } else if let Some(name) = line.strip_prefix(LANGUAGE_KEY) {
+            if name != "English" {
+                return err(format!(
+                    "{} names an unknown phrase language '{name}'",
+                    path.display()
+                ));
+            }
+        } else if phrase.is_empty() && !line.is_empty() && !line.starts_with('#') {
+            phrase = line.to_string();
+        }
+    }
+    let phrase = phrase.split_whitespace().collect::<Vec<_>>().join(" ");
+    if phrase.is_empty() || keys::seed_from_mnemonic(&phrase, "").is_err() {
+        return err(format!(
+            "{} does not hold a valid English recovery phrase",
+            path.display()
+        ));
+    }
+    Ok(phrase)
+}
+
 /// Write the seed file atomically, mode 0600.
 fn write_seed_file(dir: &Path, file: &SeedFile) -> Result<(), SignerError> {
     let path = seed_path(dir);
@@ -450,6 +488,31 @@ pub fn seed_fingerprint(seed: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn recovery_phrase_file() {
+        let d = std::env::temp_dir().join(format!("yewd-phrase-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let phrase = "legal winner thank year wave sausage worth useful legal winner thank yellow";
+        let dump = d.join("dump");
+        std::fs::write(
+            &dump,
+            format!("# Wallet dump\n# - recovery_phrase=\"{phrase}\"\n# - language=English\nL1x 2026 label=\n"),
+        )
+        .unwrap();
+        assert_eq!(read_recovery_phrase_file(&dump).unwrap(), phrase);
+        let bare = d.join("bare");
+        std::fs::write(&bare, format!("  {phrase}  \n")).unwrap();
+        assert_eq!(read_recovery_phrase_file(&bare).unwrap(), phrase);
+        let other = d.join("other");
+        std::fs::write(&other, format!("# - language=French\n{phrase}\n")).unwrap();
+        assert!(read_recovery_phrase_file(&other).is_err());
+        let bad = d.join("bad");
+        std::fs::write(&bad, "not a phrase\n").unwrap();
+        assert!(read_recovery_phrase_file(&bad).is_err());
+        assert!(read_recovery_phrase_file(&d.join("missing")).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
     use super::*;
 
     const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";

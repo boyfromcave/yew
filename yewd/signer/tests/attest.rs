@@ -45,7 +45,10 @@ fn ask(c: &SignerCore, r: Request) -> Response {
 fn import(c: &SignerCore, secret: &[u8]) -> (KeyRef, String) {
     let sk = secp256k1::SecretKey::from_secret_bytes(secret.try_into().unwrap()).unwrap();
     let wif = keys::encode_wif(Network::Regtest, &sk);
-    match ask(c, Request::ImportKey(ImportKeyRequest { wif })) {
+    match ask(
+        c,
+        Request::ImportKey(ImportKeyRequest { wif, members: None }),
+    ) {
         Response::ImportedKey(k) => (
             KeyRef::Bip32 {
                 chain: IMPORTED_CHAIN,
@@ -309,6 +312,83 @@ fn the_cancel_cosignature_locks_its_price() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// 07/F-5 review S3 (ycash6 `MarkVaultKeyImported`, `VaultCheckJoins`): an imported key that is
+/// no set member is pending, not restored; its `SET_JOIN` sets the marker; a member's import sets
+/// it at once; acknowledging keeps the pending keys watched.
+#[test]
+fn imported_key_pending_until_join() {
+    let d = dir("pending");
+    let c = core(&d);
+    let Response::Dumped(wif) = ask(&c, Request::DumpKey(KeyRef::Bip32 { chain: 0, index: 7 }))
+    else {
+        panic!()
+    };
+    let pk = c.bip32_pubkey(0, 7).unwrap();
+    let hash = hex::encode(keys::hash160(&pk));
+    let d2 = dir("pending2");
+    let c2 = SignerCore::open(
+        Keystore::from_mnemonic(
+            Network::Regtest,
+            "legal winner thank year wave sausage worth useful legal winner thank yellow",
+        ),
+        &d2,
+    )
+    .unwrap();
+    let Response::ImportedKey(ik) = ask(
+        &c2,
+        Request::ImportKey(ImportKeyRequest {
+            wif: wif.clone(),
+            members: Some(vec!["00".repeat(20)]),
+        }),
+    ) else {
+        panic!()
+    };
+    assert!(ik.new);
+    let Response::Acknowledged(a) = ask(&c2, Request::AcknowledgeRestore) else {
+        panic!()
+    };
+    assert_eq!((a.restored, a.pending), (false, 1));
+    // another key's join changes nothing; this key's join sets the marker
+    let Response::Acknowledged(a) = ask(&c2, Request::JoinsSeen(vec!["11".repeat(20)])) else {
+        panic!()
+    };
+    assert_eq!((a.restored, a.pending), (false, 1));
+    let Response::Acknowledged(a) = ask(&c2, Request::JoinsSeen(vec![hash.clone()])) else {
+        panic!()
+    };
+    assert_eq!((a.restored, a.pending), (true, 0));
+    // a member key's import sets the marker at once
+    let d3 = dir("pending3");
+    let c3 = core(&d3);
+    let other = SignerCore::open(
+        Keystore::from_mnemonic(
+            Network::Regtest,
+            "legal winner thank year wave sausage worth useful legal winner thank yellow",
+        ),
+        &dir("pending4"),
+    )
+    .unwrap();
+    let Response::Dumped(wif2) = ask(
+        &other,
+        Request::DumpKey(KeyRef::Bip32 { chain: 0, index: 1 }),
+    ) else {
+        panic!()
+    };
+    let h2 = hex::encode(keys::hash160(&other.bip32_pubkey(0, 1).unwrap()));
+    assert!(!c3.once.lock().unwrap().restored);
+    ask(
+        &c3,
+        Request::ImportKey(ImportKeyRequest {
+            wif: wif2,
+            members: Some(vec![h2]),
+        }),
+    );
+    assert!(c3.once.lock().unwrap().restored);
+    for x in [&d, &d2, &d3] {
+        let _ = std::fs::remove_dir_all(x);
+    }
+}
+
 #[test]
 fn signmessage_dumpprivkey_and_import() {
     let d = dir("msg");
@@ -345,7 +425,10 @@ fn signmessage_dumpprivkey_and_import() {
     assert!(!c2.once.lock().unwrap().restored);
     let Response::ImportedKey(ik) = ask(
         &c2,
-        Request::ImportKey(ImportKeyRequest { wif: wif.clone() }),
+        Request::ImportKey(ImportKeyRequest {
+            wif: wif.clone(),
+            members: None,
+        }),
     ) else {
         panic!()
     };
@@ -354,7 +437,10 @@ fn signmessage_dumpprivkey_and_import() {
         (0, hex::encode(pk).as_str(), true)
     );
     assert!(c2.once.lock().unwrap().restored);
-    let Response::ImportedKey(ik) = ask(&c2, Request::ImportKey(ImportKeyRequest { wif })) else {
+    let Response::ImportedKey(ik) = ask(
+        &c2,
+        Request::ImportKey(ImportKeyRequest { wif, members: None }),
+    ) else {
         panic!()
     };
     assert!(!ik.new);
@@ -376,7 +462,8 @@ fn signmessage_dumpprivkey_and_import() {
         ask(
             &c2,
             Request::ImportKey(ImportKeyRequest {
-                wif: "not a key".into()
+                wif: "not a key".into(),
+                members: None,
             })
         ),
         Response::Refused(_)

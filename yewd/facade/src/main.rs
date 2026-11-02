@@ -29,6 +29,7 @@ Usage: yewd [options]
   -signerbin=<file>           the yewd-signer binary (default: beside yewd)
   -walletpoll=<ms>            how often the wallet follows the node between calls (default 1000; 0 = only at calls)
   -initwallet                 create the wallet (seed in the signer, birthday 0), print its coinbase address, exit
+  -mnemonicfile=<file>        a new wallet takes its seed from the recovery phrase in <file> (read by the signer)
   -debug                      log every method called
   -version                    print the version and exit
 
@@ -63,16 +64,25 @@ fn main() {
                 .get("signerbin")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(yewd_facade::wallet::default_signer_bin);
-            yewd_facade::wallet::WalletService::init_offline(net, &datadir, bin)
-                .map_err(yewd_facade::config::ConfigError)
+            let mnemonic = a.get("mnemonicfile").map(std::path::PathBuf::from);
+            yewd_facade::wallet::WalletService::init_offline(
+                net,
+                &datadir,
+                bin,
+                mnemonic.as_deref(),
+                a.has("wallet"),
+            )
+            .map_err(yewd_facade::config::ConfigError)
         }) {
-            Ok((addr, sapling)) => {
+            Ok((addr, sapling, moved)) => {
                 // saplingaddress: a coinbase address that names no YED payout key on either line
-                // (MINER-2 takes a P2PKH -mineraddress / miner_address only; finding F-S5-9)
-                println!(
-                    "{}",
-                    serde_json::json!({ "mineaddress": addr, "saplingaddress": sapling })
-                );
+                // (MINER-2 takes a P2PKH -mineraddress / miner_address only; finding F-S5-9);
+                // movedaside: <net>/wallet.dat was removed, the old wallet went there (F-S5-17)
+                let mut out = serde_json::json!({ "mineaddress": addr, "saplingaddress": sapling });
+                if let Some(m) = moved {
+                    out["movedaside"] = serde_json::Value::String(m.display().to_string());
+                }
+                println!("{out}");
                 0
             }
             Err(e) => {

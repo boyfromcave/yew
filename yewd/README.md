@@ -141,6 +141,7 @@ ycashd's wallet arguments (`-keypool`, `-exportdir`, …) and a ycashd-format `y
 | `-wallet=<file>` | `wallet.dat` | a `backupwallet` file in `<datadir>/<net>/` (or absolute) restored once at the first wallet call |
 | `-rescan` | off | read the chain again from the wallet's birthday at open |
 | `-salvagewallet` | off | a restored backup carries the sign-once restore marker (07/NEW-1) |
+| `-mnemonicfile=<file>` | — | ycashd's seed-only restore: a **new** wallet takes its seed from the recovery phrase in `<file>` (the phrase on one line, or a `z_exportwallet` file's `recovery_phrase=` line), read by the signer itself; birthday 0 (a scan from genesis) and the sign-once restore marker set; ignored for a wallet with this seed, refused for one with another (F-S5-17) |
 | `-paramsdir=<dir>` | ycashd's (`~/Library/Application Support/ZcashParams`, `~/.zcash-params`) | the Sapling parameters the signer proves with |
 | `-backendexitgrace=<s>` | 20 | with `-stopbackend`: exit once the backend has been gone this long after it was up (H6: the node stopped itself); 0 = never |
 | `-debug` | off | log each method called |
@@ -159,6 +160,9 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
   issue counters, the address book, the processed tip with a window of 288 recent block hashes,
   and the wallet transactions' bytes and block positions; coins, notes and balances are derived
   from them at load, as ycashd derives them from `mapWallet`). Nothing secret is in `wallet.json`.
+  `<datadir>/<net>/wallet.dat` stands in for the two (a restored `backupwallet` file, or a small
+  note yewd writes): removing it means what it means to ycashd, the next start opens a **new** wallet
+  (the old `yewd/` and `signer/` are moved aside as `*.wiped-<time>`, never deleted).
 - **Keys (K-24).** The façade holds the signer's public bundle: the BIP32 account node
   `m/44'/347'/0'` (CKDpub for `/{0,1}/i`, 100 keys of lookahead per chain), the Sapling DFVK of
   `m/32'/347'/0'` (diversified addresses, trial decryption, nullifiers) and a pool of PQ public

@@ -222,6 +222,28 @@ impl SetView {
     }
 }
 
+/// The hash160s (hex) of every member key of every set at the tip (ycash6 `IsVaultSetMemberKey`:
+/// `set_list`, then each set's `memberlist`), for the sign-once rule of an imported key (07/F-5
+/// review S3). `None` when the node does not answer (no Vault reads yet): the signer then marks
+/// the import as a member's, fail closed.
+pub(crate) async fn set_member_hashes(node: &dyn Node) -> Option<Vec<String>> {
+    let sets = node::call(node, "set_list", serde_json::json!([]))
+        .await
+        .ok()?;
+    let mut out = Vec::new();
+    for s in sets.as_array()? {
+        let id = s["setid"].as_str()?;
+        let info = node::call(node, "set_getinfo", serde_json::json!([id]))
+            .await
+            .ok()?;
+        for m in info["memberlist"].as_array()? {
+            let key = hex::decode(m["key"].as_str()?).ok()?;
+            out.push(hex::encode(yew_core::keys::hash160(&key)));
+        }
+    }
+    Some(out)
+}
+
 pub(crate) async fn set_view(node: &dyn Node, set: &[u8; 32]) -> Result<Option<SetView>, RpcError> {
     match node::call(node, "set_getinfo", serde_json::json!([txid_hex(set)])).await {
         Ok(v) => {
@@ -2239,7 +2261,7 @@ impl Wallet {
         match self.signer.request(Request::AcknowledgeRestore) {
             Ok(Response::Acknowledged(r)) => Ok(J::obj()
                 .with("restored", r.restored)
-                .with("pendingkeys", 0i64)),
+                .with("pendingkeys", i64::from(r.pending))),
             other => Err(signer_error(other)),
         }
     }

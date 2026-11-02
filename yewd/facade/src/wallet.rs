@@ -72,9 +72,15 @@ impl ProcessSigner {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    /// `init` (a no-op when the seed exists); returns the seed's birthday.
-    pub fn init(&self, birthday: u32) -> Result<u32, String> {
-        let out = self.run(&["init".into(), format!("-birthday={birthday}")])?;
+    /// `init` (a no-op when the seed exists); returns the seed's birthday. `mnemonic_file`:
+    /// ycashd's `-mnemonicfile`, read by the signer (a new seed from that phrase, birthday 0, the
+    /// sign-once restore marker set; refused when the seed exists and is another).
+    pub fn init(&self, birthday: u32, mnemonic_file: Option<&Path>) -> Result<u32, String> {
+        let mut args = vec!["init".to_string(), format!("-birthday={birthday}")];
+        if let Some(f) = mnemonic_file {
+            args.push(format!("-mnemonicfile={}", f.display()));
+        }
+        let out = self.run(&args)?;
         let v: Value = serde_json::from_str(out.trim()).map_err(|e| format!("signer init: {e}"))?;
         Ok(v["birthday"].as_u64().unwrap_or(0) as u32)
     }
@@ -246,6 +252,68 @@ pub struct WalletArgs {
     pub rescan: bool,
     /// `-salvagewallet`: a restored backup carries the sign-once restore marker (07/NEW-1).
     pub salvage: bool,
+    /// `-mnemonicfile=<file>`: a new wallet takes its seed from the recovery phrase in the file
+    /// (read by the signer), rescans from genesis and carries the sign-once restore marker.
+    pub mnemonic_file: Option<PathBuf>,
+}
+
+/// The wallet file a yewd wallet answers to (`<datadir>/<net>/wallet.dat`, ycashd's default):
+/// yewd keeps its wallet in `<net>/yewd` and `<net>/signer`, and writes this file as their
+/// stand-in, so that removing it means what it means to ycashd: the next start opens a new
+/// wallet (F-S5-17). The old wallet is moved aside, never deleted.
+const WALLET_FILE: &str = "wallet.dat";
+/// Inside `<net>/yewd`: the wallet answers to `<net>/wallet.dat` (written by this version).
+const WALLET_FILE_RECORD: &str = "walletfile";
+const WALLET_FILE_FORMAT: &str = "yewd-wallet-file-1";
+
+/// Before the wallet is opened: if this wallet answers to `<dir>/wallet.dat` and that file is
+/// gone, move the wallet (`yewd/`, `signer/`) aside as `*.wiped-<unix time>`, so a new one is
+/// created. A wallet without the record (an older yewd's) is left as it is. Returns where the
+/// wallet state went.
+fn retire_wiped_wallet(dir: &Path) -> Result<Option<PathBuf>, String> {
+    let wallet = dir.join("yewd");
+    if !wallet.join(WALLET_FILE_RECORD).exists() || dir.join(WALLET_FILE).exists() {
+        return Ok(None);
+    }
+    let mut moved = None;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    for part in ["yewd", "signer"] {
+        let from = dir.join(part);
+        if from.exists() {
+            let mut to = dir.join(format!("{part}.wiped-{stamp}"));
+            let mut n = 1;
+            while to.exists() {
+                to = dir.join(format!("{part}.wiped-{stamp}.{n}"));
+                n += 1;
+            }
+            std::fs::rename(&from, &to)
+                .map_err(|e| format!("cannot move {} aside: {e}", from.display()))?;
+            if part == "yewd" {
+                moved = Some(to);
+            }
+        }
+    }
+    Ok(moved)
+}
+
+/// After the wallet is opened: the wallet file exists (a restored backup, or the stand-in
+/// written here) and the wallet records that it answers to it.
+fn mark_wallet_file(dir: &Path) -> Result<(), String> {
+    let file = dir.join(WALLET_FILE);
+    if !file.exists() {
+        let text = serde_json::json!({
+            "format": WALLET_FILE_FORMAT,
+            "note": "a yewd wallet: its state is in yewd/ and its seed in signer/ beside this file; \
+                     removing this file makes the next start create a new wallet",
+        });
+        std::fs::write(&file, format!("{text}\n"))
+            .map_err(|e| format!("{}: {e}", file.display()))?;
+    }
+    std::fs::write(dir.join("yewd").join(WALLET_FILE_RECORD), WALLET_FILE)
+        .map_err(|e| format!("the wallet file record: {e}"))
 }
 
 impl WalletService {
@@ -367,23 +435,34 @@ impl WalletService {
         network: Network,
         datadir: &Path,
         signer_bin: PathBuf,
-    ) -> Result<(String, Option<String>), String> {
+        mnemonic_file: Option<&Path>,
+        wallet_file_given: bool,
+    ) -> Result<(String, Option<String>, Option<PathBuf>), String> {
         let dir = datadir.join(network.subdir());
+        let moved = if wallet_file_given {
+            None
+        } else {
+            retire_wiped_wallet(&dir)?
+        };
         let ps = ProcessSigner {
             bin: signer_bin,
             dir: dir.join("signer"),
             network,
         };
-        let birthday = ps.init(0)?;
+        let birthday = ps.init(0, mnemonic_file)?;
         let w = Wallet::open(
             &dir.join("yewd"),
             core_network(network),
             Box::new(ps),
             birthday,
         )?;
+        if !wallet_file_given {
+            mark_wallet_file(&dir)?;
+        }
         Ok((
             w.taddr(yewd_wallet::keys::EXTERNAL, 0),
             w.sapling_coinbase_address(),
+            moved,
         ))
     }
 
@@ -401,6 +480,23 @@ impl WalletService {
                 "yewd: the wallet could not be opened",
             ));
         };
+        let args = self.opts.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        // the wallet file stands in for a wallet whose seed this façade's own signer holds
+        let own_files = matches!(source, SignerSource::Process(_)) && args.wallet_file.is_none();
+        if own_files {
+            match retire_wiped_wallet(&self.dir) {
+                Ok(Some(to)) => eprintln!(
+                    "yewd: {} was removed: the wallet was moved aside to {} and a new one is created",
+                    self.dir.join(WALLET_FILE).display(),
+                    to.display()
+                ),
+                Ok(None) => {}
+                Err(e) => {
+                    *self.signer.lock().unwrap_or_else(|e| e.into_inner()) = Some(source);
+                    return Err(RpcError::new(code::WALLET_ERROR, format!("yewd: {e}")));
+                }
+            }
+        }
         if let (SignerSource::Process(bin), Some((from, digest))) =
             (&source, self.pending_restore())
         {
@@ -410,8 +506,9 @@ impl WalletService {
             }
         }
         let exists = self.wallet_dir().join("wallet.json").exists();
-        // a new wallet's birthday: the node's height now (a new seed has no earlier history)
-        let height = if exists {
+        // a new wallet's birthday: the node's height now (a new seed has no earlier history); a
+        // seed restored from -mnemonicfile has an unknown birthday: it rescans from genesis
+        let height = if exists || args.mnemonic_file.is_some() {
             0
         } else {
             match yewd_wallet::node::block_count(&self.node).await {
@@ -431,7 +528,7 @@ impl WalletService {
                     network: self.network,
                 };
                 let b = ps
-                    .init(height)
+                    .init(height, args.mnemonic_file.as_deref())
                     .map_err(|e| RpcError::new(code::WALLET_ERROR, format!("yewd: {e}")))?;
                 let s = match SocketSigner::spawn(&bin, &dir, self.network) {
                     Ok(s) => s,
@@ -457,7 +554,10 @@ impl WalletService {
         )
         .map_err(|e| RpcError::new(code::WALLET_ERROR, format!("yewd: {e}")))?;
         let mut w = w;
-        let args = self.opts.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if own_files {
+            mark_wallet_file(&self.dir)
+                .map_err(|e| RpcError::new(code::WALLET_ERROR, format!("yewd: {e}")))?;
+        }
         w.opts = args.opts;
         if args.rescan {
             w.rescan_all();
@@ -560,5 +660,43 @@ impl WalletService {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F-S5-17: the stand-in wallet file; removing it retires the wallet (moved aside, never
+    /// deleted); a wallet without the record (an older yewd's) is never retired.
+    #[test]
+    fn wallet_file_stand_in() {
+        let d = std::env::temp_dir().join(format!("yewd-walletfile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("yewd")).unwrap();
+        std::fs::create_dir_all(d.join("signer")).unwrap();
+        // no record: left alone even without wallet.dat
+        assert_eq!(retire_wiped_wallet(&d).unwrap(), None);
+        mark_wallet_file(&d).unwrap();
+        assert!(d.join(WALLET_FILE).exists());
+        assert_eq!(yewd_proto::backup_digest(&d.join(WALLET_FILE)), None);
+        assert_eq!(retire_wiped_wallet(&d).unwrap(), None);
+        std::fs::remove_file(d.join(WALLET_FILE)).unwrap();
+        let moved = retire_wiped_wallet(&d).unwrap().unwrap();
+        assert!(moved.join(WALLET_FILE_RECORD).exists());
+        assert!(!d.join("yewd").exists() && !d.join("signer").exists());
+        assert_eq!(
+            std::fs::read_dir(&d)
+                .unwrap()
+                .filter(|e| e
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("signer.wiped-"))
+                .count(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

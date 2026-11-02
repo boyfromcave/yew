@@ -561,9 +561,11 @@ impl Wallet {
     ) -> Result<J, RpcError> {
         self.ensure_unlocked()?;
         let path = str_arg(p, 0)?;
+        let members = crate::vaultrpc::set_member_hashes(node).await;
         let r = match self.signer.request(Request::ImportDump(ImportDumpRequest {
             path: path.to_string(),
             zkeys,
+            members,
         })) {
             Ok(Response::ImportedDump(r)) => r,
             Ok(Response::Refused(r)) if r.code == refuse::MALFORMED => {
