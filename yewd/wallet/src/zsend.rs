@@ -41,7 +41,7 @@ pub(crate) fn refuse_pq(
     method: &str,
     what: &str,
 ) -> Result<(), RpcError> {
-    if yew_core::keys::parse_pq_address(network, a).is_ok() {
+    if yew_core::keys::parse_pq_yec_address(network, a).is_ok() {
         return Err(RpcError::new(
             code::INVALID_ADDRESS_OR_KEY,
             format!("{method}{what}"),
