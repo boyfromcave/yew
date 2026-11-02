@@ -1,0 +1,11 @@
+[package]
+name = "yewd-wallet"
+description = "yewd: wallet state, sync and builders on yew-core (S1, S2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+yew-core.workspace = true
