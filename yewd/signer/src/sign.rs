@@ -37,10 +37,13 @@ use yew_core::tx::Transaction;
 use yew_core::vault;
 use yewd_proto::act::{self, OutPoint};
 use yewd_proto::{
-    refuse, ActSignRequest, ActSigs, Envelope, GatePath, Hello, KeyRef, Prevout, Request, Response,
-    SetSignRequest, SetSigs, SignRequest, Signed, PROTO_VERSION,
+    refuse, ActSignRequest, ActSigs, AttestRequest, AttestSigned, CosignRequest, Cosigned,
+    Envelope, GatePath, Hello, ImportedKey, KeyRef, MessageRequest, Prevout, Request, Response,
+    SetSignRequest, SetSigs, SignRequest, Signed, IMPORTED_CHAIN, PROTO_VERSION,
 };
 
+use crate::attest::Guard;
+use crate::imported::Imported;
 use crate::signonce::{Check, SignOnce};
 use crate::Keystore;
 
@@ -67,6 +70,10 @@ pub struct SignerCore {
     pub seed_fp: String,
     keys: Keys,
     pub once: Mutex<SignOnce>,
+    /// The attestation equivocation guard (S3).
+    pub guard: Mutex<Guard>,
+    /// The imported transparent keys (S3, `importprivkey`).
+    imported: Mutex<Imported>,
     ks: Keystore,
 }
 
@@ -99,11 +106,15 @@ impl SignerCore {
         let seed_fp = hex::encode(crate::seed_fingerprint(&seed));
         keys::wipe(&mut seed);
         let once = SignOnce::load(dir, ks.restored())?;
+        let guard = Guard::load(dir)?;
+        let imported = Imported::load(dir)?;
         Ok(SignerCore {
             network: ks.network(),
             seed_fp,
             keys: Keys { account, pq_root },
             once: Mutex::new(once),
+            guard: Mutex::new(guard),
+            imported: Mutex::new(imported),
             ks,
         })
     }
@@ -128,7 +139,10 @@ impl SignerCore {
             Request::Public(p) => self
                 .ks
                 .public(p)
-                .map(Response::Public)
+                .map(|mut b| {
+                    b.imported = self.imports().pubkeys().iter().map(hex::encode).collect();
+                    Response::Public(b)
+                })
                 .map_err(|e| (refuse::FAILED, e.to_string())),
             Request::Sign(s) => self.sign(s).map(Response::Signed),
             Request::SignAct(a) => self.sign_act(a).map(Response::ActSigs),
@@ -151,6 +165,11 @@ impl SignerCore {
                     .map(|_| Response::Acknowledged(o.list()))
                     .map_err(|e| (refuse::FAILED, e))
             }
+            Request::SignAttestation(a) => self.sign_attestation(a).map(Response::Attestation),
+            Request::CancelCosign(c) => self.cancel_cosign(c).map(Response::Cosign),
+            Request::SignMessage(m) => self.sign_message(m).map(Response::MessageSig),
+            Request::ImportKey(i) => self.import_key(&i.wif).map(Response::ImportedKey),
+            Request::DumpKey(k) => self.dump_key(k).map(Response::Dumped),
         };
         r.unwrap_or_else(|(c, m)| Response::refused(c, m))
     }
@@ -159,23 +178,50 @@ impl SignerCore {
         self.once.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    fn imports(&self) -> std::sync::MutexGuard<'_, Imported> {
+        self.imported.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn attest_guard(&self) -> std::sync::MutexGuard<'_, Guard> {
+        self.guard.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A transparent key: `m/44'/347'/0'/chain/index`, or imported key `index` on
+    /// [`IMPORTED_CHAIN`].
+    fn transparent(&self, chain: u32, index: u32) -> Result<(SecretKey, [u8; 33]), Refused> {
+        if chain == IMPORTED_CHAIN {
+            let sk = *self.imports().get(index).ok_or_else(|| {
+                (
+                    refuse::KEY_NOT_HELD,
+                    format!("no imported key {index} in this signer"),
+                )
+            })?;
+            let pk = secp256k1::PublicKey::from_secret_key(&sk).serialize();
+            return Ok((sk, pk));
+        }
+        if chain > 1 || index >= HARDENED {
+            return no(
+                refuse::KEY_MISMATCH,
+                format!("no key m/44'/347'/0'/{chain}/{index}"),
+            );
+        }
+        let x = self
+            .keys
+            .account
+            .derive(&[chain, index])
+            .map_err(|e| (refuse::FAILED, e.to_string()))?;
+        let pk = x.public_key();
+        Ok((x.key, pk))
+    }
+
     fn derive(&self, k: &KeyRef) -> Result<Option<Derived>, Refused> {
         match *k {
             KeyRef::None => Ok(None),
-            KeyRef::Bip32 { chain, index } | KeyRef::Carrier { chain, index } => {
-                if chain > 1 || index >= HARDENED {
-                    return no(
-                        refuse::KEY_MISMATCH,
-                        format!("no key m/44'/347'/0'/{chain}/{index}"),
-                    );
-                }
-                let x = self
-                    .keys
-                    .account
-                    .derive(&[chain, index])
-                    .map_err(|e| (refuse::FAILED, e.to_string()))?;
-                let pk = x.public_key();
-                Ok(Some(Derived::T(x.key, pk)))
+            KeyRef::Bip32 { chain, index }
+            | KeyRef::Carrier { chain, index }
+            | KeyRef::Bond { chain, index, .. } => {
+                let (sk, pk) = self.transparent(chain, index)?;
+                Ok(Some(Derived::T(sk, pk)))
             }
             KeyRef::Pq { scheme, index } | KeyRef::PqOwner { scheme, index, .. } => {
                 let mut seed = self.keys.pq_root.derive(scheme, index);
@@ -361,6 +407,20 @@ impl SignerCore {
                     tx.vin[i].script_sig =
                         yew_core::script::carrier_script_sig(&bundle, &der, &redeem)
                             .map_err(|e| (refuse::FAILED, e.to_string()))?;
+                    digest
+                }
+                (KeyRef::Bond { locktime, .. }, Derived::T(sk, pk)) => {
+                    let redeem = act::bond_redeem_script(*locktime, &pk);
+                    let digest = tx
+                        .sighash(i, &redeem, amount, SIGHASH_ALL, r.branch_id)
+                        .map_err(|e| (refuse::FAILED, e.to_string()))?;
+                    let sig = secp256k1::ecdsa::sign(secp256k1::Message::from_digest(digest), &sk);
+                    let mut der = sig.serialize_der().to_vec();
+                    der.push(SIGHASH_ALL as u8);
+                    let mut ss = Vec::with_capacity(der.len() + redeem.len() + 4);
+                    yew_core::script::push_data(&mut ss, &der);
+                    yew_core::script::push_data(&mut ss, &redeem);
+                    tx.vin[i].script_sig = ss;
                     digest
                 }
                 (KeyRef::PqOwner { selector, .. }, Derived::Pq(k)) => {
@@ -552,6 +612,287 @@ impl SignerCore {
         })
     }
 
+    /// The transparent key a role request names, checked to be `pubkey` (the node's record).
+    fn role_key(
+        &self,
+        k: &KeyRef,
+        pubkey: &str,
+        what: &str,
+    ) -> Result<(SecretKey, [u8; 33]), Refused> {
+        let (sk, pk) = match *k {
+            KeyRef::Bip32 { chain, index } => self.transparent(chain, index)?,
+            _ => {
+                return no(
+                    refuse::KEY_MISMATCH,
+                    format!("{what} is made with a transparent key"),
+                )
+            }
+        };
+        if hex::encode(pk) != pubkey.to_ascii_lowercase() {
+            return no(
+                refuse::KEY_MISMATCH,
+                format!("the named key is not {what}'s key {pubkey}"),
+            );
+        }
+        Ok((sk, pk))
+    }
+
+    /// `SignAttestationGuarded` (S16) once the key is derived: the guard decides before anything
+    /// is signed, and the record is on disk before the signature leaves.
+    fn guarded_attestation(
+        &self,
+        sk: &SecretKey,
+        pk: &[u8; 33],
+        seq: u16,
+        price: u32,
+        cited: u32,
+        block_hash: &str,
+    ) -> Result<([u8; 64], bool), Refused> {
+        let bh_display = block_hash.to_ascii_lowercase();
+        let bh = yew_core::tx::txid_from_hex(&bh_display)
+            .map_err(|e| (refuse::MALFORMED, format!("block hash: {e}")))?;
+        let pk_hex = hex::encode(pk);
+        let mut g = self.attest_guard();
+        if let Some(other) = g
+            .by_key(&pk_hex, cited, &bh_display)
+            .find(|r| r.seq != seq && r.price_micro_usd != price)
+        {
+            return no(
+                refuse::EQUIVOCATION_GUARD,
+                format!(
+                    "equivocation-guard: this key already signed {} for height {cited} under seq {}",
+                    other.price_micro_usd, other.seq
+                ),
+            );
+        }
+        if let Some(prior) = g.by_seq(seq, cited, &bh_display) {
+            if prior.price_micro_usd != price {
+                return no(
+                    refuse::EQUIVOCATION_GUARD,
+                    format!(
+                        "equivocation-guard: seq {seq} already signed {} for height {cited}",
+                        prior.price_micro_usd
+                    ),
+                );
+            }
+            let sig: [u8; 64] = hex::decode(&prior.sig)
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .ok_or_else(|| (refuse::FAILED, "the guard's record is damaged".to_string()))?;
+            return Ok((sig, true));
+        }
+        let msg = yew_core::bundle::attest_message(seq, price, cited, &bh);
+        // RFC 6979, low-S (libsecp256k1 normalises), r ‖ s: ycashd's `CKey::Sign` + `DerToCompact`
+        let sig =
+            secp256k1::ecdsa::sign(secp256k1::Message::from_digest(msg), sk).serialize_compact();
+        if !yew_core::bundle::verify_compact_sig(pk, &msg, &sig) {
+            return no(refuse::FAILED, "attestation signature does not verify");
+        }
+        g.record(crate::attest::Signed {
+            seq,
+            pubkey: pk_hex,
+            cited_height: cited,
+            block_hash: bh_display,
+            price_micro_usd: price,
+            sig: hex::encode(sig),
+        })
+        .map_err(|e| {
+            eprintln!("yewd-signer: guard-write-failed: {e}");
+            (
+                refuse::GUARD_WRITE_FAILED,
+                "guard-write-failed: the equivocation guard could not be written; nothing was returned"
+                    .to_string(),
+            )
+        })?;
+        Ok((sig, false))
+    }
+
+    /// `yed_signattestation`'s signature (S16): one 74-byte attestation through the guard.
+    pub fn sign_attestation(&self, r: &AttestRequest) -> Result<AttestSigned, Refused> {
+        if (r.price_micro_usd as i64) < yewd_proto::attest::PRICE_MIN {
+            return no(
+                refuse::ATTEST_RANGE,
+                format!(
+                    "attest-range: priceMicroUsd must be in [{}, {}]",
+                    yewd_proto::attest::PRICE_MIN,
+                    yewd_proto::attest::PRICE_MAX
+                ),
+            );
+        }
+        let (sk, pk) = self.role_key(&r.key, &r.pubkey, "an attestation")?;
+        let (sig, reused) = self.guarded_attestation(
+            &sk,
+            &pk,
+            r.seq,
+            r.price_micro_usd,
+            r.cited_height,
+            &r.block_hash,
+        )?;
+        let a = yew_core::bundle::Attestation {
+            seq: r.seq,
+            price_micro_usd: r.price_micro_usd,
+            cited_height: r.cited_height,
+            sig,
+        };
+        Ok(AttestSigned {
+            hex: hex::encode(a.encode()),
+            reused,
+        })
+    }
+
+    /// `yed_signcancelcosign`'s signature (CAN-2 + C4b): the price statement at `R` locked
+    /// through the guard, then the recoverable signature over `CancelCosignMessage`.
+    pub fn cancel_cosign(&self, r: &CosignRequest) -> Result<Cosigned, Refused> {
+        let (sk, pk) = self.role_key(&r.key, &r.pubkey, "a cancel co-signature")?;
+        let bh_display = r.block_hash.to_ascii_lowercase();
+        let pk_hex = hex::encode(pk);
+        // the price this key already stated for R, under any seq (EQV-1 binds the key)
+        let prior: Option<(u16, u32)> = {
+            let g = self.attest_guard();
+            let mut prior: Option<(u16, u32)> = None;
+            for rec in g.by_key(&pk_hex, r.ref_height, &bh_display) {
+                if let Some((_, p)) = prior {
+                    if p != rec.price_micro_usd {
+                        return no(
+                            refuse::EQUIVOCATION_GUARD,
+                            format!(
+                                "equivocation-guard: this key already signed two prices for height {}",
+                                r.ref_height
+                            ),
+                        );
+                    }
+                }
+                prior = Some((rec.seq, rec.price_micro_usd));
+            }
+            prior
+        };
+        let price = match (r.price_micro_usd, prior) {
+            (Some(p), Some((s, q))) if p != q => {
+                return no(
+                    refuse::EQUIVOCATION_GUARD,
+                    format!(
+                        "equivocation-guard: seq {s} already signed {q} for height {}",
+                        r.ref_height
+                    ),
+                )
+            }
+            (Some(p), _) => p,
+            (None, Some((_, q))) => q,
+            (None, None) => {
+                return no(
+                    refuse::PRICE_REQUIRED,
+                    format!(
+                        "price-required: this key signed no price for the claim's refHeight {}; pass priceMicroUsd",
+                        r.ref_height
+                    ),
+                )
+            }
+        };
+        if (price as i64) < yewd_proto::attest::PRICE_MIN {
+            return no(
+                refuse::ATTEST_RANGE,
+                format!(
+                    "attest-range: priceMicroUsd must be in [{}, {}]",
+                    yewd_proto::attest::PRICE_MIN,
+                    yewd_proto::attest::PRICE_MAX
+                ),
+            );
+        }
+        if yewd_proto::attest::is_underwater(
+            r.collateral_zat,
+            price as i64,
+            r.minted_cents,
+            r.claim_threshold_bps,
+        ) {
+            return no(
+                refuse::CANCEL_STATEMENT_CLAIMABLE,
+                format!(
+                    "cancel-statement-claimable: at {price} micro-USD the vault was claimable at refHeight {}; a cancel co-signature states it was not",
+                    r.ref_height
+                ),
+            );
+        }
+        let (_, reused) =
+            self.guarded_attestation(&sk, &pk, r.seq, price, r.ref_height, &bh_display)?;
+        let set = yew_core::tx::txid_from_hex(&r.set_id)
+            .map_err(|e| (refuse::MALFORMED, format!("set id: {e}")))?;
+        let intent = OutPoint::parse(&r.intent)
+            .ok_or_else(|| (refuse::MALFORMED, "the intent is not txid:n".to_string()))?;
+        let bh = yew_core::tx::txid_from_hex(&bh_display)
+            .map_err(|e| (refuse::MALFORMED, format!("block hash: {e}")))?;
+        let msg = yewd_proto::attest::cancel_cosign_message(
+            &set,
+            &intent.txid,
+            intent.n,
+            r.ref_height,
+            price,
+            &bh,
+        );
+        let e = yewd_proto::attest::CosignEntry {
+            price_micro_usd: price,
+            sig: act::sign_recoverable(&sk, &msg),
+        };
+        Ok(Cosigned {
+            cosig: hex::encode(e.bytes()),
+            price_micro_usd: price,
+            reused,
+        })
+    }
+
+    /// `signmessage`: the digest is computed here from the text (the magic prefix first).
+    pub fn sign_message(&self, r: &MessageRequest) -> Result<String, Refused> {
+        let (sk, _) = match r.key {
+            KeyRef::Bip32 { chain, index } => self.transparent(chain, index)?,
+            _ => {
+                return no(
+                    refuse::KEY_MISMATCH,
+                    "signmessage signs with a transparent key",
+                )
+            }
+        };
+        let h = yewd_proto::attest::message_hash(&r.message);
+        Ok(hex::encode(act::sign_recoverable(&sk, &h)))
+    }
+
+    /// `importprivkey`: a compressed WIF of this network into the store; the sign-once restore
+    /// marker is set for a new key (it brings no sign-once history, 07/F-5).
+    pub fn import_key(&self, wif: &str) -> Result<ImportedKey, Refused> {
+        let k = keys::decode_wif(self.network, wif.trim()).map_err(|_| {
+            (
+                refuse::KEY_NOT_HELD,
+                "Invalid private key encoding".to_string(),
+            )
+        })?;
+        let (index, new) = self
+            .imports()
+            .add(k.secret)
+            .map_err(|e| (refuse::FAILED, format!("Error adding key to wallet: {e}")))?;
+        if new {
+            self.lock().mark_restored().map_err(|e| {
+                (
+                    refuse::FAILED,
+                    format!("cannot write the vault sign-once restore marker: {e}"),
+                )
+            })?;
+        }
+        Ok(ImportedKey {
+            index,
+            pubkey: hex::encode(k.pubkey),
+            new,
+        })
+    }
+
+    /// `dumpprivkey`: the WIF of a transparent key.
+    pub fn dump_key(&self, k: &KeyRef) -> Result<String, Refused> {
+        match *k {
+            KeyRef::Bip32 { chain, index } => {
+                let (sk, _) = self.transparent(chain, index)?;
+                Ok(keys::encode_wif(self.network, &sk))
+            }
+            _ => no(refuse::KEY_MISMATCH, "only a transparent key has a WIF"),
+        }
+    }
+
     /// The compressed public key of a BIP32 reference, for tests and the hello check.
     pub fn bip32_pubkey(&self, chain: u32, index: u32) -> Option<[u8; 33]> {
         self.tpub(&KeyRef::Bip32 { chain, index }).ok().flatten()
@@ -623,6 +964,13 @@ fn owns_input(k: &KeyRef, d: &Derived, script: &[u8], bundle: Option<&str>) -> R
                 Ok(())
             } else {
                 Err("the script is not the carrier of the named key and bundle".into())
+            }
+        }
+        (KeyRef::Bond { locktime, .. }, Derived::T(_, pk)) => {
+            if act::bond_script_pubkey(*locktime, pk) == script {
+                Ok(())
+            } else {
+                Err("the script is not the bond of the named key and locktime".into())
             }
         }
         (KeyRef::Bip32 { .. }, Derived::T(_, pk)) => {

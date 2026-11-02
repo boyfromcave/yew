@@ -13,6 +13,8 @@
 //! Unix-socket server, the encrypted store, signing, the sign-once records and the attestation
 //! guard; until then the façade runs this binary as a child process for each bundle request.
 
+pub mod attest;
+pub mod imported;
 pub mod server;
 pub mod sign;
 pub mod signonce;
@@ -273,6 +275,7 @@ pub fn public_from_seed(
         },
         sapling_dfvk: hex::encode(sapling.viewing_key_bytes()),
         pq,
+        imported: Vec::new(),
     })
 }
 
