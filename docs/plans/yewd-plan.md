@@ -47,7 +47,7 @@ the repository's `rust-toolchain.toml`.
 |---|---|---|
 | S0 | the shell: crate layout, façade skeleton (auth, the full method table answering `-32601`, forwarding with the backend's cookie, `help`, `stop`), the `YEWD_BIN` harness contract, the `yewd` CI job | **this revision** |
 | S1 | wallet state and sync; the read-only wallet subset (against ycash6 `-disablewallet`; kogany after W7-a/b) | **this revision** (§3.1) |
-| S2 | builders and the signer boundary | **this revision** (§3.2): 40/47; Sapling in the signer remains |
+| S2 | builders and the signer boundary | **this revision** (§3.2): 40/47; the Sapling build in the signer remains (F-S2-8) |
 | S3 | roles: attestor `attest` mode, Hawkeye member, x402 `rpcWalletSigner` | — |
 | S4 | the façade complete: all 47, R7, the K-25 stock set, error parity, hazards H1–H11 | — |
 | S5 | the parity gate (three-way matrix, the 48 wallet-needing scripts, 7 nightly days) | — |
@@ -244,7 +244,24 @@ are re-derived from ycash6 `src/vault/act.cpp` (plan §4.3 rule 1) and checked a
   another protocol version, the socket's mode). `pq_wallet_vectors.json` has no signing section; its
   derivation section replays as in S1.
 - `yewd/qa/s2_wallet_builders.py` on ycash6 `vaults/kogany-compat` (`65cb4ae0f` binaries, harness
-  `f4967b0d7`): see the S2 report for the run.
+  `f4967b0d7`), **passing** (exit 0): node 6 = ycash6 `-disablewallet` + yewd + its signer, nodes 0-5
+  plain ycashd. Every transaction yewd built was accepted and confirmed by all seven nodes with equal
+  `vault_getinfo.statehash` and `yed_getstatehash` at each checkpoint, and each chain object compared
+  with the same request made of ycashd: YEC (`sendtoaddress`, `sendmany`, `lockunspent`,
+  `getrawchangeaddress`, `signrawtransaction` with and without keys, `fundrawtransaction`); sets
+  (`set_create` beside ycashd's, `set_join` complete and cosigned both ways, `set_signact`,
+  `set_sendact`, `set_heartbeat`, `set_buildact`, dry-run previews, three documented errors); vaults
+  (`vault_lock` beside ycashd's, `vault_buildunlock` new/reused/refused, `set_signunlock` across yewd
+  and ycashd, `vault_send`, a ycashd intent cancelled by yewd with `vault_buildcancel` +
+  `set_signcancel`, the sign-once refusal and `set_importsigned`/`set_acknowledgerestore`,
+  `vault_release`, `vault_refee`, `vault_ownerspend` — the SLH-DSA owner spend made in the signer —,
+  the template-kind refusals); YED (`yed_mint` two-step beside ycashd's with `yed_getvault` and
+  `yed_gettxinfo` equal but for byte-level fields, `yed_estimatesend`, `yed_send` beside ycashd's,
+  `yed_sendmany`, `yed_estimateredeem`/`yed_redeem` early beside ycashd's, `yed_lockcoins`,
+  `yed_unlockcoin`, the H7 `sendrawtransaction` guard, `yed_claim` after a price crash beside
+  ycashd's, the claimant intent released to CLAIMED, `yed_sweepcarriers`): 28 of the 40 served build
+  RPCs exercised on chain. Served but not exercised by the gate: `set_leave`, `set_equivocation`,
+  `vault_app`, `yed_claimnotice` (its unarmed refusal).
 - Not run here: the same gate on kogany (W4/W5/W7 not merged), and the mixed kogany + ycash6-peer
   acceptance check of the plan's S2 row (the acceptance by every ycash6 node of the network is what
   this gate checks).
