@@ -97,10 +97,16 @@ pub fn bind(path: &Path) -> Result<UnixListener, String> {
                 .map_err(|e| format!("{}: {e}", dir.display()))?;
         }
     }
-    let l = UnixListener::bind(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // bound under a temporary name, made 0600, then renamed into place: the socket never appears
+    // at `path` with the default mode (a client, or a test, could otherwise meet it before the
+    // chmod)
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let l = UnixListener::bind(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(l)
 }
 

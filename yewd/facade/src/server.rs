@@ -297,6 +297,17 @@ impl Facade {
                 &methods::not_implemented_message(&method, stage),
                 id,
             ),
+            // F-S5-10: the post-quantum refusals of two methods outside K-25, as ycashd answers them
+            Some(Class::OutOfScope)
+                if matches!(method.as_str(), "z_shieldcoinbase" | "z_mergetoaddress") =>
+            {
+                let params = params_of(env.params).unwrap_or_default();
+                let net = crate::wallet::core_network(self.wallet.network);
+                match yewd_wallet::zsend::pq_refusal_only(net, &method, &params) {
+                    Ok(j) => raw_result_reply(&j.text(), id),
+                    Err(e) => error_reply(e.code, &e.message, id),
+                }
+            }
             Some(Class::OutOfScope) => error_reply(
                 code::METHOD_NOT_FOUND,
                 &methods::out_of_scope_message(&method),

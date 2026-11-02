@@ -30,6 +30,58 @@ use crate::node::{self, Node};
 use crate::rpc::invalid;
 use crate::{code, txid_hex, RpcError, Wallet};
 
+/// `RefusePQSource` / `RefusePQRecipient` (ycashd `wallet/rpcwallet.cpp`, quantum spec A-15): the
+/// z_* operations never spend or pay `TX_PQPKH`.
+const PQ_SOURCE: &str = " cannot spend from a post-quantum address; use sendtoaddress or sendmany";
+const PQ_RECIPIENT: &str = " cannot pay a post-quantum address; use sendtoaddress or sendmany";
+
+pub(crate) fn refuse_pq(
+    network: yew_core::params::Network,
+    a: &str,
+    method: &str,
+    what: &str,
+) -> Result<(), RpcError> {
+    if yew_core::keys::parse_pq_address(network, a).is_ok() {
+        return Err(RpcError::new(
+            code::INVALID_ADDRESS_OR_KEY,
+            format!("{method}{what}"),
+        ));
+    }
+    Ok(())
+}
+
+/// `z_shieldcoinbase` and `z_mergetoaddress` are outside K-25: the façade answers their
+/// post-quantum refusals as ycashd does (the scripts call them for nothing else, finding F-S5-10)
+/// and refuses the rest as not served.
+pub fn pq_refusal_only(
+    network: yew_core::params::Network,
+    method: &str,
+    p: &[Value],
+) -> Result<J, RpcError> {
+    match method {
+        "z_shieldcoinbase" => {
+            if let Some(from) = p.first().and_then(|v| v.as_str()) {
+                refuse_pq(network, from, method, PQ_SOURCE)?;
+            }
+        }
+        "z_mergetoaddress" => {
+            for a in p.first().and_then(|v| v.as_array()).into_iter().flatten() {
+                if let Some(a) = a.as_str() {
+                    refuse_pq(network, a, method, PQ_SOURCE)?;
+                }
+            }
+            if let Some(to) = p.get(1).and_then(|v| v.as_str()) {
+                refuse_pq(network, to, method, PQ_RECIPIENT)?;
+            }
+        }
+        _ => {}
+    }
+    Err(RpcError::new(
+        code::METHOD_NOT_FOUND,
+        format!("yewd: not served ({method} is outside the façade's scope, K-25)"),
+    ))
+}
+
 pub const SERVED: &[&str] = &[
     "z_sendmany",
     "z_getoperationstatus",
@@ -240,13 +292,13 @@ impl Wallet {
             let a = obj.get("address").and_then(|v| v.as_str()).ok_or_else(|| {
                 RpcError::new(code::MISC_ERROR, "JSON value is not a string as expected")
             })?;
+            // RefusePQRecipient (ycashd rpcwallet.cpp): before the transparent parse, which takes rq… too
+            refuse_pq(self.network, a, "z_sendmany", PQ_RECIPIENT)?;
             let dest = if let Some(s) = crate::rpc::parse_taddr_script(self.network, a) {
                 has_t = true;
                 Dest::T(s)
             } else if yew_core::shielded_keys::is_sapling_address(self.network, a) {
                 Dest::Z(a.to_string())
-            } else if yew_core::keys::parse_pq_address(self.network, a).is_ok() {
-                return Err(invalid(format!("z_sendmany cannot pay a post-quantum address ({a}); use sendtoaddress or the yed_/vault_ RPCs")));
             } else {
                 return Err(invalid(format!(
                     "Invalid parameter, unknown address format: {a}"
@@ -292,6 +344,7 @@ impl Wallet {
         let from = p.first().and_then(|v| v.as_str()).ok_or_else(|| {
             RpcError::new(code::MISC_ERROR, "JSON value is not a string as expected")
         })?;
+        refuse_pq(self.network, from, "z_sendmany", PQ_SOURCE)?;
         let source = if from == "ANY_TADDR" {
             Source::AnyTaddr
         } else if let Some(s) = crate::rpc::parse_taddr_script(self.network, from) {
@@ -313,8 +366,6 @@ impl Wallet {
                 ));
             }
             Source::Z(from.to_string())
-        } else if yew_core::keys::parse_pq_address(self.network, from).is_ok() {
-            return Err(RpcError::new(code::INVALID_ADDRESS_OR_KEY, format!("z_sendmany cannot spend from a post-quantum address ({from}): the z_* operations never spend TX_PQPKH (quantum spec A-15)")));
         } else {
             return Err(RpcError::new(
                 code::INVALID_ADDRESS_OR_KEY,
