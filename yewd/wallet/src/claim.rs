@@ -174,6 +174,7 @@ impl Wallet {
         };
         let pending = PendingMint {
             claim: Some(args.clone()),
+            equivocation: None,
             carrier,
             cents: minted,
             lock_blocks: 0,

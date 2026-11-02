@@ -196,13 +196,13 @@ struct Member {
 
 /// The set state the act and sign RPCs need (`set_getinfo` at the next block).
 #[derive(Clone, Debug)]
-struct SetView {
+pub(crate) struct SetView {
     unlock_threshold: i64,
     cancel_threshold: i64,
     slash_threshold: i64,
     open: bool,
     admit_key: [u8; 33],
-    maturity: i64,
+    pub(crate) maturity: i64,
     current: i64,
     released: bool,
     members: Vec<Member>,
@@ -222,7 +222,7 @@ impl SetView {
     }
 }
 
-async fn set_view(node: &dyn Node, set: &[u8; 32]) -> Result<Option<SetView>, RpcError> {
+pub(crate) async fn set_view(node: &dyn Node, set: &[u8; 32]) -> Result<Option<SetView>, RpcError> {
     match node::call(node, "set_getinfo", serde_json::json!([txid_hex(set)])).await {
         Ok(v) => {
             let key = |s: &Value| -> [u8; 33] {
@@ -888,7 +888,7 @@ impl Wallet {
             .with("admitkey", hex::encode(c.admit_key)))
     }
 
-    async fn set_join(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
+    pub(crate) async fn set_join(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
         want_params(
             p,
             3,
@@ -972,7 +972,11 @@ impl Wallet {
             })
     }
 
-    async fn set_heartbeat(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
+    pub(crate) async fn set_heartbeat(
+        &mut self,
+        node: &dyn Node,
+        p: &[Value],
+    ) -> Result<J, RpcError> {
         want_params(p, 1, 2, "set_heartbeat \"setid\" ( \"memberkey\" )")?;
         let next = self.ensure_vault_active(node).await?;
         let set = hash_param(&p[0], "setid")?;

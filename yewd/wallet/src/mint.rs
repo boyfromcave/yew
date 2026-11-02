@@ -38,6 +38,8 @@ const CARRIER_WAIT_SECS: u64 = 300;
 pub struct PendingMint {
     /// `None` for a mint; the claim's arguments for a claim.
     pub claim: Option<crate::claim::ClaimArgs>,
+    /// An equivocation report's two attestations (hex), S3's `yed_reportequivocation`.
+    pub equivocation: Option<(String, String)>,
     pub carrier: OutPoint,
     pub cents: i64,
     pub lock_blocks: i64,
@@ -76,6 +78,19 @@ pub fn build_error(msg: String) -> RpcError {
         "mint-vault-share",
         "mint-dry-run",
         "liveness-",
+        // the attestor role (S3)
+        "bond-below-min",
+        "lock-below-min",
+        "bond-locked",
+        "bond-spent",
+        "not-dormant",
+        "not-equivocation",
+        "attest-unknown-seq",
+        "attest-key-not-held",
+        "attest-range",
+        "attest-stale",
+        "equivocation-guard",
+        "register-refused",
     ];
     const PARAM: &[&str] = &[
         "mint-bad-lock",
@@ -324,6 +339,7 @@ impl Wallet {
             .await?;
         let pending = PendingMint {
             claim: None,
+            equivocation: None,
             carrier,
             cents,
             lock_blocks,
@@ -472,9 +488,25 @@ impl Wallet {
         for pm in std::mem::take(&mut self.pending) {
             match node_coin(node, &pm.carrier).await {
                 Ok(Some(c)) if c.height.is_some() => {
-                    let r = match &pm.claim {
-                        None => self.complete_mint(node, &pm).await,
-                        Some(a) => self.complete_claim(node, a, &pm).await,
+                    let r = match (&pm.claim, &pm.equivocation) {
+                        (Some(a), _) => self.complete_claim(node, a, &pm).await,
+                        (None, Some((a, b))) => {
+                            let dec = |h: &str| {
+                                hex::decode(h)
+                                    .ok()
+                                    .and_then(|b| yew_core::bundle::Attestation::decode(&b))
+                            };
+                            match (dec(a), dec(b)) {
+                                (Some(a), Some(b)) => {
+                                    self.complete_equivocation(node, &a, &b, &pm.carrier).await
+                                }
+                                _ => Err(RpcError::new(
+                                    code::INTERNAL_ERROR,
+                                    "a pending report's attestations",
+                                )),
+                            }
+                        }
+                        (None, None) => self.complete_mint(node, &pm).await,
                     };
                     if let Err(e) = r {
                         eprintln!(
