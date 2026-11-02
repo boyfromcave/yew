@@ -79,7 +79,10 @@ pub fn amount_param(v: &Value) -> Result<i64, RpcError> {
         if (z / 1e8 - f).abs() > 1e-12 || z > MAX_MONEY as f64 {
             return Err(bad());
         }
-        return Ok(if neg { -(z as i64) } else { z as i64 });
+        if neg && z > 0.0 {
+            return Err(RpcError::new(code::TYPE_ERROR, "Amount out of range"));
+        }
+        return Ok(z as i64);
     }
     let (i, frac) = t.split_once('.').unwrap_or((t, ""));
     if i.is_empty() && frac.is_empty()
@@ -102,10 +105,11 @@ pub fn amount_param(v: &Value) -> Result<i64, RpcError> {
         .checked_mul(100_000_000)
         .and_then(|w| w.checked_add(f.parse::<i64>().unwrap_or(0)))
         .ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Amount out of range"))?;
-    if z > MAX_MONEY {
+    // MoneyRange: a negative amount is out of range (ParseFixedPoint keeps the sign)
+    if z > MAX_MONEY || (neg && z > 0) {
         return Err(RpcError::new(code::TYPE_ERROR, "Amount out of range"));
     }
-    Ok(if neg { -z } else { z })
+    Ok(z)
 }
 
 /// `ParseOutPoint`: `"txid:n"` or `{"txid", "vout"}`.

@@ -96,8 +96,9 @@ impl SignerCore {
             r.vault_height.map(u64::from),
         );
         // the spends: each note rebuilt from its parts, each path checked against the anchor
+        // outputs alone still need an anchor for the bundle: the empty tree's root
         let anchor = if r.spends.is_empty() {
-            None
+            Some(Anchor::empty_tree())
         } else {
             let a = hex32(&r.anchor, "anchor")?;
             Some(

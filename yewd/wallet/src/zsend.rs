@@ -571,8 +571,14 @@ impl Wallet {
             }
         }
         if change > 0 {
-            if z_source {
-                outputs.push(SaplingOut::Change { value: change });
+            if let Source::Z(a) = source {
+                // a legacy Sapling source takes its change back (ycashd's legacy-address change)
+                outputs.push(SaplingOut::Shielded {
+                    address: a.clone(),
+                    value: change,
+                    memo: String::new(),
+                    own: true,
+                });
             } else {
                 let sc = self.new_change()?;
                 outputs.push(SaplingOut::Transparent {

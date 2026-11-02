@@ -332,7 +332,18 @@ impl WalletService {
             }
             _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
         };
-        r.map(|j| j.text())
+        match r {
+            Ok(j) => Ok(j.text()),
+            // a refusal's text is the C++ library's where ycashd's deserializer throws ("TX decode
+            // failed: …: unspecified iostream_category error"): a backend that has the helper
+            // (ycash6) gives its own words; one that lacks it (kogany: -32601) gets ours (F-S4-4)
+            Err(e) => match self.node.call(method, Value::Array(params.to_vec())).await {
+                Err(NodeError::Rpc { code: c, message }) if c != code::METHOD_NOT_FOUND => {
+                    Err(RpcError::new(c, message))
+                }
+                _ => Err(e),
+            },
+        }
     }
 
     fn wallet_dir(&self) -> PathBuf {

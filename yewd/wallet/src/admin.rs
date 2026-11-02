@@ -790,22 +790,12 @@ impl Wallet {
     /// `addmultisigaddress nrequired ["key",...] ( "" )` (`_createmultisig_redeemScript`): the
     /// P2SH address of an m-of-n multisig, its redeem script kept (validateaddress shows it).
     fn addmultisigaddress(&mut self, p: &[Value]) -> Result<J, RpcError> {
-        let label = match param(p, 2) {
-            None => String::new(),
-            Some(v) => {
-                let s = v.as_str().ok_or_else(|| {
-                    RpcError::new(code::MISC_ERROR, "JSON value is not a string as expected")
-                })?;
-                if !s.is_empty() && s != "*" {
-                    // AccountFromValue
-                    return Err(RpcError::new(
-                        code::WALLET_INVALID_ACCOUNT_NAME,
-                        "Invalid account name",
-                    ));
-                }
-                String::new()
+        if let Some(v) = param(p, 2) {
+            if v.as_str() != Some("") {
+                return Err(invalid("dummy argument must be excluded or set to \"\"."));
             }
-        };
+        }
+        let label = String::new();
         let required = p_int(p, 0, 0)?;
         let keys = p.get(1).and_then(|v| v.as_array()).ok_or_else(|| {
             RpcError::new(code::MISC_ERROR, "JSON value is not an array as expected")
@@ -848,15 +838,15 @@ impl Wallet {
                 })?;
                 pubkeys.push(tk.pubkey.to_vec());
             } else {
-                let b = hex::decode(ks).ok().filter(|b| {
-                    (b.len() == 33 && (b[0] == 2 || b[0] == 3)) || (b.len() == 65 && b[0] == 4)
-                });
+                let b = hex::decode(ks)
+                    .ok()
+                    .filter(|b| secp256k1::PublicKey::from_slice(b).is_ok());
                 match b {
                     Some(b) => pubkeys.push(b),
                     None => {
                         return Err(RpcError::new(
                             code::MISC_ERROR,
-                            format!("Invalid public key: {ks}"),
+                            format!(" Invalid public key: {ks}"),
                         ))
                     }
                 }

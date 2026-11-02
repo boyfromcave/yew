@@ -45,6 +45,15 @@ pub struct Backup {
     pub signer: std::collections::BTreeMap<String, String>,
 }
 
+/// `std::strerror`'s text of an I/O error (Rust appends " (os error N)").
+fn strerror(e: &std::io::Error) -> String {
+    let t = e.to_string();
+    match t.rfind(" (os error ") {
+        Some(i) => t[..i].to_string(),
+        None => t,
+    }
+}
+
 fn write_new(path: &str, text: &str, create_new: bool) -> Result<(), Refused> {
     let mut o = std::fs::OpenOptions::new();
     o.write(true);
@@ -61,7 +70,7 @@ fn write_new(path: &str, text: &str, create_new: bool) -> Result<(), Refused> {
     let mut f = o.open(path).map_err(|e| {
         (
             refuse::FAILED,
-            format!("Cannot open wallet dump file {path}: {e}"),
+            format!("Cannot open wallet dump file {path}: {}", strerror(&e)),
         )
     })?;
     f.write_all(text.as_bytes())
@@ -233,7 +242,7 @@ impl SignerCore {
         let text = std::fs::read_to_string(&r.path).map_err(|e| {
             (
                 refuse::MALFORMED,
-                format!("Cannot open wallet dump file {}: {e}", r.path),
+                format!("Cannot open wallet dump file {}: {}", r.path, strerror(&e)),
             )
         })?;
         let mut out = ImportDumpResult::default();

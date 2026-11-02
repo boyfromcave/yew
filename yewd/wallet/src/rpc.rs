@@ -1913,6 +1913,27 @@ impl Wallet {
                             .unwrap_or_default();
                         o.insert("account".into(), J::Str(label).text());
                     }
+                    // a redeem script this wallet knows (addmultisigaddress): DescribeAddressVisitor
+                    if let Some(redeem) = self.st.scripts.get(a).and_then(|h| hex::decode(h).ok()) {
+                        let (typ, dest) = crate::raw::solve(self.network, &redeem);
+                        o.insert("script".into(), J::Str(typ.into()).text());
+                        o.insert("hex".into(), J::Str(hex::encode(&redeem)).text());
+                        let (req, addrs) = dest.unwrap_or((0, Vec::new()));
+                        // IsMine: a multisig is the wallet's only when it holds every key
+                        let all = !addrs.is_empty()
+                            && addrs.iter().all(|x| {
+                                parse_taddr_script(self.network, x)
+                                    .is_some_and(|s| self.book.owns_script(&s).is_some())
+                            });
+                        o.insert("ismine".into(), all.to_string());
+                        o.insert(
+                            "addresses".into(),
+                            J::Arr(addrs.into_iter().map(J::Str).collect()).text(),
+                        );
+                        if typ == "multisig" {
+                            o.insert("sigsrequired".into(), req.to_string());
+                        }
+                    }
                 }
                 Ok(write_raw_obj(&o))
             }

@@ -640,15 +640,18 @@ pub fn createrawtransaction(
                 "txid must be hexadecimal string (not '')",
             )
         })?;
-        let txid = yew_core::tx::txid_from_hex(txid_s)
-            .ok()
-            .filter(|_| txid_s.len() == 64)
-            .ok_or_else(|| {
-                RpcError::new(
-                    code::INVALID_PARAMETER,
-                    format!("txid must be hexadecimal string (not '{txid_s}')"),
-                )
-            })?;
+        // ParseHashO: any hex string, read as uint256S reads it (right-aligned, zero-padded)
+        let padded = if txid_s.len() <= 64 && txid_s.chars().all(|c| c.is_ascii_hexdigit()) {
+            format!("{:0>64}", txid_s)
+        } else {
+            String::new()
+        };
+        let txid = yew_core::tx::txid_from_hex(&padded).ok().ok_or_else(|| {
+            RpcError::new(
+                code::INVALID_PARAMETER,
+                format!("txid must be hexadecimal string (not '{txid_s}')"),
+            )
+        })?;
         let vout = match o.get("vout") {
             Some(Value::Number(n)) => n.as_i64().unwrap_or(-1),
             _ => {

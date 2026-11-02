@@ -391,6 +391,15 @@ impl Facade {
             .and_then(|p| serde_json::from_str::<Vec<serde_json::Value>>(p.get()).ok())
             .and_then(|v| v.first().and_then(|t| t.as_str().map(str::to_string)));
         if let Some(m) = topic {
+            // ycashd's help branch of these two runs only on an encrypted wallet
+            if matches!(m.as_str(), "walletlock" | "walletpassphrase")
+                && !self.wallet.encrypted().await
+            {
+                return result_reply(
+                    &serde_json::Value::String(format!("help: unknown command: {m}")),
+                    id,
+                );
+            }
             return match methods::classify(&m) {
                 Some(Class::Wallet { .. } | Class::Local) if crate::ycashd::help(&m).is_some() => {
                     result_reply(
