@@ -515,12 +515,18 @@ impl Wallet {
         }
         // the node verifies (ycash6: its own signrawtransaction with no keys; kogany: yed_validaterawtransaction)
         let signed_hex = tx_hex(&out)?;
-        let mut prevtxs = Vec::new();
-        for (i, c) in tx.vin.iter().zip(&coins) {
-            if !c.script.is_empty() {
-                prevtxs.push(serde_json::json!({"txid": txid_hex(&i.prevout.txid), "vout": i.prevout.n, "scriptPubKey": hex::encode(&c.script), "amount": c.value as f64 / 1e8}));
-            }
-        }
+        // the caller's prevtxs as given (a P2SH one needs its redeemScript with keys given, even
+        // none); the node finds the rest in its own view
+        let prevtxs: Vec<Value> = param(p, 1)
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|o| {
+                let spk = hex::decode(o["scriptPubKey"].as_str().unwrap_or("")).unwrap_or_default();
+                yew_core::script::p2sh_hash(&spk).is_none() || o.get("redeemScript").is_some()
+            })
+            .collect();
         match node::call(
             node,
             "signrawtransaction",

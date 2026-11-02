@@ -130,7 +130,12 @@ fn weight_of(v: &Value) -> Option<u128> {
 }
 
 /// `IsUnderwater` (`math.h`): `collateral · price < cents · threshold · COIN`.
-pub fn is_underwater(collateral_zat: i64, price: Option<i64>, minted_cents: i64, threshold_bps: i64) -> bool {
+pub fn is_underwater(
+    collateral_zat: i64,
+    price: Option<i64>,
+    minted_cents: i64,
+    threshold_bps: i64,
+) -> bool {
     let Some(p) = price.filter(|p| *p > 0) else {
         return false;
     };
@@ -178,7 +183,12 @@ impl Wallet {
             let bundle = hex::decode(b["hex"].as_str().unwrap_or("")).unwrap_or_default();
             let seqs = b["seqs"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|x| x.as_u64()).map(|x| x as u16).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_u64())
+                        .map(|x| x as u16)
+                        .collect()
+                })
                 .unwrap_or_default();
             return Ok(BundleFacts {
                 armed: true,
@@ -201,7 +211,12 @@ impl Wallet {
         for a in &atts {
             let w = rows
                 .iter()
-                .find(|x| x["seq"].as_u64().or_else(|| x["seq"].as_str().and_then(|s| s.parse().ok())) == Some(a.seq as u64))
+                .find(|x| {
+                    x["seq"]
+                        .as_u64()
+                        .or_else(|| x["seq"].as_str().and_then(|s| s.parse().ok()))
+                        == Some(a.seq as u64)
+                })
                 .and_then(|x| weight_of(&x["weight"]))
                 .unwrap_or(0);
             weighted.push((a.seq, a.price_micro_usd as i64, w));
@@ -267,7 +282,9 @@ impl Wallet {
             .as_array()
             .and_then(|rows| {
                 rows.iter().find(|x| {
-                    x["seq"].as_u64().or_else(|| x["seq"].as_str().and_then(|s| s.parse().ok()))
+                    x["seq"]
+                        .as_u64()
+                        .or_else(|| x["seq"].as_str().and_then(|s| s.parse().ok()))
                         == Some(seq as u64)
                 })
             })
@@ -325,9 +342,9 @@ mod tests {
 
     #[test]
     fn quantile_and_stat() {
-        // equal weights, three prices: the 1/3 quantile is the first, 2/3 the second
+        // equal weights, three prices: ⌈3 · 0.3333⌉ = 1 (the first), ⌈3 · 0.6667⌉ = 3 (the third)
         let atts = [(1u16, 300i64, 1u128), (2, 100, 1), (3, 200, 1)];
-        assert_eq!(bundle_stat(&atts, 2, 3333, 6667), (Some(100), Some(200)));
+        assert_eq!(bundle_stat(&atts, 2, 3333, 6667), (Some(100), Some(300)));
         assert_eq!(bundle_stat(&atts, 4, 3333, 6667), (None, None));
         // a heavy attestor moves the quantile
         let atts = [(1u16, 100i64, 1u128), (2, 200, 10)];
@@ -337,8 +354,18 @@ mod tests {
     #[test]
     fn underwater_and_fee() {
         // $100 at 125 % needs 125 USD of collateral: at $1 that is 125 YEC
-        assert!(is_underwater(124 * 100_000_000, Some(1_000_000), 10_000, 12_500));
-        assert!(!is_underwater(126 * 100_000_000, Some(1_000_000), 10_000, 12_500));
+        assert!(is_underwater(
+            124 * 100_000_000,
+            Some(1_000_000),
+            10_000,
+            12_500
+        ));
+        assert!(!is_underwater(
+            126 * 100_000_000,
+            Some(1_000_000),
+            10_000,
+            12_500
+        ));
         assert!(!is_underwater(1, None, 10_000, 12_500));
         assert_eq!(attest_fee_zat(1_000_001, 2_500), 250_000);
         assert_eq!(attest_fee_zat(0, 2_500), 0);

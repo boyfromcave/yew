@@ -26,7 +26,7 @@ pub struct Received {
     pub diversifier_index: Option<u64>,
     pub internal: bool,
     pub memo: [u8; 512],
-    note: sapling_crypto::Note,
+    pub note: sapling_crypto::Note,
 }
 
 impl Received {

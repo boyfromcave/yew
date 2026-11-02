@@ -51,16 +51,20 @@ use crate::Keystore;
 pub const MAX_MONEY: i64 = 21_000_000 * 100_000_000;
 const ANYONECANPAY: u32 = 0x80;
 
-type Refused = (&'static str, String);
+pub(crate) type Refused = (&'static str, String);
 
-fn no<T>(code: &'static str, reason: impl Into<String>) -> Result<T, Refused> {
+pub(crate) fn no<T>(code: &'static str, reason: impl Into<String>) -> Result<T, Refused> {
     Err((code, reason.into()))
 }
 
+fn no_guard<T>() -> Result<T, Refused> {
+    no(refuse::LOCKED, crate::LOCKED)
+}
+
 /// The keys of one seed, derived once: the BIP32 account node and the PQ seed root.
-struct Keys {
-    account: ExtendedPrivKey,
-    pq_root: PqSeedRoot,
+pub(crate) struct Keys {
+    pub(crate) account: ExtendedPrivKey,
+    pub(crate) pq_root: PqSeedRoot,
 }
 
 /// The signer: the keystore, its derived keys and its sign-once records. One request at a time
@@ -68,13 +72,43 @@ struct Keys {
 pub struct SignerCore {
     pub network: Network,
     pub seed_fp: String,
-    keys: Keys,
+    /// `None` while an encrypted wallet is locked (S4).
+    pub(crate) keys: std::sync::RwLock<Option<Keys>>,
     pub once: Mutex<SignOnce>,
     /// The attestation equivocation guard (S3).
     pub guard: Mutex<Guard>,
     /// The imported transparent keys (S3, `importprivkey`).
-    imported: Mutex<Imported>,
-    ks: Keystore,
+    pub(crate) imported: Mutex<Imported>,
+    /// The imported post-quantum keys (S4, `z_importpqkey`, `pqseed=` lines).
+    pub(crate) pq_imported: Mutex<crate::pqimported::PqImported>,
+    pub(crate) ks: Mutex<Keystore>,
+    /// Unix time an unlock lasts until (0: locked, or never encrypted).
+    unlocked_until: Mutex<i64>,
+    /// The signer's directory.
+    pub(crate) dir: std::path::PathBuf,
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn derive_keys(phrase: &str) -> Result<(Keys, String), String> {
+    let mut seed = keys::seed_from_mnemonic(phrase, "").map_err(|e| e.to_string())?;
+    let master = ExtendedPrivKey::master(&seed).map_err(|e| e.to_string())?;
+    let account = master
+        .derive(&[
+            BIP44_PURPOSE | HARDENED,
+            COIN_TYPE | HARDENED,
+            ACCOUNT | HARDENED,
+        ])
+        .map_err(|e| e.to_string())?;
+    let pq_root = PqSeedRoot::from_seed(&seed);
+    let seed_fp = hex::encode(crate::seed_fingerprint(&seed));
+    keys::wipe(&mut seed);
+    Ok((Keys { account, pq_root }, seed_fp))
 }
 
 impl std::fmt::Debug for SignerCore {
@@ -93,29 +127,176 @@ impl SignerCore {
     /// The signer over `ks`, its records in `dir` (`restored_if_new`: the marker a first start
     /// writes; [`crate::init`] sets it for a restored phrase).
     pub fn open(ks: Keystore, dir: &Path) -> Result<SignerCore, String> {
-        let mut seed = keys::seed_from_mnemonic(ks.phrase(), "").map_err(|e| e.to_string())?;
-        let master = ExtendedPrivKey::master(&seed).map_err(|e| e.to_string())?;
-        let account = master
-            .derive(&[
-                BIP44_PURPOSE | HARDENED,
-                COIN_TYPE | HARDENED,
-                ACCOUNT | HARDENED,
-            ])
-            .map_err(|e| e.to_string())?;
-        let pq_root = PqSeedRoot::from_seed(&seed);
-        let seed_fp = hex::encode(crate::seed_fingerprint(&seed));
-        keys::wipe(&mut seed);
+        // a locked encrypted wallet starts without keys; its fingerprint is in the public cache
+        let (keys, seed_fp) = match ks.phrase() {
+            Some(p) => {
+                let (k, fp) = derive_keys(p)?;
+                (Some(k), fp)
+            }
+            None => (
+                None,
+                ks.public(&yewd_proto::PublicRequest::default())
+                    .map(|b| b.seed_fp)
+                    .map_err(|e| e.to_string())?,
+            ),
+        };
         let once = SignOnce::load(dir, ks.restored())?;
         let guard = Guard::load(dir)?;
         let imported = Imported::load(dir)?;
+        let pq_imported = crate::pqimported::PqImported::load(dir)?;
         Ok(SignerCore {
             network: ks.network(),
             seed_fp,
-            keys: Keys { account, pq_root },
+            keys: std::sync::RwLock::new(keys),
             once: Mutex::new(once),
             guard: Mutex::new(guard),
             imported: Mutex::new(imported),
-            ks,
+            ks: Mutex::new(ks),
+            unlocked_until: Mutex::new(0),
+            pq_imported: Mutex::new(pq_imported),
+            dir: dir.to_path_buf(),
+        })
+    }
+
+    pub(crate) fn keystore(&self) -> std::sync::MutexGuard<'_, Keystore> {
+        self.ks.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The encryption state: `(encrypted, unlocked_until)`; an unlock past its time is undone here.
+    fn enc_state(&self) -> (bool, i64) {
+        let encrypted = self.keystore().encrypted();
+        if !encrypted {
+            return (false, 0);
+        }
+        let mut until = self
+            .unlocked_until
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if *until != 0 && now() >= *until {
+            *until = 0;
+            drop(until);
+            self.do_lock();
+            return (true, 0);
+        }
+        (true, *until)
+    }
+
+    fn do_lock(&self) {
+        *self.keys.write().unwrap_or_else(|e| e.into_inner()) = None;
+        self.keystore().lock();
+        self.imports().lock();
+        *self
+            .unlocked_until
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = 0;
+    }
+
+    /// The keys, or the `locked` refusal.
+    pub(crate) fn keys(&self) -> Result<std::sync::RwLockReadGuard<'_, Option<Keys>>, Refused> {
+        let (encrypted, until) = self.enc_state();
+        let g = self.keys.read().unwrap_or_else(|e| e.into_inner());
+        if g.is_none() || (encrypted && until == 0) {
+            return no_guard();
+        }
+        Ok(g)
+    }
+
+    /// `encryptwallet`: seal the seed and the imported keys; the signer stays unlocked until the
+    /// façade restarts it (ycashd stops after encrypting).
+    fn encrypt(&self, r: &yewd_proto::EncryptRequest) -> Result<yewd_proto::WalletState, Refused> {
+        if self.keystore().encrypted() {
+            return no(
+                refuse::WRONG_ENC_STATE,
+                "Error: running with an encrypted wallet, but encryptwallet was called.",
+            );
+        }
+        if r.passphrase.is_empty() {
+            return no(
+                refuse::FAILED,
+                "encryptwallet <passphrase>\nEncrypts the wallet with <passphrase>.",
+            );
+        }
+        let cache = self
+            .keystore()
+            .public(&yewd_proto::PublicRequest { pq: r.pq.clone() })
+            .map_err(|e| (refuse::FAILED, e.to_string()))?;
+        let mut cache = cache;
+        cache.imported = self.imports().pubkeys().iter().map(hex::encode).collect();
+        self.imports().encrypt(&r.passphrase).map_err(|e| {
+            (
+                refuse::FAILED,
+                format!("Error: Failed to encrypt the wallet. {e}"),
+            )
+        })?;
+        self.keystore()
+            .encrypt(&r.passphrase, &cache)
+            .map_err(|e| {
+                (
+                    refuse::FAILED,
+                    format!("Error: Failed to encrypt the wallet. {e}"),
+                )
+            })?;
+        self.do_lock();
+        Ok(yewd_proto::WalletState {
+            encrypted: true,
+            unlocked_until: 0,
+        })
+    }
+
+    /// `walletpassphrase`.
+    fn unlock(&self, r: &yewd_proto::UnlockRequest) -> Result<yewd_proto::WalletState, Refused> {
+        if !self.keystore().encrypted() {
+            return no(
+                refuse::WRONG_ENC_STATE,
+                "Error: running with an unencrypted wallet, but walletpassphrase was called.",
+            );
+        }
+        let phrase = {
+            let mut ks = self.keystore();
+            if !ks.unlock(&r.passphrase) {
+                return no(
+                    refuse::BAD_PASSPHRASE,
+                    "Error: The wallet passphrase entered was incorrect.",
+                );
+            }
+            ks.phrase().unwrap_or_default().to_string()
+        };
+        match self.imports().unlock(&r.passphrase) {
+            Ok(true) => {}
+            Ok(false) => {
+                self.do_lock();
+                return no(
+                    refuse::BAD_PASSPHRASE,
+                    "Error: The wallet passphrase entered was incorrect.",
+                );
+            }
+            Err(e) => return no(refuse::FAILED, e),
+        }
+        let (k, _) = derive_keys(&phrase).map_err(|e| (refuse::FAILED, e))?;
+        *self.keys.write().unwrap_or_else(|e| e.into_inner()) = Some(k);
+        let until = now().saturating_add(r.timeout.max(0));
+        *self
+            .unlocked_until
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = until;
+        Ok(yewd_proto::WalletState {
+            encrypted: true,
+            unlocked_until: until,
+        })
+    }
+
+    /// `walletlock`.
+    fn wallet_lock(&self) -> Result<yewd_proto::WalletState, Refused> {
+        if !self.keystore().encrypted() {
+            return no(
+                refuse::WRONG_ENC_STATE,
+                "Error: running with an unencrypted wallet, but walletlock was called.",
+            );
+        }
+        self.do_lock();
+        Ok(yewd_proto::WalletState {
+            encrypted: true,
+            unlocked_until: 0,
         })
     }
 
@@ -131,19 +312,42 @@ impl SignerCore {
             );
         }
         let r = match &env.request {
-            Request::Hello => Ok(Response::Hello(Hello {
-                version: PROTO_VERSION,
-                network: self.network.chain_name().into(),
-                seed_fp: self.seed_fp.clone(),
-            })),
-            Request::Public(p) => self
-                .ks
-                .public(p)
-                .map(|mut b| {
-                    b.imported = self.imports().pubkeys().iter().map(hex::encode).collect();
-                    Response::Public(b)
-                })
-                .map_err(|e| (refuse::FAILED, e.to_string())),
+            Request::Hello => {
+                let (encrypted, unlocked_until) = self.enc_state();
+                Ok(Response::Hello(Hello {
+                    version: PROTO_VERSION,
+                    network: self.network.chain_name().into(),
+                    seed_fp: self.seed_fp.clone(),
+                    encrypted,
+                    unlocked_until,
+                }))
+            }
+            Request::Encrypt(e) => self.encrypt(e).map(Response::WalletState),
+            Request::Unlock(u) => self.unlock(u).map(Response::WalletState),
+            Request::Lock => self.wallet_lock().map(Response::WalletState),
+            Request::Dump(d) => self.dump(d).map(Response::Written),
+            Request::ImportDump(d) => self.import_dump(d).map(Response::ImportedDump),
+            Request::ImportPq(q) => self.import_pq(q).map(Response::ImportedPq),
+            Request::Backup(b) => self.backup(b).map(Response::Written),
+            Request::SaplingBuild(b) => self.sapling_build(b).map(Response::Built),
+            Request::Public(p) => {
+                let _ = self.enc_state();
+                self.keystore()
+                    .public(p)
+                    .map(|mut b| {
+                        b.imported = self.imports().pubkeys().iter().map(hex::encode).collect();
+                        b.pq.extend(self.pq_imported_public());
+                        Response::Public(b)
+                    })
+                    .map_err(|e| {
+                        let m = e.to_string();
+                        if m.starts_with("locked") {
+                            (refuse::LOCKED, m)
+                        } else {
+                            (refuse::FAILED, m)
+                        }
+                    })
+            }
             Request::Sign(s) => self.sign(s).map(Response::Signed),
             Request::SignAct(a) => self.sign_act(a).map(Response::ActSigs),
             Request::SignSet(s) => self.sign_set(s).map(Response::SetSigs),
@@ -174,11 +378,11 @@ impl SignerCore {
         r.unwrap_or_else(|(c, m)| Response::refused(c, m))
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, SignOnce> {
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, SignOnce> {
         self.once.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn imports(&self) -> std::sync::MutexGuard<'_, Imported> {
+    pub(crate) fn imports(&self) -> std::sync::MutexGuard<'_, Imported> {
         self.imported.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -188,7 +392,13 @@ impl SignerCore {
 
     /// A transparent key: `m/44'/347'/0'/chain/index`, or imported key `index` on
     /// [`IMPORTED_CHAIN`].
-    fn transparent(&self, chain: u32, index: u32) -> Result<(SecretKey, [u8; 33]), Refused> {
+    pub(crate) fn transparent(
+        &self,
+        chain: u32,
+        index: u32,
+    ) -> Result<(SecretKey, [u8; 33]), Refused> {
+        let keys = self.keys()?;
+        let k = keys.as_ref().expect("checked");
         if chain == IMPORTED_CHAIN {
             let sk = *self.imports().get(index).ok_or_else(|| {
                 (
@@ -205,8 +415,7 @@ impl SignerCore {
                 format!("no key m/44'/347'/0'/{chain}/{index}"),
             );
         }
-        let x = self
-            .keys
+        let x = k
             .account
             .derive(&[chain, index])
             .map_err(|e| (refuse::FAILED, e.to_string()))?;
@@ -223,8 +432,45 @@ impl SignerCore {
                 let (sk, pk) = self.transparent(chain, index)?;
                 Ok(Some(Derived::T(sk, pk)))
             }
+            KeyRef::Pq { scheme, index } | KeyRef::PqOwner { scheme, index, .. }
+                if index >= yewd_proto::IMPORTED_PQ_BASE =>
+            {
+                drop(self.keys()?);
+                let e = self
+                    .pq_imported
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .keys
+                    .get((index - yewd_proto::IMPORTED_PQ_BASE) as usize)
+                    .cloned()
+                    .ok_or_else(|| {
+                        (
+                            refuse::KEY_NOT_HELD,
+                            format!("no imported post-quantum key {index}"),
+                        )
+                    })?;
+                let mut seed: [u8; 48] = hex::decode(&e.seed)
+                    .ok()
+                    .and_then(|b| b.try_into().ok())
+                    .ok_or_else(|| (refuse::FAILED, "an imported seed".to_string()))?;
+                if e.scheme != scheme {
+                    return no(
+                        refuse::KEY_MISMATCH,
+                        "the imported key is of another scheme",
+                    );
+                }
+                let key = PqKey::from_seed(scheme, &seed)
+                    .map_err(|err| (refuse::KEY_MISMATCH, format!("imported key {index}: {err}")));
+                keys::wipe(&mut seed);
+                Ok(Some(Derived::Pq(key?)))
+            }
             KeyRef::Pq { scheme, index } | KeyRef::PqOwner { scheme, index, .. } => {
-                let mut seed = self.keys.pq_root.derive(scheme, index);
+                let keys = self.keys()?;
+                let mut seed = keys
+                    .as_ref()
+                    .expect("checked")
+                    .pq_root
+                    .derive(scheme, index);
                 let key = PqKey::from_seed(scheme, &seed).map_err(|e| {
                     (
                         refuse::KEY_MISMATCH,
@@ -857,6 +1103,7 @@ impl SignerCore {
     /// `importprivkey`: a compressed WIF of this network into the store; the sign-once restore
     /// marker is set for a new key (it brings no sign-once history, 07/F-5).
     pub fn import_key(&self, wif: &str) -> Result<ImportedKey, Refused> {
+        drop(self.keys()?);
         let k = keys::decode_wif(self.network, wif.trim()).map_err(|_| {
             (
                 refuse::KEY_NOT_HELD,

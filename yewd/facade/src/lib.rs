@@ -13,6 +13,7 @@ pub mod config;
 pub mod methods;
 pub mod server;
 pub mod wallet;
+pub mod ycashd;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -57,6 +58,7 @@ pub async fn start_with(cfg: &Config, signer: wallet::SignerSource) -> std::io::
         signer,
         cfg.debug,
     ));
+    *wallet.opts.lock().unwrap_or_else(|e| e.into_inner()) = cfg.wallet_args.clone();
     if cfg.wallet_poll_ms > 0 {
         wallet.spawn_poll(std::time::Duration::from_millis(cfg.wallet_poll_ms));
     }
@@ -68,6 +70,9 @@ pub async fn start_with(cfg: &Config, signer: wallet::SignerSource) -> std::io::
         cfg.stop_backend,
         cfg.debug,
     );
+    if cfg.stop_backend && cfg.backend_exit_grace > 0 {
+        spawn_backend_watch(facade.clone(), cfg.backend, cfg.backend_exit_grace);
+    }
     let (addrs, task) = server::serve(facade.clone(), &cfg.bind, rx).await?;
     Ok(Running {
         addrs,
@@ -75,4 +80,37 @@ pub async fn start_with(cfg: &Config, signer: wallet::SignerSource) -> std::io::
         task,
         cookie,
     })
+}
+
+/// H6, the pair is one node: with `-stopbackend` the façade exits once its backend has been gone
+/// (nothing listening) for `grace` seconds after it was up, as when the node stops itself (an
+/// `AbortNode`, a `stop` sent to it directly). A restart within `grace` is followed instead.
+fn spawn_backend_watch(facade: std::sync::Arc<server::Facade>, addr: SocketAddr, grace: u64) {
+    tokio::spawn(async move {
+        let mut seen_up = false;
+        let mut down_since: Option<std::time::Instant> = None;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let up = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                tokio::net::TcpStream::connect(addr),
+            )
+            .await
+            .is_ok_and(|r| r.is_ok());
+            if up {
+                seen_up = true;
+                down_since = None;
+                continue;
+            }
+            if !seen_up {
+                continue;
+            }
+            let since = *down_since.get_or_insert_with(std::time::Instant::now);
+            if since.elapsed() >= std::time::Duration::from_secs(grace) {
+                eprintln!("yewd: the backend has been gone {grace} s; stopping (-stopbackend: the pair is one node)");
+                facade.shutdown();
+                return;
+            }
+        }
+    });
 }

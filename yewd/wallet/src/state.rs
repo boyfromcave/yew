@@ -96,6 +96,13 @@ pub struct State {
     /// until the MINT/CLAIM spends it or `yed_sweepcarriers` reclaims it.
     #[serde(default)]
     pub carriers: BTreeMap<String, CarrierRec>,
+    /// Own transactions with a payload that left the mempool unmined (txid → hex): the
+    /// `"expired": true` rows of `yed_listtransactions` once past their expiry height (§4.6).
+    #[serde(default)]
+    pub expired: BTreeMap<String, String>,
+    /// Redeem scripts this wallet knows (`addmultisigaddress`): P2SH address → script hex.
+    #[serde(default)]
+    pub scripts: BTreeMap<String, String>,
 }
 
 /// A carrier (`CarrierRecord`): its key (external chain index), the bundle it commits to, its
@@ -131,6 +138,8 @@ impl State {
             builds: BTreeMap::new(),
             recipients: BTreeMap::new(),
             carriers: BTreeMap::new(),
+            expired: BTreeMap::new(),
+            scripts: BTreeMap::new(),
         }
     }
 

@@ -3876,13 +3876,27 @@ dependencies = [
 name = "yewd-signer"
 version = "0.1.0"
 dependencies = [
+ "chacha20poly1305",
+ "getrandom 0.2.17",
  "hex",
+ "hmac 0.13.0-pre.4",
+ "incrementalmerkletree",
  "libc",
+ "rand_core 0.6.4",
+ "sapling-crypto",
+ "secp256k1 0.29.1",
  "secp256k1 0.33.1",
  "serde",
  "serde_json",
+ "sha2 0.11.0-pre.4",
  "yew-core",
  "yewd-proto",
+ "zcash_keys",
+ "zcash_primitives",
+ "zcash_proofs",
+ "zcash_protocol",
+ "zcash_transparent",
+ "zip32",
 ]
 
 [[package]]
@@ -3892,6 +3906,7 @@ dependencies = [
  "base64 0.22.1",
  "hex",
  "hmac 0.13.0-pre.4",
+ "incrementalmerkletree",
  "sapling-crypto",
  "secp256k1 0.33.1",
  "serde",

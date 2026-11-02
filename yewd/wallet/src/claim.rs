@@ -360,9 +360,10 @@ impl Wallet {
             .map_err(|e| RpcError::new(code::WALLET_ERROR, e.to_string()))?;
         let mut last_err = None;
         for _pass in 0..6 {
-            let needed = network_fee + fee_zat + attest_fee + if s.change > 0 { TOKEN_VALUE } else { 0 }
-                - CARRIER_VALUE
-                - yed_value;
+            let needed =
+                network_fee + fee_zat + attest_fee + if s.change > 0 { TOKEN_VALUE } else { 0 }
+                    - CARRIER_VALUE
+                    - yed_value;
             let (funding, fee_after) = self
                 .pick_yec(node, needed.max(0), &info, &yed_scripts, network_fee)
                 .await?;
@@ -510,7 +511,14 @@ impl Wallet {
                 .with("pending", false)
                 .with("refHeight", r)
                 .with("xClaim", crate::armed::opt(x_claim))
-                .with("aClaim", if pm.facts.armed { crate::armed::opt(pm.facts.a_claim) } else { J::Null })
+                .with(
+                    "aClaim",
+                    if pm.facts.armed {
+                        crate::armed::opt(pm.facts.a_claim)
+                    } else {
+                        J::Null
+                    },
+                )
                 .with("pClaim", crate::armed::opt(p_claim))
                 .with("pEmerg", crate::armed::opt(p_emerg))
                 .with(
@@ -521,7 +529,10 @@ impl Wallet {
                 .with("attestFeeZat", attest_fee)
                 .with(
                     "attestPayee",
-                    attest.as_ref().map(|x| J::Str(x.address.clone())).unwrap_or(J::Null),
+                    attest
+                        .as_ref()
+                        .map(|x| J::Str(x.address.clone()))
+                        .unwrap_or(J::Null),
                 )
                 .with("residualZat", residual));
         }
@@ -646,8 +657,8 @@ impl Wallet {
         txid_s: &str,
         pm: &PendingMint,
     ) -> Result<J, RpcError> {
-        let txid = yew_core::tx::txid_from_hex(txid_s)
-            .map_err(|e| RpcError::new(code::MISC_ERROR, e))?;
+        let txid =
+            yew_core::tx::txid_from_hex(txid_s).map_err(|e| RpcError::new(code::MISC_ERROR, e))?;
         let op = OutPoint { txid, n: 0 };
         let info = crate::yed::yed_info(node).await?;
         let next = next_block(node).await?;

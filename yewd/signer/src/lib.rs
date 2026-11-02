@@ -15,9 +15,13 @@
 
 pub mod attest;
 pub mod imported;
+pub mod pqimported;
+pub mod sapling;
+pub mod seal;
 pub mod server;
 pub mod sign;
 pub mod signonce;
+pub mod walletio;
 
 use std::path::{Path, PathBuf};
 
@@ -59,7 +63,12 @@ fn err<T>(m: impl Into<String>) -> Result<T, SignerError> {
 struct SeedFile {
     format: String,
     network: String,
+    /// The phrase; empty once the wallet is encrypted (`sealed` holds it).
+    #[serde(default)]
     mnemonic: String,
+    /// The phrase sealed under the wallet passphrase (`encryptwallet`, S4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sealed: Option<seal::Sealed>,
     /// The height a scan of this seed starts at (0: from genesis; a restored phrase).
     birthday: u64,
     /// The seed was restored from a phrase (`init -mnemonic=`): the sign-once restore marker
@@ -86,8 +95,14 @@ pub fn init(
     if path.exists() {
         let ks = Keystore::load(dir, network)?;
         if let Some(m) = mnemonic {
-            if m.split_whitespace().collect::<Vec<_>>()
-                != ks.mnemonic.split_whitespace().collect::<Vec<_>>()
+            let held = ks
+                .mnemonic
+                .as_ref()
+                .map(|h| h.to_string())
+                .unwrap_or_default();
+            if ks.mnemonic.is_some()
+                && m.split_whitespace().collect::<Vec<_>>()
+                    != held.split_whitespace().collect::<Vec<_>>()
             {
                 return err(format!(
                     "yewd-signer: {} already holds another seed",
@@ -119,10 +134,18 @@ pub fn init(
         format: SEED_FORMAT.into(),
         network: network.chain_name().into(),
         mnemonic: phrase,
+        sealed: None,
         birthday,
         restored: mnemonic.is_some(),
     };
-    let text = serde_json::to_string_pretty(&file).expect("serializable");
+    write_seed_file(dir, &file)?;
+    Ok(true)
+}
+
+/// Write the seed file atomically, mode 0600.
+fn write_seed_file(dir: &Path, file: &SeedFile) -> Result<(), SignerError> {
+    let path = seed_path(dir);
+    let text = serde_json::to_string_pretty(file).expect("serializable");
     let tmp = dir.join(format!("{SEED_FILE}.tmp"));
     {
         use std::io::Write;
@@ -142,15 +165,19 @@ pub fn init(
             .map_err(|e| SignerError(format!("{}: {e}", tmp.display())))?;
     }
     std::fs::rename(&tmp, &path).map_err(|e| SignerError(format!("{}: {e}", path.display())))?;
-    Ok(true)
+    Ok(())
 }
 
 /// The loaded seed (the phrase; the BIP39 seed is recomputed per request and wiped).
 pub struct Keystore {
     network: Network,
-    mnemonic: SecretString,
+    /// The phrase; `None` while an encrypted wallet is locked.
+    mnemonic: Option<SecretString>,
+    /// The sealed phrase of an encrypted wallet.
+    sealed: Option<seal::Sealed>,
     birthday: u64,
     restored: bool,
+    dir: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Keystore {
@@ -182,27 +209,96 @@ impl Keystore {
                 network.chain_name()
             ));
         }
+        let mnemonic = if f.sealed.is_some() {
+            None
+        } else {
+            Some(SecretString::new(f.mnemonic))
+        };
         Ok(Keystore {
             network,
-            mnemonic: SecretString::new(f.mnemonic),
+            mnemonic,
+            sealed: f.sealed,
             birthday: f.birthday,
             restored: f.restored,
+            dir: Some(dir.to_path_buf()),
         })
+    }
+
+    /// Whether the wallet is encrypted.
+    pub fn encrypted(&self) -> bool {
+        self.sealed.is_some()
+    }
+
+    /// Whether the phrase is available (unencrypted, or unlocked).
+    pub fn unlocked(&self) -> bool {
+        self.mnemonic.is_some()
+    }
+
+    /// Open the sealed phrase with `pass` (`walletpassphrase`). False for a wrong passphrase.
+    pub fn unlock(&mut self, pass: &str) -> bool {
+        let Some(s) = &self.sealed else {
+            return true;
+        };
+        match seal::open(pass, s).and_then(|b| String::from_utf8(b).ok()) {
+            Some(m) => {
+                self.mnemonic = Some(SecretString::new(m));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Forget the phrase (`walletlock`); a no-op on an unencrypted wallet.
+    pub fn lock(&mut self) {
+        if self.sealed.is_some() {
+            self.mnemonic = None;
+        }
+    }
+
+    /// Seal the phrase under `pass` and rewrite the seed file (`encryptwallet`); the public cache
+    /// is written first so a locked signer can still answer `public`.
+    pub fn encrypt(&mut self, pass: &str, cache: &PublicBundle) -> Result<(), SignerError> {
+        let dir = self
+            .dir
+            .clone()
+            .ok_or_else(|| SignerError("yewd-signer: an in-memory keystore".into()))?;
+        let phrase = self
+            .mnemonic
+            .as_ref()
+            .ok_or_else(|| SignerError("yewd-signer: the wallet is locked".into()))?
+            .to_string();
+        write_public_cache(&dir, cache)?;
+        let sealed = seal::seal(pass, phrase.as_bytes())
+            .map_err(|e| SignerError(format!("yewd-signer: {e}")))?;
+        let file = SeedFile {
+            format: SEED_FORMAT.into(),
+            network: self.network.chain_name().into(),
+            mnemonic: String::new(),
+            sealed: Some(sealed.clone()),
+            birthday: self.birthday,
+            restored: self.restored,
+        };
+        write_seed_file(&dir, &file)?;
+        self.sealed = Some(sealed);
+        self.mnemonic = None;
+        Ok(())
     }
 
     /// A keystore over a phrase held in memory (tests, the vector replay).
     pub fn from_mnemonic(network: Network, mnemonic: &str) -> Keystore {
         Keystore {
             network,
-            mnemonic: SecretString::new(mnemonic.to_string()),
+            mnemonic: Some(SecretString::new(mnemonic.to_string())),
+            sealed: None,
             birthday: 0,
             restored: false,
+            dir: None,
         }
     }
 
-    /// The phrase (the signer's own use only).
-    pub(crate) fn phrase(&self) -> &str {
-        &self.mnemonic
+    /// The phrase (the signer's own use only); `None` while locked.
+    pub(crate) fn phrase(&self) -> Option<&str> {
+        self.mnemonic.as_deref()
     }
 
     /// Whether the seed was restored from a phrase.
@@ -220,13 +316,76 @@ impl Keystore {
     }
 
     /// The public bundle: the account xpub, the Sapling DFVK, and the PQ keys `req` names.
+    /// While an encrypted wallet is locked the answer comes from the public cache, and a
+    /// post-quantum key it does not hold is refused ([`LOCKED`]); unlocked, the cache grows.
     pub fn public(&self, req: &PublicRequest) -> Result<PublicBundle, SignerError> {
-        let mut seed = keys::seed_from_mnemonic(&self.mnemonic, "")
+        let Some(m) = &self.mnemonic else {
+            let dir = self
+                .dir
+                .as_ref()
+                .ok_or_else(|| SignerError(LOCKED.into()))?;
+            let cache = read_public_cache(dir)?;
+            let mut out = cache.clone();
+            out.pq.clear();
+            for &(scheme, from, count) in &req.pq {
+                for index in from..from.saturating_add(count) {
+                    match cache
+                        .pq
+                        .iter()
+                        .find(|k| k.scheme == scheme && k.index == index)
+                    {
+                        Some(k) => out.pq.push(k.clone()),
+                        None => return Err(SignerError(LOCKED.into())),
+                    }
+                }
+            }
+            return Ok(out);
+        };
+        let mut seed = keys::seed_from_mnemonic(m, "")
             .map_err(|e| SignerError(format!("yewd-signer: {e}")))?;
         let out = public_from_seed(self.network, &seed, req);
         keys::wipe(&mut seed);
+        if let (Ok(b), true, Some(dir)) = (&out, self.sealed.is_some(), &self.dir) {
+            if let Ok(mut cache) = read_public_cache(dir) {
+                let mut grew = false;
+                for k in &b.pq {
+                    if !cache
+                        .pq
+                        .iter()
+                        .any(|c| c.scheme == k.scheme && c.index == k.index)
+                    {
+                        cache.pq.push(k.clone());
+                        grew = true;
+                    }
+                }
+                if grew {
+                    let _ = write_public_cache(dir, &cache);
+                }
+            }
+        }
         out
     }
+}
+
+/// The refusal text of anything that needs the phrase while an encrypted wallet is locked.
+pub const LOCKED: &str = "locked: the wallet is encrypted and locked; walletpassphrase first";
+
+/// The public cache of an encrypted wallet (`public.json`): the bundle with every PQ key derived.
+pub const PUBLIC_CACHE: &str = "public.json";
+
+fn read_public_cache(dir: &Path) -> Result<PublicBundle, SignerError> {
+    let p = dir.join(PUBLIC_CACHE);
+    let t = std::fs::read_to_string(&p)
+        .map_err(|e| SignerError(format!("yewd-signer: {}: {e}", p.display())))?;
+    serde_json::from_str(&t).map_err(|e| SignerError(format!("yewd-signer: {}: {e}", p.display())))
+}
+
+fn write_public_cache(dir: &Path, b: &PublicBundle) -> Result<(), SignerError> {
+    let p = dir.join(PUBLIC_CACHE);
+    let tmp = dir.join(format!("{PUBLIC_CACHE}.tmp"));
+    std::fs::write(&tmp, serde_json::to_vec(b).expect("serializable"))
+        .and_then(|_| std::fs::rename(&tmp, &p))
+        .map_err(|e| SignerError(format!("yewd-signer: {}: {e}", p.display())))
 }
 
 /// [`Keystore::public`] over a BIP39 seed.

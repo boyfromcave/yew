@@ -2,9 +2,10 @@
 // Distributed under the MIT software license, see the accompanying
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
-//! The S0 exit-gate tests, as S1 leaves them: every listed wallet method not served yet answers
-//! `-32601`, a served one is answered by the wallet, and no wallet method ever reaches the
-//! backend by name; node RPCs are forwarded byte for byte, batches, `help`, `stop`, auth, warm-up.
+//! The S0 exit-gate tests, as S4 leaves them: every listed wallet method is served (S4: 82 of 82)
+//! and answered by the façade (the wallet, or ycashd's arity check), the raw helpers are answered
+//! locally, and no wallet method ever reaches the backend by name; node RPCs are forwarded byte for
+//! byte, batches, `help` (ycashd's listing and texts), `stop`, auth, warm-up.
 
 mod common;
 
@@ -27,23 +28,18 @@ async fn every_wallet_method_answers_32601() {
     .await;
     let c = client(&f, "u", "p");
     let mut n = 0;
-    for (m, _, stage) in methods::wallet_methods() {
+    for (m, _, _) in methods::wallet_methods() {
         n += 1;
-        if yewd_wallet::rpc::served(m) {
-            // answered by the wallet (here an error: the fake node is no chain), never forwarded
-            let (_, v, _) = call(&c, m, "[]").await;
-            let msg = v["error"]["message"].as_str().unwrap_or("");
-            assert!(!msg.starts_with("yewd: not yet implemented"), "{m}: {msg}");
-            continue;
+        assert!(yewd_wallet::rpc::served(m), "{m} is not served");
+        // answered by the façade (an error here: the fake node is no chain, or ycashd's arity
+        // check), never forwarded and never "not yet implemented"
+        let (_, v, _) = call(&c, m, "[]").await;
+        let msg = v["error"]["message"].as_str().unwrap_or("");
+        assert!(!msg.starts_with("yewd: not yet implemented"), "{m}: {msg}");
+        if let Some(e) = yewd_facade::ycashd::arity_error(m, 0, false) {
+            assert_eq!(v["error"]["code"], -32602, "{m}");
+            assert_eq!(msg, e, "{m}");
         }
-        let (status, v, _) = call(&c, m, "[]").await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{m}");
-        assert_eq!(v["error"]["code"], -32601, "{m}");
-        let msg = v["error"]["message"].as_str().unwrap();
-        assert!(msg.starts_with("yewd: not yet implemented"), "{m}: {msg}");
-        assert!(msg.contains(stage.name()), "{m}: {msg}");
-        assert_eq!(v["id"], "t");
-        assert!(v["result"].is_null());
     }
     assert_eq!(n, 22 + 25 + 1 + 30 + 4);
     for m in methods::OUT_OF_SCOPE {
@@ -79,13 +75,7 @@ async fn node_rpcs_are_forwarded_unchanged() {
     )
     .await;
     let c = client(&f, "u", "p");
-    for m in [
-        "getblockchaininfo",
-        "generate",
-        "vault_getinfo",
-        "yed_getinfo",
-        "decoderawtransaction",
-    ] {
+    for m in ["getblockchaininfo", "generate", "vault_getinfo"] {
         let (status, v, text) = call(&c, m, "[]").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(v["result"]["method"], m);
@@ -95,7 +85,13 @@ async fn node_rpcs_are_forwarded_unchanged() {
     let (status, v, _) = call(&c, "nosuchmethod", "[]").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(v["error"]["message"], "Method not found");
-    assert_eq!(node.seen.lock().unwrap().len(), 6);
+    assert_eq!(node.seen.lock().unwrap().len(), 4);
+    // the raw helpers are answered here (K-25), never forwarded
+    let (status, v, _) = call(&c, "decodescript", r#"["51"]"#).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["result"]["asm"], "1");
+    assert_eq!(v["result"]["type"], "nonstandard");
+    assert_eq!(node.seen.lock().unwrap().len(), 4);
 }
 
 #[tokio::test]
@@ -110,7 +106,7 @@ async fn batches_mix_local_and_forwarded() {
     )
     .await;
     let c = client(&f, "u", "p");
-    let body = r#"[{"id":1,"method":"getblockcount","params":[]},{"id":2,"method":"z_importpqkey","params":[]},{"id":3,"method":"backupwallet"}]"#;
+    let body = r#"[{"id":1,"method":"getblockcount","params":[]},{"id":2,"method":"listtransactions","params":[]},{"id":3,"method":"decodescript","params":["6a"]}]"#;
     let (status, out) = c.call("/", Bytes::from(body)).await.unwrap();
     assert_eq!(status, StatusCode::OK);
     let v: Vec<serde_json::Value> = serde_json::from_slice(&out).unwrap();
@@ -119,7 +115,7 @@ async fn batches_mix_local_and_forwarded() {
     assert_eq!(v[0]["result"]["method"], "getblockcount");
     assert_eq!(v[1]["error"]["code"], -32601);
     assert_eq!(v[2]["id"], 3);
-    assert_eq!(v[2]["error"]["code"], -32601);
+    assert_eq!(v[2]["result"]["type"], "nulldata");
     assert_eq!(
         *node.seen.lock().unwrap(),
         vec!["getblockcount".to_string()]
@@ -140,16 +136,26 @@ async fn help_lists_the_wallet_table() {
     let c = client(&f, "u", "p");
     let (_, v, _) = call(&c, "help", "[]").await;
     let text = v["result"].as_str().unwrap();
-    assert!(text.starts_with("== Blockchain =="));
-    assert!(text.contains("== Wallet (yewd) =="));
+    assert!(text.starts_with("== Blockchain =="), "{text}");
+    // ycashd's listing lines, in ycashd's categories
+    assert!(text.contains("== Wallet =="), "{text}");
     for (m, _, _) in methods::wallet_methods() {
-        assert!(text.contains(&format!("\n{m}  ")), "{m}");
+        // ycashd lists these two only on an encrypted wallet (their help branch)
+        if m == "walletlock" || m == "walletpassphrase" {
+            continue;
+        }
+        assert!(
+            text.contains(&format!("\n{m} "))
+                || text.contains(&format!("\n{m}\n"))
+                || text.ends_with(&format!("\n{m}")),
+            "{m}"
+        );
     }
     let (_, v, _) = call(&c, "help", r#"["z_importpqkey"]"#).await;
-    assert!(v["result"]
-        .as_str()
-        .unwrap()
-        .contains("yewd: not yet implemented"));
+    assert_eq!(
+        v["result"].as_str().unwrap(),
+        yewd_facade::ycashd::help("z_importpqkey").unwrap()
+    );
     // a node method's help is the backend's, without the wallet section
     let (_, v, _) = call(&c, "help", r#"["getblockcount"]"#).await;
     assert!(!v["result"].as_str().unwrap().contains("yewd"));
@@ -234,13 +240,15 @@ async fn unreachable_backend_answers_warmup() {
     let (status, v, _) = call(&client(&f, "u", "p"), "getblockcount", "[]").await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(v["error"]["code"], -28, "{v}");
-    // a served wallet method waits for the pair (H5), one not served yet answers from the table
+    // a served wallet method waits for the pair (H5); one out of scope answers from the table
     assert_eq!(
         call(&client(&f, "u", "p"), "getbalance", "[]").await.1["error"]["code"],
         -28
     );
     assert_eq!(
-        call(&client(&f, "u", "p"), "backupwallet", "[]").await.1["error"]["code"],
+        call(&client(&f, "u", "p"), "listtransactions", "[]")
+            .await
+            .1["error"]["code"],
         -32601
     );
 }

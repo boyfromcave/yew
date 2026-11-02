@@ -76,6 +76,8 @@ pub fn served(method: &str) -> bool {
         || crate::mint::SERVED.contains(&method)
         || crate::claim::SERVED.contains(&method)
         || crate::attest::SERVED.contains(&method)
+        || crate::admin::SERVED.contains(&method)
+        || crate::zsend::SERVED.contains(&method)
 }
 
 /// Every served wallet method, S1's reads and S2's builders.
@@ -88,6 +90,8 @@ pub fn all_served() -> Vec<&'static str> {
         .chain(crate::mint::SERVED)
         .chain(crate::claim::SERVED)
         .chain(crate::attest::SERVED)
+        .chain(crate::admin::SERVED)
+        .chain(crate::zsend::SERVED)
         .copied()
         .collect()
 }
@@ -171,7 +175,8 @@ async fn can_notice(node: &dyn Node, v: &Value, h: i64, info: &Value) -> Result<
     let at = &info["params"]["attest"];
     let ttl = at["emergencyNoticeTtl"].as_i64().unwrap_or(0);
     let notice = node::call(node, "yed_getnotice", serde_json::json!([txid])).await?;
-    if notice["found"].as_bool() == Some(true) && h - notice["height"].as_i64().unwrap_or(0) <= ttl {
+    if notice["found"].as_bool() == Some(true) && h - notice["height"].as_i64().unwrap_or(0) <= ttl
+    {
         return Ok(false);
     }
     let (_, x_claim) = crate::armed::cross_section(node, h).await?;
@@ -354,6 +359,9 @@ impl Wallet {
         method: &str,
         p: &[Value],
     ) -> Result<J, RpcError> {
+        if crate::admin::NEEDS_UNLOCK.contains(&method) {
+            self.ensure_unlocked()?;
+        }
         match method {
             "getbalance" => self.getbalance(p),
             "getnewaddress" => self.getnewaddress(p),
@@ -380,6 +388,8 @@ impl Wallet {
             m if crate::mint::SERVED.contains(&m) => self.mint_call(node, m, p).await,
             m if crate::claim::SERVED.contains(&m) => self.claim_call(node, m, p).await,
             m if crate::attest::SERVED.contains(&m) => self.attest_call(node, m, p).await,
+            m if crate::admin::SERVED.contains(&m) => self.admin_call(node, m, p).await,
+            m if crate::zsend::SERVED.contains(&m) => self.zsend_call(node, m, p).await,
             _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
         }
     }
@@ -627,7 +637,7 @@ impl Wallet {
             .map(|c| c.value)
             .sum();
         let (shielded, shielded_unconfirmed) = self.shielded_balances();
-        Ok(J::obj()
+        let o = J::obj()
             .with("walletversion", 60_000i64)
             .with("balance", J::Amount(self.balance(None, 0)))
             .with("unconfirmed_balance", J::Amount(unconfirmed))
@@ -639,9 +649,26 @@ impl Wallet {
             )
             .with("txcount", self.st.wtx.len())
             .with("keypoololdest", self.st.created)
-            .with("keypoolsize", crate::keys::LOOKAHEAD)
-            .with("paytxfee", J::Amount(0))
-            .with("mnemonic_seedfp", self.st.public.seed_fp.clone()))
+            .with("keypoolsize", crate::keys::LOOKAHEAD);
+        let mut o = o;
+        let (enc, until) = self.signer_state();
+        if enc {
+            o.push("unlocked_until", J::Int(until));
+        }
+        o.push("paytxfee", J::Amount(self.opts.paytxfee));
+        o.push("mnemonic_seedfp", J::Str(self.st.public.seed_fp.clone()));
+        if !self.st.public.imported.is_empty()
+            || self
+                .st
+                .public
+                .pq
+                .iter()
+                .any(|k| k.index >= yewd_proto::IMPORTED_PQ_BASE)
+        {
+            o.push("has_external_imports", J::Bool(true));
+            o.push("external_imports_warning", J::Str("Wallet contains keys imported from outside the ZIP-32 derivation tree. Restoring from the emergency recovery phrase alone will NOT recover funds at these addresses. Back up wallet.dat or run z_exportwallet to preserve the imported keys.".into()));
+        }
+        Ok(o)
     }
 
     fn shielded_balances(&self) -> (i64, i64) {
@@ -1254,10 +1281,22 @@ impl Wallet {
     ) -> Result<Vec<(String, Value, i64, i64, BTreeSet<Vec<u8>>)>, RpcError> {
         let mut assigned_cache: BTreeMap<String, Value> = BTreeMap::new();
         let mut rows = Vec::new();
+        let has_payload = |t: &str| {
+            self.parsed(t)
+                .is_some_and(|p| yew_core::payload::find_payload(&p.tx).is_some())
+        };
         let candidates: Vec<String> = self
             .parsed_all()
             .filter(|(t, px)| {
-                self.tx_depth(t, None) >= 1 && yew_core::payload::find_payload(&px.tx).is_some()
+                self.tx_depth(t, None) >= 1
+                    && !px.coinbase
+                    && (yew_core::payload::find_payload(&px.tx).is_some()
+                        // a claim's release or cancel spends the intent of an own claim
+                        || px
+                            .tx
+                            .vin
+                            .first()
+                            .is_some_and(|i| has_payload(&txid_hex(&i.prevout.txid))))
             })
             .map(|(t, _)| t.clone())
             .collect();
@@ -1322,13 +1361,139 @@ impl Wallet {
             return Err(invalid("count and skip must be >= 0"));
         }
         let height = self.yed_info(node).await?;
+        let tip = self.tip_height() as i64;
+        // Plan A6: this wallet's carriers and what spent them (a carrier input is recognised by its
+        // scriptSig; a spender with a payload is the main transaction, one without a sweep)
+        #[derive(Default)]
+        struct CarrierUse {
+            main: Option<String>,
+            main_live: bool,
+            live: bool,
+            live_payload: bool,
+        }
+        let mut uses: BTreeMap<(String, u32), CarrierUse> = BTreeMap::new();
+        let mut carrier_of: BTreeMap<String, (String, u32)> = BTreeMap::new();
+        for (txid, px) in self.parsed_all() {
+            let carriers: Vec<(String, u32)> = px
+                .tx
+                .vin
+                .iter()
+                .filter(|i| yew_core::script::parse_carrier_script_sig(&i.script_sig).is_some())
+                .map(|i| (txid_hex(&i.prevout.txid), i.prevout.n))
+                .collect();
+            if carriers.is_empty() {
+                continue;
+            }
+            let live = true; // in the wallet: confirmed or in the node's mempool
+            let payload = yew_core::payload::find_payload(&px.tx).is_some();
+            for c in carriers {
+                let u = uses.entry(c.clone()).or_default();
+                if payload {
+                    carrier_of.insert(txid.clone(), c.clone());
+                    if u.main.is_none() || (live && !u.main_live) {
+                        u.main = Some(txid.clone());
+                        u.main_live = live;
+                    }
+                }
+                if live {
+                    u.live = true;
+                    u.live_payload = payload;
+                }
+            }
+        }
+        for (txid, h) in &self.st.expired {
+            if let Some(t) = crate::build::parse_hex_tx(h) {
+                if yew_core::payload::find_payload(&t).is_some() {
+                    for i in &t.vin {
+                        if yew_core::script::parse_carrier_script_sig(&i.script_sig).is_some() {
+                            let c = (txid_hex(&i.prevout.txid), i.prevout.n);
+                            carrier_of.insert(txid.clone(), c.clone());
+                            let u = uses.entry(c).or_default();
+                            if u.main.is_none() {
+                                u.main = Some(txid.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for k in self.st.carriers.keys() {
+            if let Some((t, n)) = k.split_once(':') {
+                uses.entry((t.to_string(), n.parse().unwrap_or(0)))
+                    .or_default();
+            }
+        }
+        let outcome = |c: &(String, u32), u: &CarrierUse| -> String {
+            if u.live {
+                return if u.live_payload { "completed" } else { "swept" }.into();
+            }
+            let expiry = self
+                .parsed(&c.0)
+                .map(|p| p.tx.expiry_height as i64)
+                .unwrap_or(0);
+            if expiry != 0 && tip > expiry {
+                "lapsed".into()
+            } else {
+                "pending".into()
+            }
+        };
+        let carrier_fields = |o: J, txid: &str| -> J {
+            match carrier_of.get(txid) {
+                Some(c) => o
+                    .with("carrierTxid", c.0.clone())
+                    .with("mainTxid", txid.to_string())
+                    .with("carrierOutcome", outcome(c, &uses[c])),
+                None => o
+                    .with("carrierTxid", "")
+                    .with("mainTxid", "")
+                    .with("carrierOutcome", ""),
+            }
+        };
+        let history = self.yed_history(node).await?;
+        // U-23: the vaults this wallet claimed (its claim burned its YED)
+        let claimed_by_me: BTreeSet<String> = history
+            .iter()
+            .filter(|(_, info, _, spent, _)| {
+                info["type"].as_str() == Some("redeem")
+                    && info["verdict"].as_str() == Some("ok")
+                    && info["path"].as_str() == Some("claim")
+                    && *spent > 0
+            })
+            .flat_map(|(_, info, _, _, _)| {
+                info["closedVaults"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|c| {
+                        format!(
+                            "{}:{}",
+                            c["txid"].as_str().unwrap_or(""),
+                            c["vout"].as_u64().unwrap_or(0)
+                        )
+                    })
+            })
+            .collect();
         let mut rows: Vec<(i64, J)> = Vec::new();
-        for (txid, info, received, spent, _) in self.yed_history(node).await? {
+        for (txid, info, received, spent, _) in history {
             let px = self.parsed(&txid).expect("history");
             let typ_node = info["type"].as_str().unwrap_or("");
-            let path = info["path"].as_str().unwrap_or("").to_string();
+            let mut path = info["path"].as_str().unwrap_or("").to_string();
             let ok = info["verdict"].as_str() == Some("ok");
             let mint_mine = typ_node == "mint" && px.owned_templates.contains(&0);
+            let closed: Vec<String> = info["closedVaults"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{}:{}",
+                        c["txid"].as_str().unwrap_or(""),
+                        c["vout"].as_u64().unwrap_or(0)
+                    )
+                })
+                .collect();
             let closed_mine = info["closedVaults"].as_array().is_some_and(|a| {
                 a.iter().any(|c| {
                     let t = c["txid"].as_str().unwrap_or("");
@@ -1337,13 +1502,29 @@ impl Wallet {
                         .is_some_and(|pp| pp.owned_templates.contains(&n))
                 })
             });
-            if received == 0 && spent == 0 && !closed_mine && !mint_mine {
+            let intent_spend = typ_node == "claim_release" || typ_node == "claim_cancel";
+            let claimant_mine = closed.iter().any(|c| claimed_by_me.contains(c));
+            if received == 0
+                && spent == 0
+                && !closed_mine
+                && !mint_mine
+                && !(intent_spend && claimant_mine)
+            {
                 continue;
             }
             let burned = info["burned"].as_i64().unwrap_or(0);
             let yed_out = info["yedOut"].as_i64().unwrap_or(0);
             let typ = if typ_node == "mint" {
                 "mint"
+            } else if intent_spend {
+                path = "claim".into();
+                let release = typ_node == "claim_release";
+                match (claimant_mine, release) {
+                    (true, true) => "claim_release",
+                    (true, false) => "claim_cancel",
+                    (false, true) => "claim_released",
+                    (false, false) => "claim_cancelled",
+                }
             } else if typ_node == "redeem" && ok && path == "claim" && spent > 0 {
                 "claim"
             } else if closed_mine {
@@ -1386,11 +1567,96 @@ impl Wallet {
                 .with("payee", J::Raw(info["payee"].to_string()))
                 .with("unbacked", false)
                 .with("expired", false)
-                .with("time", time)
-                .with("carrierTxid", "")
-                .with("mainTxid", "")
-                .with("carrierOutcome", "");
-            rows.push((h, o));
+                .with("time", time);
+            rows.push((h, carrier_fields(o, &txid)));
+        }
+        // own transactions with a payload that expired unmined, typed by the payload
+        for (txid, h) in &self.st.expired {
+            if self.st.wtx.contains_key(txid) {
+                continue;
+            }
+            let Some(t) = crate::build::parse_hex_tx(h) else {
+                continue;
+            };
+            if t.expiry_height == 0 || t.expiry_height as i64 > tip {
+                continue;
+            }
+            let Some(fp) = yew_core::payload::find_payload(&t) else {
+                continue;
+            };
+            let typ = match fp.payload.payload_type() {
+                yew_core::payload::PayloadType::Mint => "mint",
+                yew_core::payload::PayloadType::Redeem => {
+                    let foreign = t.vin.first().is_some_and(|i| {
+                        !self
+                            .parsed(&txid_hex(&i.prevout.txid))
+                            .is_some_and(|p| p.owned_templates.contains(&i.prevout.n))
+                    });
+                    if foreign {
+                        "claim"
+                    } else {
+                        "redeem"
+                    }
+                }
+                yew_core::payload::PayloadType::ClaimNotice => "notice",
+                yew_core::payload::PayloadType::Equivocation => "equivocation",
+                yew_core::payload::PayloadType::AttestorRegister => "register",
+                yew_core::payload::PayloadType::AttestorRevive => "revive",
+                yew_core::payload::PayloadType::Transfer => "send",
+            };
+            let o = J::obj()
+                .with("txid", txid.clone())
+                .with("height", -1i64)
+                .with("confirmations", 0i64)
+                .with("type", typ)
+                .with("verdict", "expired")
+                .with("path", "")
+                .with("yedIn", 0i64)
+                .with("yedOut", 0i64)
+                .with("burned", 0i64)
+                .with("amountCents", 0i64)
+                .with("feeZat", 0i64)
+                .with("payee", J::Null)
+                .with("unbacked", false)
+                .with("expired", true)
+                .with("time", J::Null);
+            rows.push((t.expiry_height as i64, carrier_fields(o, txid)));
+        }
+        // A6: a row for each own carrier its main transaction did not complete
+        for (c, u) in &uses {
+            let Some(cp) = self.parsed(&c.0) else {
+                continue;
+            };
+            let oc = outcome(c, u);
+            if oc == "completed" {
+                continue;
+            }
+            let block = self.st.wtx.get(&c.0).and_then(|w| w.block.clone());
+            let (h, conf, sort) = match &block {
+                Some(b) => (b.height as i64, tip - b.height as i64 + 1, b.height as i64),
+                None => (-1, 0, tip + 1),
+            };
+            let _ = cp;
+            let o = J::obj()
+                .with("txid", c.0.clone())
+                .with("height", h)
+                .with("confirmations", conf)
+                .with("type", "carrier")
+                .with("verdict", "")
+                .with("path", "")
+                .with("yedIn", 0i64)
+                .with("yedOut", 0i64)
+                .with("burned", 0i64)
+                .with("amountCents", 0i64)
+                .with("feeZat", 0i64)
+                .with("payee", J::Null)
+                .with("unbacked", false)
+                .with("expired", false)
+                .with("time", block.map(|b| J::Int(b.time)).unwrap_or(J::Null))
+                .with("carrierTxid", c.0.clone())
+                .with("mainTxid", u.main.clone().unwrap_or_default())
+                .with("carrierOutcome", oc);
+            rows.push((sort, o));
         }
         rows.sort_by(|a, b| b.0.cmp(&a.0));
         Ok(J::Arr(
@@ -1598,9 +1864,13 @@ impl Wallet {
                     ("balance", bal),
                     ("keypoololdest", self.st.created.to_string()),
                     ("keypoolsize", crate::keys::LOOKAHEAD.to_string()),
-                    ("paytxfee", "0.00000000".to_string()),
+                    ("paytxfee", J::Amount(self.opts.paytxfee).text()),
                 ] {
                     o.insert(k.to_string(), v);
+                }
+                let (enc, until) = self.signer_state();
+                if enc {
+                    o.insert("unlocked_until".into(), until.to_string());
                 }
                 Ok(write_raw_obj(&o))
             }
@@ -1834,7 +2104,7 @@ fn yed_script(network: yew_core::params::Network, s: &str) -> Option<Vec<u8>> {
 
 /// `Memo::Interpret`'s text case: a first byte at most 0xF4, valid UTF-8 once the zero padding
 /// is trimmed.
-fn memo_str(memo: &[u8; 512]) -> Option<String> {
+pub(crate) fn memo_str(memo: &[u8; 512]) -> Option<String> {
     if memo[0] > 0xf4 {
         return None;
     }

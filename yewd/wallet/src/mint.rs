@@ -490,25 +490,25 @@ impl Wallet {
                         self.complete_notice(node, t, &pm).await
                     } else {
                         match (&pm.claim, &pm.equivocation) {
-                        (Some(a), _) => self.complete_claim(node, a, &pm).await,
-                        (None, Some((a, b))) => {
-                            let dec = |h: &str| {
-                                hex::decode(h)
-                                    .ok()
-                                    .and_then(|b| yew_core::bundle::Attestation::decode(&b))
-                            };
-                            match (dec(a), dec(b)) {
-                                (Some(a), Some(b)) => {
-                                    self.complete_equivocation(node, &a, &b, &pm.carrier).await
+                            (Some(a), _) => self.complete_claim(node, a, &pm).await,
+                            (None, Some((a, b))) => {
+                                let dec = |h: &str| {
+                                    hex::decode(h)
+                                        .ok()
+                                        .and_then(|b| yew_core::bundle::Attestation::decode(&b))
+                                };
+                                match (dec(a), dec(b)) {
+                                    (Some(a), Some(b)) => {
+                                        self.complete_equivocation(node, &a, &b, &pm.carrier).await
+                                    }
+                                    _ => Err(RpcError::new(
+                                        code::INTERNAL_ERROR,
+                                        "a pending report's attestations",
+                                    )),
                                 }
-                                _ => Err(RpcError::new(
-                                    code::INTERNAL_ERROR,
-                                    "a pending report's attestations",
-                                )),
                             }
+                            (None, None) => self.complete_mint(node, &pm).await,
                         }
-                        (None, None) => self.complete_mint(node, &pm).await,
-                    }
                     };
                     if let Err(e) = r {
                         eprintln!(
@@ -616,8 +616,10 @@ impl Wallet {
             }
             Err(e) => return Err(e.into()),
         };
-        let protocol_fee = yew_core::params::protocol_fee_zat(pm.cents as u64, p_mint)
-            .ok_or_else(|| build_error("mint-unsatisfiable: no protocol fee at this price".into()))?;
+        let protocol_fee =
+            yew_core::params::protocol_fee_zat(pm.cents as u64, p_mint).ok_or_else(|| {
+                build_error("mint-unsatisfiable: no protocol fee at this price".into())
+            })?;
         let fee_zat = if payee.is_some() { protocol_fee } else { 0 };
         // AFEE-W: the attestor fee of an armed mint (F-S2-4), selector empty
         let attest = self

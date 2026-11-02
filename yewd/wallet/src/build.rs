@@ -221,14 +221,21 @@ pub async fn node_coin(node: &dyn Node, o: &OutPoint) -> Result<Option<NodeCoin>
 pub fn signer_error(e: Result<Response, String>) -> RpcError {
     match e {
         Ok(Response::Refused(r)) => {
-            let c = match r.code.as_str() {
-                refuse::SET_SIGN_ONCE
-                | refuse::SET_SIGN_RESTORED
-                | refuse::OUTFLOW
-                | refuse::FOREIGN_INPUT => code::WALLET_ERROR,
-                refuse::BAD_VERSION => code::WALLET_UNLOCK_NEEDED,
-                _ => code::WALLET_ERROR,
-            };
+            let c =
+                match r.code.as_str() {
+                    refuse::SET_SIGN_ONCE
+                    | refuse::SET_SIGN_RESTORED
+                    | refuse::OUTFLOW
+                    | refuse::FOREIGN_INPUT => code::WALLET_ERROR,
+                    refuse::BAD_VERSION => code::WALLET_UNLOCK_NEEDED,
+                    refuse::LOCKED => return RpcError::new(
+                        code::WALLET_UNLOCK_NEEDED,
+                        "Error: Please enter the wallet passphrase with walletpassphrase first.",
+                    ),
+                    refuse::BAD_PASSPHRASE => code::WALLET_PASSPHRASE_INCORRECT,
+                    refuse::WRONG_ENC_STATE => code::WALLET_WRONG_ENC_STATE,
+                    _ => code::WALLET_ERROR,
+                };
             // the set refusals already carry ycashd's text
             if r.reason.starts_with(&r.code) {
                 RpcError::new(c, r.reason)

@@ -22,6 +22,7 @@
 //! address index is not there to ask, and one block reader serves the transparent, PQ and
 //! Sapling sides with the reorg handling in one place.
 
+pub mod admin;
 pub mod armed;
 pub mod attest;
 pub mod build;
@@ -30,12 +31,14 @@ pub mod json;
 pub mod keys;
 pub mod mint;
 pub mod node;
+pub mod raw;
 pub mod rpc;
 pub mod sapling;
 pub mod send;
 pub mod state;
 pub mod vaultrpc;
 pub mod yed;
+pub mod zsend;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
@@ -112,7 +115,11 @@ pub mod code {
     pub const INVALID_ADDRESS_OR_KEY: i64 = -5;
     pub const WALLET_INSUFFICIENT_FUNDS: i64 = -6;
     pub const INVALID_PARAMETER: i64 = -8;
+    pub const WALLET_INVALID_ACCOUNT_NAME: i64 = -11;
     pub const WALLET_UNLOCK_NEEDED: i64 = -13;
+    pub const WALLET_PASSPHRASE_INCORRECT: i64 = -14;
+    pub const WALLET_WRONG_ENC_STATE: i64 = -15;
+    pub const WALLET_ENCRYPTION_FAILED: i64 = -16;
     pub const DESERIALIZATION_ERROR: i64 = -22;
     pub const TRANSACTION_ERROR: i64 = -25;
     pub const TRANSACTION_REJECTED: i64 = -26;
@@ -160,6 +167,9 @@ pub struct NoteRow {
     pub height: Option<u32>,
     pub nullifier: Option<[u8; 32]>,
     pub spent: bool,
+    /// The note itself (for a spend in the signer, S4) and its commitment-tree position.
+    pub note: sapling_crypto::Note,
+    pub position: Option<u64>,
 }
 
 /// The open wallet.
@@ -179,6 +189,10 @@ pub struct Wallet {
     /// Mints between their carrier and their MINT (`yed_mint … wait = false`), completed by the
     /// poll once the carrier confirms; in memory only, as ycashd's.
     pub pending: Vec<mint::PendingMint>,
+    /// The wallet options (`-exportdir`, `-paytxfee`, encryption allowed; S4).
+    pub opts: admin::Opts,
+    /// The asynchronous operations (`z_sendmany`'s operation ids), in memory as ycashd's.
+    pub ops: zsend::Operations,
 }
 
 /// What the wallet knows about the chain beyond blocks (from `getblockchaininfo`).
@@ -204,7 +218,7 @@ pub fn txid_hex(b: &[u8; 32]) -> String {
 type BlockTx = (Vec<u8>, zcash_primitives::transaction::Transaction);
 
 /// A raw block's header fields and transactions.
-fn split_block(raw: &[u8]) -> Result<(BlockHead, Vec<BlockTx>), String> {
+pub(crate) fn split_block(raw: &[u8]) -> Result<(BlockHead, Vec<BlockTx>), String> {
     if raw.len() < 140 {
         return Err("block too short".into());
     }
@@ -407,6 +421,8 @@ impl Wallet {
             notes: Vec::new(),
             chain: ChainFacts::default(),
             pending: Vec::new(),
+            opts: admin::Opts::default(),
+            ops: zsend::Operations::default(),
         };
         w.refresh_keys()?;
         let txids: Vec<String> = w.st.wtx.keys().cloned().collect();
@@ -417,6 +433,12 @@ impl Wallet {
         }
         w.rebuild();
         Ok(w)
+    }
+
+    /// `-rescan`: forget every block-derived row and read the chain again from the birthday at
+    /// the next sync.
+    pub fn rescan_all(&mut self) {
+        self.rewind(None);
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -437,7 +459,7 @@ impl Wallet {
                 .public
                 .pq
                 .iter()
-                .filter(|p| p.scheme == scheme)
+                .filter(|p| p.scheme == scheme && p.index < yewd_proto::IMPORTED_PQ_BASE)
                 .count() as u32;
             let want = self.st.pq_issued(scheme) + PQ_LOOKAHEAD;
             if have < want {
@@ -612,6 +634,8 @@ impl Wallet {
                     height,
                     nullifier,
                     spent: nullifier.is_some_and(|n| nfs.contains(&n)),
+                    note: r.note.clone(),
+                    position: pos,
                 });
             }
         }
@@ -879,6 +903,13 @@ impl Wallet {
             .map(|(t, _)| t.clone())
             .collect();
         for t in gone {
+            if let Some(p) = self.parsed.get(&t) {
+                if p.tx.expiry_height != 0 && yew_core::payload::find_payload(&p.tx).is_some() {
+                    if let Some(w) = self.st.wtx.get(&t) {
+                        self.st.expired.insert(t.clone(), w.hex.clone());
+                    }
+                }
+            }
             self.st.wtx.remove(&t);
             self.parsed.remove(&t);
             changed = true;
