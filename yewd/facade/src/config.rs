@@ -61,6 +61,9 @@ pub const KNOWN: &[&str] = &[
     "backendrpcpassword",
     "stopbackend",
     "signer",
+    "signerbin",
+    "walletpoll",
+    "initwallet",
     "printtoconsole",
     "debug",
     "help",
@@ -87,6 +90,10 @@ pub struct Config {
     pub stop_backend: bool,
     /// Reserved for S2: the signer's Unix-domain socket.
     pub signer: Option<PathBuf>,
+    /// The `yewd-signer` binary (S1 runs it as a child process); default beside `yewd`.
+    pub signer_bin: Option<PathBuf>,
+    /// The wallet's poll interval in milliseconds (the fallback wake-up; 0 = barrier only).
+    pub wallet_poll_ms: u64,
     pub debug: bool,
     /// Options given but not understood (reported at start).
     pub ignored: Vec<String>,
@@ -218,6 +225,12 @@ fn parse_bind(v: &str, port: u16) -> Result<SocketAddr, ConfigError> {
 impl Config {
     /// Resolve the command line, reading `-conf` (default `<datadir>/yewd.conf`, optional).
     pub fn load(cli: Args) -> Result<Self, ConfigError> {
+        let (a, datadir) = Self::merged(cli)?;
+        Self::resolve(a, datadir)
+    }
+
+    /// The command line over the configuration file, and the data directory.
+    pub fn merged(cli: Args) -> Result<(Args, PathBuf), ConfigError> {
         let datadir = cli
             .get("datadir")
             .map(PathBuf::from)
@@ -235,17 +248,22 @@ impl Config {
             }
             Err(e) => return err(format!("yewd: cannot read {}: {e}", conf_path.display())),
         };
-        Self::resolve(cli.over(file), datadir)
+        Ok((cli.over(file), datadir))
+    }
+
+    /// The network the merged options name.
+    pub fn network_of(a: &Args) -> Result<Network, ConfigError> {
+        match (a.flag("regtest"), a.flag("testnet")) {
+            (true, true) => err("yewd: -regtest and -testnet together"),
+            (true, false) => Ok(Network::Regtest),
+            (false, true) => Ok(Network::Test),
+            _ => Ok(Network::Main),
+        }
     }
 
     /// Resolve already merged options.
     pub fn resolve(a: Args, datadir: PathBuf) -> Result<Self, ConfigError> {
-        let network = match (a.flag("regtest"), a.flag("testnet")) {
-            (true, true) => return err("yewd: -regtest and -testnet together"),
-            (true, false) => Network::Regtest,
-            (false, true) => Network::Test,
-            _ => Network::Main,
-        };
+        let network = Self::network_of(&a)?;
         let port = match a.get("rpcport") {
             Some(v) => parse_port("rpcport", v)?,
             None => network.default_rpc_port(),
@@ -309,6 +327,15 @@ impl Config {
             backend_auth,
             stop_backend: a.flag("stopbackend"),
             signer: a.get("signer").map(PathBuf::from),
+            signer_bin: a.get("signerbin").map(PathBuf::from),
+            wallet_poll_ms: match a.get("walletpoll") {
+                Some(v) => v.parse().map_err(|_| {
+                    ConfigError(format!(
+                        "yewd: -walletpoll={v} is not a number of milliseconds"
+                    ))
+                })?,
+                None => 1000,
+            },
             debug: a.has("debug"),
             ignored,
         })

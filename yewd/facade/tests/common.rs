@@ -114,6 +114,8 @@ pub async fn facade(dir: &Path, backend: SocketAddr, cookie: &Path, extra: &[&st
         format!("-datadir={}", dir.display()),
         format!("-backendrpcport={}", backend.port()),
         format!("-backendrpccookiefile={}", cookie.display()),
+        // no background wallet poll: the fake node sees only what each test sends
+        "-walletpoll=0".to_string(),
     ];
     v.extend(extra.iter().map(|s| s.to_string()));
     let cfg = Config::load(Args::from_cli(v).unwrap()).unwrap();

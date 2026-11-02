@@ -32,6 +32,17 @@ serde_json = { version = "=1.0.151", features = ["raw_value"] }
 base64 = "=0.22.1"
 getrandom = "=0.2.17"
 hex = "=0.4.3"
+yewd-proto = { path = "proto" }
+# The wallet's chain reading (S1): the block and transaction parser and the Sapling viewing side,
+# from the same sources and revisions yew-core already locks (one copy of each in the graph).
+secp256k1 = { version = "=0.33.1", features = ["std"] }
+hmac = "=0.13.0-pre.4"
+sha2 = "=0.11.0-pre.4"
+zcash_primitives = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false, features = ["std"] }
+zcash_protocol = { version = "=0.9.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false, features = ["std"] }
+zcash_keys = { version = "=0.14.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false, features = ["std", "sapling"] }
+sapling-crypto = { version = "=0.7.0", default-features = false, features = ["std"] }
+zip32 = { version = "=0.2.0", default-features = false }
 
 [profile.release]
 lto = true

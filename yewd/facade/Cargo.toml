@@ -17,6 +17,8 @@ path = "src/main.rs"
 
 [dependencies]
 yewd-wallet = { path = "../wallet" }
+yewd-proto.workspace = true
+yew-core.workspace = true
 tokio.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
@@ -27,3 +29,6 @@ serde_json.workspace = true
 base64.workspace = true
 getrandom.workspace = true
 hex.workspace = true
+
+[dev-dependencies]
+yewd-signer = { path = "../signer" }

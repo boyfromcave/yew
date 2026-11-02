@@ -91,8 +91,9 @@ pub fn init(
                 .map_err(|e| SignerError(format!("yewd-signer: bad mnemonic: {e}")))?;
             m.split_whitespace().collect::<Vec<_>>().join(" ")
         }
-        None => keys::generate_mnemonic(24)
-            .map_err(|e| SignerError(format!("yewd-signer: {e}")))?,
+        None => {
+            keys::generate_mnemonic(24).map_err(|e| SignerError(format!("yewd-signer: {e}")))?
+        }
     };
     std::fs::create_dir_all(dir).map_err(|e| SignerError(format!("{}: {e}", dir.display())))?;
     #[cfg(unix)]
@@ -152,7 +153,11 @@ impl Keystore {
         let f: SeedFile = serde_json::from_str(&text)
             .map_err(|e| SignerError(format!("yewd-signer: {}: {e}", path.display())))?;
         if f.format != SEED_FORMAT {
-            return err(format!("yewd-signer: {}: unknown format {}", path.display(), f.format));
+            return err(format!(
+                "yewd-signer: {}: unknown format {}",
+                path.display(),
+                f.format
+            ));
         }
         if f.network != network.chain_name() {
             return err(format!(
@@ -268,16 +273,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(init(&dir, Network::Regtest, Some(PHRASE), 0).unwrap());
         assert!(!init(&dir, Network::Regtest, None, 0).unwrap());
-        assert!(init(&dir, Network::Regtest, Some("legal winner thank year wave sausage worth useful legal winner thank yellow"), 0).is_err());
+        assert!(init(
+            &dir,
+            Network::Regtest,
+            Some("legal winner thank year wave sausage worth useful legal winner thank yellow"),
+            0
+        )
+        .is_err());
         assert!(Keystore::load(&dir, Network::Mainnet).is_err());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let m = std::fs::metadata(seed_path(&dir)).unwrap().permissions().mode();
+            let m = std::fs::metadata(seed_path(&dir))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(m & 0o777, 0o600);
         }
         let ks = Keystore::load(&dir, Network::Regtest).unwrap();
-        let b = ks.public(&PublicRequest { pq: vec![(1, 0, 2)] }).unwrap();
+        let b = ks
+            .public(&PublicRequest {
+                pq: vec![(1, 0, 2)],
+            })
+            .unwrap();
         assert_eq!(b.pq.len(), 2);
         assert_eq!(b.format, PUBLIC_FORMAT);
         // nothing in the bundle is the phrase or a secret
@@ -294,6 +312,13 @@ mod tests {
         let acct = SaplingAccount::from_seed(&seed, Network::Regtest).unwrap();
         assert_eq!(b.sapling_dfvk, hex::encode(acct.viewing_key_bytes()));
         assert_eq!(b.account.pubkey.len(), 66);
-        assert!(public_from_seed(Network::Regtest, &seed, &PublicRequest { pq: vec![(1, 0, MAX_PQ_PER_REQUEST + 1)] }).is_err());
+        assert!(public_from_seed(
+            Network::Regtest,
+            &seed,
+            &PublicRequest {
+                pq: vec![(1, 0, MAX_PQ_PER_REQUEST + 1)]
+            }
+        )
+        .is_err());
     }
 }

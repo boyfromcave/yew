@@ -21,7 +21,8 @@ use yewd_proto::PublicRequest;
 use yewd_signer::Keystore;
 
 fn pinned_sha(file: &str) -> String {
-    let pin = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../PIN")).unwrap();
+    let pin =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../PIN")).unwrap();
     pin.lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split_whitespace().collect();
@@ -39,7 +40,10 @@ fn candidates() -> Vec<PathBuf> {
     }
     // $WS/yew/yewd/signer -> $WS/kogany; $WS/wt/<worktree>/yewd/signer -> $WS/kogany
     for up in ["../../../kogany", "../../../../kogany"] {
-        v.push(here.join(up).join("testdata/yellowback/pq_wallet_vectors.json"));
+        v.push(
+            here.join(up)
+                .join("testdata/yellowback/pq_wallet_vectors.json"),
+        );
     }
     v.push(here.join("../../core/tests/vectors/pq_wallet_vectors.json"));
     v
@@ -48,12 +52,22 @@ fn candidates() -> Vec<PathBuf> {
 fn load() -> (PathBuf, serde_json::Value) {
     let want = pinned_sha("pq_wallet_vectors.json");
     for p in candidates() {
-        let Ok(bytes) = std::fs::read(&p) else { continue };
+        let Ok(bytes) = std::fs::read(&p) else {
+            continue;
+        };
         let got = keys::hex(&keys::sha256(&bytes));
-        assert_eq!(got, want, "{} does not hash to yewd/PIN's value", p.display());
+        assert_eq!(
+            got,
+            want,
+            "{} does not hash to yewd/PIN's value",
+            p.display()
+        );
         return (p, serde_json::from_slice(&bytes).unwrap());
     }
-    panic!("pq_wallet_vectors.json not found (tried {:?})", candidates());
+    panic!(
+        "pq_wallet_vectors.json not found (tried {:?})",
+        candidates()
+    );
 }
 
 fn unhex(v: &serde_json::Value) -> Vec<u8> {
@@ -81,19 +95,35 @@ fn pq_wallet_vectors_replay() {
         for d in derive {
             let scheme = d["scheme"].as_u64().unwrap() as u8;
             let index = d["index"].as_u64().unwrap() as u32;
-            assert_eq!(root.derive(scheme, index).to_vec(), unhex(&d["seed"]), "{section} derive {scheme}/{index}");
+            assert_eq!(
+                root.derive(scheme, index).to_vec(),
+                unhex(&d["seed"]),
+                "{section} derive {scheme}/{index}"
+            );
         }
         let slh = &s["slh"];
         let index = slh["index"].as_u64().unwrap() as u32;
         let key = PqKey::from_seed(1, &root.derive(1, index)).unwrap();
-        assert_eq!(key.public_key().to_vec(), unhex(&slh["pk"]), "{section} slh pk");
-        assert_eq!(key.id().hash.to_vec(), unhex(&slh["keyhash"]), "{section} slh keyhash");
+        assert_eq!(
+            key.public_key().to_vec(),
+            unhex(&slh["pk"]),
+            "{section} slh pk"
+        );
+        assert_eq!(
+            key.id().hash.to_vec(),
+            unhex(&slh["keyhash"]),
+            "{section} slh keyhash"
+        );
     }
     // The signer's own path, phrase -> public bundle: the SLH-DSA key it hands the façade is the vector's.
     let m = &v["mnemonic"];
     let ks = Keystore::from_mnemonic(Network::Regtest, m["phrase"].as_str().unwrap());
     let index = m["slh"]["index"].as_u64().unwrap() as u32;
-    let b = ks.public(&PublicRequest { pq: vec![(1, index, 1), (2, 0, 2)] }).unwrap();
+    let b = ks
+        .public(&PublicRequest {
+            pq: vec![(1, index, 1), (2, 0, 2)],
+        })
+        .unwrap();
     assert_eq!(b.pq[0].pk, m["slh"]["pk"].as_str().unwrap());
     assert_eq!(b.pq[0].index, index);
     // Falcon: the bundle's keys are the ones the vector's derived seeds generate.
@@ -102,7 +132,10 @@ fn pq_wallet_vectors_replay() {
         assert_eq!(row.scheme, 2);
         let key = PqKey::from_seed(2, &root.derive(2, k as u32)).unwrap();
         assert_eq!(row.pk, keys::hex(key.public_key()));
-        let vector_seed = m["derive"].as_array().unwrap().iter()
+        let vector_seed = m["derive"]
+            .as_array()
+            .unwrap()
+            .iter()
             .find(|d| d["scheme"] == 2 && d["index"] == k as u64)
             .map(|d| unhex(&d["seed"]));
         if let Some(seed) = vector_seed {
