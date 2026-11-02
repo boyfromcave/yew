@@ -528,7 +528,9 @@ impl Wallet {
             + z_notes.iter().map(|n| n.value as i64).sum::<i64>();
         // selection at the conventional fee (or the given one), the change decided with it
         let z_source = matches!(source, Source::Z(_));
-        let mut need_fee = fee.unwrap_or(0);
+        // the first pass already asks for the fee of the outputs alone (ycashd's target in its
+        // "Insufficient funds: have …, need …" is amount + fee: vault_pq_wallet.py)
+        let mut need_fee = fee.unwrap_or_else(|| conventional_fee(0, n_t_out, 0, n_z_out));
         let mut sel_t: Vec<_> = Vec::new();
         let mut sel_z: Vec<crate::NoteRow> = Vec::new();
         let mut change = 0i64;
