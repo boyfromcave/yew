@@ -13,6 +13,21 @@ use std::time::Duration;
 
 use crate::{Envelope, Request, Response};
 
+/// The longest socket path `sockaddr_un` takes everywhere (macOS: 104 bytes with the NUL).
+pub const MAX_SOCKET_PATH: usize = 100;
+
+/// The signer socket for the signer directory `dir`: `<dir>/signer.sock`, or, when that path is
+/// too long for a Unix socket address, `/tmp/yewd-<uid>/<hash of dir>.sock` (the directory mode
+/// 0700; the signer's peer-UID check applies either way). Both ends compute it the same way.
+pub fn socket_path(dir: &std::path::Path, uid: u32) -> PathBuf {
+    let p = dir.join("signer.sock");
+    if p.as_os_str().len() <= MAX_SOCKET_PATH {
+        return p;
+    }
+    let h = yew_core::keys::sha256(dir.as_os_str().as_encoded_bytes());
+    PathBuf::from(format!("/tmp/yewd-{uid}")).join(format!("{}.sock", hex::encode(&h[..8])))
+}
+
 pub struct SocketClient {
     pub path: PathBuf,
     conn: Mutex<Option<BufReader<UnixStream>>>,

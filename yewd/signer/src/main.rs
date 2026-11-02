@@ -116,7 +116,9 @@ fn main() {
         Some("serve") => {
             let ks = Keystore::load(&dir, network).unwrap_or_else(|e| fail(e));
             let core = yewd_signer::sign::SignerCore::open(ks, &dir).unwrap_or_else(|e| fail(e));
-            let path = socket.unwrap_or_else(|| dir.join(yewd_signer::SOCKET_FILE));
+            let path = socket.unwrap_or_else(|| {
+                yewd_proto::client::socket_path(&dir, yewd_signer::server::my_uid())
+            });
             if let Err(e) = yewd_signer::server::serve(core, path, watch_stdin) {
                 fail(e)
             }

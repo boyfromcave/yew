@@ -110,7 +110,7 @@ impl SocketSigner {
     pub fn spawn(bin: &Path, dir: &Path, network: Network) -> Result<SocketSigner, String> {
         use std::io::BufRead;
         use std::process::Stdio;
-        let sock = dir.join("signer.sock");
+        let sock = yewd_proto::client::socket_path(dir, my_uid());
         let mut cmd = Command::new(bin);
         cmd.arg(format!("-datadir={}", dir.display()));
         if let Some(f) = net_flag(network) {
@@ -164,6 +164,11 @@ impl Signer for SocketSigner {
     fn request(&self, r: yewd_proto::Request) -> Result<yewd_proto::Response, String> {
         self.client.call(r)
     }
+}
+
+fn my_uid() -> u32 {
+    // SAFETY: geteuid has no preconditions.
+    unsafe { libc::geteuid() }
 }
 
 /// The signer binary: `-signerbin`, else `yewd-signer` beside this executable.
@@ -308,8 +313,14 @@ impl WalletService {
                 let b = ps
                     .init(height)
                     .map_err(|e| RpcError::new(code::WALLET_ERROR, format!("yewd: {e}")))?;
-                let s = SocketSigner::spawn(&bin, &dir, self.network)
-                    .map_err(|e| RpcError::new(code::WALLET_UNLOCK_NEEDED, format!("yewd: {e}")))?;
+                let s = match SocketSigner::spawn(&bin, &dir, self.network) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        *self.signer.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some(SignerSource::Process(bin));
+                        return Err(RpcError::new(code::WALLET_UNLOCK_NEEDED, format!("yewd: {e}")));
+                    }
+                };
                 (Box::new(s), b)
             }
             SignerSource::Socket(path) => (Box::new(SocketSigner::connect(path)), height),

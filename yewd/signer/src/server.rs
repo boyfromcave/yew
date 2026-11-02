@@ -85,6 +85,17 @@ pub fn bind(path: &Path) -> Result<UnixListener, String> {
     }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        // a short socket directory outside the signer's own (yewd_proto::client::socket_path) is
+        // this user's alone
+        if dir.starts_with("/tmp") {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let m = std::fs::metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            if m.uid() != my_uid() {
+                return Err(format!("{} belongs to another user", dir.display()));
+            }
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
     }
     let l = UnixListener::bind(path).map_err(|e| format!("{}: {e}", path.display()))?;
     use std::os::unix::fs::PermissionsExt;
