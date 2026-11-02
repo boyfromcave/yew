@@ -909,6 +909,7 @@ impl Wallet {
                 .with("reclaimedZat", 0i64)
                 .with("outstanding", self.st.carriers.len() as i64));
         }
+        self.ensure_unlocked()?;
         let mut tx = Transaction::new_v4();
         tx.expiry_height = next.height + crate::build::TX_EXPIRY_DELTA;
         let mut prevs = Vec::new();

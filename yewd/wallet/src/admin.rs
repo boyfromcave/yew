@@ -74,7 +74,8 @@ pub const NEEDS_UNLOCK: &[&str] = &[
     "yed_redeem",
     "yed_claim",
     "yed_claimnotice",
-    "yed_sweepcarriers",
+    // yed_sweepcarriers: unlock checked only when something lapsed is swept (mint.rs; ycashd reads
+    // the outstanding carriers without the passphrase, yellowback_wallet_restore.py)
     "yed_buildcancel",
     "yed_signcancelcosign",
     "yed_registerattestor",
