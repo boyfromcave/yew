@@ -621,6 +621,63 @@ impl Wallet {
     }
 }
 
+impl Wallet {
+    /// `YedBurnedByRawTransaction` (H7, ycash6 `src/yellowback/wallet.cpp`): a raw transaction that
+    /// spends this wallet's YED tokens and whose payload reassigns fewer cents than they hold is
+    /// refused (`-4 yed-burn-refused`); a REDEEM spending a vault is MP-1's, never this guard's.
+    pub async fn yed_burn_guard(&self, node: &dyn Node, p: &[Value]) -> Result<(), RpcError> {
+        let Some(raw) = p
+            .first()
+            .and_then(|v| v.as_str())
+            .and_then(|h| hex::decode(h).ok())
+        else {
+            return Ok(()); // the node's own decode error answers
+        };
+        let Ok((tx, _)) = Transaction::parse(&raw) else {
+            return Ok(());
+        };
+        let found = yew_core::payload::find_payload(&tx).map(|f| f.payload);
+        let (is_redeem, assigned) = match &found {
+            Some(p @ yew_core::payload::Payload::Transfer { .. }) => (false, p.assigned_cents()),
+            Some(p @ yew_core::payload::Payload::Redeem { .. }) => (true, p.assigned_cents()),
+            _ => (false, 0),
+        };
+        let tokens = match self.tokens(node).await {
+            Ok(t) => t,
+            Err(_) => return Ok(()), // no Yellowback index: no guard (ycashd without -yellowback)
+        };
+        let mut cents = 0i64;
+        let mut outpoints = Vec::new();
+        for i in &tx.vin {
+            let (t, n) = (txid_hex(&i.prevout.txid), i.prevout.n);
+            if is_redeem {
+                if let Ok(v) = node::call(node, "yed_getvault", serde_json::json!([t])).await {
+                    if n == 0 && v["status"].is_string() {
+                        return Ok(());
+                    }
+                }
+            }
+            if let Some(tok) = tokens.iter().find(|x| {
+                x["txid"].as_str() == Some(t.as_str()) && x["vout"].as_u64() == Some(n as u64)
+            }) {
+                cents += tok["cents"].as_i64().unwrap_or(0);
+                outpoints.push(format!("{t}:{n}"));
+            }
+        }
+        if cents <= 0 || assigned >= cents {
+            return Ok(());
+        }
+        Err(RpcError::new(
+            code::WALLET_ERROR,
+            format!(
+                "yed-burn-refused: this transaction spends {cents} cents of this wallet's YED ({}) and its payload reassigns {assigned} of them, so {} cents of YED would be destroyed. Pass allowyedburn = true to send it anyway.",
+                outpoints.join(", "),
+                cents - assigned
+            ),
+        ))
+    }
+}
+
 fn type_name(v: &Value) -> &'static str {
     match v {
         Value::Null => "null",

@@ -432,6 +432,8 @@ class YewdS2(YellowbackTestFramework):
         print('YED: yed_estimateredeem and yed_redeem of the yewd vault (early: IT-9), the same by ycashd, compared')
         user.yed_send(y.yed_getnewaddress(), 6000)
         self.confirm(user.getrawmempool()[0])
+        spare = wallet_mint(self, user, 10000, 48)              # the ycashd side's YED for its own redeem
+        self.confirm(spare['txid'])
         q = yc.check('yed_estimateredeem', y.yed_estimateredeem(ym['txid']))
         uq = yc.check('yed_estimateredeem', user.yed_estimateredeem(um['txid']))
         assert_equal((q['canRedeem'], q['early'], q['burnedCents']), (True, True, 10000))
@@ -453,6 +455,14 @@ class YewdS2(YellowbackTestFramework):
         un = y.yed_unlockcoin(locked[0]['txid'], locked[0]['vout'], 'I understand this burns YED')
         assert_equal((un['unlocked'], un['wasYellowbackLocked']), (True, True))
         yrc.assert_rpc_error('unlock-acknowledgement-missing', y.yed_unlockcoin, locked[0]['txid'], locked[0]['vout'], 'no')
+        # H7: sendrawtransaction through yewd refuses a raw spend that destroys this wallet's YED
+        tok = [t for t in y.yed_listunspent() if not t['spentUnconfirmed']][0]
+        burn = user.createrawtransaction([{'txid': tok['txid'], 'vout': tok['vout']}], {y.getnewaddress(): Decimal('0.00005')})
+        burn = y.signrawtransaction(burn)['hex']
+        yrc.assert_rpc_error('yed-burn-refused', y.sendrawtransaction, burn)
+        e = rpc_error(y.sendrawtransaction, burn, False, 'yes')
+        assert_equal(e['code'], -3)
+        self.served['stock'].add('sendrawtransaction allowyedburn (H7)')
         self.served['yed'].update(['yed_lockcoins', 'yed_unlockcoin'])
 
         print('YED: yed_claim after a price crash: yewd claims one ycashd vault, ycashd claims another, compared')

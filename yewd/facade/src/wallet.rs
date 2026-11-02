@@ -350,6 +350,36 @@ impl WalletService {
         Ok(r.text())
     }
 
+    /// `sendrawtransaction`'s H7 guard (`allowyedburn`): the type checks of `RPCTypeCheck`, then
+    /// the refusal of a transaction that destroys this wallet's YED unless the caller allows it.
+    pub async fn burn_guard(&self, params: &[Value]) -> Result<(), RpcError> {
+        for (i, want) in [(1usize, "bool"), (2, "bool")] {
+            if let Some(v) = params.get(i).filter(|v| !v.is_null()) {
+                if !v.is_boolean() {
+                    let got = match v {
+                        Value::String(_) => "string",
+                        Value::Number(_) => "number",
+                        Value::Array(_) => "array",
+                        Value::Object(_) => "object",
+                        _ => "null",
+                    };
+                    return Err(RpcError::new(
+                        code::TYPE_ERROR,
+                        format!("Expected type {want}, got {got}"),
+                    ));
+                }
+            }
+        }
+        if params.get(2).and_then(|v| v.as_bool()) == Some(true) {
+            return Ok(());
+        }
+        let mut slot = self.wallet.lock().await;
+        self.ensure_open(&mut slot).await?;
+        let w = slot.as_mut().expect("opened");
+        w.sync(&self.node).await?;
+        w.yed_burn_guard(&self.node, params).await
+    }
+
     /// A read the wallet answers without forwarding (`z_validateaddress`).
     pub async fn local(&self, method: &str, params: &[Value]) -> Result<String, RpcError> {
         let mut slot = self.wallet.lock().await;
