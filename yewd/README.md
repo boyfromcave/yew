@@ -10,13 +10,15 @@ streams and lightwalletd-dd), and never needs a node change.
 Plan: [`docs/plans/yewd-plan.md`](../docs/plans/yewd-plan.md), which points into the workspace's
 kogany plan (`docs/plans/kogany/kogany-yellowback-plan.md` §3b, §4.3, §5; decisions K-20, K-22–K-26).
 
-**State: S2, the builders and the signer boundary.** S1's wallet (public material only in the
+**State: S3, the roles** (the attestor, the cancel co-signer, a Hawkeye member, x402's
+`rpcWalletSigner`), on S2's builders and signer boundary. S1's wallet (public material only in the
 façade, a block-reading sync with reorg rewind, the read RPCs) plus the build RPCs and the signer
 process: every transaction is built unsigned in the façade and signed in `yewd-signer`, a separate
 process on a Unix socket that recomputes every digest from the bytes and the prevouts it is shown
-([The signer](#the-signer-s2)). `yewd-wallet/src/rpc.rs` `all_served()`: **40 of the 47** (all 22
-R5 `set_*`/`vault_*`, 18 of the 25 R6 `yed_*`; the 7 left are S3's attestor and cancel-cosign RPCs)
-and 16 of the K-25 stock set. Every other wallet RPC still answers `-32601` with
+([The signer](#the-signer-s2)). `yewd-wallet/src/rpc.rs` `all_served()`: **47 of the 47** (all 22
+R5 `set_*`/`vault_*`, all 25 R6 `yed_*`; S3 added the attestor and cancel co-signer RPCs,
+`wallet/src/attest.rs`) and 19 of the K-25 stock set (S3 added `signmessage`, `importprivkey`,
+`dumpprivkey`, which the roles call). Every other wallet RPC still answers `-32601` with
 `yewd: not yet implemented (<method>; plan §3b S<n>)`.
 
 ## Layout
@@ -35,6 +37,8 @@ yewd/
 │                  preview both ends compute, the YV act codec and the set messages, the socket client
 ├── qa/s1_wallet_reads.py   the S1 exit gate on ycash6's functional framework (below)
 ├── qa/s2_wallet_builders.py   the S2 exit gate: every build RPC on yewd beside the same request on ycashd
+├── qa/s3_roles.py   the S3 exit gate: the role scripts with their role nodes as pairs, and the roles stage
+├── qa/ycashd_pair.py   a stand-in `ycashd` that starts the pair (for tools that start their own node: Hawkeye's tests)
 └── scripts/check-yewd.sh   the CI unit leg: naming/attribution greps, fmt, clippy, tests
 ```
 
@@ -51,6 +55,10 @@ YCASH6_QA=<ycash6>/qa/rpc-tests ZCASHD=<ycash6>/src/ycashd YEWD_BIN=<target>/deb
 # the S2 exit gate: every build RPC through yewd, each beside the same request on a plain ycashd
 YCASH6_QA=<ycash6>/qa/rpc-tests ZCASHD=<ycash6>/src/ycashd YEWD_BIN=<target>/debug/yewd \
   <workspace>/.venv/bin/python yewd/qa/s2_wallet_builders.py --tmpdir=<dir> --portseed=<n>
+# the S3 exit gate: a role script with its role nodes as pairs, or the roles stage
+YCASH6_QA=... ZCASHD=... YEWD_BIN=... <workspace>/.venv/bin/python yewd/qa/s3_roles.py --stage=attest_wallet|roles|attest_bond|attest_agent|cancel_agent --tmpdir=<dir> --portseed=<n>
+# Hawkeye's regtest test against the pair (unchanged test; the node is the stand-in)
+ZCASHD=... YEWD_BIN=... HAWKEYE_REGTEST_YCASHD=yewd/qa/ycashd_pair.py cargo test -p hawkeye --test regtest_self_signing
 # the pinned PQ wallet vectors from kogany (else yew's byte-identical copy is replayed)
 YEWD_PQ_WALLET_VECTORS=<kogany>/testdata/yellowback/pq_wallet_vectors.json cargo test --manifest-path yewd/Cargo.toml -p yewd-signer
 ```
@@ -65,9 +73,9 @@ the node's decimal text).
 | Class | Methods | S1 answer |
 |---|---|---|
 | Wallet, R5 vault | the 22 `set_*` / `vault_*` wallet RPCs (ycash6 `src/rpc/vault.cpp`) | all 22 served (S1's two reads, S2's twenty builders: `wallet/src/vaultrpc.rs`) |
-| Wallet, R6 YED | the 25 `yed_*` wallet RPCs (ycash6 `src/rpc/yellowbackwallet.cpp`) | served: S1's seven reads; S2's `yed_mint`, `yed_send`, `yed_sendmany`, `yed_estimatesend`, `yed_redeem`, `yed_estimateredeem`, `yed_claim`, `yed_claimnotice` (its unarmed refusal), `yed_sweepcarriers`, `yed_lockcoins`, `yed_unlockcoin` (`wallet/src/{yed,mint,claim}.rs`); S3's seven (`yed_buildcancel`, `yed_signcancelcosign`, the attestor RPCs) `-32601` |
+| Wallet, R6 YED | the 25 `yed_*` wallet RPCs (ycash6 `src/rpc/yellowbackwallet.cpp`) | served: S1's seven reads; S2's `yed_mint`, `yed_send`, `yed_sendmany`, `yed_estimatesend`, `yed_redeem`, `yed_estimateredeem`, `yed_claim`, `yed_claimnotice` (its unarmed refusal), `yed_sweepcarriers`, `yed_lockcoins`, `yed_unlockcoin` (`wallet/src/{yed,mint,claim}.rs`); S3's seven: `yed_registerattestor`, `yed_signattestation`, `yed_revive`, `yed_withdrawbond`, `yed_reportequivocation`, `yed_signcancelcosign`, `yed_buildcancel` (`wallet/src/attest.rs`) |
 | Wallet, R7 | `z_importpqkey` | `-32601` "yewd: not yet implemented" |
-| Wallet, K-25 stock | the 30 the Yellowback scripts call, and the 4 only the roles call | served: S1's ten reads; S2's `sendtoaddress`, `sendmany`, `lockunspent`, `fundrawtransaction`, `signrawtransaction`, `getrawchangeaddress` (`wallet/src/send.rs`), and the forwarded node RPC `sendrawtransaction` keeps ycashd's H7 wallet guard first (`allowyedburn`: `-4 yed-burn-refused`, `-3` on a non-bool); `z_sendmany` and its operation RPCs wait for the Sapling build in the signer; the rest `-32601` |
+| Wallet, K-25 stock | the 30 the Yellowback scripts call, and the 4 only the roles call | served: S1's ten reads; S2's `sendtoaddress`, `sendmany`, `lockunspent`, `fundrawtransaction`, `signrawtransaction`, `getrawchangeaddress` (`wallet/src/send.rs`); S3's `signmessage`, `importprivkey`, `dumpprivkey` (`wallet/src/attest.rs`, the keys in the signer), and the forwarded node RPC `sendrawtransaction` keeps ycashd's H7 wallet guard first (`allowyedburn`: `-4 yed-burn-refused`, `-3` on a non-bool); `z_sendmany` and its operation RPCs wait for the Sapling build in the signer; the rest `-32601` |
 | Out of scope | the rest of ycashd's wallet table (39: `listtransactions`, `z_shieldcoinbase`, …) | `-32601` "yewd: not served" |
 | Local | `createrawtransaction`, `decoderawtransaction`, `decodescript` | forwarded; served from yew-core in S4 |
 | Augmented | `getinfo`, `validateaddress`, `z_validateaddress`, `set_getinfo`, `vault_list`, `yed_gettxinfo` | forwarded, then the wallet adds its fields (`balance`…, `ismine`…, `memberlist[].wallet`, the `wallet` column and the `mine` filter of `vault_list`; `yed_gettxinfo` has none in rpcversion 8). `z_validateaddress` is answered by yewd itself: a ycash6 `-disablewallet` backend stops on it (it dereferences its absent wallet) |
@@ -166,7 +174,9 @@ another version is refused (`bad-version`) before it is read further.
 carrier_bundle?}], own_outputs: [{n, key, bond_locktime?}], gate_path, outflow_cap_zat, preview:
 {sign: [{vin, outpoint, amount_zat}], outputs: [{n, amount_zat, address|script, mine, kind}], fee_zat,
 outflow_zat}}`; `KeyRef` = `{"kind": "none"}` | `bip32 {chain, index}` | `pq {scheme, index}` |
-`pq_owner {scheme, index, selector}` | `carrier {chain, index}`; `gate_path` = `yec` | `vault` |
+`pq_owner {scheme, index, selector}` | `carrier {chain, index}` | `bond {chain, index, locktime}` (S3: the
+CLTV path of a bond `P2SH(<locktime> CLTV DROP <pk> CHECKSIG)`, scriptSig `<sig> <redeem>`); a `bip32`
+reference with `chain` 2 names the signer's imported key `index` (`importprivkey`, S3); `gate_path` = `yec` | `vault` |
 `owner` | `yed` | `raw`.
 
 **Policy** (`signer/src/sign.rs`), in this order, before any signature leaves the signer:
@@ -198,8 +208,35 @@ signature is returned. A different role or sighash for a recorded `(setid, prevo
 is idempotent; a seed restored from a phrase (`init -mnemonic=`) starts with the restore marker set
 (`set-sign-restored` until `acknowledge_restore` or `{"acknowledgerestore": true}`); an import that
 differs from a record is refused whole. The façade maps `set-sign-once` / `set-sign-restored` /
-`outflow` / `foreign-input` to `-4`, an unreachable signer to `-13`. The attestation guard
-(`attest-signed.dat`) is S3's.
+`outflow` / `foreign-input` to `-4`, an unreachable signer to `-13`.
+
+**The roles' requests (S3, protocol version 1, additive).**
+
+| `op` | body | answer `result` |
+|---|---|---|
+| `sign_attestation` | `{key, pubkey, seq, price_micro_usd, cited_height, block_hash}` | `attestation` `{hex (74 bytes), reused}` |
+| `cancel_cosign` | `{key, pubkey, seq, set_id, intent, ref_height, block_hash, price_micro_usd?, collateral_zat, minted_cents, claim_threshold_bps}` | `cosign` `{cosig (69 bytes), price_micro_usd, reused}` |
+| `sign_message` | `{key, message}` | `message_sig` (65 recoverable bytes, hex; the façade writes base64) |
+| `import_key` | `{wif}` | `imported_key` `{index, pubkey, new}` |
+| `dump_key` | `KeyRef` | `dumped` (a WIF) |
+
+The public bundle gains `imported` (the imported keys' public keys, in store order).
+
+**The attestation equivocation guard** (`signer/src/attest.rs`, ycash6 S16 / EQV-1 self-protection):
+`<signer dir>/attest-signed.jsonl`, one record `(seq, key, citedHeight, blockHash, price, sig)` per
+line, appended and fsynced before the signature leaves the signer. The same price again returns the
+recorded signature (`reused`); another price for the same `(key, citedHeight, blockHash)` is refused
+(`equivocation-guard: seq <s> already signed <p> for height <h>`, or `… this key already signed <p>
+for height <h> under seq <s>` for another seq of the same key: EQV-1 binds the key); another block
+hash at that height (a reorg) is not equivocation; a torn last line is cut off at load. The signer
+derives the key, checks it is the attestor record's (`pubkey`, from the node), and computes the
+74-byte message itself (`AttestMessage` over the cited block's hash). A cancel co-signature first
+resolves its price (the given one, or the one this key signed for `R`; `price-required` when
+neither), refuses a statement under which the vault was claimable (`cancel-statement-claimable`,
+RED-4), passes the same guard for `(R, price)`, then signs `CancelCosignMessage` recoverably. A
+`sign_message` digest is computed from the text with ycashd's magic prefix, so it can never be a
+transaction digest. Imported keys live in `<signer dir>/imported.json` (0600; S4 encrypts it); a new
+import sets the sign-once restore marker (an imported key brings no history, 07/F-5).
 
 ## Harness mode (`YEWD_BIN`)
 

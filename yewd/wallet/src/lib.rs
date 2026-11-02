@@ -22,6 +22,7 @@
 //! address index is not there to ask, and one block reader serves the transparent, PQ and
 //! Sapling sides with the reorg handling in one place.
 
+pub mod attest;
 pub mod build;
 pub mod claim;
 pub mod json;
@@ -454,6 +455,13 @@ impl Wallet {
                 self.book.add_pq(&p)?;
             }
         }
+        for (i, pk) in self.st.public.imported.clone().iter().enumerate() {
+            let pk: [u8; 33] = hex::decode(pk)
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .ok_or("an imported public key is not 33 bytes")?;
+            self.book.add_imported(i as u32, pk);
+        }
         Ok(())
     }
 
@@ -620,7 +628,7 @@ impl Wallet {
     /// Rewind every wallet transaction above `fork` (`None`: everything) to the mempool; coinbase
     /// transactions are dropped (they cannot return to the mempool). The mempool step then drops
     /// whatever the node did not put back.
-    fn rewind(&mut self, fork: Option<u32>) {
+    pub(crate) fn rewind(&mut self, fork: Option<u32>) {
         let above = |b: &Option<BlockRef>| {
             b.as_ref()
                 .is_some_and(|b| fork.is_none_or(|f| b.height > f))

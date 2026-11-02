@@ -1,6 +1,6 @@
 # yewd — the YEW core as a daemon: plan
 
-**Revision 3 (2026-11-01), S2** (revision 2: S1; revision 1: S0). `yewd` is the third shell on the YEW core, in `yew/yewd/`
+**Revision 4 (2026-11-01), S3** (revision 3: S2; revision 2: S1; revision 1: S0). `yewd` is the third shell on the YEW core, in `yew/yewd/`
 beside `yew/app/` and `yew/web/` (workspace decision K-22, the Yellowback lead architect,
 2026-11-01): a ycashd-compatible wallet-RPC façade in front of a wallet-less node, kogany or
 ycash6 `-disablewallet`. The normative plan is the workspace's
@@ -48,7 +48,7 @@ the repository's `rust-toolchain.toml`.
 | S0 | the shell: crate layout, façade skeleton (auth, the full method table answering `-32601`, forwarding with the backend's cookie, `help`, `stop`), the `YEWD_BIN` harness contract, the `yewd` CI job | **this revision** |
 | S1 | wallet state and sync; the read-only wallet subset (against ycash6 `-disablewallet`; kogany after W7-a/b) | **this revision** (§3.1) |
 | S2 | builders and the signer boundary | **this revision** (§3.2): 40/47; the Sapling build in the signer remains (F-S2-8) |
-| S3 | roles: attestor `attest` mode, Hawkeye member, x402 `rpcWalletSigner` | — |
+| S3 | roles: attestor `attest` mode, Hawkeye member, x402 `rpcWalletSigner` | **this revision** (§3.3): 47/47 |
 | S4 | the façade complete: all 47, R7, the K-25 stock set, error parity, hazards H1–H11 | — |
 | S5 | the parity gate (three-way matrix, the 48 wallet-needing scripts, 7 nightly days) | — |
 
@@ -265,6 +265,101 @@ are re-derived from ycash6 `src/vault/act.cpp` (plan §4.3 rule 1) and checked a
 - Not run here: the same gate on kogany (W4/W5/W7 not merged), and the mixed kogany + ycash6-peer
   acceptance check of the plan's S2 row (the acceptance by every ycash6 node of the network is what
   this gate checks).
+
+### 3.3 S3: roles
+
+**What it serves.** The seven S2 left (`wallet/src/attest.rs`): `yed_registerattestor` (a `set_join`
+of a fresh wallet key to the attestor set, D-Q-30's floor and `bond-near-min` warning from
+`yed_getinfo.params.attest`), `yed_signattestation` and `yed_revive` (the guarded attestation; the
+revive's `SET_HEARTBEAT`), `yed_withdrawbond` (the bond's CLTV path, `KeyRef::Bond`),
+`yed_reportequivocation` (EQV-1's conditions from `yed_listattestors` and the chain, the carrier of
+exactly the two attestations, the `EQUIVOCATION` payload; `wait` or the poll), `yed_signcancelcosign`
+and `yed_buildcancel` (the claim's target, `CurrentMember`, the refund and the `CANCEL_COSIGN` marker
+on S2's `build_intent_cancel`, the co-signature carrier signed last) — **47/47**. Of the K-25 stock
+set the roles need `signmessage` (the attestor agent's endpoint binding), `importprivkey` (the
+role scripts import attestor keys into their attestor wallets) and `dumpprivkey`
+(`yellowback_attest_wallet.py`): served, the keys in the signer — **19/34**. Nothing S3 owned is
+left to S4.
+
+**The signer (K-24).** The attestation equivocation guard (`signer/src/attest.rs`,
+`attest-signed.jsonl`, fsynced before a signature leaves; keyed by key, cited height and block hash,
+so another seq of the same key cannot sign a second price and a reorg is not equivocation), the
+cancel co-signature (its price locked through the same guard; a claimable statement refused in the
+signer), `sign_message` (the digest computed from the text), the imported-key store
+(`imported.json`, chain 2 of a `bip32` reference) and `dump_key`. README "The signer" has the
+requests. The 18 attestations of `yellowback_attest_vectors.json` (`vectors[]` with a secret,
+`valid[]`) replay byte for byte through the signer (`signer/tests/attest.rs`; the file is read by path,
+`YEWD_ATTEST_VECTORS` or a kogany checkout, hashed against `yewd/PIN`; one vector is inline so the
+check also runs without the file).
+
+**The roles.**
+- *Attestor `attest` mode* (`ycash6/contrib/yellowback/attest`): runs unchanged against yewd. Its
+  wallet calls (`yed_signattestation`, `yed_signcancelcosign`, `yed_buildcancel`, `signmessage`,
+  `set_signcancel`, `vault_send`, and the on-chain fallback's `yed_listunspent`, `listunspent`,
+  `createrawtransaction`, `signrawtransaction`, `sendrawtransaction`) are served or forwarded;
+  `subscribe` mode's `yed_addattestation` is the node's.
+- *Hawkeye member*: `hawkeye-ycash` reaches yewd as a ycashd. `yewd/qa/ycashd_pair.py` stands in for
+  the `ycashd` a tool starts itself (it starts ycash6 `-disablewallet` + yewd, the pair on the
+  caller's ports and credentials), so `crates/hawkeye/tests/regtest_self_signing.rs` runs unchanged
+  against the pair. `bond_exit.rs` runs against Hawkeye's mock ycashd (no node); the bond exit on a
+  real pair is the roles stage's `set_leave` + `yed_withdrawbond`.
+- *x402 `rpcWalletSigner`*: its call set (`getrawchangeaddress`, `listunspent`, `gettxout`,
+  `lockunspent`, `createrawtransaction` with the expiry and decimal-string amounts,
+  `signrawtransaction`, the verify-only `signrawtransaction hex [] []`, `sendrawtransaction`,
+  `yed_getnewaddress`, `yed_listunspent`) re-expressed in the roles stage against the pair. No
+  x402 change.
+- *Pool payout*: yolo calls no wallet RPC (the coinbase pays the pool, `yolo/src/rpc.rs:185-203`);
+  W8-c covers it, nothing here.
+
+**Findings.**
+- **F-S3-1** (harness): under `YEWD_BIN` the harness skips the `fullyNotified` wait for every node
+  (`util._yewd_skips_notified`), so the plain ycashd nodes of a mixed run lose their wallet
+  notification wait: `yellowback_attest_wallet.py`'s Sapling-funded mint on node 0 failed
+  (`insufficient-yec … in confirmed Sapling notes`, the note's block not yet notified). The S3 gate
+  keeps the wait and lets a pair answer `fullyNotified` for itself (`PairProxy`; yewd's barrier
+  brings its wallet to the tip at every call). For the harness chunk: skip the wait for pair nodes
+  only.
+- **F-S3-2** (Hawkeye, pre-existing, not yewd's): `regtest_self_signing.rs` fails against plain
+  ycash6 `65cb4ae0f`: the self-signed `SET_JOIN`'s bond pays a member key the node wallet does not
+  hold, so `set_sendact` refuses it (`vault-send-outflow`, rpcversion 8's `HandoffSend`). The engine
+  sends the same way (`engine/mod.rs:558`, `engine/slash.rs:855`). Proposed (not committed, diff in the
+  S3 report): the test passes `{"allowoutflow": …}`; the client gains `set_sendact` options and the
+  engine passes the bond plus the fee. With the test change the test passes against ycash6 and
+  against the pair.
+- **F-S3-3** (record): `importprivkey` of a new key sets the signer's sign-once restore marker; ycashd
+  sets it for a key that is, or later becomes, a set member (`MarkVaultKeyImported`,
+  `VaultCheckJoins`). The role scripts import member keys, so the effect is the same there; a
+  non-member import makes yewd ask for `set_acknowledgerestore` where ycashd would not.
+- **F-S3-4** (record): `dumpprivkey` returns a WIF, so the secret passes through the façade's memory
+  on its way to the caller; the signer produces it (§4.3 rule 2), the façade never stores it.
+- **F-S3-5** (record): `yed_getvault` reports no claim intent's `claimRefHeight`; yewd reads the
+  claim's `REDEEM` payload `refHeight` from the claim transaction (`getrawtransaction`, its intent
+  unspent), which is what the index records and what ycashd's mempool path reads.
+- **F-S3-6** (remaining, as F-S2-8): `yed_withdrawbond` to a Sapling address waits for the Sapling
+  build in the signer.
+
+### S3 exit gate (as run)
+
+- `yewd/scripts/check-yewd.sh`: fmt, clippy `-D warnings`, the crates' tests, incl.
+  `signer/tests/attest.rs` (the vectors; the guard: same price reused, a second price refused under
+  the same and another seq, a reorg allowed, a restart kept; the co-signature's price lock and the
+  claimable refusal; `signmessage`; import/dump; the bond's CLTV path).
+- `yewd/qa/s3_roles.py` on ycash6 `vaults/kogany-compat` (`65cb4ae0f` binaries, harness of
+  `eac62c942`), every stage **passing**:
+  `--stage=attest_wallet` (`yellowback_attest_wallet.py` unchanged, nodes 6 and 7 pairs),
+  `--stage=attest_bond` (`yellowback_attest_bond.py`, node 0 a pair: it registers and mints),
+  `--stage=attest_agent` (`yellowback_attest_agent.py`, the shipped agent against pairs 6 and 7),
+  `--stage=cancel_agent` (`yellowback_cancel_agent.py`, the four agents' wallet node 6 a pair:
+  imports, bindings by `signmessage`, co-signatures, cancels over the direct path and the on-chain
+  fallback), and `--stage=roles` (this file's steps: register, sign and the guard across a restart,
+  `signmessage`/`verifymessage`, import/dump both ways, a ycashd claim co-signed and cancelled by yewd,
+  an equivocation reported by yewd with `wait=false` ejecting the attestor, `set_leave` and
+  `yed_withdrawbond`, the x402 call set), with `yed_getstatehash` and `vault_getinfo.statehash` equal
+  on every node but the stock one at each checkpoint. `yellowback_cancel_limit.py` is re-expressed
+  in the roles stage, not run on a pair: its node 0 mints, notices and claims while armed (F-S2-4).
+- Hawkeye `crates/hawkeye/tests/regtest_self_signing.rs` with F-S3-2's test change, against ycash6
+  alone and against `ycashd_pair.py` (pass both); `bond_exit.rs` (mock) passes.
+- Not run here: the same on kogany (W5/W7 not merged).
 
 ## 4. CI (workspace plan §5)
 

@@ -21,6 +21,7 @@
 //! public material only (K-24, plan §4.3 rule 2).
 
 pub mod act;
+pub mod attest;
 pub mod client;
 pub mod preview;
 
@@ -51,6 +52,8 @@ pub enum KeyRef {
     /// signatures, a selector) the façade already placed and the signer keeps as it is.
     None,
     /// The BIP32 key `m/44'/347'/0'/chain/index` (P2PKH; also a set member or admit key).
+    /// `chain` [`IMPORTED_CHAIN`] names the signer's imported key `index` instead
+    /// (`importprivkey`, S3): not a derivation, an entry of the signer's key store.
     Bip32 { chain: u32, index: u32 },
     /// The post-quantum key `DerivePQSeed(seed, scheme, index)` (`TX_PQPKH`).
     Pq { scheme: u8, index: u32 },
@@ -65,7 +68,18 @@ pub enum KeyRef {
     /// carries the bundle ([`SignInput::carrier_bundle`]), which the signer hashes into the
     /// redeem script it checks the prevout against and pushes into the scriptSig.
     Carrier { chain: u32, index: u32 },
+    /// The key of an attestor or set-member **bond** `P2SH(<locktime> CLTV DROP <pk> CHECKSIG)`
+    /// (`yed_withdrawbond`, S3): the signer rebuilds the redeem script from the key and the
+    /// locktime, checks the prevout against it and signs the CLTV path (`<sig> <redeem>`).
+    Bond {
+        chain: u32,
+        index: u32,
+        locktime: u32,
+    },
 }
+
+/// The `chain` of a [`KeyRef::Bip32`] that names an imported key (`importprivkey`).
+pub const IMPORTED_CHAIN: u32 = 2;
 
 /// One transaction input as the signer sees it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,6 +274,87 @@ pub struct Imported {
     pub present: u32,
 }
 
+/// A price attestation (`yed_signattestation`, `yed_revive`; S3): the signer derives the key,
+/// checks it is `pubkey` (the attestor record's key, from the node), recomputes `AttestMessage`
+/// and passes the **equivocation guard** (`attest-signed`) before it signs: a second price for one
+/// `(key, citedHeight, blockHash)` is refused, the same price returns the recorded signature.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttestRequest {
+    pub key: KeyRef,
+    /// The attestor key the record names, hex (33 bytes).
+    pub pubkey: String,
+    pub seq: u16,
+    pub price_micro_usd: u32,
+    pub cited_height: u32,
+    /// The block hash at `cited_height` (display hex).
+    pub block_hash: String,
+}
+
+/// A signed (or recalled) attestation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttestSigned {
+    /// The 74 bytes, hex.
+    pub hex: String,
+    /// The guard already held this price for this height: the recorded signature.
+    pub reused: bool,
+}
+
+/// A cancel co-signature (`yed_signcancelcosign`, S3): the member's price statement at the
+/// claim's `R`, locked through the equivocation guard, then the recoverable signature over
+/// `CancelCosignMessage`. The signer refuses a statement under which the vault was claimable
+/// (`cancel-statement-claimable`), so it never signs a cancel of an honest claim.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CosignRequest {
+    pub key: KeyRef,
+    pub pubkey: String,
+    pub seq: u16,
+    /// The attestor set (display hex).
+    pub set_id: String,
+    /// The claimant intent, `txid:n`.
+    pub intent: String,
+    pub ref_height: u32,
+    /// The block hash at `ref_height` (display hex).
+    pub block_hash: String,
+    /// The price stated; `None`: the price this key already signed for `ref_height`.
+    pub price_micro_usd: Option<u32>,
+    /// The vault the claim spent, as the cancel is judged against it.
+    pub collateral_zat: i64,
+    pub minted_cents: i64,
+    pub claim_threshold_bps: i64,
+}
+
+/// A co-signature.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cosigned {
+    /// The 69 bytes `price_le32 ‖ sig65`, hex.
+    pub cosig: String,
+    pub price_micro_usd: u32,
+    pub reused: bool,
+}
+
+/// `signmessage` (S3): the signer computes the message digest itself (the magic prefix, so a
+/// message can never be a transaction digest) and signs it recoverably.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageRequest {
+    pub key: KeyRef,
+    pub message: String,
+}
+
+/// `importprivkey`: a WIF of this network into the signer's key store.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportKeyRequest {
+    pub wif: String,
+}
+
+/// The imported key's place in the store ([`KeyRef::Bip32`] with [`IMPORTED_CHAIN`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportedKey {
+    pub index: u32,
+    pub pubkey: String,
+    /// `false`: the store already held it.
+    pub new: bool,
+}
+
 /// What the signer says about itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
@@ -280,6 +375,12 @@ pub enum Request {
     ListSigned,
     ImportSigned(Vec<SignedRecord>),
     AcknowledgeRestore,
+    SignAttestation(AttestRequest),
+    CancelCosign(CosignRequest),
+    SignMessage(MessageRequest),
+    ImportKey(ImportKeyRequest),
+    /// `dumpprivkey`: the WIF of a transparent key (the dump is the signer's, §4.3 rule 2).
+    DumpKey(KeyRef),
 }
 
 /// A request with its protocol version.
@@ -329,6 +430,18 @@ pub mod refuse {
     pub const SET_SIGN_ONCE: &str = "set-sign-once";
     /// The restore marker is set and the prevout has no record.
     pub const SET_SIGN_RESTORED: &str = "set-sign-restored";
+    /// The equivocation guard holds another price for this key and height (EQV-1).
+    pub const EQUIVOCATION_GUARD: &str = "equivocation-guard";
+    /// A price outside `[PRICE_MIN, PRICE_MAX]`.
+    pub const ATTEST_RANGE: &str = "attest-range";
+    /// A cancel co-signature with no price given and none signed for the height.
+    pub const PRICE_REQUIRED: &str = "price-required";
+    /// A cancel co-signature whose price says the vault was claimable.
+    pub const CANCEL_STATEMENT_CLAIMABLE: &str = "cancel-statement-claimable";
+    /// The guard could not be written; nothing was signed.
+    pub const GUARD_WRITE_FAILED: &str = "guard-write-failed";
+    /// A key the signer does not hold (an imported index past its store, a bad WIF).
+    pub const KEY_NOT_HELD: &str = "key-not-held";
     /// Anything else (a derivation, the store).
     pub const FAILED: &str = "failed";
 }
@@ -345,6 +458,13 @@ pub enum Response {
     Records(SignedRecords),
     Imported(Imported),
     Acknowledged(SignedRecords),
+    Attestation(AttestSigned),
+    Cosign(Cosigned),
+    /// A `signmessage` signature: the 65 recoverable bytes, hex (the façade writes them base64).
+    MessageSig(String),
+    ImportedKey(ImportedKey),
+    /// A WIF.
+    Dumped(String),
     Refused(Refusal),
 }
 
@@ -409,6 +529,9 @@ pub struct PublicBundle {
     pub sapling_dfvk: String,
     /// The post-quantum public keys asked for.
     pub pq: Vec<PqPublic>,
+    /// The public keys of the signer's imported keys, in store order (S3, `importprivkey`), hex.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imported: Vec<String>,
 }
 
 #[cfg(test)]

@@ -126,6 +126,16 @@ impl SignOnce {
         Ok((added, present))
     }
 
+    /// Set the restore marker (an imported key brings no sign-once history; ycash6
+    /// `MarkVaultKeyImported`).
+    pub fn mark_restored(&mut self) -> Result<(), String> {
+        if self.restored {
+            return Ok(());
+        }
+        self.restored = true;
+        self.save()
+    }
+
     pub fn acknowledge(&mut self) -> Result<(), String> {
         self.restored = false;
         self.save()

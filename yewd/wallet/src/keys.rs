@@ -27,6 +27,8 @@ pub const PQ_LOOKAHEAD: u32 = 20;
 /// The external (receive) and internal (change) chains.
 pub const EXTERNAL: u32 = 0;
 pub const INTERNAL: u32 = 1;
+/// The signer's imported keys (`importprivkey`, S3): `chain` 2 of a [`TKey`], `index` the store's.
+pub const IMPORTED: u32 = yewd_proto::IMPORTED_CHAIN;
 
 #[derive(Clone, Debug)]
 pub struct Xpub {
@@ -120,6 +122,22 @@ impl KeyBook {
             });
         }
         Ok(())
+    }
+
+    /// Watch the signer's imported key `index` (its public key from the signer's bundle).
+    pub fn add_imported(&mut self, index: u32, pubkey: [u8; 33]) {
+        if self.key(IMPORTED, index).is_some() {
+            return;
+        }
+        let hash = keys::hash160(&pubkey);
+        // a key the seed also derives stays the seed's
+        self.by_hash.entry(hash).or_insert(self.tkeys.len());
+        self.tkeys.push(TKey {
+            chain: IMPORTED,
+            index,
+            pubkey,
+            hash,
+        });
     }
 
     pub fn key(&self, chain: u32, index: u32) -> Option<&TKey> {
