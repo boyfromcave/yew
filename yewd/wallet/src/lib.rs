@@ -31,6 +31,7 @@ pub mod sapling;
 pub mod send;
 pub mod state;
 pub mod vaultrpc;
+pub mod yed;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;

@@ -179,6 +179,7 @@ class YewdS2(YellowbackTestFramework):
         a = user.getnewaddress()
         t1 = y.sendtoaddress(a, 3)
         t2 = y.sendmany('', {user.getnewaddress(): Decimal('1.5'), user.getnewaddress(): 2})
+        self.sync()
         assert t1 in user.getrawmempool() and t2 in user.getrawmempool()
         self.confirm(t1, t2)
         assert_equal(user.getreceivedbyaddress(a), 3)

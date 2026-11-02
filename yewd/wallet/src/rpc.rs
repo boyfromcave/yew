@@ -71,6 +71,7 @@ pub fn served(method: &str) -> bool {
     SERVED.contains(&method)
         || crate::vaultrpc::SERVED.contains(&method)
         || crate::send::SERVED.contains(&method)
+        || crate::yed::SERVED.contains(&method)
 }
 
 /// Every served wallet method, S1's reads and S2's builders.
@@ -79,6 +80,7 @@ pub fn all_served() -> Vec<&'static str> {
         .iter()
         .chain(crate::vaultrpc::SERVED)
         .chain(crate::send::SERVED)
+        .chain(crate::yed::SERVED)
         .copied()
         .collect()
 }
@@ -323,6 +325,7 @@ impl Wallet {
             "yed_listpositions" => self.yed_listpositions(node, p).await,
             m if crate::vaultrpc::SERVED.contains(&m) => self.vault_call(node, m, p).await,
             m if crate::send::SERVED.contains(&m) => self.send_call(node, m, p).await,
+            m if crate::yed::SERVED.contains(&m) => self.yed_call(node, m, p).await,
             _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
         }
     }
