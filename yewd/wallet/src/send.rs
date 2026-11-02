@@ -38,6 +38,49 @@ pub const SERVED: &[&str] = &[
 /// default relay fee, 54 zat; ycashd adds such change to the fee).
 const DUST: i64 = 54;
 
+/// The scriptSig a wallet coin's input will carry: a post-quantum signature's pushes for
+/// `TX_PQPKH`, the P2PKH maximum otherwise.
+fn script_sig_size(script: &[u8]) -> usize {
+    match yew_core::pq::pqpkh_of(script) {
+        Some(id) => yew_core::pq::pq_sig_pushes_size(id.scheme).unwrap_or(MAX_P2PKH_SCRIPT_SIG),
+        None => MAX_P2PKH_SCRIPT_SIG,
+    }
+}
+
+/// ycashd's fee of a transaction with a post-quantum input (`CWallet::CreateTransaction`,
+/// quantum plan §4.5, D-Q-23 (b), D-Q-26): max(min(max(policy fee, PQSizeFee(LEGACY_DEFAULT_FEE,
+/// bytes)), PQMaxTxFee()), the ZIP-317 conventional fee), the plain rate and the cap as the node
+/// reports them (`yed_getinfo.params.fees.network`: `plain.zatPerKB`, `yellowback.maxTxFeeZat`);
+/// without a live Yellowback the -pqfeerate default (the relay floor, 1,000 zat/kB) and -maxtxfee.
+async fn pq_spend_fee(
+    node: &dyn Node,
+    tx: &Transaction,
+    sizes: &[usize],
+    conventional: i64,
+) -> Result<i64, RpcError> {
+    const LEGACY_DEFAULT_FEE: i64 = 1000;
+    let (rate, cap) = match node::call(node, "yed_getinfo", serde_json::json!([])).await {
+        Ok(v) => {
+            let n = &v["params"]["fees"]["network"];
+            (
+                n["plain"]["zatPerKB"].as_i64().unwrap_or(1000),
+                n["yellowback"]["maxTxFeeZat"]
+                    .as_i64()
+                    .unwrap_or(10_000_000),
+            )
+        }
+        Err(_) => (1000, 10_000_000),
+    };
+    let unsigned = tx
+        .serialize()
+        .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?
+        .len();
+    let compact = |n: usize| if n <= 252 { 1 } else { 3 };
+    let bytes = unsigned + sizes.iter().map(|n| n + compact(*n) - 1).sum::<usize>();
+    let size_fee = LEGACY_DEFAULT_FEE.max(rate * bytes as i64 / 1000);
+    Ok(conventional.max(size_fee).min(cap).max(conventional))
+}
+
 impl Wallet {
     pub async fn send_call(
         &mut self,
@@ -62,12 +105,13 @@ impl Wallet {
         &self,
         node: &dyn Node,
         min_depth: i64,
+        with_pq: bool,
     ) -> Result<Vec<(OutPoint, i64, Vec<u8>)>, RpcError> {
         let spent = self.mempool_spent();
         let reserved = self.yed_reserved(node).await?;
         let mut v = Vec::new();
         for (c, d) in self.available_coins(None) {
-            if !matches!(c.owner, Owner::T(..))
+            if !(matches!(c.owner, Owner::T(..)) || with_pq && matches!(c.owner, Owner::Pq(..)))
                 || spent.contains(&(c.txid.clone(), c.vout))
                 || reserved.contains(&(c.txid.clone(), c.vout))
             {
@@ -104,7 +148,9 @@ impl Wallet {
         min_depth: i64,
     ) -> Result<String, RpcError> {
         let next = next_block(node).await?;
-        let coins = self.spendable_yec(node, min_depth).await?;
+        // ycashd's AvailableCoins: the wallet's TX_PQPKH coins are selected too (wallet_pq_address.py,
+        // yellowback_fees_reaccept.py), priced as a PQ spend below
+        let coins = self.spendable_yec(node, min_depth, true).await?;
         let total: i64 = recipients.iter().map(|r| r.1).sum();
         let subtract = recipients.iter().filter(|r| r.2).count() as i64;
         let mut fee = 10_000i64;
@@ -169,10 +215,16 @@ impl Wallet {
                     script_pubkey: s,
                 });
             }
-            let sizes = vec![MAX_P2PKH_SCRIPT_SIG; tx.vin.len()];
-            let want = tx
+            let sizes: Vec<usize> = chosen.iter().map(|c| script_sig_size(&c.2)).collect();
+            let mut want = tx
                 .zip317_conventional_fee(&sizes)
                 .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
+            if chosen
+                .iter()
+                .any(|c| yew_core::pq::pqpkh_of(&c.2).is_some())
+            {
+                want = pq_spend_fee(node, &tx, &sizes, want).await?;
+            }
             if want > fee {
                 fee = want;
                 continue;
@@ -651,7 +703,7 @@ impl Wallet {
             .map(|i| (txid_hex(&i.prevout.txid), i.prevout.n))
             .collect();
         let coins: Vec<_> = self
-            .spendable_yec(node, 0)
+            .spendable_yec(node, 0, false)
             .await?
             .into_iter()
             .filter(|c| !used.contains(&(txid_hex(&c.0.txid), c.0.n)))

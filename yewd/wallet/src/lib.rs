@@ -184,6 +184,13 @@ pub struct Wallet {
     signer: Box<dyn Signer>,
     parsed: BTreeMap<String, Parsed>,
     mempool_seen: BTreeSet<String>,
+    /// ycashd's `ReacceptWalletTransactions` at wallet open: the first mempool read offers the
+    /// wallet's own unconfirmed transactions to the node again (a restarted node's mempool is
+    /// empty; yellowback_fees_reaccept.py).
+    reaccept_pending: bool,
+    /// The chain facts (`refresh_chain`) were read since the wallet opened: a restarted pair whose
+    /// wallet is already at the node's tip still reads them once (the Vault activation height).
+    chain_read: bool,
     pub coins: Vec<Coin>,
     pub notes: Vec<NoteRow>,
     /// Chain facts the read RPCs need, refreshed by [`Wallet::sync`] when the tip moves.
@@ -432,6 +439,8 @@ impl Wallet {
             signer,
             parsed: BTreeMap::new(),
             mempool_seen: BTreeSet::new(),
+            reaccept_pending: true,
+            chain_read: false,
             coins: Vec::new(),
             notes: Vec::new(),
             chain: ChainFacts::default(),
@@ -701,6 +710,10 @@ impl Wallet {
     /// whether anything changed.
     pub async fn sync(&mut self, node: &dyn Node) -> Result<bool, RpcError> {
         let mut changed = false;
+        if !self.chain_read {
+            self.refresh_chain(node).await?;
+            self.chain_read = true;
+        }
         for _attempt in 0..4 {
             let best = node::best_hash(node).await?;
             if self.st.tip.as_ref().is_some_and(|t| t.hash == best) {
@@ -866,7 +879,27 @@ impl Wallet {
     /// Read the node's mempool: admit relevant transactions not seen yet, drop wallet
     /// transactions that left it unmined.
     async fn sync_mempool(&mut self, node: &dyn Node) -> Result<bool, RpcError> {
-        let ids: BTreeSet<String> = node::mempool(node).await?.into_iter().collect();
+        let mut ids: BTreeSet<String> = node::mempool(node).await?.into_iter().collect();
+        if std::mem::take(&mut self.reaccept_pending) {
+            let mut own: Vec<(i64, String, String)> = self
+                .st
+                .wtx
+                .iter()
+                .filter(|(t, w)| w.block.is_none() && !ids.contains(*t))
+                .filter(|(t, _)| self.parsed.get(*t).is_some_and(|p| !p.coinbase))
+                .map(|(t, w)| (w.time_received, t.clone(), w.hex.clone()))
+                .collect();
+            own.sort();
+            for (_, txid, hex) in own {
+                // the node judges it again; a refusal leaves it to the drop below
+                if node::call(node, "sendrawtransaction", serde_json::json!([hex, true]))
+                    .await
+                    .is_ok()
+                {
+                    ids.insert(txid);
+                }
+            }
+        }
         let mut changed = false;
         let mut fresh: Vec<(String, Vec<u8>)> = Vec::new();
         for txid in &ids {
