@@ -75,9 +75,39 @@ from test_framework.authproxy import JSONRPCException                         # 
 _start_node = util.start_node
 
 
+class PairProxy:
+    """A pair node's RPC proxy. The harness skips the fullyNotified wait for every node under
+    YEWD_BIN (a -disablewallet backend never reports it), which leaves the plain ycashd nodes of a
+    mixed run without their wallet-notification wait (their wallet can lag a block it has: finding
+    F-S3-1). So the wait is kept, and a pair answers fullyNotified for itself: yewd brings its wallet
+    to the tip at every wallet call (the barrier, H1)."""
+
+    def __init__(self, inner):
+        self.__dict__['_inner'] = inner
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._inner, name, value)
+
+    def getblockchaininfo(self, *a):
+        r = self._inner.getblockchaininfo(*a)
+        r['fullyNotified'] = True
+        return r
+
+    def getmempoolinfo(self, *a):
+        r = self._inner.getmempoolinfo(*a)
+        r['fullyNotified'] = True
+        return r
+
+
+util._yewd_skips_notified = lambda: False
+
+
 def _start_node_pairs(i, *a, **kw):
     if i in PAIRS:
-        return _start_node(i, *a, **kw)
+        return PairProxy(_start_node(i, *a, **kw))
     saved = os.environ.pop('YEWD_BIN')
     try:
         return _start_node(i, *a, **kw)
