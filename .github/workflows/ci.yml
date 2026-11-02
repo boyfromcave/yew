@@ -22,6 +22,12 @@
 #                yewd-node (ycashd from a trusted ycash6 run at the commit yewd/PIN records) and
 #                yewd-gates (the S0 round trip and the S1-S3 stage gates, one job each, report-only
 #                until each stage's gate is seen green).
+#   kogany       (report-only; a push to or a dispatch on vaults/kogany-compat) scripts/kogany-leg.sh:
+#                the W1 devnet acceptance (core/tests/devnet.rs) through lightwalletd-dd in front of
+#                a regtest kogany node (the third node line, workspace kogany plan W9-c), its ycash6
+#                test rig standing in for the devnet tool. zakurad is kogany's zakurad-bin artifact
+#                at KOGANY_REF, else built at that commit; ycashd is ycash6's node-bin of
+#                vaults/kogany-compat; lightwalletd-dd is built at proto/PIN.
 # Not in this workflow: the devnet acceptance suites (scripts/devnet-*.sh). They need a workspace
 # devnet (an ARMED devnet from ycash-dd, the attest agent, lightwalletd-dd serving --yellowback,
 # the Python test framework), so they run nightly, non-gating, in devnet-nightly.yml: its `hosted`
@@ -489,3 +495,135 @@ jobs:
         with:
           name: yew-web-BUNDLE-SHA256SUMS
           path: web/dist/BUNDLE-SHA256SUMS
+
+  # The kogany leg (report-only until the lead architect flips it: drop continue-on-error). YEW's
+  # own build restores rust-cache and saves nothing (zakurad, ycashd, lightwalletd-dd and
+  # fetch-params.sh are other repositories' code).
+  kogany:
+    if: github.ref_name == 'vaults/kogany-compat' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    name: kogany (report-only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: read  # gh run list/download on kogany's and ycash6's runs
+    env:
+      # kogany vaults/kogany-compat at W5-f (the YED module registered: the real index answers)
+      KOGANY_REF: 1eca93d3f462fb5a10815b4267acb9157843b253
+      YCASH6_REPO: boyfromcave/ycash6
+      YCASH6_BRANCH: vaults/kogany-compat
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # zakurad-bin.tgz: zakurad (dev profile, --features ycash, ubuntu-24.04, the runner's librocksdb)
+      # and zakurad-bin.json, from a push, schedule or dispatch run of kogany at KOGANY_REF only (the
+      # contract of the workspace's docs/plans/kogany/ci-design.md), never a pull_request run.
+      - name: kogany's zakurad-bin at KOGANY_REF
+        id: zakurad
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$KOGANY_REF" in *[!0-9a-f]*|'') echo "::error::KOGANY_REF is not a commit id"; exit 1 ;; esac
+          trusted='select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")'
+          runs=$(gh run list -R boyfromcave/kogany -c "$KOGANY_REF" -L 50 --json databaseId,event,headSha \
+            -q ".[] | select(.headSha == \"$KOGANY_REF\") | $trusted | .databaseId" 2>/dev/null || true)
+          for r in $runs; do
+            if gh run download "$r" -R boyfromcave/kogany -n zakurad-bin -D "$RUNNER_TEMP/zk-dl" 2>/dev/null \
+               && [ -f "$RUNNER_TEMP/zk-dl/zakurad-bin.tgz" ]; then
+              mkdir -p "$RUNNER_TEMP/zk" && tar xzf "$RUNNER_TEMP/zk-dl/zakurad-bin.tgz" -C "$RUNNER_TEMP/zk"
+              cat "$RUNNER_TEMP/zk/zakurad-bin.json"
+              echo "ZAKURAD=$RUNNER_TEMP/zk/zakurad" >> "$GITHUB_ENV"
+              echo "got=true" >> "$GITHUB_OUTPUT"
+              echo "zakurad from boyfromcave/kogany run $r"; exit 0
+            fi
+          done
+          echo "got=false" >> "$GITHUB_OUTPUT"
+          echo "no zakurad-bin of boyfromcave/kogany at $KOGANY_REF: building it here"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: boyfromcave/kogany
+          ref: ${{ env.KOGANY_REF }}
+          path: kogany
+          persist-credentials: false
+          sparse-checkout: ${{ steps.zakurad.outputs.got == 'true' && '.github/actions/setup-zakura-build' || '' }}
+      # kogany's setup-zakura-build as its script (librocksdb for zakurad). The fallback build fails at
+      # dependency resolution until boyfromcave/zakura-common-ycash exists on GitHub (kogany plan K-2).
+      - name: kogany build packages
+        env:
+          INSTALL_LIBCLANG: "false"
+          INSTALL_PROTOC: "false"
+        run: bash kogany/.github/actions/setup-zakura-build/install-ubuntu-packages.sh
+      - name: build zakurad (kogany at KOGANY_REF, --features ycash)
+        if: steps.zakurad.outputs.got != 'true'
+        working-directory: kogany
+        env:
+          CARGO_INCREMENTAL: 0
+        run: |
+          cargo build --locked -p zakura --features ycash --bin zakurad
+          echo "ZAKURAD=$GITHUB_WORKSPACE/kogany/target/debug/zakurad" >> "$GITHUB_ENV"
+      - name: zakurad runs here
+        run: |
+          if ldd "$ZAKURAD" | grep 'not found'; then echo "::error::zakurad needs a library this runner lacks"; exit 1; fi
+          "$ZAKURAD" --version
+      - name: ycashd from ycash6's node-bin (vaults/kogany-compat)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          trusted='select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")'
+          runs=$(gh run list -R "$YCASH6_REPO" -w yellowback-tests.yml -b "$YCASH6_BRANCH" -L 20 --json databaseId,event -q ".[] | $trusted | .databaseId")
+          for r in $runs; do
+            if gh run download "$r" -R "$YCASH6_REPO" -n node-bin -D "$RUNNER_TEMP/dl" 2>/dev/null; then
+              echo "ycashd from $YCASH6_REPO run $r"; break
+            fi
+          done
+          mkdir -p "$RUNNER_TEMP/node"
+          tar -xzf "$RUNNER_TEMP/dl/node-bin.tgz" -C "$RUNNER_TEMP/node" src/ycashd src/ycash-cli
+          test -x "$RUNNER_TEMP/node/src/ycashd"
+          echo "YCASHD=$RUNNER_TEMP/node/src/ycashd" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ env.YCASH6_REPO }}
+          ref: ${{ env.YCASH6_BRANCH }}
+          path: ycash6
+          persist-credentials: false
+          sparse-checkout: zcutil
+      - name: fetch zcash params
+        run: ycash6/zcutil/fetch-params.sh
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.26.10'
+          cache: false
+      - name: lightwalletd-dd at proto/PIN
+        run: |
+          set -euo pipefail
+          rev=$(awk '{print $2}' proto/PIN)
+          case "$rev" in *[!0-9a-f]*|'') echo "::error::bad proto/PIN"; exit 1 ;; esac
+          git init -q "$RUNNER_TEMP/lwd"
+          git -C "$RUNNER_TEMP/lwd" fetch -q --depth 1 https://github.com/boyfromcave/lightwalletd.git "$rev"
+          git -C "$RUNNER_TEMP/lwd" checkout -q FETCH_HEAD
+          (cd "$RUNNER_TEMP/lwd" && CGO_ENABLED=0 go build -mod=vendor -o "$RUNNER_TEMP/lightwalletd" .)
+          echo "LWD_BIN=$RUNNER_TEMP/lightwalletd" >> "$GITHUB_ENV"
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler && protoc --version
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+      - name: scripts/kogany-leg.sh (report-only)
+        env:
+          KOGANY_RIG_DIR: ${{ runner.temp }}/kogany-rig
+        run: scripts/kogany-leg.sh
+      - name: upload the rig logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: yew-kogany-logs
+          path: |
+            ${{ runner.temp }}/kogany-rig/*.log
+            ${{ runner.temp }}/kogany-rig/*.json
+          retention-days: 14
+          if-no-files-found: ignore
