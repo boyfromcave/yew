@@ -3,7 +3,9 @@
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
 //! The façade→backend leg: one HTTP/1.1 POST per call to the wallet-less node's JSON-RPC
-//! endpoint, authenticated with the backend's cookie (re-read after a 401, so a backend restart
+//! endpoint over a small pool of kept-alive connections (a connection per call left thousands of
+//! sockets in TIME_WAIT under the parity suites and ran the host out of ephemeral ports, finding
+//! F-S5-8), authenticated with the backend's cookie (re-read after a 401, so a backend restart
 //! is followed) or a configured user and password. The body goes out and comes back as bytes:
 //! nothing is re-encoded, so amounts keep the node's decimal text.
 
@@ -42,10 +44,16 @@ impl std::fmt::Display for BackendError {
     }
 }
 
+/// Idle kept-alive connections the façade keeps to its backend.
+const POOL_MAX: usize = 8;
+
+type Sender = hyper::client::conn::http1::SendRequest<Full<Bytes>>;
+
 pub struct Backend {
     addr: SocketAddr,
     auth: BackendAuth,
     header: Mutex<Option<String>>,
+    idle: std::sync::Mutex<Vec<Sender>>,
 }
 
 impl Backend {
@@ -54,6 +62,7 @@ impl Backend {
             addr,
             auth,
             header: Mutex::new(None),
+            idle: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -98,41 +107,97 @@ impl Backend {
         Ok((status, out))
     }
 
+    async fn connect(&self) -> Result<Sender, BackendError> {
+        let stream = TcpStream::connect(self.addr)
+            .await
+            .map_err(|e| BackendError::Unreachable(format!("{}: {e}", self.addr)))?;
+        let (send, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .map_err(|e| BackendError::Unreachable(e.to_string()))?;
+        tokio::spawn(conn);
+        Ok(send)
+    }
+
+    /// An idle pooled connection that is still open, if any.
+    fn take_idle(&self) -> Option<Sender> {
+        let mut idle = self.idle.lock().unwrap_or_else(|e| e.into_inner());
+        while let Some(s) = idle.pop() {
+            if !s.is_closed() && s.is_ready() {
+                return Some(s);
+            }
+        }
+        None
+    }
+
+    fn put_idle(&self, s: Sender) {
+        if s.is_closed() {
+            return;
+        }
+        let mut idle = self.idle.lock().unwrap_or_else(|e| e.into_inner());
+        if idle.len() < POOL_MAX {
+            idle.push(s);
+        }
+    }
+
     async fn post(
         &self,
         path: &str,
         body: Bytes,
         auth: &str,
     ) -> Result<(StatusCode, Bytes), BackendError> {
+        // a pooled connection the backend closed meanwhile fails before any byte is answered:
+        // the call is then sent once more on a fresh connection
+        if let Some(send) = self.take_idle() {
+            match self.post_on(send, path, body.clone(), auth).await {
+                Err((true, _)) => {} // never sent: the connection was gone
+                r => return r.map_err(|(_, e)| e),
+            }
+        }
+        let send = self.connect().await?;
+        self.post_on(send, path, body, auth)
+            .await
+            .map_err(|(_, e)| e)
+    }
+
+    async fn post_on(
+        &self,
+        mut send: Sender,
+        path: &str,
+        body: Bytes,
+        auth: &str,
+    ) -> Result<(StatusCode, Bytes), (bool, BackendError)> {
         let fut = async {
-            let stream = TcpStream::connect(self.addr)
-                .await
-                .map_err(|e| BackendError::Unreachable(format!("{}: {e}", self.addr)))?;
-            let (mut send, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
-                .await
-                .map_err(|e| BackendError::Unreachable(e.to_string()))?;
-            tokio::spawn(conn);
             let req = Request::post(path)
                 .header(hyper::header::HOST, self.addr.to_string())
                 .header(hyper::header::AUTHORIZATION, auth)
                 .header(hyper::header::CONTENT_TYPE, "application/json")
                 .body(Full::new(body))
-                .map_err(|e| BackendError::Other(e.to_string()))?;
+                .map_err(|e| (false, BackendError::Other(e.to_string())))?;
+            // is_canceled: hyper never sent the request (the connection had closed)
             let resp = send
                 .send_request(req)
                 .await
-                .map_err(|e| BackendError::Other(e.to_string()))?;
+                .map_err(|e| (e.is_canceled(), BackendError::Other(e.to_string())))?;
             let status = resp.status();
+            let keep = !resp
+                .headers()
+                .get(hyper::header::CONNECTION)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.eq_ignore_ascii_case("close"));
             let out = resp
                 .into_body()
                 .collect()
                 .await
-                .map_err(|e| BackendError::Other(e.to_string()))?
+                .map_err(|e| (false, BackendError::Other(e.to_string())))?
                 .to_bytes();
-            Ok((status, out))
+            Ok((status, out, keep))
         };
-        tokio::time::timeout(CALL_TIMEOUT, fut)
+        let (status, out, keep) = tokio::time::timeout(CALL_TIMEOUT, fut)
             .await
-            .map_err(|_| BackendError::Other("timed out".into()))?
+            .map_err(|_| (false, BackendError::Other("timed out".into())))??;
+        if keep {
+            self.put_idle(send);
+        }
+        Ok((status, out))
     }
 }
