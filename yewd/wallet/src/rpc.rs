@@ -78,6 +78,7 @@ pub fn served(method: &str) -> bool {
         || crate::attest::SERVED.contains(&method)
         || crate::admin::SERVED.contains(&method)
         || crate::zsend::SERVED.contains(&method)
+        || crate::legacy::SERVED.contains(&method)
 }
 
 /// Every served wallet method, S1's reads and S2's builders.
@@ -92,6 +93,7 @@ pub fn all_served() -> Vec<&'static str> {
         .chain(crate::attest::SERVED)
         .chain(crate::admin::SERVED)
         .chain(crate::zsend::SERVED)
+        .chain(crate::legacy::SERVED)
         .copied()
         .collect()
 }
@@ -224,7 +226,7 @@ impl Wallet {
     // ------------------------------------------------------------------ chain views
 
     /// Depth of a height as of `asof` (`None`: now, with the mempool at 0).
-    fn depth_at(&self, height: Option<u32>, asof: Option<u32>) -> i64 {
+    pub(crate) fn depth_at(&self, height: Option<u32>, asof: Option<u32>) -> i64 {
         let top = asof
             .map(|a| a.min(self.tip_height()))
             .unwrap_or(self.tip_height());
@@ -236,7 +238,7 @@ impl Wallet {
         }
     }
 
-    fn tx_depth(&self, txid: &str, asof: Option<u32>) -> i64 {
+    pub(crate) fn tx_depth(&self, txid: &str, asof: Option<u32>) -> i64 {
         self.st
             .wtx
             .get(txid)
@@ -244,7 +246,7 @@ impl Wallet {
             .unwrap_or(-1)
     }
 
-    fn immature(&self, coinbase: bool, depth: i64) -> bool {
+    pub(crate) fn immature(&self, coinbase: bool, depth: i64) -> bool {
         coinbase && depth < (COINBASE_MATURITY + 1) as i64
     }
 
@@ -260,7 +262,7 @@ impl Wallet {
     }
 
     /// ycashd's `IsFromMe` debit: the value of own outputs a transaction spends.
-    fn debit(&self, txid: &str) -> i64 {
+    pub(crate) fn debit(&self, txid: &str) -> i64 {
         let Some(p) = self.parsed(txid) else { return 0 };
         p.tx.vin
             .iter()
@@ -341,7 +343,7 @@ impl Wallet {
 
     /// Whether `addr` (an `s…`/`t…`/`sq…` address) is in the address book: ycashd's `IsChange`
     /// is "mine and not in the book".
-    fn in_book(&self, script: &[u8]) -> bool {
+    pub(crate) fn in_book(&self, script: &[u8]) -> bool {
         script_address(self.network, script).is_some_and(|a| self.st.book.contains_key(&a))
     }
 
@@ -390,6 +392,7 @@ impl Wallet {
             m if crate::attest::SERVED.contains(&m) => self.attest_call(node, m, p).await,
             m if crate::admin::SERVED.contains(&m) => self.admin_call(node, m, p).await,
             m if crate::zsend::SERVED.contains(&m) => self.zsend_call(node, m, p).await,
+            m if crate::legacy::SERVED.contains(&m) => self.legacy_call(m, p).await,
             _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
         }
     }
@@ -601,7 +604,7 @@ impl Wallet {
     }
 
     /// The `status` of `gettransaction` (`mined`, `waiting`, `expiringsoon`, `expired`).
-    fn status(&self, expiry: u32, depth: i64) -> &'static str {
+    pub(crate) fn status(&self, expiry: u32, depth: i64) -> &'static str {
         if depth > 0 {
             return "mined";
         }

@@ -41,7 +41,7 @@ async fn every_wallet_method_answers_32601() {
             assert_eq!(msg, e, "{m}");
         }
     }
-    assert_eq!(n, 22 + 25 + 1 + 30 + 4);
+    assert_eq!(n, 22 + 25 + 1 + 30 + 4 + 4);
     for m in methods::OUT_OF_SCOPE {
         let (status, v, _) = call(&c, m, "[]").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{m}");
@@ -106,7 +106,7 @@ async fn batches_mix_local_and_forwarded() {
     )
     .await;
     let c = client(&f, "u", "p");
-    let body = r#"[{"id":1,"method":"getblockcount","params":[]},{"id":2,"method":"listtransactions","params":[]},{"id":3,"method":"decodescript","params":["6a"]}]"#;
+    let body = r#"[{"id":1,"method":"getblockcount","params":[]},{"id":2,"method":"listsinceblock","params":[]},{"id":3,"method":"decodescript","params":["6a"]}]"#;
     let (status, out) = c.call("/", Bytes::from(body)).await.unwrap();
     assert_eq!(status, StatusCode::OK);
     let v: Vec<serde_json::Value> = serde_json::from_slice(&out).unwrap();
@@ -246,9 +246,7 @@ async fn unreachable_backend_answers_warmup() {
         -28
     );
     assert_eq!(
-        call(&client(&f, "u", "p"), "listtransactions", "[]")
-            .await
-            .1["error"]["code"],
+        call(&client(&f, "u", "p"), "listsinceblock", "[]").await.1["error"]["code"],
         -32601
     );
 }

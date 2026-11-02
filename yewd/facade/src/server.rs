@@ -237,7 +237,9 @@ impl Facade {
             // -disablewallet: ycashd registers no wallet method, so each is "Method not found";
             // the augmented reads and sendrawtransaction are the node's own, the raw helpers stay
             return match class {
-                Some(Class::Wallet { .. }) => error_reply(code::METHOD_NOT_FOUND, "Method not found", id),
+                Some(Class::Wallet { .. }) => {
+                    error_reply(code::METHOD_NOT_FOUND, "Method not found", id)
+                }
                 Some(Class::Local) => {
                     let params = match params_of(env.params) {
                         Ok(p) => p,

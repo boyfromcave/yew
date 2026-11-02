@@ -54,6 +54,7 @@ pub enum Stage {
     S2,
     S3,
     S4,
+    S5,
 }
 
 impl Stage {
@@ -63,6 +64,7 @@ impl Stage {
             Stage::S2 => "S2",
             Stage::S3 => "S3",
             Stage::S4 => "S4",
+            Stage::S5 => "S5",
         }
     }
 }
@@ -171,6 +173,15 @@ pub const ROLE_WALLET: &[(&str, Stage)] = &[
     ("z_listreceivedbyaddress", S4),
 ];
 
+/// Stock wallet reads the scripts call beyond K-25's list, found by the S5 gate (F-S5-1):
+/// `wallet_pq_address.py`, `yellowback_wallet_restore.py`.
+pub const GATE_WALLET: &[(&str, Stage)] = &[
+    ("getaddressesbyaccount", S5),
+    ("listreceivedbyaddress", S5),
+    ("listtransactions", S5),
+    ("z_listaddresses", S5),
+];
+
 /// The rest of ycashd's wallet table (`src/wallet/rpcwallet.cpp`, `rpcdump.cpp`, the
 /// disclosure pair): outside K-25, answered `-32601` and never forwarded.
 pub const OUT_OF_SCOPE: &[&str] = &[
@@ -183,9 +194,7 @@ pub const OUT_OF_SCOPE: &[&str] = &[
     "keypoolrefill",
     "listaddresses",
     "listaddressgroupings",
-    "listreceivedbyaddress",
     "listsinceblock",
-    "listtransactions",
     "walletpassphrasechange",
     "walletconfirmbackup",
     "zcbenchmark",
@@ -199,7 +208,6 @@ pub const OUT_OF_SCOPE: &[&str] = &[
     "z_shieldcoinbase",
     "z_getnewaccount",
     "z_listaccounts",
-    "z_listaddresses",
     "z_listunifiedreceivers",
     "z_getaddressforaccount",
     "z_exportkey",
@@ -245,6 +253,7 @@ pub fn wallet_methods() -> impl Iterator<Item = (&'static str, Group, Stage)> {
         .chain(g(PQ_WALLET, Pq))
         .chain(g(STOCK_WALLET, Stock))
         .chain(g(ROLE_WALLET, Role))
+        .chain(g(GATE_WALLET, Stock))
 }
 
 /// The class of `method`; `None` = a node RPC, forwarded unchanged.
@@ -300,7 +309,8 @@ mod tests {
         assert_eq!(VAULT_WALLET.len() + YED_WALLET.len(), 47);
         assert_eq!(STOCK_WALLET.len(), 30, "K-25 scripts");
         assert_eq!(ROLE_WALLET.len(), 4, "K-25 roles");
-        assert_eq!(OUT_OF_SCOPE.len(), 39, "the rest of ycashd's wallet table");
+        assert_eq!(GATE_WALLET.len(), 4, "S5's finding F-S5-1");
+        assert_eq!(OUT_OF_SCOPE.len(), 36, "the rest of ycashd's wallet table");
     }
 
     #[test]

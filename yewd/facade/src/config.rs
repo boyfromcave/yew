@@ -378,7 +378,8 @@ impl Config {
                 rescan: a.flag("rescan"),
                 salvage: a.flag("salvagewallet"),
             },
-            disable_wallet: a.get("disablewallet").is_some_and(|v| v != "0") || a.flag("disablewallet"),
+            disable_wallet: a.get("disablewallet").is_some_and(|v| v != "0")
+                || a.flag("disablewallet"),
             backend_indexer: match a.get("backendindexer") {
                 Some(v) => Some(v.parse().map_err(|_| {
                     ConfigError(format!("yewd: -backendindexer={v} is not an ip:port"))

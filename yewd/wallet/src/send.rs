@@ -596,7 +596,10 @@ fn local_completeness(tx: &Transaction, signed_hex: String) -> J {
                     .with("vout", i.prevout.n as i64)
                     .with("scriptSig", String::new())
                     .with("sequence", i.sequence as i64)
-                    .with("error", "Operation not valid with the current stack size".to_string()),
+                    .with(
+                        "error",
+                        "Operation not valid with the current stack size".to_string(),
+                    ),
             );
         }
     }
