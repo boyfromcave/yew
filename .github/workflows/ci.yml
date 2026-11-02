@@ -35,7 +35,7 @@ on:
     # upgrade/vault-in-term (in-term claims, rpcversion 6), upgrade/quantum-vaults (post-quantum owners,
     # rpcversion 7; proto/PIN names lightwalletd-dd's upgrade/quantum-vaults commit, so lightwalletd-dd
     # is pushed first), main (the branch of record, AGENTS.md rule 2).
-    branches: &branches [main, harden/yellowback, upgrade/vault, upgrade/vault-in-term, upgrade/quantum-vaults]
+    branches: &branches [main, harden/yellowback, upgrade/vault, upgrade/vault-in-term, upgrade/quantum-vaults, vaults/kogany-compat]
   pull_request:
     branches: *branches
   workflow_dispatch:
