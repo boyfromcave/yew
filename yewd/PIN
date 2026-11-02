@@ -6,3 +6,4 @@ kogany b90fc9b197212a1607612809a6c06de4caccf542 vaults/kogany-compat 2026-11-01
 # vector <file> <sha256>. Read by path from a kogany vaults/kogany-compat checkout beside yew (or yew's own
 # byte-identical copy core/tests/vectors/), and refused unless the bytes hash to this value.
 vector pq_wallet_vectors.json 053c765de96e0b943b1d4c7ad1b93bc6dac6c0f2f4c1087a7779f2fd504db34c
+vector vault_vectors.json 2f7a3ab2fc909bca4772957f15696e8ed5f6feec6914f957e016adf5d0fd7dc8

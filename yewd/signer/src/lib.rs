@@ -13,6 +13,10 @@
 //! Unix-socket server, the encrypted store, signing, the sign-once records and the attestation
 //! guard; until then the façade runs this binary as a child process for each bundle request.
 
+pub mod server;
+pub mod sign;
+pub mod signonce;
+
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -25,6 +29,9 @@ use yewd_proto::{AccountXpub, PqPublic, PublicBundle, PublicRequest, PUBLIC_FORM
 /// The seed file's name inside the signer directory, and its format tag.
 pub const SEED_FILE: &str = "seed.json";
 pub const SEED_FORMAT: &str = "yewd-signer-seed-1";
+
+/// The socket `serve` listens on by default, inside the signer directory.
+pub const SOCKET_FILE: &str = "signer.sock";
 
 /// The most post-quantum keys one request may derive (SLH-DSA key generation is not free).
 pub const MAX_PQ_PER_REQUEST: u32 = 1_000;
@@ -53,6 +60,10 @@ struct SeedFile {
     mnemonic: String,
     /// The height a scan of this seed starts at (0: from genesis; a restored phrase).
     birthday: u64,
+    /// The seed was restored from a phrase (`init -mnemonic=`): the sign-once restore marker
+    /// starts set (07/F-5; ycashd's `-mnemonicfile` restore).
+    #[serde(default)]
+    restored: bool,
 }
 
 /// The seed file's path in `dir`.
@@ -107,6 +118,7 @@ pub fn init(
         network: network.chain_name().into(),
         mnemonic: phrase,
         birthday,
+        restored: mnemonic.is_some(),
     };
     let text = serde_json::to_string_pretty(&file).expect("serializable");
     let tmp = dir.join(format!("{SEED_FILE}.tmp"));
@@ -136,6 +148,7 @@ pub struct Keystore {
     network: Network,
     mnemonic: SecretString,
     birthday: u64,
+    restored: bool,
 }
 
 impl std::fmt::Debug for Keystore {
@@ -171,6 +184,7 @@ impl Keystore {
             network,
             mnemonic: SecretString::new(f.mnemonic),
             birthday: f.birthday,
+            restored: f.restored,
         })
     }
 
@@ -180,7 +194,18 @@ impl Keystore {
             network,
             mnemonic: SecretString::new(mnemonic.to_string()),
             birthday: 0,
+            restored: false,
         }
+    }
+
+    /// The phrase (the signer's own use only).
+    pub(crate) fn phrase(&self) -> &str {
+        &self.mnemonic
+    }
+
+    /// Whether the seed was restored from a phrase.
+    pub fn restored(&self) -> bool {
+        self.restored
     }
 
     pub fn network(&self) -> Network {
