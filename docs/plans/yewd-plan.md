@@ -50,7 +50,7 @@ the repository's `rust-toolchain.toml`.
 | S2 | builders and the signer boundary | done (§3.2): 40/47; the Sapling build in the signer: S4 |
 | S3 | roles: attestor `attest` mode, Hawkeye member, x402 `rpcWalletSigner` | done (§3.3): 47/47 |
 | S4 | the façade complete: all 47, R7, the K-25 stock set, error parity, hazards H1–H11 | **this revision** (§3.4): 47/47, R7, 34/34, the raw helpers |
-| S5 | the parity gate (three-way matrix, the 48 wallet-needing scripts, 7 nightly days) | — |
+| S5 | the parity gate (three-way matrix, the 48 wallet-needing scripts, 7 nightly days) | **this revision** (§3.5): column 3 runs end to end; the gate is not met — blocked on kogany node gaps (F-S5-3…), the 7 nightly days pending |
 
 ### S0 exit gate (as run)
 
@@ -519,6 +519,84 @@ Against ycash6 `vaults/kogany-compat` (`65cb4ae0f` binaries; the suites and harn
   tests that need kogany's indexer streams (H3, H4) and `setmocktime` (H11, F-S4-11).
 
 
+### 3.5 S5: the parity gate
+
+**Column 3 in the harness** (ycash6 `qa/rpc-tests/test_framework/kogany.py`, `YEWD_KOGANY`; ycash6
+`kc/yewd-s5`). With `YEWD_BIN` and `YEWD_KOGANY=<zakurad>` every node *i* is **kogany *i* + yewd *i***
+and no ycashd runs behind any node: kogany from `zakurad_config` (node *i*'s own arguments, slot *i*)
+with P2P on `p2p_port(i)` (so `connect_nodes` and the scripts' topology carry over), cookie RPC on
+`yewd_backend_rpc_port(i)`, the **indexer gRPC listener** on `yewd_backend_indexer_port(i)` and
+`mining.miner_address` = the pair's coinbase address; yewd on `rpc_port(i)` with `-backendindexer`.
+The scripts are unchanged. `YewdColumn` compares `vault_getinfo.statehash` and `yed_getstatehash`
+across the pairs at every `sync_blocks` (a node that does not serve the read, a stock node, is
+skipped). **The mixed variant** (`YEWD_YCASH6_PEER=1`) adds one ycashd `-disablewallet` that dials pair
+`YEWD_PEER` (default 0) and nothing else; at every sync point it must reach the pairs' tip and equal
+their state hashes, and at every mempool sync it must hold every pair's mempool transaction, so every
+transaction a sidecar builds is judged by ycash6 (§4.3 rule 3). kogany never solves Equihash (K-16), so
+in that variant a pair's `generate` is answered by the harness: kogany's template through yewd, the
+framework's (48,5) solver (as kogany's W8-c `kogany_mines.py`), `submitblock` through yewd.
+
+Other harness steps: **H8 for every pair** (`yewd -initwallet`, then the backend mines to its
+address; F-S4-1's rule; on kogany a node that names `-yellowbackpayoutaddress` mines to that address,
+F-S5-12); the 200-block cache (`cache_behavior='current'`) is mined by the run's own pairs
+(`yewd_build_cache`: the cached ycashd chain and wallets are read by neither a pair's backend nor yewd);
+`connect_nodes` uses `addnode "add"` and tolerates `-23` for a kogany pair; `-disablewallet` reaches
+yewd too. The shard manifest gains the **`pair` group** (the 50 wallet-needing scripts of `sidecar`)
+and the runner knows it.
+
+**Fixes the gate found in yewd** (each committed with its finding):
+- kogany's **indexer streams as wake-ups** (`facade/src/indexer.rs`, `-backendindexer`: H3, H4;
+  `qa/s5_streams.py` shows both streams held and a kogany-mined block seen at once);
+- the backend leg over a **pool of kept-alive connections** (F-S5-8: a connection per call exhausted
+  the host's ephemeral ports under the suites);
+- `signrawtransaction`'s completeness without a node verifier (F-S5-2), the façade's **mock clock**
+  (H11, F-S4-11), `-disablewallet`, `help` without a Yellowback category on a stock node;
+- the four stock reads beyond K-25 (`getaddressesbyaccount`, `listreceivedbyaddress`,
+  `listtransactions`, `z_listaddresses`, F-S5-1), the z_* post-quantum refusals and the refusal-only
+  `z_shieldcoinbase`/`z_mergetoaddress` (F-S5-10);
+- ycashd wallet behaviours: `ReacceptWalletTransactions` at open, the chain facts read once at open,
+  plain sends that select and price **PQ coins** (`CreateTransaction`'s PQ fee), `EnsurePQRecipientPayable`,
+  the dust refusals (`GetPQDustThreshold`), the size-priced fee fallback to the relay floor without a
+  price, `yed_sweepcarriers` on a locked wallet, a mempool intent's vault for `vault_buildcancel`;
+- the signer socket appears only at mode 0600 (bound under a temporary name, then renamed).
+
+**Findings** (for the coordinator's §9; *kogany* = a node gap, not the sidecar's):
+- **F-S5-1** (yewd, fixed): K-25's list missed four stock reads two scripts call.
+- **F-S5-2** (kogany): no script verifier outside a live Yellowback (`signrawtransaction` with `[]`
+  keys is ycashd's; kogany's `yed_validaterawtransaction` answers only while Yellowback is live).
+- **F-S5-3** (kogany): `yed_setquote` never refuses `no-payout-address` (`yellowback_rpc_contract.py`).
+- **F-S5-4** (kogany): `submitblock` answers a bare `rejected` where ycashd names the reason
+  (`bad-yellowback-bad-mint-*`; `yellowback_rpc_contract`, `claim`, `interm`, `redeem_boundary`).
+- **F-S5-5** (kogany): `yed_getvault.spendPending`/`spendTxid` are not read from the mempool.
+- **F-S5-6** (kogany): no `disconnectnode`, so `split_network` cannot cut a kogany↔kogany link
+  (`yellowback_lifecycle`, `activation_reorg`, …).
+- **F-S5-7** (kogany): transactions of a disconnected block do not return to the mempool
+  (`yellowback_reorg_restart`); a restarted kogany came back below its tip once (wallet_pq_address,
+  a flake: the pairs then failed to re-sync within the timeout).
+- **F-S5-8** (yewd, fixed): one TCP connection per backend call.
+- **F-S5-9** (both lines): a coinbase address that names no YED payout key: kogany refuses a Sapling
+  miner address ("Sapling coinbase construction is not supported"), so a Yellowback-live pair without a
+  payout address cannot `generate` (`yellowback_attest_wallet`). A node option for a miner address
+  without a payout default closes it.
+- **F-S5-10** (yewd, fixed): `z_shieldcoinbase`/`z_mergetoaddress` are called for their PQ refusals.
+- **F-S5-11** (kogany): no Falcon height (W3-c/F-1 open): `vault_pq_wallet_restore`, `yellowback_pq`,
+  `pq_dayone`, `vault_policy`, `wallet_pq_address`'s Falcon part.
+- **F-S5-12** (harness): kogany's payout key is its miner address only; a pair that names
+  `-yellowbackpayoutaddress` mines to it.
+- **F-S5-13** (record, §4.3 rule 3): scripts that read ycashd internals cannot run in column 3:
+  `debug.log` (`vault_dos`, `vault_rpc`, `yellowback_index`, `upgrade`, `stock_node`, `wr_flags`,
+  `mempool_limits`, `mining`), the datadir layout (`yellowback_hardening` h6, `vault_rpc`'s vault DB
+  wipe), init-error texts (`yellowback_fees_reaccept`'s `-yellowbackmaxtxfee` floor).
+- kogany read/shape gaps met on the way (each a W7/W8 parity item): `getblocktemplate` carries
+  `maxtime`, `yed_getstats.supplyCapCents` is null and its armed fields differ (`mint_armed`,
+  `cancel_limit`), `yed_gettxinfo` lacks register rows (`yellowback_attest`), `z_validateaddress`
+  answers `ismine: false`, `getblockchaininfo` lacks `chainhistoryroot` (`vault_upgrade`), reject texts
+  (`old-consensus-branch-id`, `OP_VERIFY`).
+
+### S5 exit gate (as run)
+
+<!-- S5 MATRIX -->
+
 ## 4. CI (workspace plan §5)
 
 Four jobs in `.github/workflows/ci.yml` (the cross-repository design is the workspace's
@@ -537,7 +615,11 @@ Four jobs in `.github/workflows/ci.yml` (the cross-repository design is the work
   it). Report-only until each stage's gate is seen green; the coordinator then sets the entry's
   `blocking: true`.
 
-The contract legs through `yewd` run in ycash6's mixed tier (`yewd-pair`): backend ycash6 now,
-kogany + `yewd` (column 3) once the harness has its kogany-backend mode (S5).
+The contract legs through `yewd` run in ycash6's mixed tier (`yewd-pair`): backend ycash6. Column 3
+(kogany + `yewd`, the harness's `YEWD_KOGANY` mode) is `.github/workflows/yewd-parity.yml`: nightly and
+on dispatch, one job per column (`pair`, `pair-mixed`) and mixed group, `qa/s5_parity.py` over the
+manifest's `pair` rows; report-only until S5's gate is seen green, and the gate's seven nights are read
+from its schedule history. `yewd-gates` also carries the S4 legs (`s4-contract-vault`,
+`s4-contract-yellowback`, `s4-facade`), report-only.
 yew's security workflows scan `yewd/` for code, and their lockfile inputs (OSV in `secops.yml`,
 cargo audit in `scripts/audit.sh`) include `yewd/Cargo.lock`.
