@@ -227,6 +227,21 @@ pub struct WalletService {
     signer: std::sync::Mutex<Option<SignerSource>>,
     wallet: Mutex<Option<Wallet>>,
     pub debug: bool,
+    /// The wallet options the command line gave (S4).
+    pub opts: std::sync::Mutex<WalletArgs>,
+}
+
+/// The ycashd wallet arguments yewd gives meaning to (S4; the harness hands them over).
+#[derive(Clone, Debug, Default)]
+pub struct WalletArgs {
+    pub opts: yewd_wallet::admin::Opts,
+    /// `-wallet=<file>`: a `backupwallet` file to restore at open (relative to `<datadir>/<net>`;
+    /// default `wallet.dat`).
+    pub wallet_file: Option<PathBuf>,
+    /// `-rescan`: read the chain again from the wallet's birthday at open.
+    pub rescan: bool,
+    /// `-salvagewallet`: a restored backup carries the sign-once restore marker (07/NEW-1).
+    pub salvage: bool,
 }
 
 impl WalletService {
@@ -244,6 +259,90 @@ impl WalletService {
             signer: std::sync::Mutex::new(Some(signer)),
             wallet: Mutex::new(None),
             debug,
+            opts: std::sync::Mutex::new(WalletArgs::default()),
+        }
+    }
+
+    /// The backup to restore at open, if `-wallet` (or `<datadir>/<net>/wallet.dat`) names a
+    /// `backupwallet` file this wallet has not restored yet: `(path, digest)`.
+    fn pending_restore(&self) -> Option<(PathBuf, String)> {
+        let args = self.opts.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let path = match args.wallet_file {
+            Some(p) if p.is_absolute() => p,
+            Some(p) => self.dir.join(p),
+            None => self.dir.join("wallet.dat"),
+        };
+        let digest = yewd_proto::backup_digest(&path)?;
+        let marker = self.wallet_dir().join("restored.sha256");
+        if std::fs::read_to_string(&marker).ok().as_deref() == Some(digest.as_str()) {
+            return None;
+        }
+        Some((path, digest))
+    }
+
+    /// Restore a `backupwallet` file: the signer writes its files back (`yewd-signer restore`),
+    /// the façade's state is replaced, and the backup is remembered so it is restored once.
+    fn restore(&self, bin: &Path, from: &Path, digest: &str) -> Result<(), String> {
+        let salvage = self.opts.lock().unwrap_or_else(|e| e.into_inner()).salvage;
+        let mut cmd = Command::new(bin);
+        cmd.arg(format!("-datadir={}", self.dir.join("signer").display()));
+        if let Some(f) = net_flag(self.network) {
+            cmd.arg(f);
+        }
+        cmd.arg("restore").arg(format!("-from={}", from.display()));
+        if salvage {
+            cmd.arg("-salvage");
+        }
+        let out = cmd
+            .output()
+            .map_err(|e| format!("cannot run the signer {}: {e}", bin.display()))?;
+        if !out.status.success() {
+            return Err(format!(
+                "the signer could not restore {}: {}",
+                from.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        let facade = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        std::fs::create_dir_all(self.wallet_dir()).map_err(|e| e.to_string())?;
+        let tmp = self.wallet_dir().join("wallet.json.restore");
+        std::fs::write(&tmp, facade).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, self.wallet_dir().join("wallet.json")).map_err(|e| e.to_string())?;
+        std::fs::write(self.wallet_dir().join("restored.sha256"), digest)
+            .map_err(|e| e.to_string())?;
+        eprintln!("yewd: restored the wallet from {}", from.display());
+        Ok(())
+    }
+
+    /// Whether the wallet is encrypted (the signer's state; false before it is open).
+    pub async fn encrypted(&self) -> bool {
+        let slot = self.wallet.lock().await;
+        slot.as_ref().map(|w| w.signer_state().0).unwrap_or(false)
+    }
+
+    /// The raw-transaction helpers, served here (K-25): no wallet, the node's next height only.
+    pub async fn raw_helper(&self, method: &str, params: &[Value]) -> Result<String, RpcError> {
+        let net = core_network(self.network);
+        let r = match method {
+            "decoderawtransaction" => yewd_wallet::raw::decoderawtransaction(net, params),
+            "decodescript" => yewd_wallet::raw::decodescript(net, params),
+            "createrawtransaction" => {
+                let h = yewd_wallet::node::block_count(&self.node).await?;
+                yewd_wallet::raw::createrawtransaction(net, h + 1, params)
+            }
+            _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
+        };
+        match r {
+            Ok(j) => Ok(j.text()),
+            // a refusal's text is the C++ library's where ycashd's deserializer throws ("TX decode
+            // failed: …: unspecified iostream_category error"): a backend that has the helper
+            // (ycash6) gives its own words; one that lacks it (kogany: -32601) gets ours (F-S4-4)
+            Err(e) => match self.node.call(method, Value::Array(params.to_vec())).await {
+                Err(NodeError::Rpc { code: c, message }) if c != code::METHOD_NOT_FOUND => {
+                    Err(RpcError::new(c, message))
+                }
+                _ => Err(e),
+            },
         }
     }
 
@@ -289,6 +388,14 @@ impl WalletService {
                 "yewd: the wallet could not be opened",
             ));
         };
+        if let (SignerSource::Process(bin), Some((from, digest))) =
+            (&source, self.pending_restore())
+        {
+            if let Err(e) = self.restore(bin, &from, &digest) {
+                *self.signer.lock().unwrap_or_else(|e| e.into_inner()) = Some(source);
+                return Err(RpcError::new(code::WALLET_ERROR, format!("yewd: {e}")));
+            }
+        }
         let exists = self.wallet_dir().join("wallet.json").exists();
         // a new wallet's birthday: the node's height now (a new seed has no earlier history)
         let height = if exists {
@@ -336,6 +443,12 @@ impl WalletService {
             birthday,
         )
         .map_err(|e| RpcError::new(code::WALLET_ERROR, format!("yewd: {e}")))?;
+        let mut w = w;
+        let args = self.opts.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        w.opts = args.opts;
+        if args.rescan {
+            w.rescan_all();
+        }
         **slot = Some(w);
         Ok(())
     }

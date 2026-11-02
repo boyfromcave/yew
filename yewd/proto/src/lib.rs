@@ -81,6 +81,10 @@ pub enum KeyRef {
 /// The `chain` of a [`KeyRef::Bip32`] that names an imported key (`importprivkey`).
 pub const IMPORTED_CHAIN: u32 = 2;
 
+/// A [`KeyRef::Pq`] index at or above this names the signer's imported post-quantum key
+/// `index - IMPORTED_PQ_BASE` (`z_importpqkey`, a dump's `pqseed=` lines; S4), never a derivation.
+pub const IMPORTED_PQ_BASE: u32 = 0x8000_0000;
+
 /// One transaction input as the signer sees it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignInput {
@@ -183,6 +187,45 @@ pub struct SignRequest {
     /// The largest net outflow the caller allows, in zatoshi.
     pub outflow_cap_zat: i64,
     pub preview: Preview,
+    /// A Sapling part built with the transparent one (S4, F-S2-8: a YED transaction funded from
+    /// or paying a Sapling address): the signer builds, proves and authorizes it, and every
+    /// transparent digest covers it (ZIP-243's `hashShieldedSpends` / `hashShieldedOutputs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sapling: Option<SaplingPart>,
+}
+
+/// The Sapling part of a [`SignRequest`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaplingPart {
+    pub target_height: u32,
+    pub vault_height: Option<u32>,
+    pub spends: Vec<SaplingSpend>,
+    /// Shielded outputs only ([`SaplingOut::Shielded`] / [`SaplingOut::Change`]).
+    pub outputs: Vec<SaplingOut>,
+    /// The anchor of the spends (empty: none).
+    pub anchor: String,
+    pub params_dir: String,
+}
+
+impl SaplingPart {
+    /// `(spent, paid, paid to the wallet)`: the values the preview adds.
+    pub fn values(&self) -> (i64, i64, i64) {
+        let spent: i64 = self.spends.iter().map(|s| s.value as i64).sum();
+        let mut paid = 0;
+        let mut own = 0;
+        for o in &self.outputs {
+            let (v, mine) = match o {
+                SaplingOut::Shielded { value, own, .. } => (*value, *own),
+                SaplingOut::Change { value } => (*value, true),
+                SaplingOut::Transparent { .. } => (0, false),
+            };
+            paid += v;
+            if mine {
+                own += v;
+            }
+        }
+        (spent, paid, own)
+    }
 }
 
 /// The whole transaction signed. Never half-signed (H10): every input with a key is signed, or
@@ -355,12 +398,206 @@ pub struct ImportedKey {
     pub new: bool,
 }
 
+/// One line of a wallet dump (`z_exportwallet`, S4): the façade writes the public text, the
+/// signer puts each secret in (§4.3 rule 2: "a dump is produced by the signer").
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DumpLine {
+    /// Written as is.
+    Text { text: String },
+    /// `<WIF of key> <rest>`.
+    Key { key: KeyRef, rest: String },
+    /// `pqseed=<scheme>:<index>:<seed hex> <rest>` (an imported key: index as `index_text`).
+    PqSeed {
+        scheme: u8,
+        index: u32,
+        index_text: String,
+        rest: String,
+    },
+    /// `<the Sapling account's extended spending key> <rest>`.
+    Sapling { rest: String },
+    /// `# - recovery_phrase="<phrase>"`.
+    Recovery,
+}
+
+/// `z_exportwallet`: write `lines` to `path` (which must not exist).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DumpRequest {
+    pub path: String,
+    pub lines: Vec<DumpLine>,
+}
+
+/// `importwallet` / `z_importwallet`: read the dump at `path`; the signer keeps its secrets.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportDumpRequest {
+    pub path: String,
+    /// `z_importwallet`: the Sapling key lines too.
+    pub zkeys: bool,
+}
+
+/// What an import added, public parts only.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportDumpResult {
+    /// Transparent keys: the store entry and the line's label (`label=`; `None` for reserve/change).
+    pub keys: Vec<(ImportedKey, Option<String>)>,
+    pub pq: Vec<PqImported>,
+    /// `vaultbuild=<txid>:<n>:<hex>` lines: (outpoint, hex).
+    pub builds: Vec<(String, String)>,
+    /// `vaultrecipient=<hash>:<script>` lines.
+    pub recipients: Vec<(String, String)>,
+    /// `vaultsetsig=` records imported into the sign-once store.
+    pub records: usize,
+    /// Sapling key lines this signer could not import (another account's spending key).
+    pub skipped_zkeys: usize,
+}
+
+/// `z_importpqkey`: one post-quantum key from its keygen seed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PqImportRequest {
+    pub scheme: u8,
+    /// The HD index the caller claims (`<scheme>:<index>:<seed>`), if any.
+    pub index: Option<u32>,
+    /// 48 bytes, hex.
+    pub seed: String,
+}
+
+/// An imported post-quantum key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PqImported {
+    pub scheme: u8,
+    /// Its own derivation index when it is this seed's key, else `IMPORTED_PQ_BASE + store index`.
+    pub index: u32,
+    /// Whether it is this seed's own key at `index`.
+    pub own: bool,
+    pub pk: String,
+    /// `false`: already held.
+    pub added: bool,
+}
+
+/// `backupwallet`: write a backup of the signer's files and the façade's state to `path`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupRequest {
+    pub path: String,
+    /// The façade's `wallet.json` text (public material).
+    pub facade: String,
+}
+
+/// A Sapling note to spend (`z_sendmany`, S4; F-S2-8): the note the façade decrypted and its
+/// Merkle path at the anchor, computed by the façade from the node's tree state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaplingSpend {
+    /// The recipient address, 43 bytes hex (diversifier ‖ pk_d).
+    pub recipient: String,
+    pub value: u64,
+    /// `rseed`: 32 bytes hex; `after_zip212` picks the variant.
+    pub rseed: String,
+    pub after_zip212: bool,
+    /// The note was received on the account's internal (change) scope.
+    pub internal: bool,
+    /// The note's position in the commitment tree.
+    pub position: u64,
+    /// The authentication path, 32 nodes hex (leaf to root).
+    pub path: Vec<String>,
+}
+
+/// A transparent input of a Sapling-capable build: a wallet P2PKH coin.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaplingTInput {
+    pub prevout: Prevout,
+    pub key: KeyRef,
+}
+
+/// An output of a Sapling-capable build.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SaplingOut {
+    /// A transparent output (P2PKH or P2SH script).
+    Transparent {
+        script: String,
+        value: i64,
+        own: bool,
+    },
+    /// A Sapling output: the encoded address, the memo (512 bytes hex; empty = no memo).
+    Shielded {
+        address: String,
+        value: i64,
+        memo: String,
+        own: bool,
+    },
+    /// A Sapling output to the account's internal (change) address.
+    Change { value: i64 },
+}
+
+/// `z_sendmany` (S4): the whole build in the signer (K-24: the spending key never leaves it):
+/// transparent P2PKH inputs, Sapling spends with their paths, the outputs, the exact fee; the
+/// signer proves, signs and returns the transaction.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaplingBuildRequest {
+    /// The height the transaction is for (its branch: the Vault branch from `vault_height`).
+    pub target_height: u32,
+    pub expiry_height: u32,
+    /// Regtest's vault activation height (`-nuparams=6d5b7a31:<h>`), if any.
+    pub vault_height: Option<u32>,
+    pub inputs: Vec<SaplingTInput>,
+    pub spends: Vec<SaplingSpend>,
+    pub outputs: Vec<SaplingOut>,
+    pub fee_zat: i64,
+    /// The Sapling anchor (the root the spends' paths lead to), 32 bytes hex; empty without spends.
+    pub anchor: String,
+    /// Inputs minus the own outputs may not exceed this (the payment and its fee).
+    pub outflow_cap_zat: i64,
+    /// The directory holding `sapling-spend.params` and `sapling-output.params`.
+    pub params_dir: String,
+}
+
+/// The backup file's format tag.
+pub const BACKUP_FORMAT: &str = "yewd-backup-1";
+
+/// Whether `path` holds a yewd backup (its format tag), and the SHA-256 of its bytes (hex).
+pub fn backup_digest(path: &std::path::Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    if v["format"].as_str() != Some(BACKUP_FORMAT) {
+        return None;
+    }
+    Some(hex::encode(yew_core::keys::sha256(&bytes)))
+}
+
 /// What the signer says about itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
     pub version: u32,
     pub network: String,
     pub seed_fp: String,
+    /// The wallet is encrypted (`encryptwallet`, S4).
+    #[serde(default)]
+    pub encrypted: bool,
+    /// Unix time the unlock lasts until; 0 while locked (or never encrypted).
+    #[serde(default)]
+    pub unlocked_until: i64,
+}
+
+/// `encryptwallet` (S4): seal the seed under `passphrase`; `pq` names the post-quantum public
+/// keys the façade holds, which the signer caches so a locked signer can still answer `public`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EncryptRequest {
+    pub passphrase: String,
+    #[serde(default)]
+    pub pq: Vec<(u8, u32, u32)>,
+}
+
+/// `walletpassphrase` (S4): unlock for `timeout` seconds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnlockRequest {
+    pub passphrase: String,
+    pub timeout: i64,
+}
+
+/// The encryption state after `encrypt`, `unlock` or `lock`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WalletState {
+    pub encrypted: bool,
+    pub unlocked_until: i64,
 }
 
 /// A request.
@@ -381,6 +618,22 @@ pub enum Request {
     ImportKey(ImportKeyRequest),
     /// `dumpprivkey`: the WIF of a transparent key (the dump is the signer's, §4.3 rule 2).
     DumpKey(KeyRef),
+    /// `encryptwallet` (S4).
+    Encrypt(EncryptRequest),
+    /// `walletpassphrase` (S4).
+    Unlock(UnlockRequest),
+    /// `walletlock` (S4).
+    Lock,
+    /// `z_exportwallet` (S4).
+    Dump(DumpRequest),
+    /// `importwallet`, `z_importwallet` (S4).
+    ImportDump(ImportDumpRequest),
+    /// `z_importpqkey` (S4).
+    ImportPq(PqImportRequest),
+    /// `backupwallet` (S4).
+    Backup(BackupRequest),
+    /// `z_sendmany` (S4).
+    SaplingBuild(SaplingBuildRequest),
 }
 
 /// A request with its protocol version.
@@ -444,6 +697,12 @@ pub mod refuse {
     pub const KEY_NOT_HELD: &str = "key-not-held";
     /// Anything else (a derivation, the store).
     pub const FAILED: &str = "failed";
+    /// The wallet is encrypted and locked (S4): ycashd's `-13`.
+    pub const LOCKED: &str = "locked";
+    /// `walletpassphrase` with a wrong passphrase: ycashd's `-14`.
+    pub const BAD_PASSPHRASE: &str = "bad-passphrase";
+    /// `encryptwallet` on an encrypted wallet, `walletpassphrase`/`walletlock` on a plain one: `-15`.
+    pub const WRONG_ENC_STATE: &str = "wrong-enc-state";
 }
 
 /// An answer.
@@ -465,6 +724,14 @@ pub enum Response {
     ImportedKey(ImportedKey),
     /// A WIF.
     Dumped(String),
+    /// After `encrypt`, `unlock`, `lock` (S4).
+    WalletState(WalletState),
+    /// The file written (`dump`, `backup`).
+    Written(String),
+    ImportedDump(ImportDumpResult),
+    ImportedPq(PqImported),
+    /// A built transaction, hex (`sapling_build`).
+    Built(String),
     Refused(Refusal),
 }
 

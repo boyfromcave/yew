@@ -10,16 +10,21 @@ streams and lightwalletd-dd), and never needs a node change.
 Plan: [`docs/plans/yewd-plan.md`](../docs/plans/yewd-plan.md), which points into the workspace's
 kogany plan (`docs/plans/kogany/kogany-yellowback-plan.md` §3b, §4.3, §5; decisions K-20, K-22–K-26).
 
-**State: S3, the roles** (the attestor, the cancel co-signer, a Hawkeye member, x402's
-`rpcWalletSigner`), on S2's builders and signer boundary. S1's wallet (public material only in the
-façade, a block-reading sync with reorg rewind, the read RPCs) plus the build RPCs and the signer
-process: every transaction is built unsigned in the façade and signed in `yewd-signer`, a separate
-process on a Unix socket that recomputes every digest from the bytes and the prevouts it is shown
-([The signer](#the-signer-s2)). `yewd-wallet/src/rpc.rs` `all_served()`: **47 of the 47** (all 22
-R5 `set_*`/`vault_*`, all 25 R6 `yed_*`; S3 added the attestor and cancel co-signer RPCs,
-`wallet/src/attest.rs`) and 19 of the K-25 stock set (S3 added `signmessage`, `importprivkey`,
-`dumpprivkey`, which the roles call). Every other wallet RPC still answers `-32601` with
-`yewd: not yet implemented (<method>; plan §3b S<n>)`.
+**State: S4, the façade complete** (S3: the roles; S2: the builders and the signer boundary; S1:
+the wallet; S0: the shell). Every wallet RPC of the façade's table is served — `yewd-wallet/src/rpc.rs`
+`all_served()`: **47 of the 47** (all 22 R5 `set_*`/`vault_*`, all 25 R6 `yed_*`), R7's
+`z_importpqkey`, and **34 of the 34** of the K-25 stock set — and the three raw helpers
+(`createrawtransaction`, `decoderawtransaction`, `decodescript`) are answered by the façade itself.
+Arity is ycashd's (`-32602` "Not enough|Too many parameters for method …" with the help text,
+`facade/src/ycashd_rpc.json`, generated from a plain ycash6 wallet node by `qa/gen_ycashd_rpc_table.py`),
+`help <method>` is ycashd's text and the `help` listing holds ycashd's lines for these methods in
+ycashd's categories. S4 added the wallet encryption (the seed and the imported keys sealed in the
+signer), the dumps and their imports (written and read by the signer), `backupwallet` and its restore
+(`-wallet`), `z_sendmany` and its operations with **the Sapling build in the signer** (the façade keeps the
+notes and computes their Merkle paths from the node's tree state; the signer proves and signs), the same
+Sapling build inside the YED builders (a mint funded from a Sapling address, a redemption or a bond
+withdrawal paying one), the armed attestation layer's wallet facts (the AFEE-W attestor payee, the
+claim notice, `canNotice`), and the backend-exit watch (H6).
 
 ## Layout
 
@@ -39,6 +44,9 @@ yewd/
 ├── qa/s2_wallet_builders.py   the S2 exit gate: every build RPC on yewd beside the same request on ycashd
 ├── qa/s3_roles.py   the S3 exit gate: the role scripts with their role nodes as pairs, and the roles stage
 ├── qa/ycashd_pair.py   a stand-in `ycashd` that starts the pair (for tools that start their own node: Hawkeye's tests)
+├── qa/s4_contract.py   the S4 exit gate's contract legs: ycash6's two contract suites, unchanged, every node a pair
+├── qa/s4_facade.py   the S4 exit gate's façade leg: arity, help, errors, raw helpers and the stock RPCs against ycashd
+├── qa/gen_ycashd_rpc_table.py   regenerates facade/src/ycashd_rpc.json (ycashd's help texts and arity) from a ycash6 node
 └── scripts/check-yewd.sh   the CI unit leg: naming/attribution greps, fmt, clippy, tests
 ```
 
@@ -59,6 +67,11 @@ YCASH6_QA=<ycash6>/qa/rpc-tests ZCASHD=<ycash6>/src/ycashd YEWD_BIN=<target>/deb
 YCASH6_QA=... ZCASHD=... YEWD_BIN=... <workspace>/.venv/bin/python yewd/qa/s3_roles.py --stage=attest_wallet|roles|attest_bond|attest_agent|cancel_agent --tmpdir=<dir> --portseed=<n>
 # Hawkeye's regtest test against the pair (unchanged test; the node is the stand-in)
 ZCASHD=... YEWD_BIN=... HAWKEYE_REGTEST_YCASHD=yewd/qa/ycashd_pair.py cargo test -p hawkeye --test regtest_self_signing
+# the S4 exit gate: the contract suites unchanged with every node a pair; the façade leg against ycashd
+YCASH6_QA=... ZCASHD=... YEWD_BIN=... <workspace>/.venv/bin/python yewd/qa/s4_contract.py --suite=vault|yellowback --tmpdir=<dir> --portseed=<n>
+YCASH6_QA=... ZCASHD=... YEWD_BIN=... <workspace>/.venv/bin/python yewd/qa/s4_facade.py --tmpdir=<dir> --portseed=<n>
+# any other ycash6 script with every node a pair (a probe ahead of S5's gate)
+YCASH6_QA=... ZCASHD=... YEWD_BIN=... <workspace>/.venv/bin/python yewd/qa/s4_contract.py --script=yellowback_sapling --tmpdir=<dir> --portseed=<n>
 # the pinned PQ wallet vectors from kogany (else yew's byte-identical copy is replayed)
 YEWD_PQ_WALLET_VECTORS=<kogany>/testdata/yellowback/pq_wallet_vectors.json cargo test --manifest-path yewd/Cargo.toml -p yewd-signer
 ```
@@ -72,15 +85,21 @@ the node's decimal text).
 
 | Class | Methods | S1 answer |
 |---|---|---|
-| Wallet, R5 vault | the 22 `set_*` / `vault_*` wallet RPCs (ycash6 `src/rpc/vault.cpp`) | all 22 served (S1's two reads, S2's twenty builders: `wallet/src/vaultrpc.rs`) |
-| Wallet, R6 YED | the 25 `yed_*` wallet RPCs (ycash6 `src/rpc/yellowbackwallet.cpp`) | served: S1's seven reads; S2's `yed_mint`, `yed_send`, `yed_sendmany`, `yed_estimatesend`, `yed_redeem`, `yed_estimateredeem`, `yed_claim`, `yed_claimnotice` (its unarmed refusal), `yed_sweepcarriers`, `yed_lockcoins`, `yed_unlockcoin` (`wallet/src/{yed,mint,claim}.rs`); S3's seven: `yed_registerattestor`, `yed_signattestation`, `yed_revive`, `yed_withdrawbond`, `yed_reportequivocation`, `yed_signcancelcosign`, `yed_buildcancel` (`wallet/src/attest.rs`) |
-| Wallet, R7 | `z_importpqkey` | `-32601` "yewd: not yet implemented" |
-| Wallet, K-25 stock | the 30 the Yellowback scripts call, and the 4 only the roles call | served: S1's ten reads; S2's `sendtoaddress`, `sendmany`, `lockunspent`, `fundrawtransaction`, `signrawtransaction`, `getrawchangeaddress` (`wallet/src/send.rs`); S3's `signmessage`, `importprivkey`, `dumpprivkey` (`wallet/src/attest.rs`, the keys in the signer), and the forwarded node RPC `sendrawtransaction` keeps ycashd's H7 wallet guard first (`allowyedburn`: `-4 yed-burn-refused`, `-3` on a non-bool); `z_sendmany` and its operation RPCs wait for the Sapling build in the signer; the rest `-32601` |
+| Wallet, R5 vault | the 22 `set_*` / `vault_*` wallet RPCs (ycash6 `src/rpc/vault.cpp`) | served (`wallet/src/vaultrpc.rs`; S1 reads, S2 builders) |
+| Wallet, R6 YED | the 25 `yed_*` wallet RPCs (ycash6 `src/rpc/yellowbackwallet.cpp`) | served (`wallet/src/{rpc,yed,mint,claim,attest,armed,zfund}.rs`) |
+| Wallet, R7 | `z_importpqkey` | served (`wallet/src/admin.rs`; the key in the signer) |
+| Wallet, K-25 stock | the 30 the Yellowback scripts call, and the 4 only the roles call | served: the reads (S1), the sends and `signrawtransaction` (S2), `signmessage`/`importprivkey`/`dumpprivkey` (S3); S4's `addmultisigaddress`, `backupwallet`, `encryptwallet`, `walletpassphrase`, `walletlock`, `settxfee`, `importwallet`, `z_exportwallet`, `z_importwallet`, `z_getnewdiversifiedaddress`, `z_listreceivedbyaddress` (`wallet/src/admin.rs`), `z_sendmany`, `z_getoperationstatus`, `z_getoperationresult`, `z_listoperationids` (`wallet/src/zsend.rs`); the forwarded node RPC `sendrawtransaction` keeps ycashd's H7 wallet guard first (`allowyedburn`) |
 | Out of scope | the rest of ycashd's wallet table (39: `listtransactions`, `z_shieldcoinbase`, …) | `-32601` "yewd: not served" |
-| Local | `createrawtransaction`, `decoderawtransaction`, `decodescript` | forwarded; served from yew-core in S4 |
-| Augmented | `getinfo`, `validateaddress`, `z_validateaddress`, `set_getinfo`, `vault_list`, `yed_gettxinfo` | forwarded, then the wallet adds its fields (`balance`…, `ismine`…, `memberlist[].wallet`, the `wallet` column and the `mine` filter of `vault_list`; `yed_gettxinfo` has none in rpcversion 8). `z_validateaddress` is answered by yewd itself: a ycash6 `-disablewallet` backend stops on it (it dereferences its absent wallet) |
-| Own | `help` (the backend's listing plus a "Wallet (yewd)" section), `stop` | served |
+| Local | `createrawtransaction`, `decoderawtransaction`, `decodescript` | answered by the façade (`wallet/src/raw.rs`: ycashd's `TxToJSON`, `ScriptToAsmStr`, `Solver`); a refusal takes the backend's words when it has the helper (the C++ deserializer's texts), ours when it lacks it (kogany) |
+| Augmented | `getinfo`, `validateaddress`, `z_validateaddress`, `set_getinfo`, `vault_list`, `yed_gettxinfo`, `yed_getinfo` | forwarded, then the wallet adds its fields (`balance`, `paytxfee`, `unlocked_until`…, `ismine`…, a known redeem script's `script`/`hex`/`addresses`/`sigsrequired`, `memberlist[].wallet`, the `wallet` column and the `mine` filter of `vault_list`, `yed_getinfo`'s `lockedOutputs`/`protectedByIndex`). `z_validateaddress` is answered by yewd itself: a ycash6 `-disablewallet` backend before `eac62c942` stops on it |
+| Own | `help` (the backend's listing with ycashd's lines for the façade's methods merged in), `stop` | served |
 | everything else | node RPCs | forwarded |
+
+Arity: every wallet and local method is checked as ycash6's RPC table checks it, before the handler
+(`-32602`, the help text after a blank line; `walletlock`/`walletpassphrase` only on an encrypted
+wallet, as ycashd). A locked encrypted wallet refuses every method that signs, draws a key or reads a
+secret with `-13` "Error: Please enter the wallet passphrase with walletpassphrase first."
+(`wallet/src/admin.rs` `NEEDS_UNLOCK`).
 
 HTTP conventions are ycashd's (`src/httprpc.cpp`): POST only (405 otherwise), Basic auth (401 with
 `WWW-Authenticate: Basic realm="jsonrpc"`, 250 ms delay on a wrong password), 403 for a peer
@@ -116,16 +135,27 @@ ycashd's wallet arguments (`-keypool`, `-exportdir`, …) and a ycashd-format `y
 | `-signerbin=<file>` | `yewd-signer` beside `yewd` | the signer binary yewd runs: `init` (and `public` for `-initwallet`), then `serve -watchstdin` |
 | `-walletpoll=<ms>` | 1000 | how often the wallet follows the node between calls (the poll fallback); 0 = only at calls (every wallet RPC syncs first anyway: the barrier, H1) |
 | `-initwallet` | | create the wallet (the seed in `<datadir>/<net>/signer/`, birthday 0), print `{"mineaddress": "<s…>"}` and exit; needs no backend (H8, below) |
+| `-exportdir=<dir>` | — | where `z_exportwallet` and `backupwallet` write (ycashd's) |
+| `-paytxfee=<amt>` | 0 | the legacy fee rate `settxfee` sets (YEC per 1000 bytes; reported, as ycashd's `payTxFee`) |
+| `-developerencryptwallet=0` | (allowed) | refuse `encryptwallet` (`-16 "Error: wallet encryption is disabled."`); yewd allows it otherwise, F-S4-3 |
+| `-wallet=<file>` | `wallet.dat` | a `backupwallet` file in `<datadir>/<net>/` (or absolute) restored once at the first wallet call |
+| `-rescan` | off | read the chain again from the wallet's birthday at open |
+| `-salvagewallet` | off | a restored backup carries the sign-once restore marker (07/NEW-1) |
+| `-paramsdir=<dir>` | ycashd's (`~/Library/Application Support/ZcashParams`, `~/.zcash-params`) | the Sapling parameters the signer proves with |
+| `-backendexitgrace=<s>` | 20 | with `-stopbackend`: exit once the backend has been gone this long after it was up (H6: the node stopped itself); 0 = never |
 | `-debug` | off | log each method called |
 | `-help`, `-version` | | |
 
 `stop` answers `"yewd stopping"` (`"yewd stopping (backend stopping)"` with `-stopbackend`) and the
-process exits about 200 ms later; SIGINT and SIGTERM stop it too. Logs go to stderr.
+process exits about 200 ms later; SIGINT and SIGTERM stop it too; `encryptwallet` stops it as it stops
+ycashd. With `-stopbackend` the pair is one node both ways: yewd also exits when its backend has stopped
+by itself (an `AbortNode`, a `stop` sent to the node) and has not come back within
+`-backendexitgrace`. Logs go to stderr.
 
 ## The wallet (S1)
 
 - **Files.** `<datadir>/<net>/signer/seed.json` (mode 0600 in a mode-0700 directory: the phrase,
-  the signer's alone; S4 encrypts it) and `<datadir>/<net>/yewd/wallet.json` (public material,
+  the signer's alone; sealed under the wallet passphrase after `encryptwallet`) and `<datadir>/<net>/yewd/wallet.json` (public material,
   issue counters, the address book, the processed tip with a window of 288 recent block hashes,
   and the wallet transactions' bytes and block positions; coins, notes and balances are derived
   from them at load, as ycashd derives them from `mapWallet`). Nothing secret is in `wallet.json`.
@@ -222,6 +252,35 @@ differs from a record is refused whole. The façade maps `set-sign-once` / `set-
 
 The public bundle gains `imported` (the imported keys' public keys, in store order).
 
+**S4's requests (protocol version 1, additive).**
+
+| `op` | body | answer `result` |
+|---|---|---|
+| `encrypt` | `{passphrase, pq: [[scheme, from, count], …]}` | `wallet_state` `{encrypted, unlocked_until}` |
+| `unlock` | `{passphrase, timeout}` | `wallet_state` |
+| `lock` | — | `wallet_state` |
+| `dump` | `{path, lines: [DumpLine]}` | `written` (the path) |
+| `import_dump` | `{path, zkeys}` | `imported_dump` `{keys, pq, builds, recipients, records, skipped_zkeys}` |
+| `import_pq` | `{scheme, index?, seed}` | `imported_pq` `{scheme, index, own, pk, added}` |
+| `backup` | `{path, facade}` | `written` |
+| `sapling_build` | `SaplingBuildRequest` (`z_sendmany`) | `built` (the transaction, hex) |
+| `sign` | `SignRequest` with `sapling: SaplingPart` (a YED builder's Sapling part) | `signed` |
+
+`hello` gains `encrypted` and `unlocked_until`. The encrypted store (`signer/src/seal.rs`): the phrase,
+and the imported keys, sealed with ChaCha20-Poly1305 under PBKDF2-HMAC-SHA256 (100,000 iterations) of
+the passphrase; `public.json` keeps the public bundle (with every PQ key the façade held) so a locked
+signer still answers `public` for them, and refuses (`locked`) a key it would have to derive. A
+`DumpLine` is `text`, `key` (a WIF before the façade's text), `pq_seed`, `sapling` (the account's
+extended spending key) or `recovery` (the phrase). Imported post-quantum keys (`pqimported.json`) are
+named `KeyRef::Pq { scheme, index: IMPORTED_PQ_BASE (2^31) + i }`. `yewd-signer restore -from=<backup>
+[-salvage]` writes a backup's signer files back and prints the façade's state (yewd runs it at open
+for `-wallet`). **The Sapling build** (`signer/src/sapling.rs`): `sapling_build` builds a whole
+`z_sendmany` transaction with librustzcash6's builder (P2PKH inputs, the spends with the façade's
+Merkle paths checked against the anchor, the outputs, the exact fee); a `sign` request with a
+`SaplingPart` builds and proves the Sapling bundle first, makes every transparent digest over the whole
+transaction (ZIP-243 with `hashShieldedSpends`/`hashShieldedOutputs`), signs the carrier, template, bond
+and coin inputs as without one, then authorizes the spends and the binding signature.
+
 **The attestation equivocation guard** (`signer/src/attest.rs`, ycash6 S16 / EQV-1 self-protection):
 `<signer dir>/attest-signed.jsonl`, one record `(seq, key, citedHeight, blockHash, price, sig)` per
 line, appended and fsynced before the signature leaves the signer. The same price again returns the
@@ -235,13 +294,15 @@ resolves its price (the given one, or the one this key signed for `R`; `price-re
 neither), refuses a statement under which the vault was claimable (`cancel-statement-claimable`,
 RED-4), passes the same guard for `(R, price)`, then signs `CancelCosignMessage` recoverably. A
 `sign_message` digest is computed from the text with ycashd's magic prefix, so it can never be a
-transaction digest. Imported keys live in `<signer dir>/imported.json` (0600; S4 encrypts it); a new
+transaction digest. Imported keys live in `<signer dir>/imported.json` (0600; sealed with the seed after `encryptwallet`); a new
 import sets the sign-once restore marker (an imported key brings no history, 07/F-5).
 
 ## Harness mode (`YEWD_BIN`)
 
 **S1 adds one step for scripts that mine on a pair node (H8), for the harness chunk to take
-over:** before the backend of node *i* starts, run `YEWD_BIN -datadir=node<i> -conf=ycash.conf
+over** (`qa/s4_contract.py` takes it for every pair: the wallet first, then the backend with its coinbase
+address — except a Yellowback-live node that names no `-yellowbackpayoutaddress`, since ycashd takes a P2PKH
+`-mineraddress` as its default payout address, F-S4-1): before the backend of node *i* starts, run `YEWD_BIN -datadir=node<i> -conf=ycash.conf
 -regtest -initwallet` and give the backend `-mineraddress=<mineaddress> -minetolocalwallet=0`
 (`yewd/qa/s1_wallet_reads.py` does this for its one pair node in `setup_network`/`node_args`).
 
@@ -266,7 +327,9 @@ The ycash6 functional harness (`qa/rpc-tests/test_framework/`) gains `YEWD_BIN` 
    where the wallet arguments are the ycashd wallet options split out of the script's
    arguments (`-keypool`, `-exportdir`, `-paytxfee`, `-mintxfee`, `-txconfirmtarget`,
    `-walletnotify`, `-spendzeroconfchange`, `-rescan`, `-wallet`; `-mocktime` goes to both).
-   S0 ignores them; S4 gives them meaning. Order does not matter: yewd answers `-28` until the
+   S4 gives `-exportdir`, `-paytxfee`, `-wallet`, `-rescan` meaning (and reads `-salvagewallet`,
+   `-developerencryptwallet`, `-paramsdir`); `-keypool`, `-mintxfee`, `-txconfirmtarget`,
+   `-walletnotify`, `-spendzeroconfchange` are still reported and ignored. Order does not matter: yewd answers `-28` until the
    backend is up, which `wait_for_bitcoind_start` already retries.
 4. `bitcoind_processes[i]` is the yewd process; the backend's process is kept beside it.
    `stop_node` / `stop_nodes` call `stop` on yewd (which stops the backend) and wait for **both**

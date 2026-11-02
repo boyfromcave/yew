@@ -100,6 +100,7 @@ fn request(tx: &Transaction, inputs: Vec<SignInput>, own: Vec<OwnOutput>, cap: i
         gate_path: GatePath::Yec,
         outflow_cap_zat: cap,
         preview,
+        sapling: None,
     }
 }
 

@@ -10,6 +10,7 @@
 //! yewd-signer -datadir=<dir> [-regtest|-testnet] init [-mnemonic="<words>"] [-birthday=<h>]
 //! yewd-signer -datadir=<dir> [-regtest|-testnet] public [-pq=<scheme>:<from>:<count>]...
 //! yewd-signer -datadir=<dir> [-regtest|-testnet] serve [-socket=<path>] [-watchstdin]
+//! yewd-signer -datadir=<dir> [-regtest|-testnet] restore -from=<backup> [-salvage]
 //! yewd-signer -version
 //! ```
 //!
@@ -30,6 +31,7 @@ fn usage() -> ! {
         "usage: yewd-signer -datadir=<dir> [-regtest|-testnet] init [-mnemonic=\"<words>\"] [-birthday=<h>]\n       \
          yewd-signer -datadir=<dir> [-regtest|-testnet] public [-pq=<scheme>:<from>:<count>]...\n       \
          yewd-signer -datadir=<dir> [-regtest|-testnet] serve [-socket=<path>] [-watchstdin]\n       \
+         yewd-signer -datadir=<dir> [-regtest|-testnet] restore -from=<backup> [-salvage]\n       \
          yewd-signer -version"
     );
     std::process::exit(2)
@@ -49,6 +51,8 @@ fn main() {
     let mut req = PublicRequest::default();
     let mut socket: Option<PathBuf> = None;
     let mut watch_stdin = false;
+    let mut from: Option<PathBuf> = None;
+    let mut salvage = false;
     for arg in std::env::args().skip(1) {
         let body = arg
             .strip_prefix("--")
@@ -72,6 +76,8 @@ fn main() {
             "mnemonic" => mnemonic = Some(value),
             "socket" => socket = Some(PathBuf::from(value)),
             "watchstdin" => watch_stdin = true,
+            "from" => from = Some(PathBuf::from(value)),
+            "salvage" => salvage = true,
             "birthday" => birthday = value.parse().unwrap_or_else(|_| usage()),
             "pq" => {
                 let parts: Vec<&str> = value.split(':').collect();
@@ -121,6 +127,14 @@ fn main() {
             });
             if let Err(e) = yewd_signer::server::serve(core, path, watch_stdin) {
                 fail(e)
+            }
+        }
+        Some("restore") => {
+            // a backupwallet file: the signer's files written back, the façade's state printed
+            let Some(from) = from else { usage() };
+            match yewd_signer::walletio::restore(&dir, &from, salvage) {
+                Ok(facade) => println!("{facade}"),
+                Err(e) => fail(e),
             }
         }
         _ => usage(),

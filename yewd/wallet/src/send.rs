@@ -48,7 +48,7 @@ impl Wallet {
         match method {
             "sendtoaddress" => self.sendtoaddress(node, p).await,
             "sendmany" => self.sendmany(node, p).await,
-            "lockunspent" => self.lockunspent(p),
+            "lockunspent" => self.lockunspent(node, p).await,
             "getrawchangeaddress" => self.getrawchangeaddress(p),
             "signrawtransaction" => self.signrawtransaction(node, p).await,
             "fundrawtransaction" => self.fundrawtransaction(node, p).await,
@@ -81,13 +81,18 @@ impl Wallet {
                     .map_err(|e| RpcError::new(code::MISC_ERROR, e))?,
                 n: c.vout,
             };
-            v.push((op, c.value, c.script.clone()));
+            v.push((d == 0, op, c.value, c.script.clone()));
         }
+        // SelectCoins' passes: confirmed coins first (nConfMine = 1), the trusted mempool change
+        // only when they do not cover the payment; largest first within each
         v.sort_by(|a, b| {
-            b.1.cmp(&a.1)
-                .then((a.0.txid, a.0.n).cmp(&(b.0.txid, b.0.n)))
+            a.0.cmp(&b.0)
+                .then(b.2.cmp(&a.2))
+                .then((a.1.txid, a.1.n).cmp(&(b.1.txid, b.1.n)))
         });
-        Ok(v)
+        Ok(v.into_iter()
+            .map(|(_, op, value, s)| (op, value, s))
+            .collect())
     }
 
     /// `CreateTransaction` + `CommitTransaction` for plain YEC recipients: largest-first coins, the
@@ -292,7 +297,7 @@ impl Wallet {
     }
 
     /// `lockunspent unlock ( [{"txid","vout"},...] )`.
-    fn lockunspent(&mut self, p: &[Value]) -> Result<J, RpcError> {
+    async fn lockunspent(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
         if p.is_empty() || p.len() > 2 {
             return Err(RpcError::new(
                 code::MISC_ERROR,
@@ -307,8 +312,10 @@ impl Wallet {
         })?;
         let Some(list) = param(p, 1) else {
             if unlock {
-                // the locks of remembered vault builds stay (ycashd re-locks them from mapVaultBuilds)
-                let keep: BTreeSet<String> = self.build_locks();
+                // the locks of remembered vault builds stay (ycashd re-locks them from mapVaultBuilds),
+                // and so do the YED locks (H5: ReapplyLocks)
+                let mut keep: BTreeSet<String> = self.build_locks();
+                keep.extend(self.yed_held_locks(node).await?);
                 self.st.locks.retain(|l| keep.contains(l));
                 self.persist_state()?;
             }
@@ -341,6 +348,21 @@ impl Wallet {
             }
             ops.push(format!("{}:{vout}", txid.to_lowercase()));
         }
+        // H5: a YED-held outpoint is not unlockable here; a call naming one applies nothing
+        if unlock {
+            let held = self.yed_held_locks(node).await?;
+            for op in &ops {
+                if held.contains(op) {
+                    let (t, n) = op.split_once(':').unwrap_or((op.as_str(), "0"));
+                    let shown: String = yew_core::tx::txid_from_hex(t)
+                        .map(|_| t.chars().take(10).collect())
+                        .unwrap_or_default();
+                    return Err(RpcError::new(code::WALLET_ERROR, format!(
+                        "yed-locked-outpoint: COutPoint({shown}, {n}) holds YED; spending it outside the overlay would burn it. Use yed_unlockcoin \"<txid>\" <n> \"I understand this burns YED\" to release it deliberately."
+                    )));
+                }
+            }
+        }
         for op in ops {
             if unlock {
                 self.st.locks.remove(&op);
@@ -350,6 +372,16 @@ impl Wallet {
         }
         self.persist_state()?;
         Ok(J::Bool(true))
+    }
+
+    /// The outpoints the YED overlay holds locked (`IsYellowbackLocked`): locked and holding YED.
+    async fn yed_held_locks(&self, node: &dyn Node) -> Result<BTreeSet<String>, RpcError> {
+        let reserved = self.yed_reserved(node).await?;
+        Ok(reserved
+            .into_iter()
+            .map(|(t, n)| format!("{t}:{n}"))
+            .filter(|k| self.st.locks.contains(k))
+            .collect())
     }
 
     /// The fee-input locks of the remembered builds.
@@ -390,7 +422,16 @@ impl Wallet {
             return Err(RpcError::new(code::MISC_ERROR, "signrawtransaction \"hexstring\" ( [{\"txid\":\"id\",\"vout\":n,\"scriptPubKey\":\"hex\",\"redeemScript\":\"hex\"},...] [\"privatekey1\",...] sighashtype )"));
         }
         if param(p, 2).is_some() {
-            return forward(node, "signrawtransaction", p).await;
+            // the caller's keys (never the wallet's): the node signs when it has the method
+            // (ycash6); kogany has none (F-S2-7), so the façade signs with the given keys here
+            return match node::call(node, "signrawtransaction", Value::Array(p.to_vec())).await {
+                Ok(v) => Ok(J::Raw(v.to_string())),
+                Err(NodeError::Rpc { code: -32601, .. }) => {
+                    self.sign_with_given_keys(node, p).await
+                }
+                Err(NodeError::Rpc { code, message }) => Err(RpcError::new(code, message)),
+                Err(e) => Err(e.into()),
+            };
         }
         if let Some(t) = param(p, 3).and_then(|v| v.as_str()) {
             if t != "ALL" {
@@ -488,12 +529,18 @@ impl Wallet {
         }
         // the node verifies (ycash6: its own signrawtransaction with no keys; kogany: yed_validaterawtransaction)
         let signed_hex = tx_hex(&out)?;
-        let mut prevtxs = Vec::new();
-        for (i, c) in tx.vin.iter().zip(&coins) {
-            if !c.script.is_empty() {
-                prevtxs.push(serde_json::json!({"txid": txid_hex(&i.prevout.txid), "vout": i.prevout.n, "scriptPubKey": hex::encode(&c.script), "amount": c.value as f64 / 1e8}));
-            }
-        }
+        // the caller's prevtxs as given (a P2SH one needs its redeemScript with keys given, even
+        // none); the node finds the rest in its own view
+        let prevtxs: Vec<Value> = param(p, 1)
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|o| {
+                let spk = hex::decode(o["scriptPubKey"].as_str().unwrap_or("")).unwrap_or_default();
+                yew_core::script::p2sh_hash(&spk).is_none() || o.get("redeemScript").is_some()
+            })
+            .collect();
         match node::call(
             node,
             "signrawtransaction",
@@ -689,10 +736,92 @@ fn type_name(v: &Value) -> &'static str {
     }
 }
 
-async fn forward(node: &dyn Node, method: &str, p: &[Value]) -> Result<J, RpcError> {
-    match node::call(node, method, Value::Array(p.to_vec())).await {
-        Ok(v) => Ok(J::Raw(v.to_string())),
-        Err(NodeError::Rpc { code, message }) => Err(RpcError::new(code, message)),
-        Err(e) => Err(e.into()),
+impl Wallet {
+    /// `signrawtransaction hex prevtxs privatekeys ( sighashtype )` against a backend that has no
+    /// `signrawtransaction` (kogany, F-S2-7): the P2PKH inputs whose key the caller gives are
+    /// signed here (ZIP-243 `SIGHASH_ALL` under the next block's branch), the rest are left as
+    /// they are; `complete` and `errors` come from the node's dry run
+    /// (`yed_validaterawtransaction`). With no keys (`[]`) it only verifies (x402's call).
+    async fn sign_with_given_keys(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
+        let hexs = p[0]
+            .as_str()
+            .ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type string"))?;
+        let raw =
+            hex::decode(hexs).map_err(|_| invalid("argument 1 must be hexadecimal string"))?;
+        let (mut tx, _) = Transaction::parse(&raw)
+            .map_err(|_| RpcError::new(code::DESERIALIZATION_ERROR, "TX decode failed"))?;
+        if let Some(t) = param(p, 3).and_then(|v| v.as_str()) {
+            if t != "ALL" {
+                return Err(invalid(format!(
+                    "yewd: sighash type {t} is not signed here (ALL only)"
+                )));
+            }
+        }
+        let mut keys: Vec<(secp256k1::SecretKey, [u8; 20])> = Vec::new();
+        for k in param(p, 2)
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+        {
+            let w = k.as_str().unwrap_or("");
+            let key = yew_core::keys::decode_wif(self.network, w)
+                .map_err(|_| RpcError::new(code::INVALID_ADDRESS_OR_KEY, "Invalid private key"))?;
+            keys.push((key.secret, key.hash160));
+        }
+        let given: Vec<Value> = param(p, 1)
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let next = next_block(node).await?;
+        for i in 0..tx.vin.len() {
+            let prev = tx.vin[i].prevout;
+            let from_given = given.iter().find(|o| {
+                o["txid"]
+                    .as_str()
+                    .and_then(|t| yew_core::tx::txid_from_hex(t).ok())
+                    == Some(prev.txid)
+                    && o["vout"].as_u64() == Some(prev.n as u64)
+            });
+            let (script, amount) = match from_given {
+                Some(o) => (
+                    hex::decode(o["scriptPubKey"].as_str().unwrap_or("")).unwrap_or_default(),
+                    o.get("amount")
+                        .filter(|v| !v.is_null())
+                        .map(amount_param)
+                        .transpose()?
+                        .unwrap_or(0),
+                ),
+                None => match node_coin(node, &prev).await? {
+                    Some(c) => (c.script, c.value),
+                    None => continue,
+                },
+            };
+            let Some(h) = yew_core::script::p2pkh_hash(&script) else {
+                continue;
+            };
+            if let Some((sk, _)) = keys.iter().find(|(_, kh)| *kh == h) {
+                tx.sign_p2pkh_input(i, sk, &script, amount, next.branch)
+                    .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
+            }
+        }
+        let signed_hex = tx_hex(&tx)?;
+        let v = node::call(
+            node,
+            "yed_validaterawtransaction",
+            serde_json::json!([signed_hex]),
+        )
+        .await?;
+        let complete = v["valid"].as_bool().unwrap_or(false);
+        let mut o = J::obj().with("hex", signed_hex).with("complete", complete);
+        if !complete {
+            o.push(
+                "errors",
+                J::Arr(vec![J::obj().with(
+                    "error",
+                    v["invalidReason"].as_str().unwrap_or("").to_string(),
+                )]),
+            );
+        }
+        Ok(o)
     }
 }

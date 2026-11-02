@@ -22,6 +22,7 @@ zcash_protocol.workspace = true
 zcash_keys.workspace = true
 sapling-crypto.workspace = true
 zip32.workspace = true
+incrementalmerkletree = "=0.8.2"
 tokio.workspace = true
 
 [dev-dependencies]

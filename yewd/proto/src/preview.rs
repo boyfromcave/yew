@@ -102,6 +102,17 @@ pub fn compute(
     }
 }
 
+/// [`compute`] for a transaction with a Sapling part: its spends fund it, its outputs are paid
+/// (S4, [`crate::SaplingPart`]).
+pub fn with_sapling(mut p: Preview, part: Option<&crate::SaplingPart>) -> Preview {
+    if let Some(part) = part {
+        let (spent, paid, own) = part.values();
+        p.fee_zat += spent - paid;
+        p.outflow_zat += spent - own;
+    }
+    p
+}
+
 /// The first difference between two previews, for the refusal's reason.
 pub fn difference(want: &Preview, got: &Preview) -> Option<String> {
     if want.sign != got.sign {

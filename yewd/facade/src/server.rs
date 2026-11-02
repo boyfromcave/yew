@@ -34,6 +34,7 @@ pub mod code {
     pub const MISC_ERROR: i64 = -1;
     pub const IN_WARMUP: i64 = -28;
     pub const INVALID_REQUEST: i64 = -32600;
+    pub const INVALID_PARAMS: i64 = -32602;
     pub const METHOD_NOT_FOUND: i64 = -32601;
     pub const PARSE_ERROR: i64 = -32700;
 }
@@ -231,9 +232,39 @@ impl Facade {
         if self.debug {
             eprintln!("yewd: {method}");
         }
-        match methods::classify(&method) {
+        let class = methods::classify(&method);
+        // ycash6's table arity check (rpc/server.cpp), before the handler: -32602 with the help text
+        if matches!(class, Some(Class::Wallet { .. } | Class::Local)) {
+            if let Ok(p) = params_of(env.params) {
+                let encrypted = matches!(method.as_str(), "walletlock" | "walletpassphrase")
+                    && self.wallet.encrypted().await;
+                if let Some(msg) = crate::ycashd::arity_error(&method, p.len(), encrypted) {
+                    return error_reply(code::INVALID_PARAMS, &msg, id);
+                }
+            }
+        }
+        match class {
+            Some(Class::Wallet { .. }) if method == "encryptwallet" => {
+                // ycashd stops after encrypting (StartShutdown); the pair is one node (H6)
+                let r = self.wallet_call(&method, env.params, id).await;
+                if r.0 == StatusCode::OK {
+                    self.begin_stop("/").await;
+                }
+                r
+            }
             Some(Class::Wallet { .. }) if yewd_wallet::rpc::served(&method) => {
                 self.wallet_call(&method, env.params, id).await
+            }
+            // the raw helpers ycashd serves without a wallet and Zakura lacks: from yew-core
+            Some(Class::Local) => {
+                let params = match params_of(env.params) {
+                    Ok(p) => p,
+                    Err(m) => return error_reply(code::INVALID_REQUEST, m, id),
+                };
+                match self.wallet.raw_helper(&method, &params).await {
+                    Ok(text) => raw_result_reply(&text, id),
+                    Err(e) => error_reply(e.code, &e.message, id),
+                }
             }
             Some(Class::Wallet { stage, .. }) => error_reply(
                 code::METHOD_NOT_FOUND,
@@ -267,7 +298,7 @@ impl Facade {
                 }
                 self.forward(path, body.clone(), id).await
             }
-            Some(Class::Local) | None => self.forward(path, body.clone(), id).await,
+            None => self.forward(path, body.clone(), id).await,
         }
     }
 
@@ -360,14 +391,24 @@ impl Facade {
             .and_then(|p| serde_json::from_str::<Vec<serde_json::Value>>(p.get()).ok())
             .and_then(|v| v.first().and_then(|t| t.as_str().map(str::to_string)));
         if let Some(m) = topic {
-            return match methods::classify(&m) {
-                Some(Class::Wallet { stage, .. }) if yewd_wallet::rpc::served(&m) => result_reply(
-                    &serde_json::Value::String(format!(
-                        "{m}\n\nyewd: served from the wallet (ycashd's arguments and result; plan §3b {})\n",
-                        stage.name()
-                    )),
+            // ycashd's help branch of these two runs only on an encrypted wallet
+            if matches!(m.as_str(), "walletlock" | "walletpassphrase")
+                && !self.wallet.encrypted().await
+            {
+                return result_reply(
+                    &serde_json::Value::String(format!("help: unknown command: {m}")),
                     id,
-                ),
+                );
+            }
+            return match methods::classify(&m) {
+                Some(Class::Wallet { .. } | Class::Local) if crate::ycashd::help(&m).is_some() => {
+                    result_reply(
+                        &serde_json::Value::String(
+                            crate::ycashd::help(&m).unwrap_or_default().to_string(),
+                        ),
+                        id,
+                    )
+                }
                 Some(Class::Wallet { stage, .. }) => result_reply(
                     &serde_json::Value::String(format!(
                         "{m}\n\n{}\n",
@@ -400,18 +441,33 @@ impl Facade {
             .and_then(|v| v.get("result").and_then(|r| r.as_str().map(str::to_string)))
             .unwrap_or_default();
         result_reply(
-            &serde_json::Value::String(format!("{text}{}", wallet_help_section())),
+            &serde_json::Value::String(crate::ycashd::merged_listing(&text, |m| {
+                matches!(
+                    methods::classify(m),
+                    Some(Class::Wallet { .. } | Class::Local)
+                ) && (yewd_wallet::rpc::served(m) || methods::LOCAL.contains(&m))
+            })),
             id,
         )
     }
 
     async fn stop(&self, path: &str, id: Option<&RawValue>) -> Reply {
         let mut text = "yewd stopping".to_string();
+        if self.begin_stop(path).await {
+            text.push_str(" (backend stopping)");
+        }
+        result_reply(&serde_json::Value::String(text), id)
+    }
+
+    /// Stop the backend too (with `-stopbackend`), then this server ~200 ms later (the reply goes
+    /// out first). Whether the backend was asked to stop.
+    async fn begin_stop(&self, path: &str) -> bool {
+        let mut stopped = false;
         if self.stop_backend {
             let stop =
                 Bytes::from_static(br#"{"jsonrpc":"1.0","id":"yewd","method":"stop","params":[]}"#);
             match self.backend.call(path, stop).await {
-                Ok(_) => text.push_str(" (backend stopping)"),
+                Ok(_) => stopped = true,
                 Err(e) => eprintln!("yewd: stop: {e}"),
             }
         }
@@ -421,29 +477,13 @@ impl Facade {
             tokio::time::sleep(Duration::from_millis(200)).await;
             let _ = tx.send(true);
         });
-        result_reply(&serde_json::Value::String(text), id)
+        stopped
     }
 
     /// Ask the server to stop (as `stop` does, without touching the backend).
     pub fn shutdown(&self) {
         let _ = self.shutdown.send(true);
     }
-}
-
-/// The section `help` appends to the backend's listing.
-pub fn wallet_help_section() -> String {
-    let mut s = String::from("\n== Wallet (yewd) ==\n");
-    for (m, _, stage) in methods::wallet_methods() {
-        if yewd_wallet::rpc::served(m) {
-            s.push_str(&format!("{m}  (yewd: served, {})\n", stage.name()));
-        } else {
-            s.push_str(&format!(
-                "{m}  (yewd: not yet implemented, {})\n",
-                stage.name()
-            ));
-        }
-    }
-    s
 }
 
 /// Listen on `addrs` and serve until `shutdown` turns true. Returns the bound addresses (port 0

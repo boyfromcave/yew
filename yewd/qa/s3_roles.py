@@ -398,12 +398,15 @@ def roles_main():
                 assert 'bond-locked' in rpc_error(wb.yed_withdrawbond, sb)['message']
                 self.mine(POOLS[0])
             self.sync_all()
-            before = wb.getbalance()
-            wd = wb.yed_withdrawbond(sb)
-            assert_equal((wd['seq'], wd['bondZat']), (sb, 10 * 100000000))
+            # S4 (F-S2-8): the bond withdrawn to a Sapling address of the pair, one note
+            zb = wb.z_getnewaddress('sapling')
+            wd = wb.yed_withdrawbond(sb, zb)
+            assert_equal((wd['seq'], wd['bondZat'], wd['to']), (sb, 10 * 100000000, zb))
+            raw = wb.getrawtransaction(wd['txid'], 1)        # still in the mempool
+            assert_equal((len(raw['vin']), len(raw['vout']), len(raw['vShieldedOutput'])), (1, 0, 2))
             self.sync_all()
             self.mine(POOLS[0])
-            assert_equal(wb.getbalance(), before + Decimal(wd['bondOut']) / 100000000)
+            assert_equal(wb.z_getbalance(zb), Decimal(wd['bondOut']) / 100000000)
             assert 'bond-spent' in rpc_error(wb.yed_withdrawbond, sb)['message']
             self.served.add('yed_withdrawbond')
             self.check('bond withdrawn by yewd')

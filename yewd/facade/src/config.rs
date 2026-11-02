@@ -64,6 +64,15 @@ pub const KNOWN: &[&str] = &[
     "signerbin",
     "walletpoll",
     "initwallet",
+    "exportdir",
+    "paytxfee",
+    "developerencryptwallet",
+    "experimentalfeatures",
+    "wallet",
+    "rescan",
+    "salvagewallet",
+    "paramsdir",
+    "backendexitgrace",
     "printtoconsole",
     "debug",
     "help",
@@ -96,6 +105,11 @@ pub struct Config {
     /// The wallet's poll interval in milliseconds (the fallback wake-up; 0 = barrier only).
     pub wallet_poll_ms: u64,
     pub debug: bool,
+    /// The ycashd wallet arguments yewd gives meaning to (S4).
+    pub wallet_args: crate::wallet::WalletArgs,
+    /// With `-stopbackend`: exit when the backend has been unreachable this many seconds after
+    /// it was reachable (the pair is one node, H6); 0 = never.
+    pub backend_exit_grace: u64,
     /// Options given but not understood (reported at start).
     pub ignored: Vec<String>,
 }
@@ -338,6 +352,32 @@ impl Config {
                 None => 1000,
             },
             debug: a.has("debug"),
+            wallet_args: crate::wallet::WalletArgs {
+                opts: yewd_wallet::admin::Opts {
+                    export_dir: a.get("exportdir").map(PathBuf::from),
+                    // ycashd needs -experimentalfeatures -developerencryptwallet; the harness hands
+                    // those to the backend, so yewd allows encryption unless told 0 (F-S4-3)
+                    encrypt_allowed: a.get("developerencryptwallet") != Some("0"),
+                    paytxfee: match a.get("paytxfee") {
+                        Some(v) => yewd_wallet::json::parse_amount(v).ok_or_else(|| {
+                            ConfigError(format!("yewd: -paytxfee={v} is not an amount"))
+                        })?,
+                        None => 0,
+                    },
+                    params_dir: a.get("paramsdir").map(PathBuf::from),
+                },
+                wallet_file: a.get("wallet").map(PathBuf::from),
+                rescan: a.flag("rescan"),
+                salvage: a.flag("salvagewallet"),
+            },
+            backend_exit_grace: match a.get("backendexitgrace") {
+                Some(v) => v.parse().map_err(|_| {
+                    ConfigError(format!(
+                        "yewd: -backendexitgrace={v} is not a number of seconds"
+                    ))
+                })?,
+                None => 20,
+            },
             ignored,
         })
     }

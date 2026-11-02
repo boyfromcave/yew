@@ -146,6 +146,13 @@ impl KeyBook {
             .find(|k| k.chain == chain && k.index == index)
     }
 
+    /// Whether `script` pays a change key (the internal chain), ycashd's `IsChange`.
+    pub fn is_change_script(&self, script: &[u8]) -> bool {
+        yew_core::script::p2pkh_hash(script)
+            .and_then(|h| self.by_hash(&h))
+            .is_some_and(|k| k.chain == INTERNAL)
+    }
+
     pub fn by_hash(&self, h: &[u8; 20]) -> Option<&TKey> {
         self.by_hash.get(h).map(|&i| &self.tkeys[i])
     }

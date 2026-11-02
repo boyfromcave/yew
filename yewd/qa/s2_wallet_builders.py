@@ -213,7 +213,8 @@ class YewdS2(YellowbackTestFramework):
         assert y.lockunspent(False, [{'txid': coins[0]['txid'], 'vout': coins[0]['vout']}])
         assert_equal([(r['txid'], r['vout']) for r in y.listlockunspent()], [(coins[0]['txid'], coins[0]['vout'])])
         assert all((c['txid'], c['vout']) != (coins[0]['txid'], coins[0]['vout']) for c in y.listunspent())
-        assert y.lockunspent(True)
+        # ycash6's RPC table takes exactly two arguments (S4: the façade checks arity as ycashd does)
+        assert y.lockunspent(True, [{'txid': coins[0]['txid'], 'vout': coins[0]['vout']}])
         assert_equal(y.listlockunspent(), [])
         ch = y.getrawchangeaddress()
         assert y.validateaddress(ch)['ismine']
