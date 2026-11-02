@@ -597,16 +597,22 @@ and the runner knows it.
 - **F-S5-14** (harness, fixed): a script that failed inside `setup_network` never stopped its pairs and
   `wait_bitcoinds` waited forever.
 - **F-S5-15** (yewd, record): ycashd's background Sapling consolidation (`yellowback_wr_flags`'s
-  consolidation builds) is not in yewd.
+  consolidation builds) is not in yewd. *Status (s5-yewd): not implemented; outside K-25 (an option, no RPC; it
+  would have the signer sign transactions no RPC asked for, K-24), and the script also reads `debug.log` for
+  `-deletetx` (F-S5-13): it needs a column-3 exclusion, not a yewd change.*
 - **F-S5-16** (kogany): transaction gossip between koganys (and to a ycashd peer) is not reliable; the
   harness feeds the gap, as the rig does.
 - **F-S5-17** (yewd, open): the seed-only restore (`-mnemonicfile` with `wallet.dat` wiped,
   `vault_pq_wallet_restore.py` (b)): yewd's wallet lives in `<net>/yewd` and the signer's directory, which
   the script's wipe does not reach; it needs a yewd `-mnemonicfile` that rebuilds the wallet from the dump's
-  seed with the restore marker.
+  seed with the restore marker. *Status: fixed (yewd `-mnemonicfile`, the `wallet.dat` stand-in, pending member
+  keys; harness routes the flag): `vault_pq_wallet_restore` passes on column 3 and 3m.*
 - **F-S5-18** (kogany/rig): a regtest started without the Ycash upgrades (the framework's 200-block cache)
   mints coinbases without the founders' reward ycashd requires (`cb-no-founders-reward`), so the cached
-  scripts cannot run with a ycash6 peer (the mixed variant; the rig's column 2 sees the same).
+  scripts cannot run with a ycash6 peer (the mixed variant; the rig's column 2 sees the same). *Status: harness
+  fix (the peer gets kogany's regtest schedule, Blossom/Heartwood/Canopy at the Sapling height, and the solved
+  generate adds the founders/YDF output): `vault_pq_wallet` passes in 3m; kogany's template paying it stays a
+  node item.*
 - kogany read/shape gaps met on the way (each a W7/W8 parity item): `getblocktemplate` carries
   `maxtime`, `yed_getstats.supplyCapCents` is null and its armed fields differ (`mint_armed`,
   `cancel_limit`), `yed_gettxinfo` lacks register rows (`yellowback_attest`), `z_validateaddress`
