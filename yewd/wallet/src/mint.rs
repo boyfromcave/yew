@@ -256,6 +256,62 @@ impl Wallet {
         ))
     }
 
+    /// The mint's preflight estimate at `R` (ycashd `PreflightMint`: `MintGate`, then `BundleAt`
+    /// with **the caller's bundle** when `bundleHex` is given, then `CombineMint`). Without a
+    /// bundle the node's `yed_estimatecollateral` is the whole answer (it builds the pool's
+    /// bundle). With one, the node is asked at a price override (which skips its pool bundle and
+    /// still reports `xMint` and the MINTPOL-1 gate at `R`), the bundle is read here, and the
+    /// estimate is taken again at the combined `pMint = min(xMint, aMint)`: on an armed snapshot
+    /// with an empty pool the plain estimate refuses `bundle-insufficient` although the caller's
+    /// bundle suffices (yellowback_cancel_limit, yellowback_mint_armed).
+    async fn mint_estimate(
+        &self,
+        node: &dyn Node,
+        cents: i64,
+        lock_blocks: i64,
+        bundle: &[u8],
+    ) -> Result<Value, RpcError> {
+        let estimate = |price: Option<i64>| {
+            let params = match price {
+                Some(p) => serde_json::json!([cents, lock_blocks, p]),
+                None => serde_json::json!([cents, lock_blocks]),
+            };
+            async move {
+                node::call(node, "yed_estimatecollateral", params)
+                    .await
+                    .map_err(node_build_error)
+            }
+        };
+        if bundle.is_empty() {
+            return estimate(None).await;
+        }
+        let probe = estimate(Some(yewd_proto::attest::PRICE_MIN)).await?;
+        let r = probe["refHeight"].as_i64().unwrap_or(0);
+        let facts = self.bundle_at(node, r, "", bundle).await?;
+        if !facts.armed {
+            return estimate(None).await;
+        }
+        let x_mint = probe["xMint"].as_i64();
+        let p_mint = crate::armed::mint_price(x_mint, &facts).ok_or_else(|| {
+            build_error("mintpol-no-price: no price the network can mint at".into())
+        })?;
+        let mut est = estimate(Some(p_mint)).await?;
+        if let Some(o) = est.as_object_mut() {
+            let a = facts.a_mint;
+            o.insert("aMint".into(), a.map(Value::from).unwrap_or(Value::Null));
+            let source = match (x_mint, a) {
+                (Some(x), Some(a)) if p_mint == a && a < x => "a",
+                _ => "x",
+            };
+            o.insert("source".into(), Value::from(source));
+            o.insert(
+                "bundleSeqs".into(),
+                Value::from(facts.seqs.iter().map(|s| *s as i64).collect::<Vec<_>>()),
+            );
+        }
+        Ok(est)
+    }
+
     /// `yed_mint cents lockBlocks ( "from" "bundleHex" wait maxCollateralZat )`.
     async fn yed_mint(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
         if p.len() < 2 || p.len() > 6 {
@@ -294,13 +350,15 @@ impl Wallet {
                 "bad-mint-amount: cents must be between {min_mint} and {max_mint}"
             )));
         }
-        let est = node::call(
-            node,
-            "yed_estimatecollateral",
-            serde_json::json!([cents, lock_blocks]),
-        )
-        .await
-        .map_err(node_build_error)?;
+        let bundle_bytes = if bundle_arg.is_empty() {
+            Vec::new()
+        } else {
+            hex::decode(&bundle_arg)
+                .map_err(|_| build_error("bundle-malformed: bundleHex is not hex".into()))?
+        };
+        let est = self
+            .mint_estimate(node, cents, lock_blocks, &bundle_bytes)
+            .await?;
         if est["mintBlocked"].as_bool() == Some(true) {
             return Err(build_error(
                 est["mintBlockedReason"]
@@ -319,12 +377,6 @@ impl Wallet {
             return Err(RpcError::new(code::WALLET_ERROR, format!("collateral-above-max: the mint needs {collateral} zat of collateral, above the maxCollateralZat of {max_collateral}")));
         }
         let r = est["refHeight"].as_i64().unwrap_or(0);
-        let bundle_bytes = if bundle_arg.is_empty() {
-            Vec::new()
-        } else {
-            hex::decode(&bundle_arg)
-                .map_err(|_| build_error("bundle-malformed: bundleHex is not hex".into()))?
-        };
         // BundleAt (the pool's bundle, or bundleHex) and, while armed, AFEE-W at completion (F-S2-4)
         let facts = self.bundle_at(node, r, "", &bundle_bytes).await?;
         let bundle = facts.bundle.clone();

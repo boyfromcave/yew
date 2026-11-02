@@ -71,6 +71,7 @@ pub const KNOWN: &[&str] = &[
     "wallet",
     "rescan",
     "salvagewallet",
+    "mnemonicfile",
     "paramsdir",
     "backendexitgrace",
     "backendindexer",
@@ -387,6 +388,7 @@ impl Config {
                 wallet_file: a.get("wallet").map(PathBuf::from),
                 rescan: a.flag("rescan"),
                 salvage: a.flag("salvagewallet"),
+                mnemonic_file: a.get("mnemonicfile").map(PathBuf::from),
             },
             falcon_height: match (a.get("pqfalconheight"), a.get("pqfalcon")) {
                 (Some(v), _) => v.parse().map_err(|_| {

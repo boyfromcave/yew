@@ -308,6 +308,10 @@ pub struct SignedRecord {
 pub struct SignedRecords {
     pub restored: bool,
     pub records: Vec<SignedRecord>,
+    /// Imported keys that were no set member when imported, watched for a `SET_JOIN` (07/F-5
+    /// review S3; ycashd's `setVaultPendingKeys`): `set_acknowledgerestore`'s `pendingkeys`.
+    #[serde(default)]
+    pub pending: u32,
 }
 
 /// `set_importsigned`'s answer.
@@ -387,6 +391,12 @@ pub struct MessageRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportKeyRequest {
     pub wif: String,
+    /// The hash160s (hex) of every set member key at the tip, as the façade read them
+    /// (`set_list`, `set_getinfo`): a new key among them sets the restore marker, any other new
+    /// key is kept pending until its `SET_JOIN` connects ([`Request::JoinsSeen`]; ycashd's
+    /// `MarkVaultKeyImported`). `None` (not read): the marker is set, as for a member.
+    #[serde(default)]
+    pub members: Option<Vec<String>>,
 }
 
 /// The imported key's place in the store ([`KeyRef::Bip32`] with [`IMPORTED_CHAIN`]).
@@ -433,6 +443,9 @@ pub struct ImportDumpRequest {
     pub path: String,
     /// `z_importwallet`: the Sapling key lines too.
     pub zkeys: bool,
+    /// As [`ImportKeyRequest::members`], for the dump's new transparent keys.
+    #[serde(default)]
+    pub members: Option<Vec<String>>,
 }
 
 /// What an import added, public parts only.
@@ -634,6 +647,10 @@ pub enum Request {
     Backup(BackupRequest),
     /// `z_sendmany` (S4).
     SaplingBuild(SaplingBuildRequest),
+    /// The hash160s (hex) of member keys whose `SET_JOIN` connected in a block the wallet read:
+    /// a pending imported key among them sets the restore marker (ycashd's `VaultCheckJoins`).
+    /// Answered with [`Response::Acknowledged`].
+    JoinsSeen(Vec<String>),
 }
 
 /// A request with its protocol version.

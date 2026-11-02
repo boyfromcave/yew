@@ -875,8 +875,10 @@ impl Wallet {
         let mut admitted: Vec<(String, u64)> = Vec::new(); // txid, sapling outputs before it
         let mut outputs_before = 0u64;
         let mut moved = false;
+        let mut joined: Vec<String> = Vec::new(); // imported member keys whose SET_JOIN connected
         for (index, (bytes, ztx)) in txs.into_iter().enumerate() {
             let txid = ztx.txid().to_string();
+            joined.extend(self.imported_joins(&ztx));
             let p = parse_tx(&self.view, &self.book, &bytes, Some(&ztx)).map_err(|e| {
                 ScanError::Rpc(RpcError::new(
                     code::MISC_ERROR,
@@ -926,7 +928,45 @@ impl Wallet {
             }
             self.rebuild();
         }
+        if !joined.is_empty() {
+            // ycash6 VaultCheckJoins: a pending imported key that joined a set brings no
+            // sign-once history; the signer sets the restore marker (07/F-5 review S3)
+            match self.signer.request(yewd_proto::Request::JoinsSeen(joined)) {
+                Ok(yewd_proto::Response::Acknowledged(_)) => {}
+                other => return Err(ScanError::Rpc(crate::build::signer_error(other))),
+            }
+        }
         Ok(())
+    }
+
+    /// The hash160s (hex) of imported keys of this wallet that `tx`'s `SET_JOIN` act names as
+    /// its member key.
+    fn imported_joins(&self, tx: &zcash_primitives::transaction::Transaction) -> Vec<String> {
+        let Some(b) = tx.transparent_bundle() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for o in &b.vout {
+            let spk = &o.script_pubkey().0 .0;
+            if !yewd_proto::act::is_act_output(spk) {
+                continue;
+            }
+            if let Ok(yewd_proto::act::Act {
+                body: yewd_proto::act::Body::Join { member_key, .. },
+                ..
+            }) = yewd_proto::act::decode(spk)
+            {
+                let h = yew_core::keys::hash160(&member_key);
+                if self
+                    .book
+                    .by_hash(&h)
+                    .is_some_and(|k| k.chain == crate::keys::IMPORTED)
+                {
+                    out.push(hex::encode(h));
+                }
+            }
+        }
+        out
     }
 
     /// Read the node's mempool: admit relevant transactions not seen yet, drop wallet

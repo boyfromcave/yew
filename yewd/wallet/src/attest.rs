@@ -1593,8 +1593,10 @@ impl Wallet {
             self.persist_state()?;
             return Ok(J::Str(addr));
         }
+        let members = crate::vaultrpc::set_member_hashes(node).await;
         let ik = match self.signer.request(Request::ImportKey(ImportKeyRequest {
             wif: wif.trim().to_string(),
+            members,
         })) {
             Ok(Response::ImportedKey(ik)) => ik,
             Ok(Response::Refused(r)) if r.code == yewd_proto::refuse::KEY_NOT_HELD => {
