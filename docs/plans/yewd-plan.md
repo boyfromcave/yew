@@ -491,6 +491,33 @@ poll stands in) and H11 (F-S4-11).
 
 ### S4 exit gate (as run)
 
+Against ycash6 `vaults/kogany-compat` (`65cb4ae0f` binaries; the suites and harness of `d85332e97`).
+
+- **The contract suites, unchanged, every node a pair** (`qa/s4_contract.py`, the harness's `YEWD_BIN`
+  mode plus the H8 step, F-S4-1): `vault_rpc_contract.py` (2 pairs) and `yellowback_rpc_contract.py`
+  (6 pairs: the whole wallet context, the armed v3 node and wallet contexts — pool-path mints with the
+  attestor fee, the emergency notice and the clause-(b) claim, the cancel co-signature, the equivocation
+  report, the bond withdrawal —, the invariant audit, the storage fault stopping a pair): **both pass**.
+- **The façade leg** (`qa/s4_facade.py` against a plain ycashd wallet node): 144 arity checks (every
+  method of the table, too few and too many arguments), 85 `help` texts, the K-25 lines of the `help`
+  listing, 33 documented errors provoked on both, 13 raw-helper answers (coinbase, transparent and Sapling
+  transactions; eight scripts; `createrawtransaction`) equal ycashd's, code and message; then `settxfee`,
+  `addmultisigaddress`, `z_getnewdiversifiedaddress`, `z_listreceivedbyaddress`, `z_sendmany` t→z, z→t,
+  z→z with a memo, a failed operation, the operations RPCs, `z_importpqkey`, the dumps both ways (yewd's
+  read by ycashd's `importwallet`, ycashd's by yewd's `z_importwallet`), `backupwallet` and its restore,
+  `encryptwallet` (the pair stops), the locked wallet's `-13`s, `walletpassphrase` (`-14`, the arity
+  with its help text), `walletlock`: **passes**.
+- **A probe ahead of S5**: `yellowback_sapling.py` unchanged with every node a pair (the Sapling-funded
+  mint and its carrier, the redemptions to a Sapling address with and without YED change): **passes**.
+- **The earlier gates on this build**: `s1_wallet_reads.py`, `s2_wallet_builders.py` (its `lockunspent`
+  step now passes the two arguments ycash6's table requires), `s3_roles.py --stage=roles` (the bond now
+  withdrawn to a Sapling address): **pass**.
+- `yewd/scripts/check-yewd.sh` with `YEWD_PQ_WALLET_VECTORS`, `YEWD_VAULT_VECTORS`,
+  `YEWD_ATTEST_VECTORS` (kogany `testdata/yellowback/`, hashes equal to `yewd/PIN`) and
+  `YEWD_REQUIRE_VECTORS=1`: fmt, clippy `-D warnings`, the tests — green.
+- Not run here: the same on **kogany** (W7 not merged; the plan's S4 row is gated on W7-e), the hazard
+  tests that need kogany's indexer streams (H3, H4) and `setmocktime` (H11, F-S4-11).
+
 
 ## 4. CI (workspace plan §5)
 
