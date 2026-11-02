@@ -405,7 +405,7 @@ class YewdS2(YellowbackTestFramework):
         assert_equal(strip(yv, ign), strip(uv, ign))
         assert_equal((yv['status'], yv['mintedCents']), ('ACTIVE', 10000))
         ti = ('txid', 'height', 'blockhash', 'feeZat', 'collateralZat', 'payee', 'outputs', 'inputs', 'index', 'refHeight',
-              'lockHeight', 'claimHeight', 'pMint', 'owner', 'ownerHash', 'vault')
+              'lockHeight', 'claimHeight', 'pMint', 'owner', 'ownerHash', 'vault', 'carrierVin')   # carrierVin: the funding input count (§4.3 rule 3)
         yt, ut = user.yed_gettxinfo(ym['txid']), user.yed_gettxinfo(um['txid'])
         assert_equal(strip(yt, ti), strip(ut, ti))
         pos = yc.check('yed_listpositions', y.yed_listpositions())
