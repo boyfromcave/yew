@@ -363,8 +363,23 @@ check also runs without the file).
 
 ## 4. CI (workspace plan §5)
 
-The `yewd` job in `.github/workflows/ci.yml`: the unit leg (`scripts/check-yewd.sh`, blocking) and
-the backend round trip against ycashd from a trusted ycash6 run at the commit `yewd/PIN` names
-(blocking). The contract legs (vs ycash6, then vs kogany + `yewd`) join when the harness lands.
-yew's security workflows already scan `yewd/` for code; their lockfile inputs (OSV, cargo audit)
-name only the root `Cargo.lock` and `app/pubspec.lock` and are to be extended to `yewd/Cargo.lock`.
+Four jobs in `.github/workflows/ci.yml` (the cross-repository design is the workspace's
+`docs/plans/kogany/ci-design.md`), each re-run on its own:
+
+- `yewd-check`: the unit leg, `scripts/check-yewd.sh` (blocking).
+- `yewd-bin`: the `yewd-bin` artifact (`yewd-bin.tgz`: `yewd`, `yewd-signer`, `yewd-bin.json`; dev
+  profile, ubuntu-24.04; 30 days outside pull requests), which this run's gates and ycash6's mixed
+  tier (at a pinned yew commit) consume.
+- `yewd-node`: ycashd and ycash-cli from ycash6's `node-bin` at the commit `yewd/PIN` names (a push,
+  schedule or dispatch run), re-uploaded as this run's `yewd-node`; it warns when the pinned
+  `node-bin` has less than 7 days left.
+- `yewd-gates`: one job per stage gate, on ycash6's functional framework at the `yewd/PIN` commit:
+  the S0 backend round trip, S1, S2, and S3's `roles`, `attest_wallet` and `attest_bond` stages
+  (`attest_agent` and `cancel_agent` need ycash6's attestation agent and join when the job builds
+  it). Report-only until each stage's gate is seen green; the coordinator then sets the entry's
+  `blocking: true`.
+
+The contract legs through `yewd` run in ycash6's mixed tier (`yewd-pair`): backend ycash6 now,
+kogany + `yewd` (column 3) once the harness has its kogany-backend mode (S5).
+yew's security workflows scan `yewd/` for code, and their lockfile inputs (OSV in `secops.yml`,
+cargo audit in `scripts/audit.sh`) include `yewd/Cargo.lock`.

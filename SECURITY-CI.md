@@ -11,8 +11,8 @@ the same shape in every Yellowback repository:
 | CodeQL | `codeql.yml` | `rust` (build-mode none) and `actions`, `security-extended` | never fails a PR on an existing alert; new alerts show on the PR | code scanning (`codeql/<language>`) |
 | Workflow security | `secops.yml` `zizmor` | every workflow and `dependabot.yml` | fails on any finding (default persona) | run summary, code scanning (`zizmor`) |
 | Secrets | `secops.yml` `gitleaks` | PR: the PR's commits; nightly, dispatch, push to `upgrade/vault`: the whole history | fails on a leak not in `.gitleaksignore` | run summary, code scanning (`gitleaks`, redacted) |
-| Dependency vulnerabilities | `secops.yml` `osv-scanner` | `Cargo.lock` and `app/pubspec.lock` | fails on a known vulnerability not in `osv-scanner.toml` | run summary, code scanning (`osv-scanner`) |
-| Rust advisories | `ci.yml` `audit` (cargo-audit, `scripts/audit.sh`) | `Cargo.lock` | fails on an advisory with a reachable fix | run log |
+| Dependency vulnerabilities | `secops.yml` `osv-scanner` | `Cargo.lock`, `yewd/Cargo.lock` and `app/pubspec.lock` | fails on a known vulnerability not in `osv-scanner.toml` | run summary, code scanning (`osv-scanner`) |
+| Rust advisories | `ci.yml` `audit` (cargo-audit, `scripts/audit.sh`) | `Cargo.lock`, `yewd/Cargo.lock` | fails on an advisory with a reachable fix | run log |
 | Code-scanning triage | `code-scanning.yml` (`contrib/secops/code-scanning-triage.py`) | the open code-scanning alerts | dismisses the alerts listed in `contrib/secops/code-scanning-dismissals.json`; never fails on an open one | run summary (alerts left open), artifact `code-scanning-alerts` |
 | Dependency updates | `.github/dependabot.yml` | cargo, pub, github-actions | security updates only, one grouped PR per ecosystem; version updates off | Dependabot PRs |
 
