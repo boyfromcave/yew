@@ -402,11 +402,11 @@ def roles_main():
             zb = wb.z_getnewaddress('sapling')
             wd = wb.yed_withdrawbond(sb, zb)
             assert_equal((wd['seq'], wd['bondZat'], wd['to']), (sb, 10 * 100000000, zb))
+            raw = wb.getrawtransaction(wd['txid'], 1)        # still in the mempool
+            assert_equal((len(raw['vin']), len(raw['vout']), len(raw['vShieldedOutput'])), (1, 0, 2))
             self.sync_all()
             self.mine(POOLS[0])
             assert_equal(wb.z_getbalance(zb), Decimal(wd['bondOut']) / 100000000)
-            raw = user.getrawtransaction(wd['txid'], 1)
-            assert_equal((len(raw['vin']), len(raw['vout']), len(raw['vShieldedOutput'])), (1, 0, 2))
             assert 'bond-spent' in rpc_error(wb.yed_withdrawbond, sb)['message']
             self.served.add('yed_withdrawbond')
             self.check('bond withdrawn by yewd')
