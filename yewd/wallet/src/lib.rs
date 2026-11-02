@@ -501,7 +501,14 @@ impl Wallet {
                 .iter()
                 .filter(|p| p.scheme == scheme && p.index < yewd_proto::IMPORTED_PQ_BASE)
                 .count() as u32;
-            let want = self.st.pq_issued(scheme) + PQ_LOOKAHEAD;
+            // a state written before the guard in mark_used may hold an imported index here
+            let issued = self.st.pq_issued(scheme);
+            let issued = if issued > yewd_proto::IMPORTED_PQ_BASE {
+                have.saturating_sub(PQ_LOOKAHEAD)
+            } else {
+                issued
+            };
+            let want = issued + PQ_LOOKAHEAD;
             if have < want {
                 req.pq.push((scheme, have, want - have));
             }
@@ -557,7 +564,9 @@ impl Wallet {
                 self.st.issued.internal = i + 1;
                 true
             }
-            Owner::Pq(s, i) if i >= self.st.pq_issued(s) => {
+            // an imported PQ key (index from IMPORTED_PQ_BASE) is no hand-out of the seed's chain:
+            // counting it asked the signer for two billion keys (vault_pq_wallet.py's importwallet)
+            Owner::Pq(s, i) if i >= self.st.pq_issued(s) && i < yewd_proto::IMPORTED_PQ_BASE => {
                 self.st.set_pq_issued(s, i + 1);
                 true
             }
