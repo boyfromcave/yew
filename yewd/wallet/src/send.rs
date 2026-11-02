@@ -38,6 +38,18 @@ pub const SERVED: &[&str] = &[
 /// default relay fee, 54 zat; ycashd adds such change to the fee).
 const DUST: i64 = 54;
 
+/// `GetPQDustThreshold` at `ONE_THIRD_DUST_THRESHOLD_RATE` (100 zat/kB): 3 × the fee of the output
+/// plus the input that spends it, the input a post-quantum spend for `TX_PQPKH`, 148 bytes otherwise
+/// (`CTxOut::GetDustThreshold`: 54 zat for P2PKH).
+fn dust_threshold(script: &[u8]) -> i64 {
+    let out = 8 + if script.len() > 252 { 3 } else { 1 } + script.len();
+    let input = match yew_core::pq::pqpkh_of(script) {
+        Some(id) => crate::yed::pq_input_size(id.scheme),
+        None => 148,
+    };
+    3 * (100 * (out + input) as i64 / 1000)
+}
+
 /// The scriptSig a wallet coin's input will carry: a post-quantum signature's pushes for
 /// `TX_PQPKH`, the P2PKH maximum otherwise.
 fn script_sig_size(script: &[u8]) -> usize {
@@ -186,12 +198,20 @@ impl Wallet {
                     let share = fee / subtract + if first_sub { fee % subtract } else { 0 };
                     first_sub = false;
                     v -= share;
-                    if v <= DUST {
-                        return Err(RpcError::new(
-                            code::WALLET_ERROR,
-                            "The transaction amount is too small to pay the fee",
-                        ));
-                    }
+                }
+                // CreateTransaction: a recipient below its dust threshold (a TX_PQPKH one priced
+                // with its real spend size, GetPQDustThreshold) is refused
+                if v < dust_threshold(s) {
+                    return Err(RpcError::new(
+                        code::WALLET_ERROR,
+                        if !*sub {
+                            "Transaction amount too small"
+                        } else if v < 0 {
+                            "The transaction amount is too small to pay the fee"
+                        } else {
+                            "The transaction amount is too small to send after the fee has been deducted"
+                        },
+                    ));
                 }
                 tx.vout.push(TxOut {
                     value: v,

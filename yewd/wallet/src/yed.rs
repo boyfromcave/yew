@@ -68,7 +68,7 @@ pub(crate) struct YedInfo {
 }
 
 /// `PQSpendInputSize`: a post-quantum input's serialized size.
-fn pq_input_size(scheme: u8) -> usize {
+pub(crate) fn pq_input_size(scheme: u8) -> usize {
     let ss = yew_core::pq::pq_sig_pushes_size(scheme).unwrap_or(0);
     40 + if ss > 252 { 3 } else { 1 } + ss
 }
