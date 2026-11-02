@@ -233,6 +233,28 @@ impl Facade {
             eprintln!("yewd: {method}");
         }
         let class = methods::classify(&method);
+        if self.wallet.disabled {
+            // -disablewallet: ycashd registers no wallet method, so each is "Method not found";
+            // the augmented reads and sendrawtransaction are the node's own, the raw helpers stay
+            return match class {
+                Some(Class::Wallet { .. }) => error_reply(code::METHOD_NOT_FOUND, "Method not found", id),
+                Some(Class::Local) => {
+                    let params = match params_of(env.params) {
+                        Ok(p) => p,
+                        Err(m) => return error_reply(code::INVALID_REQUEST, m, id),
+                    };
+                    match self.wallet.raw_helper(&method, &params).await {
+                        Ok(text) => raw_result_reply(&text, id),
+                        Err(e) => error_reply(e.code, &e.message, id),
+                    }
+                }
+                Some(Class::Own) if method == "help" => {
+                    self.help(path, body.clone(), env.params, id).await
+                }
+                Some(Class::Own) => self.stop(path, id).await,
+                _ => self.forward(path, body.clone(), id).await,
+            };
+        }
         // ycash6's table arity check (rpc/server.cpp), before the handler: -32602 with the help text
         if matches!(class, Some(Class::Wallet { .. } | Class::Local)) {
             if let Ok(p) = params_of(env.params) {

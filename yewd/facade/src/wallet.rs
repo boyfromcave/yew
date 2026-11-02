@@ -231,6 +231,8 @@ pub struct WalletService {
     pub opts: std::sync::Mutex<WalletArgs>,
     /// Woken by kogany's indexer streams (`crate::indexer`): a sync between polls (H3, H4).
     pub wake: Arc<tokio::sync::Notify>,
+    /// `-disablewallet`: never opened; the façade answers no wallet method.
+    pub disabled: bool,
 }
 
 /// The ycashd wallet arguments yewd gives meaning to (S4; the harness hands them over).
@@ -263,6 +265,7 @@ impl WalletService {
             debug,
             opts: std::sync::Mutex::new(WalletArgs::default()),
             wake: Arc::new(tokio::sync::Notify::new()),
+            disabled: false,
         }
     }
 

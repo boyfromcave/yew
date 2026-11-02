@@ -74,6 +74,7 @@ pub const KNOWN: &[&str] = &[
     "paramsdir",
     "backendexitgrace",
     "backendindexer",
+    "disablewallet",
     "printtoconsole",
     "debug",
     "help",
@@ -114,6 +115,9 @@ pub struct Config {
     /// kogany's indexer gRPC listener (`-backendindexer=<ip:port>`): its `ChainTipChange` and
     /// `MempoolChange` streams wake the wallet (H3, H4); never the source of truth.
     pub backend_indexer: Option<SocketAddr>,
+    /// `-disablewallet` (ycashd's): no wallet is opened and no wallet method is served; the façade
+    /// is the node's RPC alone (a node a script starts without a wallet, in the harness's pairs).
+    pub disable_wallet: bool,
     /// Options given but not understood (reported at start).
     pub ignored: Vec<String>,
 }
@@ -374,6 +378,7 @@ impl Config {
                 rescan: a.flag("rescan"),
                 salvage: a.flag("salvagewallet"),
             },
+            disable_wallet: a.get("disablewallet").is_some_and(|v| v != "0") || a.flag("disablewallet"),
             backend_indexer: match a.get("backendindexer") {
                 Some(v) => Some(v.parse().map_err(|_| {
                     ConfigError(format!("yewd: -backendindexer={v} is not an ip:port"))
