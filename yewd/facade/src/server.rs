@@ -298,9 +298,7 @@ impl Facade {
                 id,
             ),
             // F-S5-10: the post-quantum refusals of two methods outside K-25, as ycashd answers them
-            Some(Class::OutOfScope)
-                if matches!(method.as_str(), "z_shieldcoinbase" | "z_mergetoaddress") =>
-            {
+            Some(Class::OutOfScope) if method == "z_shieldcoinbase" => {
                 let params = params_of(env.params).unwrap_or_default();
                 let net = crate::wallet::core_network(self.wallet.network);
                 match yewd_wallet::zsend::pq_refusal_only(net, &method, &params) {

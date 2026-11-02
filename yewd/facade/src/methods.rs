@@ -180,6 +180,9 @@ pub const GATE_WALLET: &[(&str, Stage)] = &[
     ("listreceivedbyaddress", S5),
     ("listtransactions", S5),
     ("z_listaddresses", S5),
+    // F-S5-10: its post-quantum refusals and "Could not find any funds to merge."; merging itself
+    // stays outside K-25
+    ("z_mergetoaddress", S5),
 ];
 
 /// The rest of ycashd's wallet table (`src/wallet/rpcwallet.cpp`, `rpcdump.cpp`, the
@@ -202,7 +205,6 @@ pub const OUT_OF_SCOPE: &[&str] = &[
     "z_gettotalbalance",
     "z_getbalanceforviewingkey",
     "z_getbalanceforaccount",
-    "z_mergetoaddress",
     "z_setmigration",
     "z_getmigrationstatus",
     "z_shieldcoinbase",
@@ -309,8 +311,8 @@ mod tests {
         assert_eq!(VAULT_WALLET.len() + YED_WALLET.len(), 47);
         assert_eq!(STOCK_WALLET.len(), 30, "K-25 scripts");
         assert_eq!(ROLE_WALLET.len(), 4, "K-25 roles");
-        assert_eq!(GATE_WALLET.len(), 4, "S5's finding F-S5-1");
-        assert_eq!(OUT_OF_SCOPE.len(), 36, "the rest of ycashd's wallet table");
+        assert_eq!(GATE_WALLET.len(), 5, "S5's findings F-S5-1, F-S5-10");
+        assert_eq!(OUT_OF_SCOPE.len(), 35, "the rest of ycashd's wallet table");
     }
 
     #[test]

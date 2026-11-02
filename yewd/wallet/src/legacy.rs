@@ -20,6 +20,7 @@ pub const SERVED: &[&str] = &[
     "listreceivedbyaddress",
     "listtransactions",
     "z_listaddresses",
+    "z_mergetoaddress",
 ];
 
 impl Wallet {
@@ -29,6 +30,7 @@ impl Wallet {
             "listreceivedbyaddress" => self.listreceivedbyaddress(p),
             "listtransactions" => self.listtransactions(p),
             "z_listaddresses" => self.z_listaddresses(p),
+            "z_mergetoaddress" => self.z_mergetoaddress(p),
             _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
         }
     }
@@ -280,6 +282,49 @@ impl Wallet {
             .rev()
             .collect();
         Ok(J::Arr(rows))
+    }
+
+    /// `z_mergetoaddress ["fromaddress", ...] "toaddress" ...` (F-S5-10): the post-quantum refusals
+    /// (`RefusePQSource`, `RefusePQRecipient`) and, with nothing to merge, ycashd's "Could not find
+    /// any funds to merge." (-6); merging itself is outside K-25 and not served.
+    fn z_mergetoaddress(&self, p: &[Value]) -> Result<J, RpcError> {
+        let e = match crate::zsend::pq_refusal_only(self.network, "z_mergetoaddress", p) {
+            Err(e) if e.code == code::METHOD_NOT_FOUND => e,
+            other => return other,
+        };
+        let froms: Vec<&str> = p
+            .first()
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        let any_t = froms.contains(&"ANY_TADDR");
+        let any_z = froms.contains(&"ANY_SAPLING");
+        let scripts: Vec<Vec<u8>> = froms
+            .iter()
+            .filter_map(|a| parse_taddr_script(self.network, a))
+            .collect();
+        let utxos = self
+            .available_coins(None)
+            .into_iter()
+            .filter(|(c, d)| {
+                *d >= 1
+                    && !c.coinbase
+                    && matches!(c.owner, crate::keys::Owner::T(..))
+                    && (any_t || scripts.contains(&c.script))
+            })
+            .count();
+        let notes = self
+            .notes
+            .iter()
+            .filter(|n| !n.spent && (any_z || froms.contains(&n.address.as_str())))
+            .count();
+        if utxos == 0 && notes == 0 {
+            return Err(RpcError::new(
+                code::WALLET_INSUFFICIENT_FUNDS,
+                "Could not find any funds to merge.",
+            ));
+        }
+        Err(e)
     }
 
     /// `z_listaddresses ( includeWatchonly )`: the wallet's Sapling addresses, in issue order.

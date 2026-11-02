@@ -41,7 +41,7 @@ async fn every_wallet_method_answers_32601() {
             assert_eq!(msg, e, "{m}");
         }
     }
-    assert_eq!(n, 22 + 25 + 1 + 30 + 4 + 4);
+    assert_eq!(n, 22 + 25 + 1 + 30 + 4 + 5);
     for m in methods::OUT_OF_SCOPE {
         let (status, v, _) = call(&c, m, "[]").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{m}");
