@@ -600,6 +600,18 @@ impl Wallet {
         self.st.birthday = 0;
         self.rewind(None);
         self.sync(node).await?;
+        // audit C-1 / H8: the imported YED outputs are locked before the RPC returns, so no plain
+        // YEC selection spends them (yellowback_wallet_restore.py); a node without a live Yellowback
+        // has none to read
+        if let Ok(tokens) = self.tokens(node).await {
+            for t in tokens {
+                if let (Some(txid), Some(vout)) = (t["txid"].as_str(), t["vout"].as_u64()) {
+                    self.st.locks.insert(format!("{txid}:{vout}"));
+                }
+            }
+            self.save()
+                .map_err(|e| RpcError::new(code::WALLET_ERROR, e))?;
+        }
         Ok(J::Null)
     }
 
