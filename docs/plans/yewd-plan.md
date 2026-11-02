@@ -540,8 +540,11 @@ Other harness steps: **H8 for every pair** (`yewd -initwallet`, then the backend
 address; F-S4-1's rule; on kogany a node that names `-yellowbackpayoutaddress` mines to that address,
 F-S5-12); the 200-block cache (`cache_behavior='current'`) is mined by the run's own pairs
 (`yewd_build_cache`: the cached ycashd chain and wallets are read by neither a pair's backend nor yewd);
-`connect_nodes` uses `addnode "add"` and tolerates `-23` for a kogany pair; `-disablewallet` reaches
-yewd too. The shard manifest gains the **`pair` group** (the 50 wallet-needing scripts of `sidecar`)
+`connect_nodes` uses `addnode "add"` and tolerates `-23` for a kogany pair; `-disablewallet`,
+`-pqfeerate`, `-pqfalcon[height]` and `-salvagewallet` reach yewd too; every proxy of a pair is wrapped
+(helpers make their own); a pair that lacks a mempool transaction another pair holds is fed it after a
+grace (kogany's gossip, as the rig's W9-a/F-3), the ycash6 peer likewise, and the peer follows the pairs'
+`invalidateblock`/`reconsiderblock`; a script that fails before `stop_nodes` leaves no pair running. The shard manifest gains the **`pair` group** (the 50 wallet-needing scripts of `sidecar`)
 and the runner knows it.
 
 **Fixes the gate found in yewd** (each committed with its finding):
@@ -556,8 +559,12 @@ and the runner knows it.
   `z_shieldcoinbase`/`z_mergetoaddress` (F-S5-10);
 - ycashd wallet behaviours: `ReacceptWalletTransactions` at open, the chain facts read once at open,
   plain sends that select and price **PQ coins** (`CreateTransaction`'s PQ fee), `EnsurePQRecipientPayable`,
-  the dust refusals (`GetPQDustThreshold`), the size-priced fee fallback to the relay floor without a
-  price, `yed_sweepcarriers` on a locked wallet, a mempool intent's vault for `vault_buildcancel`;
+  the dust refusals (`GetPQDustThreshold`), the size-priced fee fallback to `-pqfeerate` (default the
+  relay floor) without a price, `-pqfalconheight` read by the wallet itself, `yed_sweepcarriers` on a
+  locked wallet, a mempool intent's vault for `vault_buildcancel`, vault/intent owner keys marked used
+  (a restored wallet never hands them out again), an imported PQ key no longer moves the seed chain's
+  index (the signer was asked for 2^31 keys), `-salvagewallet` on an already restored file,
+  `z_sendmany`'s insufficient-funds target with the fee;
 - the signer socket appears only at mode 0600 (bound under a temporary name, then renamed).
 
 **Findings** (for the coordinator's §9; *kogany* = a node gap, not the sidecar's):
@@ -587,6 +594,19 @@ and the runner knows it.
   `debug.log` (`vault_dos`, `vault_rpc`, `yellowback_index`, `upgrade`, `stock_node`, `wr_flags`,
   `mempool_limits`, `mining`), the datadir layout (`yellowback_hardening` h6, `vault_rpc`'s vault DB
   wipe), init-error texts (`yellowback_fees_reaccept`'s `-yellowbackmaxtxfee` floor).
+- **F-S5-14** (harness, fixed): a script that failed inside `setup_network` never stopped its pairs and
+  `wait_bitcoinds` waited forever.
+- **F-S5-15** (yewd, record): ycashd's background Sapling consolidation (`yellowback_wr_flags`'s
+  consolidation builds) is not in yewd.
+- **F-S5-16** (kogany): transaction gossip between koganys (and to a ycashd peer) is not reliable; the
+  harness feeds the gap, as the rig does.
+- **F-S5-17** (yewd, open): the seed-only restore (`-mnemonicfile` with `wallet.dat` wiped,
+  `vault_pq_wallet_restore.py` (b)): yewd's wallet lives in `<net>/yewd` and the signer's directory, which
+  the script's wipe does not reach; it needs a yewd `-mnemonicfile` that rebuilds the wallet from the dump's
+  seed with the restore marker.
+- **F-S5-18** (kogany/rig): a regtest started without the Ycash upgrades (the framework's 200-block cache)
+  mints coinbases without the founders' reward ycashd requires (`cb-no-founders-reward`), so the cached
+  scripts cannot run with a ycash6 peer (the mixed variant; the rig's column 2 sees the same).
 - kogany read/shape gaps met on the way (each a W7/W8 parity item): `getblocktemplate` carries
   `maxtime`, `yed_getstats.supplyCapCents` is null and its armed fields differ (`mint_armed`,
   `cancel_limit`), `yed_gettxinfo` lacks register rows (`yellowback_attest`), `z_validateaddress`
