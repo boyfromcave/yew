@@ -52,6 +52,15 @@ pub struct PendingMint {
     pub facts: crate::armed::BundleFacts,
 }
 
+/// `CombineMint`'s source: the estimate's, or `"x"` when the estimate names none (unarmed:
+/// `yed_estimatecollateral` leaves it empty, a MINT's pMint is then xMint).
+fn mint_source(est: &Value) -> String {
+    match est["source"].as_str() {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => "x".to_string(),
+    }
+}
+
 /// MINT-10: `|fast − a| · 10⁴ > max(0, bps) · min(fast, a)`.
 pub fn mint10_diverged(fast: i64, a: i64, bps: i64) -> bool {
     let diff = (fast as i128 - a as i128).unsigned_abs();
@@ -437,7 +446,7 @@ impl Wallet {
                 .with("xMint", raw_or_null(&est["xMint"]))
                 .with("aMint", raw_or_null(&est["aMint"]))
                 .with("pMint", raw_or_null(&est["pMint"]))
-                .with("source", est["source"].as_str().unwrap_or("").to_string())
+                .with("source", mint_source(&est))
                 .with("bundleSeqs", raw_or_null(&est["bundleSeqs"]))
                 .with("attestFeeZat", 0i64)
                 .with("attestPayee", J::Null));
@@ -935,7 +944,7 @@ impl Wallet {
                 "source",
                 match (pm.facts.armed, pm.facts.a_mint, est["xMint"].as_i64()) {
                     (true, Some(a), Some(x)) => (if a < x { "a" } else { "x" }).to_string(),
-                    _ => est["source"].as_str().unwrap_or("").to_string(),
+                    _ => mint_source(&est),
                 },
             )
             .with("bundleSeqs", pm.facts.seqs_json())
