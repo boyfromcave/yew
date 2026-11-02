@@ -3854,6 +3854,9 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "yew-core",
+ "yewd-proto",
+ "yewd-signer",
  "yewd-wallet",
 ]
 
@@ -3869,6 +3872,10 @@ dependencies = [
 name = "yewd-signer"
 version = "0.1.0"
 dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "yew-core",
  "yewd-proto",
 ]
 
@@ -3876,7 +3883,21 @@ dependencies = [
 name = "yewd-wallet"
 version = "0.1.0"
 dependencies = [
+ "hex",
+ "hmac 0.13.0-pre.4",
+ "sapling-crypto",
+ "secp256k1 0.33.1",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0-pre.4",
+ "tokio",
  "yew-core",
+ "yewd-proto",
+ "yewd-signer",
+ "zcash_keys",
+ "zcash_primitives",
+ "zcash_protocol",
+ "zip32",
 ]
 
 [[package]]

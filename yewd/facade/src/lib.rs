@@ -12,6 +12,7 @@ pub mod backend;
 pub mod config;
 pub mod methods;
 pub mod server;
+pub mod wallet;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -29,6 +30,15 @@ pub struct Running {
 
 /// Write the cookie (when no password is configured), bind and serve.
 pub async fn start(cfg: &Config) -> std::io::Result<Running> {
+    let bin = cfg
+        .signer_bin
+        .clone()
+        .unwrap_or_else(wallet::default_signer_bin);
+    start_with(cfg, wallet::SignerSource::Process(bin)).await
+}
+
+/// [`start`] with the wallet's signer given (the façade's tests pass an in-process one).
+pub async fn start_with(cfg: &Config, signer: wallet::SignerSource) -> std::io::Result<Running> {
     let (cookie, creds) = match &cfg.user_pass {
         Some((u, p)) => (None, auth::Credentials::user_pass(u, p)),
         None => {
@@ -36,11 +46,22 @@ pub async fn start(cfg: &Config) -> std::io::Result<Running> {
             (Some(c), creds)
         }
     };
-    let backend = backend::Backend::new(cfg.backend, cfg.backend_auth.clone());
+    let backend = Arc::new(backend::Backend::new(cfg.backend, cfg.backend_auth.clone()));
+    let wallet = Arc::new(wallet::WalletService::new(
+        cfg.network,
+        &cfg.datadir,
+        backend.clone(),
+        signer,
+        cfg.debug,
+    ));
+    if cfg.wallet_poll_ms > 0 {
+        wallet.spawn_poll(std::time::Duration::from_millis(cfg.wallet_poll_ms));
+    }
     let (facade, rx) = server::Facade::new(
         creds,
         cfg.allow.clone(),
         backend,
+        wallet,
         cfg.stop_backend,
         cfg.debug,
     );

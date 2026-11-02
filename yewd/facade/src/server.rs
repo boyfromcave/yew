@@ -27,6 +27,7 @@ use crate::allowip::AllowIp;
 use crate::auth::Credentials;
 use crate::backend::{Backend, BackendError};
 use crate::methods::{self, Class};
+use crate::wallet::WalletService;
 
 /// ycashd's JSON-RPC error codes the façade answers with (`src/rpc/protocol.h`).
 pub mod code {
@@ -43,7 +44,8 @@ const MAX_BODY: usize = 32 * 1024 * 1024;
 pub struct Facade {
     pub creds: Credentials,
     pub allow: AllowIp,
-    pub backend: Backend,
+    pub backend: Arc<Backend>,
+    pub wallet: Arc<WalletService>,
     pub stop_backend: bool,
     pub debug: bool,
     shutdown: watch::Sender<bool>,
@@ -86,6 +88,26 @@ fn result_reply(result: &serde_json::Value, id: Option<&RawValue>) -> Reply {
     )
 }
 
+/// A reply whose result is JSON text already written (the wallet's [`yewd_wallet::json::J`]).
+fn raw_result_reply(result: &str, id: Option<&RawValue>) -> Reply {
+    let id = id.map(RawValue::get).unwrap_or("null");
+    (
+        StatusCode::OK,
+        Bytes::from(format!(r#"{{"result":{result},"error":null,"id":{id}}}"#)),
+    )
+}
+
+/// The positional parameters of a call (`null` or absent = none).
+fn params_of(p: Option<&RawValue>) -> Result<Vec<serde_json::Value>, &'static str> {
+    match p.map(|r| serde_json::from_str::<serde_json::Value>(r.get())) {
+        None => Ok(Vec::new()),
+        Some(Ok(serde_json::Value::Null)) => Ok(Vec::new()),
+        Some(Ok(serde_json::Value::Array(v))) => Ok(v),
+        Some(Ok(_)) => Err("Params must be an array"),
+        Some(Err(_)) => Err("Parse error"),
+    }
+}
+
 fn trim_newline(b: Bytes) -> Bytes {
     let mut n = b.len();
     while n > 0 && matches!(b[n - 1], b'\n' | b'\r') {
@@ -98,7 +120,8 @@ impl Facade {
     pub fn new(
         creds: Credentials,
         allow: AllowIp,
-        backend: Backend,
+        backend: Arc<Backend>,
+        wallet: Arc<WalletService>,
         stop_backend: bool,
         debug: bool,
     ) -> (Arc<Self>, watch::Receiver<bool>) {
@@ -108,6 +131,7 @@ impl Facade {
                 creds,
                 allow,
                 backend,
+                wallet,
                 stop_backend,
                 debug,
                 shutdown: tx,
@@ -208,6 +232,9 @@ impl Facade {
             eprintln!("yewd: {method}");
         }
         match methods::classify(&method) {
+            Some(Class::Wallet { .. }) if yewd_wallet::rpc::served(&method) => {
+                self.wallet_call(&method, env.params, id).await
+            }
             Some(Class::Wallet { stage, .. }) => error_reply(
                 code::METHOD_NOT_FOUND,
                 &methods::not_implemented_message(&method, stage),
@@ -222,11 +249,81 @@ impl Facade {
                 self.help(path, body.clone(), env.params, id).await
             }
             Some(Class::Own) => self.stop(path, id).await,
-            // node RPCs, the raw helpers (S4 serves them locally) and the augmented reads
-            // (S1 adds the wallet fields): forwarded unchanged in S0
-            Some(Class::Local | Class::Augmented) | None => {
-                self.forward(path, body.clone(), id).await
+            // the augmented reads: forwarded, then the wallet adds its fields (S1)
+            Some(Class::Augmented) => {
+                self.augmented(path, &method, body.clone(), env.params, id)
+                    .await
             }
+            // node RPCs and the raw helpers (S4 serves them locally): forwarded unchanged
+            Some(Class::Local) | None => self.forward(path, body.clone(), id).await,
+        }
+    }
+
+    async fn wallet_call(
+        &self,
+        method: &str,
+        params: Option<&RawValue>,
+        id: Option<&RawValue>,
+    ) -> Reply {
+        let params = match params_of(params) {
+            Ok(p) => p,
+            Err(m) => return error_reply(code::INVALID_REQUEST, m, id),
+        };
+        match self.wallet.call(method, &params).await {
+            Ok(text) => raw_result_reply(&text, id),
+            Err(e) => error_reply(e.code, &e.message, id),
+        }
+    }
+
+    async fn augmented(
+        &self,
+        path: &str,
+        method: &str,
+        body: Bytes,
+        params: Option<&RawValue>,
+        id: Option<&RawValue>,
+    ) -> Reply {
+        let params = match params_of(params) {
+            Ok(p) => p,
+            Err(m) => return error_reply(code::INVALID_REQUEST, m, id),
+        };
+        // z_validateaddress is answered from the address and the wallet: a ycash6 -disablewallet
+        // backend stops on it (it dereferences its absent wallet)
+        if method == "z_validateaddress" {
+            return match self.wallet.local(method, &params).await {
+                Ok(text) => raw_result_reply(&text, id),
+                Err(e) => error_reply(e.code, &e.message, id),
+            };
+        }
+        // vault_list's `mine` is the wallet's filter: the node is asked without it
+        let body = if method == "vault_list" {
+            let stripped = yewd_wallet::Wallet::strip_mine(&params);
+            let idv = id.map(RawValue::get).unwrap_or("null");
+            Bytes::from(format!(
+                r#"{{"jsonrpc":"1.0","id":{idv},"method":"vault_list","params":{}}}"#,
+                serde_json::Value::Array(stripped)
+            ))
+        } else {
+            body
+        };
+        let (status, out) = self.forward(path, body, id).await;
+        if status != StatusCode::OK {
+            return (status, out);
+        }
+        #[derive(Deserialize)]
+        struct Answer<'a> {
+            #[serde(borrow)]
+            result: Option<&'a RawValue>,
+        }
+        let Ok(Answer {
+            result: Some(result),
+        }) = serde_json::from_slice::<Answer>(&out)
+        else {
+            return (status, out);
+        };
+        match self.wallet.augment(method, &params, result.get()).await {
+            Ok(text) => raw_result_reply(&text, id),
+            Err(e) => error_reply(e.code, &e.message, id),
         }
     }
 
@@ -252,6 +349,13 @@ impl Facade {
             .and_then(|v| v.first().and_then(|t| t.as_str().map(str::to_string)));
         if let Some(m) = topic {
             return match methods::classify(&m) {
+                Some(Class::Wallet { stage, .. }) if yewd_wallet::rpc::served(&m) => result_reply(
+                    &serde_json::Value::String(format!(
+                        "{m}\n\nyewd: served from the wallet (ycashd's arguments and result; plan §3b {})\n",
+                        stage.name()
+                    )),
+                    id,
+                ),
                 Some(Class::Wallet { stage, .. }) => result_reply(
                     &serde_json::Value::String(format!(
                         "{m}\n\n{}\n",
@@ -318,10 +422,14 @@ impl Facade {
 pub fn wallet_help_section() -> String {
     let mut s = String::from("\n== Wallet (yewd) ==\n");
     for (m, _, stage) in methods::wallet_methods() {
-        s.push_str(&format!(
-            "{m}  (yewd: not yet implemented, {})\n",
-            stage.name()
-        ));
+        if yewd_wallet::rpc::served(m) {
+            s.push_str(&format!("{m}  (yewd: served, {})\n", stage.name()));
+        } else {
+            s.push_str(&format!(
+                "{m}  (yewd: not yet implemented, {})\n",
+                stage.name()
+            ));
+        }
     }
     s
 }

@@ -2,8 +2,9 @@
 // Distributed under the MIT software license, see the accompanying
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
-//! The S0 exit-gate tests: every listed wallet method answers `-32601` (and never reaches the
-//! backend), node RPCs are forwarded byte for byte, batches, `help`, `stop`, auth, warm-up.
+//! The S0 exit-gate tests, as S1 leaves them: every listed wallet method not served yet answers
+//! `-32601`, a served one is answered by the wallet, and no wallet method ever reaches the
+//! backend by name; node RPCs are forwarded byte for byte, batches, `help`, `stop`, auth, warm-up.
 
 mod common;
 
@@ -27,6 +28,14 @@ async fn every_wallet_method_answers_32601() {
     let c = client(&f, "u", "p");
     let mut n = 0;
     for (m, _, stage) in methods::wallet_methods() {
+        n += 1;
+        if yewd_wallet::rpc::served(m) {
+            // answered by the wallet (here an error: the fake node is no chain), never forwarded
+            let (_, v, _) = call(&c, m, "[]").await;
+            let msg = v["error"]["message"].as_str().unwrap_or("");
+            assert!(!msg.starts_with("yewd: not yet implemented"), "{m}: {msg}");
+            continue;
+        }
         let (status, v, _) = call(&c, m, "[]").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{m}");
         assert_eq!(v["error"]["code"], -32601, "{m}");
@@ -35,7 +44,6 @@ async fn every_wallet_method_answers_32601() {
         assert!(msg.contains(stage.name()), "{m}: {msg}");
         assert_eq!(v["id"], "t");
         assert!(v["result"].is_null());
-        n += 1;
     }
     assert_eq!(n, 22 + 25 + 1 + 30 + 4);
     for m in methods::OUT_OF_SCOPE {
@@ -50,10 +58,13 @@ async fn every_wallet_method_answers_32601() {
             "{m}"
         );
     }
-    assert!(
-        node.seen.lock().unwrap().is_empty(),
-        "a wallet method reached the backend"
-    );
+    let seen = node.seen.lock().unwrap().clone();
+    for (m, _, _) in methods::wallet_methods() {
+        assert!(!seen.iter().any(|s| s == m), "{m} reached the backend");
+    }
+    for m in methods::OUT_OF_SCOPE {
+        assert!(!seen.iter().any(|s| s == m), "{m} reached the backend");
+    }
 }
 
 #[tokio::test]
@@ -74,7 +85,6 @@ async fn node_rpcs_are_forwarded_unchanged() {
         "vault_getinfo",
         "yed_getinfo",
         "decoderawtransaction",
-        "validateaddress",
     ] {
         let (status, v, text) = call(&c, m, "[]").await;
         assert_eq!(status, StatusCode::OK);
@@ -85,7 +95,7 @@ async fn node_rpcs_are_forwarded_unchanged() {
     let (status, v, _) = call(&c, "nosuchmethod", "[]").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(v["error"]["message"], "Method not found");
-    assert_eq!(node.seen.lock().unwrap().len(), 7);
+    assert_eq!(node.seen.lock().unwrap().len(), 6);
 }
 
 #[tokio::test]
@@ -100,7 +110,7 @@ async fn batches_mix_local_and_forwarded() {
     )
     .await;
     let c = client(&f, "u", "p");
-    let body = r#"[{"id":1,"method":"getblockcount","params":[]},{"id":2,"method":"yed_mint","params":[]},{"id":3,"method":"getnewaddress"}]"#;
+    let body = r#"[{"id":1,"method":"getblockcount","params":[]},{"id":2,"method":"yed_mint","params":[]},{"id":3,"method":"sendtoaddress"}]"#;
     let (status, out) = c.call("/", Bytes::from(body)).await.unwrap();
     assert_eq!(status, StatusCode::OK);
     let v: Vec<serde_json::Value> = serde_json::from_slice(&out).unwrap();
@@ -224,9 +234,13 @@ async fn unreachable_backend_answers_warmup() {
     let (status, v, _) = call(&client(&f, "u", "p"), "getblockcount", "[]").await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(v["error"]["code"], -28, "{v}");
-    // a wallet method still answers from the table
+    // a served wallet method waits for the pair (H5), one not served yet answers from the table
     assert_eq!(
         call(&client(&f, "u", "p"), "getbalance", "[]").await.1["error"]["code"],
+        -28
+    );
+    assert_eq!(
+        call(&client(&f, "u", "p"), "sendtoaddress", "[]").await.1["error"]["code"],
         -32601
     );
 }

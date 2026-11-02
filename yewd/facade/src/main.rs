@@ -25,6 +25,9 @@ Usage: yewd [options]
   -backendrpcuser=<u> -backendrpcpassword=<p>   instead of the cookie
   -stopbackend                `stop` stops the node too (the harness bundle)
   -signer=<socket>            the signer's Unix socket (reserved, S2)
+  -signerbin=<file>           the yewd-signer binary (default: beside yewd)
+  -walletpoll=<ms>            how often the wallet follows the node between calls (default 1000; 0 = only at calls)
+  -initwallet                 create the wallet (seed in the signer, birthday 0), print its coinbase address, exit
   -debug                      log every method called
   -version                    print the version and exit
 
@@ -49,6 +52,29 @@ fn main() {
             yewd_wallet::CORE_VERSION
         );
         return;
+    }
+    if cli.has("initwallet") {
+        // H8: the harness creates the wallet before the backend starts, and gives the backend
+        // `-mineraddress=<the printed address>`.
+        let code = match Config::merged(cli).and_then(|(a, datadir)| {
+            let net = Config::network_of(&a)?;
+            let bin = a
+                .get("signerbin")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(yewd_facade::wallet::default_signer_bin);
+            yewd_facade::wallet::WalletService::init_offline(net, &datadir, bin)
+                .map_err(yewd_facade::config::ConfigError)
+        }) {
+            Ok(addr) => {
+                println!("{}", serde_json::json!({ "mineaddress": addr }));
+                0
+            }
+            Err(e) => {
+                eprintln!("yewd: -initwallet: {e}");
+                1
+            }
+        };
+        std::process::exit(code);
     }
     let cfg = match Config::load(cli) {
         Ok(c) => c,
