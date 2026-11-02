@@ -144,6 +144,11 @@ async fn help_lists_the_wallet_table() {
         if m == "walletlock" || m == "walletpassphrase" {
             continue;
         }
+        // the fake node lists no Yellowback category (no live Yellowback): no yed_ line is added
+        if m.starts_with("yed_") {
+            assert!(!text.contains(&format!("\n{m}")), "{m}");
+            continue;
+        }
         assert!(
             text.contains(&format!("\n{m} "))
                 || text.contains(&format!("\n{m}\n"))
