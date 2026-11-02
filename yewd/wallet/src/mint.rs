@@ -40,12 +40,16 @@ pub struct PendingMint {
     pub claim: Option<crate::claim::ClaimArgs>,
     /// An equivocation report's two attestations (hex), S3's `yed_reportequivocation`.
     pub equivocation: Option<(String, String)>,
+    /// A claim notice's vault txid (`yed_claimnotice`, S4).
+    pub notice: Option<String>,
     pub carrier: OutPoint,
     pub cents: i64,
     pub lock_blocks: i64,
     pub from: String,
     pub max_collateral: i64,
     pub est: Value,
+    /// The bundle facts at the carrier's `R` (`BundleAt`; empty while unarmed).
+    pub facts: crate::armed::BundleFacts,
 }
 
 /// ycashd's code for a build refusal (`ThrowBuildError`).
@@ -279,6 +283,7 @@ impl Wallet {
         };
         let only = from_script(self, &from)?;
         // preflight at R (MINTPOL-1, the bundle, MINT-10, the collateral bound), before any transaction
+        crate::yed::yed_info(node).await?;
         let info = node::call(node, "yed_getinfo", serde_json::json!([])).await?;
         let prm = &info["params"];
         let (min_mint, max_mint) = (
@@ -315,24 +320,15 @@ impl Wallet {
             return Err(RpcError::new(code::WALLET_ERROR, format!("collateral-above-max: the mint needs {collateral} zat of collateral, above the maxCollateralZat of {max_collateral}")));
         }
         let r = est["refHeight"].as_i64().unwrap_or(0);
-        let armed = est["armed"].as_bool().unwrap_or(false);
-        let bundle = if !bundle_arg.is_empty() {
+        let bundle_bytes = if bundle_arg.is_empty() {
+            Vec::new()
+        } else {
             hex::decode(&bundle_arg)
                 .map_err(|_| build_error("bundle-malformed: bundleHex is not hex".into()))?
-        } else if armed {
-            let b = node::call(node, "yed_buildbundle", serde_json::json!([r, ""]))
-                .await
-                .map_err(node_build_error)?;
-            hex::decode(b["hex"].as_str().unwrap_or("")).unwrap_or_default()
-        } else {
-            Vec::new()
         };
-        if armed && est["attestFeeZat"].as_i64().unwrap_or(0) > 0 {
-            return Err(RpcError::new(
-                code::WALLET_ERROR,
-                "yewd: an armed mint's attestor fee payee (AFEE-W) is not served yet; finding F-S2-4",
-            ));
-        }
+        // BundleAt (the pool's bundle, or bundleHex) and, while armed, AFEE-W at completion (F-S2-4)
+        let facts = self.bundle_at(node, r, "", &bundle_bytes).await?;
+        let bundle = facts.bundle.clone();
         // the carrier
         let carrier = self
             .build_carrier(node, &bundle, r, "", only.as_deref())
@@ -340,12 +336,14 @@ impl Wallet {
         let pending = PendingMint {
             claim: None,
             equivocation: None,
+            notice: None,
             carrier,
             cents,
             lock_blocks,
             from: from.clone(),
             max_collateral,
             est: est.clone(),
+            facts: facts.clone(),
         };
         if !wait {
             self.pending.push(pending);
@@ -488,7 +486,10 @@ impl Wallet {
         for pm in std::mem::take(&mut self.pending) {
             match node_coin(node, &pm.carrier).await {
                 Ok(Some(c)) if c.height.is_some() => {
-                    let r = match (&pm.claim, &pm.equivocation) {
+                    let r = if let Some(t) = &pm.notice {
+                        self.complete_notice(node, t, &pm).await
+                    } else {
+                        match (&pm.claim, &pm.equivocation) {
                         (Some(a), _) => self.complete_claim(node, a, &pm).await,
                         (None, Some((a, b))) => {
                             let dec = |h: &str| {
@@ -507,6 +508,7 @@ impl Wallet {
                             }
                         }
                         (None, None) => self.complete_mint(node, &pm).await,
+                    }
                     };
                     if let Err(e) = r {
                         eprintln!(
@@ -568,7 +570,13 @@ impl Wallet {
         if pm.max_collateral > 0 && collateral > pm.max_collateral {
             return Err(RpcError::new(code::WALLET_ERROR, format!("collateral-above-max: the mint needs {collateral} zat of collateral, above the maxCollateralZat of {}", pm.max_collateral)));
         }
-        let p_mint = est["pMint"].as_i64().unwrap_or(0);
+        // pMint = min(xMint, aMint) while armed (CombineMint); the estimate's for the pool's bundle
+        let p_mint = if pm.facts.armed && pm.facts.a_mint.is_some() {
+            crate::armed::mint_price(est["xMint"].as_i64(), &pm.facts)
+                .unwrap_or_else(|| est["pMint"].as_i64().unwrap_or(0))
+        } else {
+            est["pMint"].as_i64().unwrap_or(0)
+        };
         let term_class = est["termClass"].as_str().unwrap_or("A").to_string();
         let class_idx = "ABC".find(&term_class).unwrap_or(0) as u8;
         let lock_height = r + pm.lock_blocks;
@@ -608,13 +616,13 @@ impl Wallet {
             }
             Err(e) => return Err(e.into()),
         };
-        let fee_zat =
-            match &payee {
-                Some(_) => yew_core::params::protocol_fee_zat(pm.cents as u64, p_mint).ok_or_else(
-                    || build_error("mint-unsatisfiable: no protocol fee at this price".into()),
-                )?,
-                None => 0,
-            };
+        let protocol_fee = yew_core::params::protocol_fee_zat(pm.cents as u64, p_mint)
+            .ok_or_else(|| build_error("mint-unsatisfiable: no protocol fee at this price".into()))?;
+        let fee_zat = if payee.is_some() { protocol_fee } else { 0 };
+        // AFEE-W: the attestor fee of an armed mint (F-S2-4), selector empty
+        let attest = self
+            .attest_payee(node, r, &[], &pm.facts, protocol_fee)
+            .await?;
         let vp =
             yew_core::vault::yed_mint_vault_params(&attestor_set, claim_delay, &owner, r as u32);
         let vault_script = yew_core::vault::build_vault(&vp)
@@ -627,7 +635,11 @@ impl Wallet {
             ref_height: r as u32,
             owner,
             fee_vout,
-            attest_fee_vout: FEE_VOUT_NONE,
+            attest_fee_vout: match (&attest, payee.is_some()) {
+                (None, _) => FEE_VOUT_NONE,
+                (Some(_), true) => 4,
+                (Some(_), false) => 3,
+            },
         })
         .ok_or_else(|| RpcError::new(code::WALLET_ERROR, "cannot encode the mint payload"))?;
         let mut base = Transaction::new_v4();
@@ -656,6 +668,13 @@ impl Wallet {
                 script_pubkey: s,
             });
         }
+        if let Some(a) = &attest {
+            base.vout.push(TxOut {
+                value: a.fee_zat,
+                script_pubkey: a.script.clone(),
+            });
+        }
+        let attest_fee = attest.as_ref().map(|a| a.fee_zat).unwrap_or(0);
         let only = from_script(self, &pm.from)?;
         let bundle = hex::decode(&rec.bundle).unwrap_or_default();
         let carrier_ss = 3 + bundle.len() + 74 + 73;
@@ -701,6 +720,7 @@ impl Wallet {
         let outflow = collateral
             + TOKEN_VALUE
             + fee_zat
+            + attest_fee
             + (prevs.iter().map(|c| c.value).sum::<i64>() - tx.output_total())
             + 1;
         let signed = self
@@ -750,12 +770,28 @@ impl Wallet {
             .with("pending", false)
             .with("refHeight", r)
             .with("xMint", raw_or_null(&est["xMint"]))
-            .with("aMint", raw_or_null(&est["aMint"]))
-            .with("pMint", raw_or_null(&est["pMint"]))
-            .with("source", est["source"].as_str().unwrap_or("").to_string())
-            .with("bundleSeqs", raw_or_null(&est["bundleSeqs"]))
-            .with("attestFeeZat", 0i64)
-            .with("attestPayee", J::Null))
+            .with(
+                "aMint",
+                if pm.facts.armed {
+                    crate::armed::opt(pm.facts.a_mint)
+                } else {
+                    J::Null
+                },
+            )
+            .with("pMint", p_mint)
+            .with(
+                "source",
+                match (pm.facts.armed, pm.facts.a_mint, est["xMint"].as_i64()) {
+                    (true, Some(a), Some(x)) => (if a < x { "a" } else { "x" }).to_string(),
+                    _ => est["source"].as_str().unwrap_or("").to_string(),
+                },
+            )
+            .with("bundleSeqs", pm.facts.seqs_json())
+            .with("attestFeeZat", attest_fee)
+            .with(
+                "attestPayee",
+                attest.map(|a| J::Str(a.address)).unwrap_or(J::Null),
+            ))
     }
 
     /// `yed_sweepcarriers`: every carrier of this wallet whose window lapsed (`R + REF_WINDOW` below

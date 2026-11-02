@@ -229,6 +229,7 @@ pub const AUGMENTED: &[&str] = &[
     "set_getinfo",
     "vault_list",
     "yed_gettxinfo",
+    "yed_getinfo",
 ];
 
 /// Answered by the façade itself.
@@ -333,7 +334,6 @@ mod tests {
             "generate",
             "sendrawtransaction",
             "vault_getinfo",
-            "yed_getinfo",
         ] {
             assert_eq!(classify(m), None, "{m}");
         }

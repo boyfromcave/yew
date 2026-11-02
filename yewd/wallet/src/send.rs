@@ -48,7 +48,7 @@ impl Wallet {
         match method {
             "sendtoaddress" => self.sendtoaddress(node, p).await,
             "sendmany" => self.sendmany(node, p).await,
-            "lockunspent" => self.lockunspent(p),
+            "lockunspent" => self.lockunspent(node, p).await,
             "getrawchangeaddress" => self.getrawchangeaddress(p),
             "signrawtransaction" => self.signrawtransaction(node, p).await,
             "fundrawtransaction" => self.fundrawtransaction(node, p).await,
@@ -292,7 +292,7 @@ impl Wallet {
     }
 
     /// `lockunspent unlock ( [{"txid","vout"},...] )`.
-    fn lockunspent(&mut self, p: &[Value]) -> Result<J, RpcError> {
+    async fn lockunspent(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
         if p.is_empty() || p.len() > 2 {
             return Err(RpcError::new(
                 code::MISC_ERROR,
@@ -307,8 +307,10 @@ impl Wallet {
         })?;
         let Some(list) = param(p, 1) else {
             if unlock {
-                // the locks of remembered vault builds stay (ycashd re-locks them from mapVaultBuilds)
-                let keep: BTreeSet<String> = self.build_locks();
+                // the locks of remembered vault builds stay (ycashd re-locks them from mapVaultBuilds),
+                // and so do the YED locks (H5: ReapplyLocks)
+                let mut keep: BTreeSet<String> = self.build_locks();
+                keep.extend(self.yed_held_locks(node).await?);
                 self.st.locks.retain(|l| keep.contains(l));
                 self.persist_state()?;
             }
@@ -341,6 +343,21 @@ impl Wallet {
             }
             ops.push(format!("{}:{vout}", txid.to_lowercase()));
         }
+        // H5: a YED-held outpoint is not unlockable here; a call naming one applies nothing
+        if unlock {
+            let held = self.yed_held_locks(node).await?;
+            for op in &ops {
+                if held.contains(op) {
+                    let (t, n) = op.split_once(':').unwrap_or((op.as_str(), "0"));
+                    let shown: String = yew_core::tx::txid_from_hex(t)
+                        .map(|_| t.chars().take(10).collect())
+                        .unwrap_or_default();
+                    return Err(RpcError::new(code::WALLET_ERROR, format!(
+                        "yed-locked-outpoint: COutPoint({shown}, {n}) holds YED; spending it outside the overlay would burn it. Use yed_unlockcoin \"<txid>\" <n> \"I understand this burns YED\" to release it deliberately."
+                    )));
+                }
+            }
+        }
         for op in ops {
             if unlock {
                 self.st.locks.remove(&op);
@@ -350,6 +367,16 @@ impl Wallet {
         }
         self.persist_state()?;
         Ok(J::Bool(true))
+    }
+
+    /// The outpoints the YED overlay holds locked (`IsYellowbackLocked`): locked and holding YED.
+    async fn yed_held_locks(&self, node: &dyn Node) -> Result<BTreeSet<String>, RpcError> {
+        let reserved = self.yed_reserved(node).await?;
+        Ok(reserved
+            .into_iter()
+            .map(|(t, n)| format!("{t}:{n}"))
+            .filter(|k| self.st.locks.contains(k))
+            .collect())
     }
 
     /// The fee-input locks of the remembered builds.

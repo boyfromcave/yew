@@ -22,6 +22,7 @@
 //! address index is not there to ask, and one block reader serves the transparent, PQ and
 //! Sapling sides with the reorg handling in one place.
 
+pub mod armed;
 pub mod attest;
 pub mod build;
 pub mod claim;

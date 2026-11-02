@@ -90,9 +90,32 @@ impl YedInfo {
     }
 }
 
+/// ycashd's builder `Context` (`yellowback/txbuilder.cpp`): the index healthy and past the start
+/// height by the mint lag, read from `yed_getinfo`, before anything is built.
 pub(crate) async fn yed_info(node: &dyn Node) -> Result<YedInfo, RpcError> {
     let v = node::call(node, "yed_getinfo", serde_json::json!([])).await?;
     let p = &v["params"];
+    if v["healthy"].as_bool() == Some(false) {
+        return Err(build_error(format!(
+            "yellowback-unhealthy: {}; restart with -reindex-yellowback",
+            v["unhealthyReason"].as_str().unwrap_or("")
+        )));
+    }
+    let lag = p["refLag"].as_i64().unwrap_or(2);
+    match (v["height"].as_i64(), v["startHeight"].as_i64()) {
+        (None, _) | (Some(-1), _) => {
+            return Err(build_error(
+                "index-below-start: the index has not reached the start height".into(),
+            ))
+        }
+        (Some(h), Some(start)) if h - lag < start => {
+            return Err(build_error(format!(
+                "index-below-start: the index must reach height {} first",
+                start + lag
+            )))
+        }
+        _ => {}
+    }
     let net = &p["fees"]["network"];
     Ok(YedInfo {
         index_height: v["height"].as_i64().unwrap_or(0),

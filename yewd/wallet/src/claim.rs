@@ -139,29 +139,16 @@ impl Wallet {
         if min_out > 0 && collateral - residual < min_out {
             return Err(RpcError::new(code::WALLET_ERROR, format!("claim-out-below-min: the claim would pay {} zat to the destination, below the minOutZat of {min_out}", collateral - residual)));
         }
-        let armed = node::call(node, "yed_getprice", serde_json::json!([r]))
-            .await
-            .ok()
-            .and_then(|x| x["armed"].as_bool())
-            .unwrap_or(false);
         let selector = selector_hex(&op);
-        let bundle = if !bundle_arg.is_empty() {
+        let bundle_bytes = if bundle_arg.is_empty() {
+            Vec::new()
+        } else {
             hex::decode(&bundle_arg)
                 .map_err(|_| build_error("bundle-malformed: bundleHex is not hex".into()))?
-        } else if armed {
-            let b = node::call(node, "yed_buildbundle", serde_json::json!([r, selector]))
-                .await
-                .map_err(|e| match e {
-                    crate::node::NodeError::Rpc { message, .. } => build_error(message),
-                    other => other.into(),
-                })?;
-            hex::decode(b["hex"].as_str().unwrap_or("")).unwrap_or_default()
-        } else {
-            Vec::new()
         };
-        if armed && row["attestFeeZat"].as_i64().unwrap_or(0) > 0 {
-            return Err(RpcError::new(code::WALLET_ERROR, "yewd: an armed claim's attestor fee payee (AFEE-W) is not served yet; finding F-S2-4"));
-        }
+        // BundleAt at (R, the vault's outpoint); the attestor fee at completion (F-S2-4)
+        let facts = self.bundle_at(node, r, &selector, &bundle_bytes).await?;
+        let bundle = facts.bundle.clone();
         let carrier = self
             .build_carrier(node, &bundle, r, &selector, None)
             .await?;
@@ -175,12 +162,14 @@ impl Wallet {
         let pending = PendingMint {
             claim: Some(args.clone()),
             equivocation: None,
+            notice: None,
             carrier,
             cents: minted,
             lock_blocks: 0,
             from: String::new(),
             max_collateral: 0,
             est: Value::Null,
+            facts: facts.clone(),
         };
         if !wait {
             self.pending.push(pending);
@@ -196,7 +185,7 @@ impl Wallet {
                 .with("pending", true)
                 .with("refHeight", r)
                 .with("xClaim", raw(&row["pClaim"]))
-                .with("aClaim", J::Null)
+                .with("aClaim", crate::armed::opt(facts.a_claim))
                 .with("pClaim", raw(&row["pClaim"]))
                 .with("pEmerg", J::Null)
                 .with(
@@ -316,6 +305,18 @@ impl Wallet {
             ),
             None => None,
         };
+        // AFEE-W on RED-3′ (F-S2-4): the protocol fee at the vault's pMint, whatever the payee
+        let protocol_fee =
+            yew_core::params::protocol_fee_zat(minted as u64, v["pMint"].as_i64().unwrap_or(0))
+                .unwrap_or(0);
+        let selector_bytes = hex::decode(selector_hex(&op)).unwrap_or_default();
+        let attest = self
+            .attest_payee(node, r, &selector_bytes, &pm.facts, protocol_fee)
+            .await?;
+        let attest_fee = attest.as_ref().map(|x| x.fee_zat).unwrap_or(0);
+        let (x_mint, x_claim) = crate::armed::cross_section(node, r).await?;
+        let _ = x_mint;
+        let (p_claim, p_emerg) = crate::armed::claim_prices(x_claim, &pm.facts);
         let claimant_script = if a.to.is_empty() {
             let pk = self.new_wallet_key()?;
             yew_core::script::p2pkh_script(&yew_core::keys::hash160(&pk))
@@ -359,7 +360,7 @@ impl Wallet {
             .map_err(|e| RpcError::new(code::WALLET_ERROR, e.to_string()))?;
         let mut last_err = None;
         for _pass in 0..6 {
-            let needed = network_fee + fee_zat + if s.change > 0 { TOKEN_VALUE } else { 0 }
+            let needed = network_fee + fee_zat + attest_fee + if s.change > 0 { TOKEN_VALUE } else { 0 }
                 - CARRIER_VALUE
                 - yed_value;
             let (funding, fee_after) = self
@@ -377,8 +378,8 @@ impl Wallet {
                 change_script: change_script.clone(),
                 payee_script: payee_script.clone(),
                 fee_zat,
-                attest_script: None,
-                attest_fee_zat: 0,
+                attest_script: attest.as_ref().map(|x| x.script.clone()),
+                attest_fee_zat: attest_fee,
                 residual_zat: residual,
                 owner_script: yew_core::pq::pqpkh_script(&owner).unwrap_or_default(),
                 claimant_script: claimant_script.clone(),
@@ -508,17 +509,20 @@ impl Wallet {
                 .with("carrierTxid", txid_hex(&pm.carrier.txid))
                 .with("pending", false)
                 .with("refHeight", r)
-                .with("xClaim", raw(&a.row["pClaim"]))
-                .with("aClaim", J::Null)
-                .with("pClaim", raw(&a.row["pClaim"]))
-                .with("pEmerg", J::Null)
+                .with("xClaim", crate::armed::opt(x_claim))
+                .with("aClaim", if pm.facts.armed { crate::armed::opt(pm.facts.a_claim) } else { J::Null })
+                .with("pClaim", crate::armed::opt(p_claim))
+                .with("pEmerg", crate::armed::opt(p_emerg))
                 .with(
                     "claimPath",
                     a.row["claimPath"].as_str().unwrap_or("").to_string(),
                 )
-                .with("bundleSeqs", J::Arr(vec![]))
-                .with("attestFeeZat", 0i64)
-                .with("attestPayee", J::Null)
+                .with("bundleSeqs", pm.facts.seqs_json())
+                .with("attestFeeZat", attest_fee)
+                .with(
+                    "attestPayee",
+                    attest.as_ref().map(|x| J::Str(x.address.clone())).unwrap_or(J::Null),
+                )
                 .with("residualZat", residual));
         }
         Err(build_error(
@@ -526,9 +530,10 @@ impl Wallet {
         ))
     }
 
-    /// `yed_claimnotice "vaultTxid" ( "bundleHex" wait )`: NOT-1's preconditions; a notice is
-    /// meaningful only while armed (`notice-not-underwater` otherwise, as ycashd). The armed notice
-    /// itself needs the bundle statistics (`pEmerg`), finding F-S2-4.
+    /// `yed_claimnotice "vaultTxid" ( "bundleHex" wait )`: `PreflightNotice` (NOT-1's
+    /// preconditions at `R` = the index tip: `notice-standing`, `notice-not-underwater` at
+    /// `pEmerg = min(xClaim, aClaim)`), the carrier step (selector = the vault outpoint), then
+    /// own YEC plus the carrier carrying the `CLAIM_NOTICE` payload (F-S2-4, resolved in S4).
     async fn yed_claimnotice(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
         if p.is_empty() || p.len() > 3 {
             return Err(RpcError::new(
@@ -537,8 +542,12 @@ impl Wallet {
             ));
         }
         let txid_s = p[0].as_str().unwrap_or("").to_lowercase();
-        yew_core::tx::txid_from_hex(&txid_s)
+        let txid = yew_core::tx::txid_from_hex(&txid_s)
             .map_err(|_| invalid("vaultTxid must be hexadecimal string of length 64"))?;
+        let bundle_arg = p.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let wait = p.get(2).and_then(|v| v.as_bool()).unwrap_or(true);
+        let op = OutPoint { txid, n: 0 };
+        let info = crate::yed::yed_info(node).await?;
         let v = Self::yed_vault(node, &txid_s).await?;
         if v["status"].as_str() != Some("ACTIVE") {
             return Err(build_error(format!(
@@ -546,20 +555,224 @@ impl Wallet {
                 v["status"].as_str().unwrap_or("")
             )));
         }
-        let info = crate::yed::yed_info(node).await?;
         let r = info.index_height;
-        let armed = node::call(node, "yed_getprice", serde_json::json!([r]))
-            .await
-            .ok()
-            .and_then(|x| x["armed"].as_bool())
-            .unwrap_or(false);
-        if !armed {
+        let selector = selector_hex(&op);
+        let bundle_bytes = if bundle_arg.is_empty() {
+            Vec::new()
+        } else {
+            hex::decode(&bundle_arg)
+                .map_err(|_| build_error("bundle-malformed: bundleHex is not hex".into()))?
+        };
+        let facts = self.bundle_at(node, r, &selector, &bundle_bytes).await?;
+        let n = self.notice_at(node, &txid_s, &v, r, &facts).await?;
+        let carrier = self
+            .build_carrier(node, &facts.bundle, r, &selector, None)
+            .await?;
+        let pending = PendingMint {
+            claim: None,
+            equivocation: None,
+            notice: Some(txid_s.clone()),
+            carrier,
+            cents: 0,
+            lock_blocks: 0,
+            from: String::new(),
+            max_collateral: 0,
+            est: Value::Null,
+            facts: facts.clone(),
+        };
+        if !wait {
+            self.pending.push(pending);
+            return Ok(J::obj()
+                .with("txid", "")
+                .with("carrierTxid", txid_hex(&carrier.txid))
+                .with("pending", true)
+                .with("refHeight", r)
+                .with("vault", format!("{txid_s}:0"))
+                .with("xClaim", crate::armed::opt(n.0))
+                .with("aClaim", crate::armed::opt(n.1))
+                .with("pEmerg", crate::armed::opt(n.2))
+                .with("bundleSeqs", facts.seqs_json())
+                .with("emergencyOpenAt", r + n.3));
+        }
+        self.wait_carrier(node, &carrier).await?;
+        self.complete_notice(node, &txid_s, &pending).await
+    }
+
+    /// `NoticeAt`: `(xClaim, aClaim, pEmerg, EMERGENCY_PERSIST)`, or the refusal.
+    async fn notice_at(
+        &self,
+        node: &dyn Node,
+        txid_s: &str,
+        v: &Value,
+        r: i64,
+        f: &crate::armed::BundleFacts,
+    ) -> Result<(Option<i64>, Option<i64>, Option<i64>, i64), RpcError> {
+        let info = node::call(node, "yed_getinfo", serde_json::json!([])).await?;
+        let at = &info["params"]["attest"];
+        let ttl = at["emergencyNoticeTtl"].as_i64().unwrap_or(0);
+        let persist = at["emergencyPersist"].as_i64().unwrap_or(0);
+        let ratio = at["emergencyRatioBps"].as_i64().unwrap_or(0);
+        let index_height = info["height"].as_i64().unwrap_or(0);
+        let standing = node::call(node, "yed_getnotice", serde_json::json!([txid_s])).await?;
+        if standing["found"].as_bool() == Some(true) {
+            let h = standing["height"].as_i64().unwrap_or(0);
+            if index_height + 1 - h <= ttl {
+                return Err(build_error(format!(
+                    "notice-standing: a notice for this vault stands since height {h} (refHeight {}); another may be posted {ttl} blocks after it",
+                    standing["refHeight"].as_i64().unwrap_or(0)
+                )));
+            }
+        }
+        if !f.armed {
             return Err(build_error(format!("notice-not-underwater: the snapshot at {r} is not armed; a notice is meaningless before arming")));
         }
-        Err(RpcError::new(
-            code::WALLET_ERROR,
-            "yewd: an armed claim notice (NOT-1 at pEmerg) is not served yet; finding F-S2-4",
-        ))
+        let (_, x_claim) = crate::armed::cross_section(node, r).await?;
+        let (_, p_emerg) = crate::armed::claim_prices(x_claim, f);
+        let collateral = v["collateralZat"].as_i64().unwrap_or(0);
+        let minted = v["mintedCents"].as_i64().unwrap_or(0);
+        if !crate::armed::is_underwater(collateral, p_emerg, minted, ratio) {
+            return Err(build_error(format!(
+                "notice-not-underwater: collateral {collateral} zat at pEmerg {} covers {minted} cents at {ratio} bps",
+                p_emerg.map(|x| x.to_string()).unwrap_or_else(|| "undefined".into())
+            )));
+        }
+        Ok((x_claim, f.a_claim, p_emerg, persist))
+    }
+
+    /// `CompleteNotice` / `BuildClaimNotice` on a confirmed carrier.
+    pub(crate) async fn complete_notice(
+        &mut self,
+        node: &dyn Node,
+        txid_s: &str,
+        pm: &PendingMint,
+    ) -> Result<J, RpcError> {
+        let txid = yew_core::tx::txid_from_hex(txid_s)
+            .map_err(|e| RpcError::new(code::MISC_ERROR, e))?;
+        let op = OutPoint { txid, n: 0 };
+        let info = crate::yed::yed_info(node).await?;
+        let next = next_block(node).await?;
+        let v = Self::yed_vault(node, txid_s).await?;
+        if v["status"].as_str() != Some("ACTIVE") {
+            return Err(build_error(format!(
+                "vault-not-active: the vault is {}",
+                v["status"].as_str().unwrap_or("")
+            )));
+        }
+        let rec = self
+            .st
+            .carriers
+            .get(&op_str(&pm.carrier))
+            .cloned()
+            .ok_or_else(|| {
+                RpcError::new(
+                    code::WALLET_ERROR,
+                    "carrier-key-missing: the carrier is not this wallet's",
+                )
+            })?;
+        match node_coin(node, &pm.carrier).await? {
+            Some(c) if c.height.is_some() => {}
+            _ => {
+                return Err(build_error(format!(
+                    "carrier-unconfirmed: the carrier {} is not a confirmed unspent output",
+                    op_str(&pm.carrier)
+                )))
+            }
+        }
+        let r = rec.ref_height;
+        if next.height as i64 - info.ref_window > r {
+            return Err(build_error(format!("carrier-lapsed: the carrier's reference height {r} is outside the window at height {}; yed_sweepcarriers reclaims it", next.height)));
+        }
+        if rec.selector != selector_hex(&op) {
+            return Err(build_error(
+                "carrier-selector: the carrier was built for another selector".into(),
+            ));
+        }
+        let n = self.notice_at(node, txid_s, &v, r, &pm.facts).await?;
+        let data = yew_core::payload::encode(&yew_core::payload::Payload::ClaimNotice {
+            vault_txid: op.txid,
+            vault_vout: 0,
+            ref_height: r as u32,
+        })
+        .ok_or_else(|| RpcError::new(code::INTERNAL_ERROR, "cannot encode the notice payload"))?;
+        let mut base = Transaction::new_v4();
+        base.expiry_height = (r + info.ref_window) as u32;
+        base.vout.push(yew_core::tx::TxOut {
+            value: 0,
+            script_pubkey: yew_core::payload::payload_script(&data),
+        });
+        let bundle = hex::decode(&rec.bundle).unwrap_or_default();
+        let pk: [u8; 33] = hex::decode(&rec.pk)
+            .ok()
+            .and_then(|b| b.try_into().ok())
+            .ok_or_else(|| RpcError::new(code::WALLET_ERROR, "carrier-key-missing"))?;
+        let redeem = yew_core::script::carrier_script(&pk, &yew_core::keys::sha256(&bundle))
+            .map_err(|e| RpcError::new(code::WALLET_ERROR, e.to_string()))?;
+        let carrier_ss = 3 + bundle.len() + 74 + 73;
+        let (tx, coins) = self
+            .fund_yed(
+                node,
+                &base,
+                CARRIER_VALUE,
+                info.flat_fee,
+                None,
+                &[(pm.carrier, carrier_ss)],
+            )
+            .await?;
+        let mut prevs: Vec<NodeCoin> = coins
+            .iter()
+            .map(|c| NodeCoin {
+                value: c.1,
+                script: c.2.clone(),
+                height: None,
+                coinbase: false,
+            })
+            .collect();
+        prevs.push(NodeCoin {
+            value: CARRIER_VALUE,
+            script: yew_core::script::p2sh_of(&redeem),
+            height: None,
+            coinbase: false,
+        });
+        let mut keys: Vec<KeyRef> = coins
+            .iter()
+            .map(|c| self.key_of_script(&c.2).unwrap_or(KeyRef::None))
+            .collect();
+        keys.push(KeyRef::Carrier {
+            chain: crate::keys::EXTERNAL,
+            index: rec.index,
+        });
+        let cap = prevs.iter().map(|c| c.value).sum::<i64>();
+        let signed = self
+            .sign_inputs(&tx, &prevs, &keys, &[], GatePath::Yed, cap, next.branch)
+            .await?;
+        let hexs = tx_hex(&signed)?;
+        let val = node::call(
+            node,
+            "yed_validaterawtransaction",
+            serde_json::json!([hexs]),
+        )
+        .await?;
+        let verdict = val["verdict"].as_str().unwrap_or("").to_string();
+        if verdict != "ok" {
+            return Err(build_error(format!(
+                "{verdict}: the wallet's dry run of NOT-1 refused this notice at height {}",
+                next.height
+            )));
+        }
+        let sent = self.broadcast(node, &signed, None).await?;
+        self.st.carriers.remove(&op_str(&pm.carrier));
+        self.persist_state()?;
+        Ok(J::obj()
+            .with("txid", sent)
+            .with("carrierTxid", txid_hex(&pm.carrier.txid))
+            .with("pending", false)
+            .with("refHeight", r)
+            .with("vault", format!("{txid_s}:0"))
+            .with("xClaim", crate::armed::opt(n.0))
+            .with("aClaim", crate::armed::opt(n.1))
+            .with("pEmerg", crate::armed::opt(n.2))
+            .with("bundleSeqs", pm.facts.seqs_json())
+            .with("emergencyOpenAt", r + n.3))
     }
 }
 

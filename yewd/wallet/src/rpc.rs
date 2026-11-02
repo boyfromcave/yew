@@ -65,6 +65,7 @@ pub const AUGMENTED: &[&str] = &[
     "vault_list",
     "set_getinfo",
     "yed_gettxinfo",
+    "yed_getinfo",
 ];
 
 pub fn served(method: &str) -> bool {
@@ -153,6 +154,50 @@ fn as_of(p: &[Value], i: usize) -> Result<Option<u32>, RpcError> {
         )),
         h => Ok(Some(h as u32)),
     }
+}
+
+/// `EstimateClaim`'s `canNotice` (ycash6 `src/rpc/yellowback.cpp`; finding F-S1-4): armed at the
+/// index tip `h`, the vault ACTIVE, no standing notice, not claimable, and underwater at
+/// `pEmerg` by `EMERGENCY_RATIO_BPS` — `pEmerg = min(xClaim, aClaim)` with the pool's bundle for
+/// the vault's outpoint, `xClaim` alone when the pool cannot build one.
+async fn can_notice(node: &dyn Node, v: &Value, h: i64, info: &Value) -> Result<bool, RpcError> {
+    if v["status"].as_str() != Some("ACTIVE") || v["claimable"].as_bool() == Some(true) {
+        return Ok(false);
+    }
+    if !crate::armed::armed_at(node, h).await? {
+        return Ok(false);
+    }
+    let txid = v["txid"].as_str().unwrap_or("").to_string();
+    let at = &info["params"]["attest"];
+    let ttl = at["emergencyNoticeTtl"].as_i64().unwrap_or(0);
+    let notice = node::call(node, "yed_getnotice", serde_json::json!([txid])).await?;
+    if notice["found"].as_bool() == Some(true) && h - notice["height"].as_i64().unwrap_or(0) <= ttl {
+        return Ok(false);
+    }
+    let (_, x_claim) = crate::armed::cross_section(node, h).await?;
+    let mut sel = yew_core::tx::txid_from_hex(&txid)
+        .map(|t| t.to_vec())
+        .unwrap_or_default();
+    sel.extend_from_slice(&0u32.to_le_bytes());
+    let p_emerg = match node::call(
+        node,
+        "yed_buildbundle",
+        serde_json::json!([h, hex::encode(sel)]),
+    )
+    .await
+    {
+        Ok(b) => match (x_claim, b["aClaim"].as_i64()) {
+            (Some(x), Some(a)) => Some(x.min(a)),
+            _ => x_claim,
+        },
+        Err(_) => x_claim,
+    };
+    Ok(crate::armed::is_underwater(
+        v["collateralZat"].as_i64().unwrap_or(0),
+        p_emerg,
+        v["mintedCents"].as_i64().unwrap_or(0),
+        at["emergencyRatioBps"].as_i64().unwrap_or(0),
+    ))
 }
 
 /// `FormatMoney`: at least two decimals, trailing zeros trimmed (`"0.00"`, `"1.50"`, `"0.00000244"`).
@@ -1475,7 +1520,8 @@ impl Wallet {
                 }
                 let txid = v["txid"].as_str().unwrap_or("").to_string();
                 let full = node::call(node, "yed_getvault", serde_json::json!([txid])).await?;
-                rows.push(self.position_row(&full, h, spendable, &info)?);
+                let notice = can_notice(node, &full, h, &info).await?;
+                rows.push(self.position_row(&full, h, spendable, &info, notice)?);
             }
             if !(skip as usize).is_multiple_of(1000) {
                 break;
@@ -1484,7 +1530,14 @@ impl Wallet {
         Ok(J::Arr(rows))
     }
 
-    fn position_row(&self, v: &Value, h: i64, spendable: i64, info: &Value) -> Result<J, RpcError> {
+    fn position_row(
+        &self,
+        v: &Value,
+        h: i64,
+        spendable: i64,
+        info: &Value,
+        can_notice: bool,
+    ) -> Result<J, RpcError> {
         let obj: BTreeMap<String, Box<RawValue>> = serde_json::from_str(&v.to_string())
             .map_err(|e| RpcError::new(code::MISC_ERROR, format!("yewd: yed_getvault: {e}")))?;
         let mut o = J::Obj(
@@ -1520,7 +1573,7 @@ impl Wallet {
             "canClaim",
             J::Bool(claimable && spendable >= minted && !pending),
         );
-        o.push("canNotice", J::Bool(false));
+        o.push("canNotice", J::Bool(can_notice));
         Ok(o)
     }
 
@@ -1549,6 +1602,19 @@ impl Wallet {
                 ] {
                     o.insert(k.to_string(), v);
                 }
+                Ok(write_raw_obj(&o))
+            }
+            "yed_getinfo" => {
+                // the wallet half of yed_getinfo (ENABLE_WALLET): the overlay's lock count (H10)
+                let mut o = raw_obj(result).map_err(bad)?;
+                let locked = self
+                    .yed_reserved(node)
+                    .await?
+                    .into_iter()
+                    .filter(|(t, n)| self.st.locks.contains(&format!("{t}:{n}")))
+                    .count();
+                o.insert("lockedOutputs".into(), locked.to_string());
+                o.insert("protectedByIndex".into(), "true".into());
                 Ok(write_raw_obj(&o))
             }
             "validateaddress" => {

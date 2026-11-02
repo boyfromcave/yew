@@ -789,12 +789,14 @@ impl Wallet {
             self.pending.push(crate::mint::PendingMint {
                 claim: None,
                 equivocation: Some((hex::encode(a.encode()), hex::encode(b.encode()))),
+                notice: None,
                 carrier,
                 cents: 0,
                 lock_blocks: 0,
                 from: String::new(),
                 max_collateral: 0,
                 est: Value::Null,
+                facts: Default::default(),
             });
             let mut o = J::obj()
                 .with("txid", "")
