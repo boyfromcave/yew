@@ -280,7 +280,11 @@ impl WalletService {
         };
         let digest = yewd_proto::backup_digest(&path)?;
         let marker = self.wallet_dir().join("restored.sha256");
-        if std::fs::read_to_string(&marker).ok().as_deref() == Some(digest.as_str()) {
+        // -salvagewallet rebuilds the wallet from the file whatever was restored before (ycashd
+        // salvages wallet.dat at every start it is given): the restore marker is set again
+        if !args.salvage
+            && std::fs::read_to_string(&marker).ok().as_deref() == Some(digest.as_str())
+        {
             return None;
         }
         Some((path, digest))
