@@ -92,6 +92,25 @@ pub struct State {
     /// the recipient script, hex.
     #[serde(default)]
     pub recipients: BTreeMap<String, String>,
+    /// The v3 carriers this wallet funded (ycashd `carriers.dat`, W7): carrier outpoint → record,
+    /// until the MINT/CLAIM spends it or `yed_sweepcarriers` reclaims it.
+    #[serde(default)]
+    pub carriers: BTreeMap<String, CarrierRec>,
+}
+
+/// A carrier (`CarrierRecord`): its key (external chain index), the bundle it commits to, its
+/// reference height and selector.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CarrierRec {
+    pub index: u32,
+    /// The compressed public key, hex.
+    pub pk: String,
+    /// The bundle bytes, hex (empty while unarmed).
+    pub bundle: String,
+    pub ref_height: i64,
+    /// The selector, hex (empty for a MINT).
+    pub selector: String,
+    pub created_height: i64,
 }
 
 impl State {
@@ -111,6 +130,7 @@ impl State {
             locks: BTreeSet::new(),
             builds: BTreeMap::new(),
             recipients: BTreeMap::new(),
+            carriers: BTreeMap::new(),
         }
     }
 

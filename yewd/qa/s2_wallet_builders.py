@@ -242,13 +242,13 @@ class YewdS2(YellowbackTestFramework):
         self.mine_on(POOLS[1], 2)                                 # maturity
         self.member_user = j2['memberkey']
         self.member_yewd = j1['memberkey']
-        # a third member: a pool's wallet, cosigned by the two current members (yewd and the user)
-        j3 = vc.call(self.nodes[POOLS[1]], 'set_join', sid, 1, h + 500)
+        # a third member: a second key of the user's wallet, cosigned by the two current members (yewd and the user)
+        j3 = vc.call(user, 'set_join', sid, 1, h + 500)
         assert_equal(j3['complete'], False)
         s3 = vc.call(y, 'set_signact', j3['hex'])
         s3 = vc.call(user, 'set_signact', s3['hex'])
         assert_equal(s3['complete'], True)
-        t = vc.call(self.nodes[POOLS[1]], 'set_sendact', s3['hex'])
+        t = vc.call(user, 'set_sendact', s3['hex'])
         self.confirm(t)
         self.mine_on(POOLS[1], 2)
         info = vc.call(y, 'set_getinfo', sid)

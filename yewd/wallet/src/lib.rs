@@ -25,6 +25,7 @@
 pub mod build;
 pub mod json;
 pub mod keys;
+pub mod mint;
 pub mod node;
 pub mod rpc;
 pub mod sapling;
@@ -172,6 +173,9 @@ pub struct Wallet {
     pub notes: Vec<NoteRow>,
     /// Chain facts the read RPCs need, refreshed by [`Wallet::sync`] when the tip moves.
     pub chain: ChainFacts,
+    /// Mints between their carrier and their MINT (`yed_mint … wait = false`), completed by the
+    /// poll once the carrier confirms; in memory only, as ycashd's.
+    pub pending: Vec<mint::PendingMint>,
 }
 
 /// What the wallet knows about the chain beyond blocks (from `getblockchaininfo`).
@@ -399,6 +403,7 @@ impl Wallet {
             coins: Vec::new(),
             notes: Vec::new(),
             chain: ChainFacts::default(),
+            pending: Vec::new(),
         };
         w.refresh_keys()?;
         let txids: Vec<String> = w.st.wtx.keys().cloned().collect();

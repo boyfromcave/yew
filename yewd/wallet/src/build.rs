@@ -423,6 +423,10 @@ impl Wallet {
                     amount_zat: p.value,
                 },
                 key: keys[i],
+                carrier_bundle: match keys[i] {
+                    KeyRef::Carrier { .. } => self.st.carriers.get(&op_str(&vin.prevout)).map(|c| c.bundle.clone()),
+                    _ => None,
+                },
             });
         }
         let mut own_outputs: Vec<OwnOutput> = Vec::new();

@@ -59,6 +59,7 @@ fn payment(c: &SignerCore) -> (Transaction, Vec<SignInput>, Vec<OwnOutput>) {
     let inputs = vec![SignInput {
         prevout: Prevout { outpoint: opstr(&op(1)), script: hex::encode(p2pkh_of(c, 0, 0)), amount_zat: 500_000_000 },
         key: KeyRef::Bip32 { chain: 0, index: 0 },
+        carrier_bundle: None,
     }];
     let own = vec![OwnOutput { n: 1, key: KeyRef::Bip32 { chain: 1, index: 0 }, bond_locktime: None }];
     (tx, inputs, own)
@@ -158,6 +159,7 @@ fn refuses_a_preview_that_lies() {
     ins.push(SignInput {
         prevout: Prevout { outpoint: opstr(&op(3)), script: hex::encode(p2pkh_of(&c, 0, 2)), amount_zat: 100_000_000 },
         key: KeyRef::Bip32 { chain: 0, index: 2 },
+        carrier_bundle: None,
     });
     let mut r = request(&two, ins, own.clone(), i64::MAX);
     r.preview.sign.truncate(1);
@@ -194,6 +196,7 @@ fn refuses_template_inputs_on_the_yec_path_and_owner_keys_elsewhere() {
     let inputs = vec![SignInput {
         prevout: Prevout { outpoint: opstr(&op(4)), script: hex::encode(&v), amount_zat: 100_000 },
         key: KeyRef::PqOwner { scheme: 1, index: 0, selector: 2 },
+        carrier_bundle: None,
     }];
     let own = vec![OwnOutput { n: 0, key: KeyRef::Bip32 { chain: 0, index: 0 }, bond_locktime: None }];
     let mut r = request(&tx, inputs.clone(), own.clone(), i64::MAX);

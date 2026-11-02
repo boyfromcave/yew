@@ -162,7 +162,7 @@ impl SignerCore {
     fn derive(&self, k: &KeyRef) -> Result<Option<Derived>, Refused> {
         match *k {
             KeyRef::None => Ok(None),
-            KeyRef::Bip32 { chain, index } => {
+            KeyRef::Bip32 { chain, index } | KeyRef::Carrier { chain, index } => {
                 if chain > 1 || index >= HARDENED {
                     return no(
                         refuse::KEY_MISMATCH,
@@ -221,7 +221,7 @@ impl SignerCore {
             templates += template as usize;
             let d = self.derive(&inp.key)?;
             if let Some(d) = &d {
-                owns_input(&inp.key, d, script)
+                owns_input(&inp.key, d, script, inp.carrier_bundle.as_deref())
                     .map_err(|m| (refuse::KEY_MISMATCH, format!("input {i}: {m}")))?;
                 signed.insert(i as u32);
             }
@@ -348,6 +348,20 @@ impl SignerCore {
                 (KeyRef::Pq { .. }, Derived::Pq(k)) => tx
                     .sign_pqpkh_input(i, &k, script, amount, r.branch_id)
                     .map_err(|e| (refuse::FAILED, e.to_string()))?,
+                (KeyRef::Carrier { .. }, Derived::T(sk, pk)) => {
+                    let bundle = carrier_bundle(r.inputs[i].carrier_bundle.as_deref())?;
+                    let redeem = yew_core::script::carrier_script(&pk, &keys::sha256(&bundle))
+                        .map_err(|e| (refuse::FAILED, e.to_string()))?;
+                    let digest = tx
+                        .sighash(i, &redeem, amount, SIGHASH_ALL, r.branch_id)
+                        .map_err(|e| (refuse::FAILED, e.to_string()))?;
+                    let sig = secp256k1::ecdsa::sign(secp256k1::Message::from_digest(digest), &sk);
+                    let mut der = sig.serialize_der().to_vec();
+                    der.push(SIGHASH_ALL as u8);
+                    tx.vin[i].script_sig = yew_core::script::carrier_script_sig(&bundle, &der, &redeem)
+                        .map_err(|e| (refuse::FAILED, e.to_string()))?;
+                    digest
+                }
                 (KeyRef::PqOwner { selector, .. }, Derived::Pq(k)) => {
                     let (digest, sig) = tx
                         .pq_signature(i, &k, script, amount, r.branch_id)
@@ -592,9 +606,22 @@ fn bind_inputs<'a>(
     Ok(scripts)
 }
 
+fn carrier_bundle(h: Option<&str>) -> Result<Vec<u8>, Refused> {
+    hex::decode(h.unwrap_or("")).map_err(|e| (refuse::MALFORMED, format!("carrier bundle: {e}")))
+}
+
 /// Whether the derived key owns the script it is to sign.
-fn owns_input(k: &KeyRef, d: &Derived, script: &[u8]) -> Result<(), String> {
+fn owns_input(k: &KeyRef, d: &Derived, script: &[u8], bundle: Option<&str>) -> Result<(), String> {
     match (k, d) {
+        (KeyRef::Carrier { .. }, Derived::T(_, pk)) => {
+            let b = hex::decode(bundle.ok_or("a carrier input carries its bundle")?).map_err(|e| e.to_string())?;
+            let redeem = yew_core::script::carrier_script(pk, &keys::sha256(&b)).map_err(|e| e.to_string())?;
+            if yew_core::script::p2sh_of(&redeem) == script {
+                Ok(())
+            } else {
+                Err("the script is not the carrier of the named key and bundle".into())
+            }
+        }
         (KeyRef::Bip32 { .. }, Derived::T(_, pk)) => {
             if yew_core::script::p2pkh_hash(script) == Some(keys::hash160(pk)) {
                 Ok(())

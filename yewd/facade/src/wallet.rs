@@ -387,6 +387,8 @@ impl WalletService {
                         if me.debug {
                             eprintln!("yewd: wallet sync: {e}");
                         }
+                    } else if !w.pending.is_empty() {
+                        w.complete_pending(&me.node).await;
                     }
                 }
             }

@@ -61,6 +61,10 @@ pub enum KeyRef {
         index: u32,
         selector: u8,
     },
+    /// The BIP32 key of a v3 **carrier** `P2SH(carrierScript(pk, SHA256(bundle)))` (W7): the input
+    /// carries the bundle ([`SignInput::carrier_bundle`]), which the signer hashes into the
+    /// redeem script it checks the prevout against and pushes into the scriptSig.
+    Carrier { chain: u32, index: u32 },
 }
 
 /// One transaction input as the signer sees it.
@@ -70,6 +74,9 @@ pub struct SignInput {
     pub prevout: Prevout,
     /// The key that signs it ([`KeyRef::None`]: not signed here).
     pub key: KeyRef,
+    /// The attestation bundle of a [`KeyRef::Carrier`] input, hex (possibly empty).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carrier_bundle: Option<String>,
 }
 
 /// An output the façade says pays the wallet: the signer checks the key owns the script, and
