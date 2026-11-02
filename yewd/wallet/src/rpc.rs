@@ -741,6 +741,12 @@ impl Wallet {
 
     // ------------------------------------------------------------------ addresses
 
+    /// The wallet's first Sapling address (diversifier index 0 or the next valid one), for a
+    /// coinbase that must name no YED payout key (`yewd -initwallet`, F-S5-9).
+    pub fn sapling_coinbase_address(&self) -> Option<String> {
+        self.view.address_at(0).map(|(_, a)| a)
+    }
+
     pub(crate) fn vault_active_next(&self) -> bool {
         self.chain
             .vault_activation

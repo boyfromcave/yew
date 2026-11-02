@@ -363,7 +363,7 @@ impl WalletService {
         network: Network,
         datadir: &Path,
         signer_bin: PathBuf,
-    ) -> Result<String, String> {
+    ) -> Result<(String, Option<String>), String> {
         let dir = datadir.join(network.subdir());
         let ps = ProcessSigner {
             bin: signer_bin,
@@ -377,7 +377,10 @@ impl WalletService {
             Box::new(ps),
             birthday,
         )?;
-        Ok(w.taddr(yewd_wallet::keys::EXTERNAL, 0))
+        Ok((
+            w.taddr(yewd_wallet::keys::EXTERNAL, 0),
+            w.sapling_coinbase_address(),
+        ))
     }
 
     async fn ensure_open<'a>(

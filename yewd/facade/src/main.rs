@@ -66,8 +66,13 @@ fn main() {
             yewd_facade::wallet::WalletService::init_offline(net, &datadir, bin)
                 .map_err(yewd_facade::config::ConfigError)
         }) {
-            Ok(addr) => {
-                println!("{}", serde_json::json!({ "mineaddress": addr }));
+            Ok((addr, sapling)) => {
+                // saplingaddress: a coinbase address that names no YED payout key on either line
+                // (MINER-2 takes a P2PKH -mineraddress / miner_address only; finding F-S5-9)
+                println!(
+                    "{}",
+                    serde_json::json!({ "mineaddress": addr, "saplingaddress": sapling })
+                );
                 0
             }
             Err(e) => {
