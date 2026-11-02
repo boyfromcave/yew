@@ -37,5 +37,6 @@ zcash_proofs = { version = "=0.28.0", git = "https://github.com/boyfromcave/libr
 sapling-crypto.workspace = true
 zip32.workspace = true
 incrementalmerkletree = "=0.8.2"
+orchard = { version = "=0.14.0", default-features = false }
 rand_core = { version = "=0.6.4", features = ["getrandom"] }
 secp256k1_029 = { package = "secp256k1", version = "=0.29.1" }

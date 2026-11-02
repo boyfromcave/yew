@@ -38,6 +38,7 @@ pub mod send;
 pub mod state;
 pub mod vaultrpc;
 pub mod yed;
+pub mod zfund;
 pub mod zsend;
 
 use std::collections::{BTreeMap, BTreeSet};

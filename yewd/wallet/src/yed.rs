@@ -937,9 +937,9 @@ impl Wallet {
             .filter(|sc| yew_core::script::p2pkh_hash(sc).is_some())
         {
             sc
-        } else if to.starts_with("ys") || to.starts_with("zregtestsapling") || to.starts_with("zs")
-        {
-            return Err(RpcError::new(code::WALLET_ERROR, "yewd: a Sapling destination for the collateral is built in the signer (plan K-24), not served yet; pass a transparent address"));
+        } else if self.is_sapling(&to) {
+            // the collateral is one Sapling note (F-S2-8): the plan's collateral slot is dropped
+            yew_core::script::p2pkh_script(&[0u8; 20])
         } else {
             return Err(build_error("bad-address: to: not a transparent (s1…) or Sapling (ys1…) address of this network".into()));
         };
@@ -1029,7 +1029,9 @@ impl Wallet {
             height: None,
             coinbase: false,
         }));
+        let z_to = self.is_sapling(&to).then(|| to.clone());
         let mut signed;
+        let mut signed_hex = String::new();
         let mut plan;
         let mut pass = 0;
         loop {
@@ -1041,12 +1043,49 @@ impl Wallet {
             tx.vin = plan.vin.clone();
             tx.vout = plan.vout.clone();
             let cap = collateral + yed_value + 1;
-            signed = self
-                .sign_inputs(&tx, &prevs, &keys, &[], GatePath::Owner, cap, next.branch)
-                .await?;
+            let n_sapling = match &z_to {
+                None => {
+                    signed = self
+                        .sign_inputs(&tx, &prevs, &keys, &[], GatePath::Owner, cap, next.branch)
+                        .await?;
+                    0
+                }
+                Some(z) => {
+                    tx.vout = crate::zfund::sapling_spend_vout(&shape, &plan)?;
+                    let part = self.sapling_part(
+                        next.height,
+                        Vec::new(),
+                        String::new(),
+                        vec![self.sapling_out(z, plan.collateral_out)],
+                    );
+                    signed_hex = self
+                        .sign_inputs_hex(
+                            &tx,
+                            &prevs,
+                            &keys,
+                            &[],
+                            GatePath::Owner,
+                            cap,
+                            next.branch,
+                            Some(part),
+                        )
+                        .await?;
+                    let raw = hex::decode(&signed_hex)
+                        .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
+                    signed = Transaction::parse(&raw).map(|(t, _)| t).map_err(|e| {
+                        RpcError::new(
+                            code::INTERNAL_ERROR,
+                            format!("yewd: the signer's transaction: {e}"),
+                        )
+                    })?;
+                    1
+                }
+            };
             // P-2: never below the ZIP-317 conventional fee of the signed shape
             let sizes: Vec<usize> = signed.vin.iter().map(|i| i.script_sig.len()).collect();
-            let conventional = signed.zip317_conventional_fee(&sizes).unwrap_or(0);
+            let mut probe = signed.clone();
+            probe.shielded = Default::default();
+            let conventional = Wallet::hybrid_fee(&probe, &sizes, 0, n_sapling).unwrap_or(0);
             pass += 1;
             if conventional <= shape.network_fee || pass >= 3 {
                 break;
@@ -1054,7 +1093,11 @@ impl Wallet {
             shape.network_fee = conventional;
         }
         // MP-1 (K7): an enforcing miner's verdict on the spend, before it is committed
-        let raw = crate::build::tx_hex(&signed)?;
+        let raw = if z_to.is_some() {
+            signed_hex.clone()
+        } else {
+            crate::build::tx_hex(&signed)?
+        };
         if let Ok(val) =
             node::call(node, "yed_validaterawtransaction", serde_json::json!([raw])).await
         {
@@ -1063,9 +1106,16 @@ impl Wallet {
                 return Err(RpcError::new(-26, format!("mempool-check-failed:{verdict}: an enforcing miner would refuse this vault spend (MP-1)")));
             }
         }
-        let txid = self.broadcast(node, &signed, None).await?;
-        let to_text =
-            crate::keys::script_address(self.network, &collateral_script).unwrap_or_default();
+        let txid = match &z_to {
+            Some(_) => self.broadcast_hex(node, &signed_hex).await?,
+            None => self.broadcast(node, &signed, None).await?,
+        };
+        let to_text = match &z_to {
+            Some(z) => z.clone(),
+            None => {
+                crate::keys::script_address(self.network, &collateral_script).unwrap_or_default()
+            }
+        };
         Ok(J::obj()
             .with("txid", txid)
             .with("burnedCents", (plan.burn_cents - extra_burn).max(0))

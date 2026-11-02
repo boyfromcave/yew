@@ -442,6 +442,7 @@ fn the_bond_is_spent_on_its_cltv_path() {
             gate_path: GatePath::Vault,
             outflow_cap_zat: 10_000,
             preview: yewd_proto::preview::compute(Network::Regtest, &tx, &prevouts, &signed, &owns),
+            sapling: None,
         }
     };
     // the wrong locktime does not own the script

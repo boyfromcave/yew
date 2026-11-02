@@ -597,7 +597,10 @@ impl SignerCore {
         }
         // the preview, recomputed from the bytes
         let full: Vec<Prevout> = r.inputs.iter().map(|i| i.prevout.clone()).collect();
-        let want = yewd_proto::preview::compute(self.network, &tx, &full, &signed, &own);
+        let want = yewd_proto::preview::with_sapling(
+            yewd_proto::preview::compute(self.network, &tx, &full, &signed, &own),
+            r.sapling.as_ref(),
+        );
         if let Some(d) = yewd_proto::preview::difference(&want, &r.preview) {
             // an input signed but not shown is a foreign input, named as such
             let shown: BTreeSet<u32> = r.preview.sign.iter().map(|c| c.vin).collect();
@@ -627,42 +630,65 @@ impl SignerCore {
                 ),
             );
         }
-        // sign
+        // sign: each digest ZIP-243 under the request's branch; with a Sapling part, over the
+        // proven Sapling bundle too (S4)
+        let hybrid = match &r.sapling {
+            Some(part) => Some(self.sapling_prepare(part, &tx, r.branch_id)?),
+            None => None,
+        };
+        let digest_of = |tx: &Transaction,
+                         i: usize,
+                         script_code: &[u8],
+                         script: &[u8],
+                         amount: i64|
+         -> Result<[u8; 32], Refused> {
+            match &hybrid {
+                Some(h) => h.digest(i, script_code, script, amount, SIGHASH_ALL),
+                None => tx
+                    .sighash(i, script_code, amount, SIGHASH_ALL, r.branch_id)
+                    .map_err(|e| (refuse::FAILED, e.to_string())),
+            }
+        };
+        let ecdsa = |digest: [u8; 32], sk: &SecretKey| {
+            let sig = secp256k1::ecdsa::sign(secp256k1::Message::from_digest(digest), sk);
+            let mut der = sig.serialize_der().to_vec();
+            der.push(SIGHASH_ALL as u8);
+            der
+        };
         let mut sighashes = vec![None; tx.vin.len()];
         for (i, d) in derived.into_iter().enumerate() {
             let Some(d) = d else { continue };
-            let script = &prevouts[i];
+            let script = prevouts[i].clone();
             let amount = r.inputs[i].prevout.amount_zat;
             let digest = match (&r.inputs[i].key, d) {
-                (KeyRef::Bip32 { .. }, Derived::T(sk, _)) => tx
-                    .sign_p2pkh_input(i, &sk, script, amount, r.branch_id)
-                    .map_err(|e| (refuse::FAILED, e.to_string()))?,
-                (KeyRef::Pq { .. }, Derived::Pq(k)) => tx
-                    .sign_pqpkh_input(i, &k, script, amount, r.branch_id)
-                    .map_err(|e| (refuse::FAILED, e.to_string()))?,
+                (KeyRef::Bip32 { .. }, Derived::T(sk, pk)) => {
+                    let digest = digest_of(&tx, i, &script, &script, amount)?;
+                    tx.vin[i].script_sig =
+                        yew_core::script::p2pkh_script_sig(&ecdsa(digest, &sk), &pk);
+                    digest
+                }
+                (KeyRef::Pq { .. }, Derived::Pq(k)) => {
+                    let digest = digest_of(&tx, i, &script, &script, amount)?;
+                    let mut sig = k.sign(&digest);
+                    sig.push(SIGHASH_ALL as u8);
+                    tx.vin[i].script_sig = yew_core::pq::pqpkh_script_sig(&sig, k.public_key())
+                        .map_err(|e| (refuse::FAILED, e.to_string()))?;
+                    digest
+                }
                 (KeyRef::Carrier { .. }, Derived::T(sk, pk)) => {
                     let bundle = carrier_bundle(r.inputs[i].carrier_bundle.as_deref())?;
                     let redeem = yew_core::script::carrier_script(&pk, &keys::sha256(&bundle))
                         .map_err(|e| (refuse::FAILED, e.to_string()))?;
-                    let digest = tx
-                        .sighash(i, &redeem, amount, SIGHASH_ALL, r.branch_id)
-                        .map_err(|e| (refuse::FAILED, e.to_string()))?;
-                    let sig = secp256k1::ecdsa::sign(secp256k1::Message::from_digest(digest), &sk);
-                    let mut der = sig.serialize_der().to_vec();
-                    der.push(SIGHASH_ALL as u8);
+                    let digest = digest_of(&tx, i, &redeem, &script, amount)?;
                     tx.vin[i].script_sig =
-                        yew_core::script::carrier_script_sig(&bundle, &der, &redeem)
+                        yew_core::script::carrier_script_sig(&bundle, &ecdsa(digest, &sk), &redeem)
                             .map_err(|e| (refuse::FAILED, e.to_string()))?;
                     digest
                 }
                 (KeyRef::Bond { locktime, .. }, Derived::T(sk, pk)) => {
                     let redeem = act::bond_redeem_script(*locktime, &pk);
-                    let digest = tx
-                        .sighash(i, &redeem, amount, SIGHASH_ALL, r.branch_id)
-                        .map_err(|e| (refuse::FAILED, e.to_string()))?;
-                    let sig = secp256k1::ecdsa::sign(secp256k1::Message::from_digest(digest), &sk);
-                    let mut der = sig.serialize_der().to_vec();
-                    der.push(SIGHASH_ALL as u8);
+                    let digest = digest_of(&tx, i, &redeem, &script, amount)?;
+                    let der = ecdsa(digest, &sk);
                     let mut ss = Vec::with_capacity(der.len() + redeem.len() + 4);
                     yew_core::script::push_data(&mut ss, &der);
                     yew_core::script::push_data(&mut ss, &redeem);
@@ -670,20 +696,23 @@ impl SignerCore {
                     digest
                 }
                 (KeyRef::PqOwner { selector, .. }, Derived::Pq(k)) => {
-                    let (digest, sig) = tx
-                        .pq_signature(i, &k, script, amount, r.branch_id)
-                        .map_err(|e| (refuse::FAILED, e.to_string()))?;
-                    let ss = owner_script_sig(script, *selector, &sig, k.public_key())?;
-                    tx.vin[i].script_sig = ss;
+                    let digest = digest_of(&tx, i, &script, &script, amount)?;
+                    let mut sig = k.sign(&digest);
+                    sig.push(SIGHASH_ALL as u8);
+                    tx.vin[i].script_sig =
+                        owner_script_sig(&script, *selector, &sig, k.public_key())?;
                     digest
                 }
                 _ => return no(refuse::FAILED, "key kind and derivation disagree"),
             };
             sighashes[i] = Some(hex::encode(digest));
         }
-        let out = tx
-            .serialize()
-            .map_err(|e| (refuse::FAILED, e.to_string()))?;
+        let out = match hybrid {
+            Some(h) => h.finish(&tx)?,
+            None => tx
+                .serialize()
+                .map_err(|e| (refuse::FAILED, e.to_string()))?,
+        };
         Ok(Signed {
             tx: hex::encode(out),
             sighashes,

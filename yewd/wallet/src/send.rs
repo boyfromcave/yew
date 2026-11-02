@@ -81,13 +81,18 @@ impl Wallet {
                     .map_err(|e| RpcError::new(code::MISC_ERROR, e))?,
                 n: c.vout,
             };
-            v.push((op, c.value, c.script.clone()));
+            v.push((d == 0, op, c.value, c.script.clone()));
         }
+        // SelectCoins' passes: confirmed coins first (nConfMine = 1), the trusted mempool change
+        // only when they do not cover the payment; largest first within each
         v.sort_by(|a, b| {
-            b.1.cmp(&a.1)
-                .then((a.0.txid, a.0.n).cmp(&(b.0.txid, b.0.n)))
+            a.0.cmp(&b.0)
+                .then(b.2.cmp(&a.2))
+                .then((a.1.txid, a.1.n).cmp(&(b.1.txid, b.1.n)))
         });
-        Ok(v)
+        Ok(v.into_iter()
+            .map(|(_, op, value, s)| (op, value, s))
+            .collect())
     }
 
     /// `CreateTransaction` + `CommitTransaction` for plain YEC recipients: largest-first coins, the

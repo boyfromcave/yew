@@ -49,7 +49,8 @@ SUITES = {
     'yellowback': ('yellowback_rpc_contract', 'YellowbackRpcContractTest'),
 }
 SUITE = _arg('suite', 'vault')
-if SUITE not in SUITES:
+SCRIPT = _arg('script')        # any other ycash6 script, every node a pair (a probe beyond the gate)
+if SCRIPT is None and SUITE not in SUITES:
     sys.exit('unknown --suite=%s (one of %s)' % (SUITE, ', '.join(SUITES)))
 
 from test_framework import kogany                                             # noqa: E402
@@ -91,7 +92,16 @@ def _kcall_warmup(self, *args):
 kogany.KoganyRPC.__call__ = _kcall_warmup
 
 if __name__ == '__main__':
-    module, cls = SUITES[SUITE]
-    m = importlib.import_module(module)
-    print('S4 contract leg: %s.%s, every node backend + yewd' % (module, cls))
-    getattr(m, cls)().main()
+    if SCRIPT:
+        from test_framework.test_framework import BitcoinTestFramework
+        m = importlib.import_module(SCRIPT)
+        cands = [v for v in vars(m).values() if isinstance(v, type) and issubclass(v, BitcoinTestFramework)
+                 and v.__module__ == m.__name__]
+        assert len(cands) == 1, cands
+        print('S4 probe: %s.%s, every node backend + yewd' % (SCRIPT, cands[0].__name__))
+        cands[0]().main()
+    else:
+        module, cls = SUITES[SUITE]
+        m = importlib.import_module(module)
+        print('S4 contract leg: %s.%s, every node backend + yewd' % (module, cls))
+        getattr(m, cls)().main()

@@ -3882,6 +3882,7 @@ dependencies = [
  "hmac 0.13.0-pre.4",
  "incrementalmerkletree",
  "libc",
+ "orchard",
  "rand_core 0.6.4",
  "sapling-crypto",
  "secp256k1 0.29.1",

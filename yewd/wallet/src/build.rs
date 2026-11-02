@@ -498,6 +498,33 @@ impl Wallet {
         cap: i64,
         branch: u32,
     ) -> Result<Transaction, RpcError> {
+        let hexs = self
+            .sign_inputs_hex(tx, prevouts, keys, extra_own, path, cap, branch, None)
+            .await?;
+        let raw =
+            hex::decode(&hexs).map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
+        Transaction::parse(&raw).map(|(t, _)| t).map_err(|e| {
+            RpcError::new(
+                code::INTERNAL_ERROR,
+                format!("yewd: the signer's transaction: {e}"),
+            )
+        })
+    }
+
+    /// [`Wallet::sign_inputs`] with a Sapling part (S4): the signer builds, proves and
+    /// authorizes it with the transparent part; the whole transaction comes back as hex.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn sign_inputs_hex(
+        &self,
+        tx: &Transaction,
+        prevouts: &[NodeCoin],
+        keys: &[KeyRef],
+        extra_own: &[OwnOutput],
+        path: GatePath,
+        cap: i64,
+        branch: u32,
+        sapling: Option<yewd_proto::SaplingPart>,
+    ) -> Result<String, RpcError> {
         let mut inputs = Vec::with_capacity(tx.vin.len());
         let mut signed = BTreeSet::new();
         for (i, (vin, p)) in tx.vin.iter().zip(prevouts).enumerate() {
@@ -539,8 +566,10 @@ impl Wallet {
             }
         }
         let proto_prevouts: Vec<Prevout> = inputs.iter().map(|i| i.prevout.clone()).collect();
-        let preview =
-            yewd_proto::preview::compute(self.network, tx, &proto_prevouts, &signed, &own);
+        let preview = yewd_proto::preview::with_sapling(
+            yewd_proto::preview::compute(self.network, tx, &proto_prevouts, &signed, &own),
+            sapling.as_ref(),
+        );
         let req = SignRequest {
             tx: hex::encode(
                 tx.serialize()
@@ -552,20 +581,31 @@ impl Wallet {
             gate_path: path,
             outflow_cap_zat: cap,
             preview,
+            sapling,
         };
         match self.signer.request(Request::Sign(req)) {
-            Ok(Response::Signed(s)) => {
-                let raw = hex::decode(&s.tx)
-                    .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
-                Transaction::parse(&raw).map(|(t, _)| t).map_err(|e| {
-                    RpcError::new(
-                        code::INTERNAL_ERROR,
-                        format!("yewd: the signer's transaction: {e}"),
-                    )
-                })
-            }
+            Ok(Response::Signed(s)) => Ok(s.tx),
             other => Err(signer_error(other)),
         }
+    }
+
+    /// `sendrawtransaction` of a whole transaction's hex (one with a Sapling part), then the
+    /// barrier: the wallet sees it before the call returns.
+    pub async fn broadcast_hex(&mut self, node: &dyn Node, hexs: &str) -> Result<String, RpcError> {
+        let txid =
+            match node::call(node, "sendrawtransaction", serde_json::json!([hexs, true])).await {
+                Ok(v) => v.as_str().unwrap_or_default().to_string(),
+                Err(NodeError::Rpc { code, message }) => return Err(RpcError::new(code, message)),
+                Err(e) => return Err(e.into()),
+            };
+        if let Some(t) = hex::decode(hexs)
+            .ok()
+            .and_then(|b| Transaction::parse(&b).ok())
+        {
+            self.lock_own_yed(&t.0, &txid);
+        }
+        self.sync(node).await?;
+        Ok(txid)
     }
 
     /// `SignWalletInputs` for a transaction this wallet built: every input whose coin this wallet
@@ -665,8 +705,34 @@ impl Wallet {
             Err(NodeError::Rpc { code, message }) => return Err(RpcError::new(code, message)),
             Err(e) => return Err(e.into()),
         };
+        self.lock_own_yed(tx, &txid);
         self.sync(node).await?;
         Ok(txid)
+    }
+
+    /// `LockOwn` (H5): the YED outputs of a transaction this wallet just committed that pay it
+    /// (a MINT's token, a TRANSFER's or REDEEM's assigned outputs) are locked at once, so plain
+    /// YEC selection never spends them.
+    pub(crate) fn lock_own_yed(&mut self, tx: &Transaction, txid: &str) {
+        let Some(fp) = yew_core::payload::find_payload(tx) else {
+            return;
+        };
+        let mut vouts: Vec<u32> = fp
+            .payload
+            .assignments()
+            .iter()
+            .map(|a| a.vout as u32)
+            .collect();
+        if fp.payload.payload_type() == yew_core::payload::PayloadType::Mint {
+            vouts.push(1);
+        }
+        for n in vouts {
+            if let Some(o) = tx.vout.get(n as usize) {
+                if self.book.owns_script(&o.script_pubkey).is_some() {
+                    self.st.locks.insert(format!("{txid}:{n}"));
+                }
+            }
+        }
     }
 
     /// `PruneVaultBuilds`: forget the remembered builds whose template coin is gone, releasing

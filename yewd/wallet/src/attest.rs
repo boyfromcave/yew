@@ -568,15 +568,8 @@ impl Wallet {
             .filter(|s| yew_core::script::p2pkh_hash(s).is_some())
         {
             Some(s)
-        } else if to.starts_with("ys")
-            || to.starts_with("zregtestsapling")
-            || to.starts_with("ytestsapling")
-            || to.starts_with("zs")
-        {
-            return Err(RpcError::new(
-                code::WALLET_ERROR,
-                "yewd: a bond withdrawal to a Sapling address is the signer's Sapling build (plan K-24, finding F-S2-8), not served yet; pass a transparent address or \"\"",
-            ));
+        } else if self.is_sapling(&to) {
+            None
         } else {
             return Err(build_error(
                 "bad-address: to: not a transparent (s1…) or Sapling (ys1…) address of this network".into(),
@@ -637,8 +630,10 @@ impl Wallet {
             )));
         }
         let redeem = yewd_proto::act::bond_redeem_script(rec.bond_locktime, &rec.pubkey);
+        let z_to = self.is_sapling(&to).then(|| to.clone());
         let dest_script = match dest {
             Some(s) => s,
+            None if z_to.is_some() => Vec::new(),
             None => {
                 let pk = self.new_wallet_key()?;
                 let h = yew_core::keys::hash160(&pk);
@@ -658,14 +653,16 @@ impl Wallet {
         let mut i = TxIn::new(bond_op);
         i.sequence = SEQUENCE_CLTV;
         tx.vin.push(i);
-        tx.vout.push(TxOut {
-            value: 0,
-            script_pubkey: dest_script.clone(),
-        });
-        // P-2: one bond input, one P2PKH output; the fee never moves the shape
+        if z_to.is_none() {
+            tx.vout.push(TxOut {
+                value: 0,
+                script_pubkey: dest_script.clone(),
+            });
+        }
+        // P-2: one bond input, one P2PKH output (or one Sapling note); the fee never moves the shape
         let ss_size = 1 + 73 + 1 + redeem.len();
         let fee = info.flat_fee.max(
-            tx.zip317_conventional_fee(&[ss_size])
+            Wallet::hybrid_fee(&tx, &[ss_size], 0, usize::from(z_to.is_some()))
                 .unwrap_or(info.flat_fee),
         );
         let out = rec.bond_zat - fee;
@@ -674,7 +671,9 @@ impl Wallet {
                 "vault-value-too-small: the bond does not cover the network fee".into(),
             ));
         }
-        tx.vout[0].value = out;
+        if z_to.is_none() {
+            tx.vout[0].value = out;
+        }
         let next = next_block(node).await?;
         let coin = coin.expect("checked");
         let key = KeyRef::Bond {
@@ -682,18 +681,43 @@ impl Wallet {
             index,
             locktime: rec.bond_locktime,
         };
-        let signed = self
-            .sign_inputs(
-                &tx,
-                &[coin],
-                &[key],
-                &[],
-                GatePath::Vault,
-                rec.bond_zat,
-                next.branch,
-            )
-            .await?;
-        let txid = self.broadcast(node, &signed, None).await?;
+        let txid = match &z_to {
+            Some(z) => {
+                let part = self.sapling_part(
+                    next.height,
+                    Vec::new(),
+                    String::new(),
+                    vec![self.sapling_out(z, out)],
+                );
+                let h = self
+                    .sign_inputs_hex(
+                        &tx,
+                        &[coin],
+                        &[key],
+                        &[],
+                        GatePath::Vault,
+                        rec.bond_zat,
+                        next.branch,
+                        Some(part),
+                    )
+                    .await?;
+                self.broadcast_hex(node, &h).await?
+            }
+            None => {
+                let signed = self
+                    .sign_inputs(
+                        &tx,
+                        &[coin],
+                        &[key],
+                        &[],
+                        GatePath::Vault,
+                        rec.bond_zat,
+                        next.branch,
+                    )
+                    .await?;
+                self.broadcast(node, &signed, None).await?
+            }
+        };
         self.persist_state()?;
         Ok(J::obj()
             .with("txid", txid)
@@ -702,7 +726,12 @@ impl Wallet {
             .with("bondOut", out)
             .with(
                 "to",
-                crate::keys::script_address(self.network, &dest_script).unwrap_or_default(),
+                match &z_to {
+                    Some(z) => z.clone(),
+                    None => {
+                        crate::keys::script_address(self.network, &dest_script).unwrap_or_default()
+                    }
+                },
             ))
     }
 

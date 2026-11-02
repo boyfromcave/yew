@@ -628,7 +628,7 @@ impl Wallet {
             fee_zat,
             anchor,
             outflow_cap_zat: total + fee_zat,
-            params_dir: self.opts_params_dir(),
+            params_dir: self.params_dir(),
         };
         let hexs = match self.signer.request(Request::SaplingBuild(req)) {
             Ok(Response::Built(h)) => h,
@@ -655,7 +655,7 @@ impl Wallet {
     }
 
     /// The Sapling parameters' directory: `-paramsdir`, else ycashd's default.
-    fn opts_params_dir(&self) -> String {
+    pub(crate) fn params_dir(&self) -> String {
         if let Some(d) = &self.opts.params_dir {
             return d.display().to_string();
         }
@@ -670,7 +670,7 @@ impl Wallet {
     /// The Merkle paths of `notes` at the tree of block `anchor_height`, and that root: the
     /// node's tree state below the earliest note (`z_gettreestate`), then every Sapling output
     /// of the blocks up to the anchor appended in chain order.
-    async fn sapling_paths(
+    pub(crate) async fn sapling_paths(
         &self,
         node: &dyn Node,
         notes: &[crate::NoteRow],

@@ -125,8 +125,8 @@ fn node_build_error(e: NodeError) -> RpcError {
     }
 }
 
-/// `ParseAddressChoice` for `from`: `""` (any coin), an `s1…` address (its coins only); a Sapling
-/// address is the signer's whole Sapling build (K-24), not served yet.
+/// `ParseAddressChoice` for `from`: `""` (any coin), an `s1…` address (its coins only), a Sapling
+/// address of this wallet (`None` here: its notes fund the carrier and the mint, `zfund.rs`).
 fn from_script(w: &Wallet, from: &str) -> Result<Option<Vec<u8>>, RpcError> {
     if from.is_empty() {
         return Ok(None);
@@ -136,15 +136,14 @@ fn from_script(w: &Wallet, from: &str) -> Result<Option<Vec<u8>>, RpcError> {
     {
         return Ok(Some(s));
     }
-    if from.starts_with("ys")
-        || from.starts_with("zregtestsapling")
-        || from.starts_with("zs")
-        || from.starts_with("ytestsapling")
-    {
-        return Err(RpcError::new(
-            code::WALLET_ERROR,
-            "yewd: funding from a Sapling address is the signer's Sapling build (plan K-24), not served yet; pass a transparent address or \"\"",
-        ));
+    if w.is_sapling(from) {
+        // the Sapling source (F-S2-8): its notes fund the carrier and the mint
+        if w.view.owns_address(from).is_none() {
+            return Err(build_error(format!(
+                "bad-address: no spending key for {from} in this wallet"
+            )));
+        }
+        return Ok(None);
     }
     Err(build_error(
         "bad-address: from: not a transparent (s1…) or Sapling (ys1…) address of this network"
@@ -330,8 +329,9 @@ impl Wallet {
         let facts = self.bundle_at(node, r, "", &bundle_bytes).await?;
         let bundle = facts.bundle.clone();
         // the carrier
+        let z_from = self.is_sapling(&from).then(|| from.clone());
         let carrier = self
-            .build_carrier(node, &bundle, r, "", only.as_deref())
+            .build_carrier_from(node, &bundle, r, "", only.as_deref(), z_from.as_deref())
             .await?;
         let pending = PendingMint {
             claim: None,
@@ -411,6 +411,21 @@ impl Wallet {
         selector: &str,
         only: Option<&[u8]>,
     ) -> Result<OutPoint, RpcError> {
+        self.build_carrier_from(node, bundle, r, selector, only, None)
+            .await
+    }
+
+    /// [`Wallet::build_carrier`], funded from the Sapling notes of `z_from` when given (the
+    /// carrier step of a mint from a Sapling address: no transparent input).
+    pub(crate) async fn build_carrier_from(
+        &mut self,
+        node: &dyn Node,
+        bundle: &[u8],
+        r: i64,
+        selector: &str,
+        only: Option<&[u8]>,
+        z_from: Option<&str>,
+    ) -> Result<OutPoint, RpcError> {
         let info = node::call(node, "yed_getinfo", serde_json::json!([])).await?;
         let flat = info["params"]["feeZat"].as_i64().unwrap_or(10_000);
         let ref_window = info["params"]["refWindow"].as_i64().unwrap_or(40);
@@ -433,6 +448,42 @@ impl Wallet {
             value: CARRIER_VALUE,
             script_pubkey: yew_core::script::p2sh_of(&redeem),
         });
+        if let Some(z) = z_from {
+            let (hexs, _) = self
+                .z_fund_and_sign(
+                    node,
+                    &base,
+                    &[],
+                    &[],
+                    0,
+                    &[],
+                    z,
+                    flat,
+                    GatePath::Yed,
+                    &next,
+                    "carrier",
+                )
+                .await?;
+            let txid = self.broadcast_hex(node, &hexs).await?;
+            let op = OutPoint {
+                txid: yew_core::tx::txid_from_hex(&txid)
+                    .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e))?,
+                n: 0,
+            };
+            self.st.carriers.insert(
+                op_str(&op),
+                CarrierRec {
+                    index,
+                    pk: hex::encode(pk),
+                    bundle: hex::encode(bundle),
+                    ref_height: r,
+                    selector: selector.into(),
+                    created_height: next.height as i64 - 1,
+                },
+            );
+            self.persist_state()?;
+            return Ok(op);
+        }
         let (tx, coins) = self.fund_yed(node, &base, 0, flat, only, &[]).await?;
         let prevs: Vec<NodeCoin> = coins
             .iter()
@@ -680,56 +731,83 @@ impl Wallet {
         let only = from_script(self, &pm.from)?;
         let bundle = hex::decode(&rec.bundle).unwrap_or_default();
         let carrier_ss = 3 + bundle.len() + 74 + 73;
-        let (tx, coins) = self
-            .fund_yed(
-                node,
-                &base,
-                CARRIER_VALUE,
-                flat,
-                only.as_deref(),
-                &[(pm.carrier, carrier_ss)],
-            )
-            .await?;
+        let z_from = self.is_sapling(&pm.from).then(|| pm.from.clone());
         let pk: [u8; 33] = hex::decode(&rec.pk)
             .ok()
             .and_then(|b| b.try_into().ok())
             .ok_or_else(|| RpcError::new(code::WALLET_ERROR, "carrier-key-missing"))?;
         let redeem = yew_core::script::carrier_script(&pk, &yew_core::keys::sha256(&bundle))
             .map_err(|e| RpcError::new(code::WALLET_ERROR, e.to_string()))?;
-        let mut prevs: Vec<NodeCoin> = coins
-            .iter()
-            .map(|c| NodeCoin {
-                value: c.1,
-                script: c.2.clone(),
-                height: None,
-                coinbase: false,
-            })
-            .collect();
-        prevs.push(NodeCoin {
+        let carrier_key = KeyRef::Carrier {
+            chain: crate::keys::EXTERNAL,
+            index: rec.index,
+        };
+        let carrier_coin = NodeCoin {
             value: CARRIER_VALUE,
             script: yew_core::script::p2sh_of(&redeem),
             height: None,
             coinbase: false,
-        });
-        let mut keys: Vec<KeyRef> = coins
-            .iter()
-            .map(|c| self.key_of_script(&c.2).unwrap_or(KeyRef::None))
-            .collect();
-        keys.push(KeyRef::Carrier {
-            chain: crate::keys::EXTERNAL,
-            index: rec.index,
-        });
-        let outflow = collateral
-            + TOKEN_VALUE
-            + fee_zat
-            + attest_fee
-            + (prevs.iter().map(|c| c.value).sum::<i64>() - tx.output_total())
-            + 1;
-        let signed = self
-            .sign_inputs(&tx, &prevs, &keys, &[], GatePath::Yed, outflow, next.branch)
-            .await?;
+        };
+        // the Sapling shape (§4.6): the notes of `from` fund the outputs; the carrier is the one
+        // transparent input (F-S2-8)
+        let (signed_hex, funded_from) = if let Some(z) = &z_from {
+            let mut tx = base.clone();
+            tx.vin.push(TxIn::new(pm.carrier));
+            let (h, _) = self
+                .z_fund_and_sign(
+                    node,
+                    &tx,
+                    std::slice::from_ref(&carrier_coin),
+                    &[carrier_key],
+                    CARRIER_VALUE,
+                    &[carrier_ss],
+                    z,
+                    flat,
+                    GatePath::Yed,
+                    &next,
+                    "mint",
+                )
+                .await?;
+            (h, "sapling")
+        } else {
+            let (tx, coins) = self
+                .fund_yed(
+                    node,
+                    &base,
+                    CARRIER_VALUE,
+                    flat,
+                    only.as_deref(),
+                    &[(pm.carrier, carrier_ss)],
+                )
+                .await?;
+            let mut prevs: Vec<NodeCoin> = coins
+                .iter()
+                .map(|c| NodeCoin {
+                    value: c.1,
+                    script: c.2.clone(),
+                    height: None,
+                    coinbase: false,
+                })
+                .collect();
+            prevs.push(carrier_coin.clone());
+            let mut keys: Vec<KeyRef> = coins
+                .iter()
+                .map(|c| self.key_of_script(&c.2).unwrap_or(KeyRef::None))
+                .collect();
+            keys.push(carrier_key);
+            let outflow = collateral
+                + TOKEN_VALUE
+                + fee_zat
+                + attest_fee
+                + (prevs.iter().map(|c| c.value).sum::<i64>() - tx.output_total())
+                + 1;
+            let signed = self
+                .sign_inputs(&tx, &prevs, &keys, &[], GatePath::Yed, outflow, next.branch)
+                .await?;
+            (tx_hex(&signed)?, "transparent")
+        };
         // DryRunOrThrow: MINT-1..10 with the bundle, by the node
-        let raw = tx_hex(&signed)?;
+        let raw = signed_hex.clone();
         let v = node::call(node, "yed_validaterawtransaction", serde_json::json!([raw])).await?;
         let verdict = v["verdict"].as_str().unwrap_or("").to_string();
         if v["type"].as_str() != Some("mint") {
@@ -750,7 +828,7 @@ impl Wallet {
                 ),
             ));
         }
-        let txid = self.broadcast(node, &signed, None).await?;
+        let txid = self.broadcast_hex(node, &signed_hex).await?;
         self.st.carriers.remove(&op_str(&pm.carrier));
         self.persist_state()?;
         Ok(J::obj()
@@ -766,7 +844,7 @@ impl Wallet {
             .with("collateralZat", collateral)
             .with("feeZat", fee_zat)
             .with("payee", payee.map(J::Str).unwrap_or(J::Null))
-            .with("fundedFrom", "transparent")
+            .with("fundedFrom", funded_from)
             .with("warning", "")
             .with("carrierTxid", txid_hex(&pm.carrier.txid))
             .with("pending", false)

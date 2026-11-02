@@ -187,6 +187,45 @@ pub struct SignRequest {
     /// The largest net outflow the caller allows, in zatoshi.
     pub outflow_cap_zat: i64,
     pub preview: Preview,
+    /// A Sapling part built with the transparent one (S4, F-S2-8: a YED transaction funded from
+    /// or paying a Sapling address): the signer builds, proves and authorizes it, and every
+    /// transparent digest covers it (ZIP-243's `hashShieldedSpends` / `hashShieldedOutputs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sapling: Option<SaplingPart>,
+}
+
+/// The Sapling part of a [`SignRequest`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaplingPart {
+    pub target_height: u32,
+    pub vault_height: Option<u32>,
+    pub spends: Vec<SaplingSpend>,
+    /// Shielded outputs only ([`SaplingOut::Shielded`] / [`SaplingOut::Change`]).
+    pub outputs: Vec<SaplingOut>,
+    /// The anchor of the spends (empty: none).
+    pub anchor: String,
+    pub params_dir: String,
+}
+
+impl SaplingPart {
+    /// `(spent, paid, paid to the wallet)`: the values the preview adds.
+    pub fn values(&self) -> (i64, i64, i64) {
+        let spent: i64 = self.spends.iter().map(|s| s.value as i64).sum();
+        let mut paid = 0;
+        let mut own = 0;
+        for o in &self.outputs {
+            let (v, mine) = match o {
+                SaplingOut::Shielded { value, own, .. } => (*value, *own),
+                SaplingOut::Change { value } => (*value, true),
+                SaplingOut::Transparent { .. } => (0, false),
+            };
+            paid += v;
+            if mine {
+                own += v;
+            }
+        }
+        (spent, paid, own)
+    }
 }
 
 /// The whole transaction signed. Never half-signed (H10): every input with a key is signed, or
