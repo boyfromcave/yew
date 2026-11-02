@@ -41,7 +41,7 @@ sys.path.insert(0, QA)
 if not os.environ.get('YEWD_BIN'):
     sys.exit('set YEWD_BIN to the yewd binary')
 
-from test_framework import util                                               # noqa: E402
+from test_framework import util, kogany                                       # noqa: E402
 from test_framework import yellowback_util as yu                              # noqa: E402
 from test_framework.authproxy import JSONRPCException                         # noqa: E402
 from test_framework.util import assert_equal                                  # noqa: E402
@@ -68,6 +68,22 @@ def _start_node_one_pair(i, *a, **kw):
 
 util.start_node = _start_node_one_pair
 yu.start_node = _start_node_one_pair
+
+# The harness's backend wait (kogany.start_yewd_pair) can reach a ycashd that listens before it has
+# written its cookie: the 401 is a warm-up, not an error (finding F-S2-9, for the harness chunk).
+_kcall = kogany.KoganyRPC.__call__
+
+
+def _kcall_warmup(self, *args):
+    try:
+        return _kcall(self, *args)
+    except JSONRPCException as e:
+        if e.error.get('code') == -342 and 'non-JSON response 401' in e.error.get('message', ''):
+            raise JSONRPCException({'code': -28, 'message': 'the backend has not written its cookie yet'})
+        raise
+
+
+kogany.KoganyRPC.__call__ = _kcall_warmup
 
 
 def zat(v):
@@ -210,7 +226,16 @@ class YewdS2(YellowbackTestFramework):
         assert_equal(unsigned['complete'], False)
         t3 = user.sendrawtransaction(signed['hex'])
         self.confirm(t3)
-        self.served['stock'].update(['sendtoaddress', 'sendmany', 'lockunspent', 'getrawchangeaddress', 'signrawtransaction'])
+        # fundrawtransaction: the wallet adds its coins and change to the node's raw payment
+        raw2 = user.createrawtransaction([], {user.getnewaddress(): 1})
+        funded = y.fundrawtransaction(raw2)
+        assert funded['fee'] > 0 and funded['changepos'] in (-1, 1), funded
+        signed2 = y.signrawtransaction(funded['hex'])
+        assert_equal(signed2['complete'], True)
+        t4 = user.sendrawtransaction(signed2['hex'])
+        self.confirm(t4)
+        self.served['stock'].update(['sendtoaddress', 'sendmany', 'lockunspent', 'getrawchangeaddress', 'signrawtransaction',
+                                     'fundrawtransaction'])
 
     # --- sets -----------------------------------------------------------------------------------
 

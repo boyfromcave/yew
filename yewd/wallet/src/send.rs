@@ -31,6 +31,7 @@ pub const SERVED: &[&str] = &[
     "lockunspent",
     "signrawtransaction",
     "getrawchangeaddress",
+    "fundrawtransaction",
 ];
 
 /// A change output below this is left to the fee (`GetDustThreshold` of a P2PKH output at the
@@ -50,6 +51,7 @@ impl Wallet {
             "lockunspent" => self.lockunspent(p),
             "getrawchangeaddress" => self.getrawchangeaddress(p),
             "signrawtransaction" => self.signrawtransaction(node, p).await,
+            "fundrawtransaction" => self.fundrawtransaction(node, p).await,
             _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
         }
     }
@@ -522,6 +524,70 @@ impl Wallet {
             }
             Err(e) => Err(e.into()),
         }
+    }
+}
+
+impl Wallet {
+    /// `fundrawtransaction "hexstring" ( includeWatching )` (`CWallet::FundTransaction`): the
+    /// transaction's outputs paid from its own inputs plus this wallet's coins, a change output
+    /// appended, the ZIP-317 conventional fee; nothing is signed.
+    async fn fundrawtransaction(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
+        if p.is_empty() || p.len() > 2 {
+            return Err(RpcError::new(code::MISC_ERROR, "fundrawtransaction \"hexstring\" includeWatching"));
+        }
+        let hexs = p[0].as_str().ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type string"))?;
+        let raw = hex::decode(hexs).map_err(|e| RpcError::new(code::DESERIALIZATION_ERROR, format!("TX decode failed: {e}")))?;
+        let (base, _) = Transaction::parse(&raw).map_err(|e| RpcError::new(code::DESERIALIZATION_ERROR, format!("TX decode failed: {e}")))?;
+        let mut preset = 0i64;
+        for i in &base.vin {
+            match node_coin(node, &i.prevout).await? {
+                Some(c) => preset += c.value,
+                None => return Err(RpcError::new(code::INTERNAL_ERROR, "Insufficient funds")),
+            }
+        }
+        let used: BTreeSet<(String, u32)> = base.vin.iter().map(|i| (txid_hex(&i.prevout.txid), i.prevout.n)).collect();
+        let coins: Vec<_> = self
+            .spendable_yec(node, 0)
+            .await?
+            .into_iter()
+            .filter(|c| !used.contains(&(txid_hex(&c.0.txid), c.0.n)))
+            .collect();
+        let mut fee = 10_000i64;
+        for _ in 0..8 {
+            let mut tx = base.clone();
+            let need = tx.output_total() + fee - preset;
+            let mut got = 0i64;
+            let mut n_new = 0usize;
+            for c in &coins {
+                if got >= need {
+                    break;
+                }
+                got += c.1;
+                tx.vin.push(TxIn::new(c.0));
+                n_new += 1;
+            }
+            if got < need {
+                return Err(RpcError::new(code::INTERNAL_ERROR, "Insufficient funds"));
+            }
+            let change = got - need.max(0);
+            let mut changepos = -1i64;
+            if change > DUST {
+                let sc = self.new_change()?;
+                tx.vout.push(TxOut { value: change, script_pubkey: sc });
+                changepos = tx.vout.len() as i64 - 1;
+            }
+            let sizes = vec![MAX_P2PKH_SCRIPT_SIG; tx.vin.len()];
+            let want = tx.zip317_conventional_fee(&sizes).map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
+            if want > fee {
+                fee = want;
+                continue;
+            }
+            let _ = n_new;
+            self.persist_state()?;
+            let paid = preset + got - tx.output_total();
+            return Ok(J::obj().with("hex", tx_hex(&tx)?).with("changepos", changepos).with("fee", J::Amount(paid)));
+        }
+        Err(RpcError::new(code::INTERNAL_ERROR, "the fee did not converge"))
     }
 }
 
