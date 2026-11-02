@@ -51,7 +51,7 @@ fn script_sig_size(script: &[u8]) -> usize {
 /// quantum plan §4.5, D-Q-23 (b), D-Q-26): max(min(max(policy fee, PQSizeFee(LEGACY_DEFAULT_FEE,
 /// bytes)), PQMaxTxFee()), the ZIP-317 conventional fee), the plain rate and the cap as the node
 /// reports them (`yed_getinfo.params.fees.network`: `plain.zatPerKB`, `yellowback.maxTxFeeZat`);
-/// without a live Yellowback the -pqfeerate default (the relay floor, 1,000 zat/kB) and -maxtxfee.
+/// without a live Yellowback the -pqfeerate default (the relay floor, 100 zat/kB) and -maxtxfee.
 async fn pq_spend_fee(
     node: &dyn Node,
     tx: &Transaction,
@@ -63,13 +63,14 @@ async fn pq_spend_fee(
         Ok(v) => {
             let n = &v["params"]["fees"]["network"];
             (
-                n["plain"]["zatPerKB"].as_i64().unwrap_or(1000),
+                n["plain"]["zatPerKB"].as_i64().unwrap_or(100),
                 n["yellowback"]["maxTxFeeZat"]
                     .as_i64()
                     .unwrap_or(10_000_000),
             )
         }
-        Err(_) => (1000, 10_000_000),
+        // -pqfeerate's default, the relay floor (DEFAULT_MIN_RELAY_TX_FEE), and -maxtxfee's
+        Err(_) => (100, 10_000_000),
     };
     let unsigned = tx
         .serialize()
