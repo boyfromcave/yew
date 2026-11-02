@@ -10,12 +10,14 @@ streams and lightwalletd-dd), and never needs a node change.
 Plan: [`docs/plans/yewd-plan.md`](../docs/plans/yewd-plan.md), which points into the workspace's
 kogany plan (`docs/plans/kogany/kogany-yellowback-plan.md` §3b, §4.3, §5; decisions K-20, K-22–K-26).
 
-**State: S1, wallet state and sync.** S0's shell (authentication, the full method table,
-forwarding of every node RPC, `help`, `stop`) plus the wallet: public material only in the façade
-(the signer derives it from the seed, K-24), a block-reading sync with reorg rewind, and the read
-RPCs (`yewd-wallet/src/rpc.rs` `SERVED`: 9 of the 47, `vault_getnewowner`, `set_listsigned` and
-the seven YED reads, plus 10 stock reads). Every other wallet RPC still answers `-32601` with
-`yewd: not yet implemented (<method>; plan §3b S<n>)` until S2–S4 implement it.
+**State: S2, the builders and the signer boundary.** S1's wallet (public material only in the
+façade, a block-reading sync with reorg rewind, the read RPCs) plus the build RPCs and the signer
+process: every transaction is built unsigned in the façade and signed in `yewd-signer`, a separate
+process on a Unix socket that recomputes every digest from the bytes and the prevouts it is shown
+([The signer](#the-signer-s2)). `yewd-wallet/src/rpc.rs` `all_served()`: **40 of the 47** (all 22
+R5 `set_*`/`vault_*`, 18 of the 25 R6 `yed_*`; the 7 left are S3's attestor and cancel-cosign RPCs)
+and 16 of the K-25 stock set. Every other wallet RPC still answers `-32601` with
+`yewd: not yet implemented (<method>; plan §3b S<n>)`.
 
 ## Layout
 
@@ -27,10 +29,12 @@ yewd/
 ├── PIN            the ycash6 and kogany commits the CI legs pull
 ├── facade/        crate yewd-facade, binary `yewd`: JSON-RPC server, method table, forwarding
 ├── wallet/        crate yewd-wallet: wallet state, sync and builders on yew-core (S1, S2)
-├── signer/        crate yewd-signer, binary `yewd-signer`: the seed and the public bundle (S1); signing,
-│                  sign-once, the attestation guard (S2)
-├── proto/         crate yewd-proto: the public bundle (S1), the sign request and response (S2)
+├── signer/        crate yewd-signer, binary `yewd-signer`: the seed and the public bundle (S1); the
+│                  Unix-socket server, the signing policy, the sign-once records (S2)
+├── proto/         crate yewd-proto: the protocol (version 1): requests, responses, key references, the
+│                  preview both ends compute, the YV act codec and the set messages, the socket client
 ├── qa/s1_wallet_reads.py   the S1 exit gate on ycash6's functional framework (below)
+├── qa/s2_wallet_builders.py   the S2 exit gate: every build RPC on yewd beside the same request on ycashd
 └── scripts/check-yewd.sh   the CI unit leg: naming/attribution greps, fmt, clippy, tests
 ```
 
@@ -44,6 +48,9 @@ YEWD_TEST_YCASHD=/path/to/ycashd YEWD_TEST_REQUIRE_BACKEND=1 cargo test --manife
 # the S1 exit gate on ycash6's functional framework (ycash6 vaults/kogany-compat: the YEWD_BIN harness)
 YCASH6_QA=<ycash6>/qa/rpc-tests ZCASHD=<ycash6>/src/ycashd YEWD_BIN=<target>/debug/yewd \
   <workspace>/.venv/bin/python yewd/qa/s1_wallet_reads.py --tmpdir=<dir>
+# the S2 exit gate: every build RPC through yewd, each beside the same request on a plain ycashd
+YCASH6_QA=<ycash6>/qa/rpc-tests ZCASHD=<ycash6>/src/ycashd YEWD_BIN=<target>/debug/yewd \
+  <workspace>/.venv/bin/python yewd/qa/s2_wallet_builders.py --tmpdir=<dir> --portseed=<n>
 # the pinned PQ wallet vectors from kogany (else yew's byte-identical copy is replayed)
 YEWD_PQ_WALLET_VECTORS=<kogany>/testdata/yellowback/pq_wallet_vectors.json cargo test --manifest-path yewd/Cargo.toml -p yewd-signer
 ```
@@ -57,10 +64,10 @@ the node's decimal text).
 
 | Class | Methods | S1 answer |
 |---|---|---|
-| Wallet, R5 vault | the 22 `set_*` / `vault_*` wallet RPCs (ycash6 `src/rpc/vault.cpp`) | served: `vault_getnewowner`, `set_listsigned`; the rest `-32601` "yewd: not yet implemented" |
-| Wallet, R6 YED | the 25 `yed_*` wallet RPCs (ycash6 `src/rpc/yellowbackwallet.cpp`) | served: `yed_getnewaddress`, `yed_validateaddress`, `yed_getbalance`, `yed_listunspent`, `yed_listpositions`, `yed_listtransactions`, `yed_listaddresses`; the rest `-32601` |
+| Wallet, R5 vault | the 22 `set_*` / `vault_*` wallet RPCs (ycash6 `src/rpc/vault.cpp`) | all 22 served (S1's two reads, S2's twenty builders: `wallet/src/vaultrpc.rs`) |
+| Wallet, R6 YED | the 25 `yed_*` wallet RPCs (ycash6 `src/rpc/yellowbackwallet.cpp`) | served: S1's seven reads; S2's `yed_mint`, `yed_send`, `yed_sendmany`, `yed_estimatesend`, `yed_redeem`, `yed_estimateredeem`, `yed_claim`, `yed_claimnotice` (its unarmed refusal), `yed_sweepcarriers`, `yed_lockcoins`, `yed_unlockcoin` (`wallet/src/{yed,mint,claim}.rs`); S3's seven (`yed_buildcancel`, `yed_signcancelcosign`, the attestor RPCs) `-32601` |
 | Wallet, R7 | `z_importpqkey` | `-32601` "yewd: not yet implemented" |
-| Wallet, K-25 stock | the 30 the Yellowback scripts call, and the 4 only the roles call | served: `getbalance`, `getnewaddress` (incl. `"pq"`/`"pqslh"`), `getreceivedbyaddress`, `gettransaction`, `getwalletinfo`, `listlockunspent`, `listunspent`, `z_getbalance`, `z_getnewaddress`, `z_listunspent`; the rest `-32601` |
+| Wallet, K-25 stock | the 30 the Yellowback scripts call, and the 4 only the roles call | served: S1's ten reads; S2's `sendtoaddress`, `sendmany`, `lockunspent`, `fundrawtransaction`, `signrawtransaction`, `getrawchangeaddress` (`wallet/src/send.rs`); `z_sendmany` and its operation RPCs wait for the Sapling build in the signer; the rest `-32601` |
 | Out of scope | the rest of ycashd's wallet table (39: `listtransactions`, `z_shieldcoinbase`, …) | `-32601` "yewd: not served" |
 | Local | `createrawtransaction`, `decoderawtransaction`, `decodescript` | forwarded; served from yew-core in S4 |
 | Augmented | `getinfo`, `validateaddress`, `z_validateaddress`, `set_getinfo`, `vault_list`, `yed_gettxinfo` | forwarded, then the wallet adds its fields (`balance`…, `ismine`…, `memberlist[].wallet`, the `wallet` column and the `mine` filter of `vault_list`; `yed_gettxinfo` has none in rpcversion 8). `z_validateaddress` is answered by yewd itself: a ycash6 `-disablewallet` backend stops on it (it dereferences its absent wallet) |
@@ -97,8 +104,8 @@ ycashd's wallet arguments (`-keypool`, `-exportdir`, …) and a ycashd-format `y
 | `-backendrpccookiefile=<file>` | — | the node's `.cookie`; re-read after a 401, so a node restart is followed |
 | `-backendrpcuser=<u>` `-backendrpcpassword=<p>` | — | instead of the cookie (one of the two is required) |
 | `-stopbackend` | off | `stop` also sends `stop` to the node (the harness bundle: the pair is one node, H6) |
-| `-signer=<socket>` | — | reserved for S2 (the signer's Unix socket) |
-| `-signerbin=<file>` | `yewd-signer` beside `yewd` | the signer binary S1 runs as a child process (`init`, `public`) |
+| `-signer=<socket>` | — | a signer someone else runs (`yewd-signer serve`): its Unix socket; without it yewd starts its own |
+| `-signerbin=<file>` | `yewd-signer` beside `yewd` | the signer binary yewd runs: `init` (and `public` for `-initwallet`), then `serve -watchstdin` |
 | `-walletpoll=<ms>` | 1000 | how often the wallet follows the node between calls (the poll fallback); 0 = only at calls (every wallet RPC syncs first anyway: the barrier, H1) |
 | `-initwallet` | | create the wallet (the seed in `<datadir>/<net>/signer/`, birthday 0), print `{"mineaddress": "<s…>"}` and exit; needs no backend (H8, below) |
 | `-debug` | off | log each method called |
@@ -128,6 +135,71 @@ process exits about 200 ms later; SIGINT and SIGTERM stop it too. Logs go to std
 - **Coinbase (H8).** A new wallet's first external address is its coinbase address. ycash6
   `-disablewallet` mines only with `-mineraddress=<it> -minetolocalwallet=0`; kogany takes it as its
   `miner_address`.
+
+## The signer (S2)
+
+K-24 (a): the façade builds, the signer signs. `yewd` starts `yewd-signer -datadir=<datadir>/<net>/signer
+serve -socket=<sock> -watchstdin` as its child (unless `-signer=<socket>` names one) and keeps the
+child's standard input open; the signer exits when the façade does. The socket is
+`<datadir>/<net>/signer/signer.sock`, or `/tmp/yewd-<uid>/<16 hex of SHA-256(signer dir)>.sock` when
+that path is longer than a Unix socket address takes (macOS: 104 bytes; F-S2-1); both ends compute it
+with `yewd_proto::client::socket_path`. Mode 0600, the directory 0700 and the caller's own, and the
+signer checks every connection's peer UID (`getpeereid`, `SO_PEERCRED`) against its own.
+
+**Protocol version 1** (`yewd-proto`). One JSON object per line each way, in order:
+`{"version": 1, "op": <op>, "body": <body>}` → `{"result": <kind>, "body": <body>}`. A request of
+another version is refused (`bad-version`) before it is read further.
+
+| `op` | body | answer `result` |
+|---|---|---|
+| `hello` | — | `hello` `{version, network, seed_fp}` |
+| `public` | `{"pq": [[scheme, from, count], …]}` | `public` (S1's `PublicBundle`) |
+| `sign` | `SignRequest` | `signed` `{tx, sighashes: [hex\|null]}` |
+| `sign_act` | `{tx, keys: [KeyRef]}` | `act_sigs` `{payload, msg, sigs: [65-byte hex]}` |
+| `sign_set` | `{tx, branch_id, index, prevout, set_id, role, keys: [KeyRef], acknowledge_restore}` | `set_sigs` `{sighash, msg, sigs}` |
+| `list_signed` | — | `records` `{restored, records: [{setid, prevout, role, sighash}]}` |
+| `import_signed` | `[record]` | `imported` `{imported, present}` |
+| `acknowledge_restore` | — | `acknowledged` (the records) |
+| any | | `refused` `{code, reason}` |
+
+`SignRequest` = `{tx, branch_id, inputs: [{prevout: {outpoint, script, amount_zat}, key: KeyRef,
+carrier_bundle?}], own_outputs: [{n, key, bond_locktime?}], gate_path, outflow_cap_zat, preview:
+{sign: [{vin, outpoint, amount_zat}], outputs: [{n, amount_zat, address|script, mine, kind}], fee_zat,
+outflow_zat}}`; `KeyRef` = `{"kind": "none"}` | `bip32 {chain, index}` | `pq {scheme, index}` |
+`pq_owner {scheme, index, selector}` | `carrier {chain, index}`; `gate_path` = `yec` | `vault` |
+`owner` | `yed` | `raw`.
+
+**Policy** (`signer/src/sign.rs`), in this order, before any signature leaves the signer:
+1. the transaction parses; a shielded one is refused (Sapling spends are built whole in the signer, K-24);
+2. **every input is bound to a prevout**: one `inputs[i]` per `vin[i]`, its outpoint equal to
+   `vin[i].prevout`, a non-empty script, an amount in `[0, MAX_MONEY]` (`unbound-input`);
+3. every key named is derived and must own the script it signs or recognises: the P2PKH of the
+   BIP32 key, the `TX_PQPKH` of the PQ key, the V/I whose owner is the PQ key (selector 2/3 of a V, 3 of
+   an I), the carrier `P2SH(carrierScript(pk, SHA256(bundle)))`, an own output's P2PKH / `TX_PQPKH` /
+   join bond (`key-mismatch`);
+4. the gate path's shape: no template input and no data output on `yec`, at most one template input
+   and never an owner key on `vault`, the owner's key at input 0 on `owner` (`gate`);
+5. the preview is recomputed from the bytes and the prevouts (`yewd_proto::preview::compute`) and must
+   equal the request's: an input signed but not listed is `foreign-input`, any other difference (an
+   amount, a recipient, an output, the fee, the outflow) `preview-mismatch`;
+6. the net outflow (signed inputs minus own outputs) must not exceed `outflow_cap_zat` (`outflow`);
+   the façade sets the cap to what the request itself spends (a payment's amount and fee, a vault's
+   amount, the flat fee of an act), and to the fee cap or `allowoutflow` on a hand-off (`vault_send`,
+   `set_sendact`);
+7. each digest is recomputed (ZIP-243 under `branch_id`; `SIGHASH_ALL|ANYONECANPAY` of the template
+   input and `SHA256d("YcashSetSig" ‖ setId ‖ role ‖ prevout ‖ sighash)` for a set signature;
+   `SHA256d("YcashSetAct" ‖ P ‖ vin[0].prevout)` for an act), then signed: ECDSA (RFC 6979; recoverable
+   compact for set and act signatures, byte-identical to `CKey::SignCompact`), SLH-DSA / FN-DSA through
+   yew-core's `pq.rs`. The whole transaction is signed or the request refused (H10).
+
+**Sign-once** (`signer/src/signonce.rs`): `<signer dir>/signonce.json`, fsynced before a set
+signature is returned. A different role or sighash for a recorded `(setid, prevout)` is refused
+(`set-sign-once`, also when no signature is asked for); the same sighash (the same spend re-funded)
+is idempotent; a seed restored from a phrase (`init -mnemonic=`) starts with the restore marker set
+(`set-sign-restored` until `acknowledge_restore` or `{"acknowledgerestore": true}`); an import that
+differs from a record is refused whole. The façade maps `set-sign-once` / `set-sign-restored` /
+`outflow` / `foreign-input` to `-4`, an unreachable signer to `-13`. The attestation guard
+(`attest-signed.dat`) is S3's.
 
 ## Harness mode (`YEWD_BIN`)
 

@@ -1,6 +1,6 @@
 # yewd — the YEW core as a daemon: plan
 
-**Revision 2 (2026-11-01), S1** (revision 1: S0). `yewd` is the third shell on the YEW core, in `yew/yewd/`
+**Revision 3 (2026-11-01), S2** (revision 2: S1; revision 1: S0). `yewd` is the third shell on the YEW core, in `yew/yewd/`
 beside `yew/app/` and `yew/web/` (workspace decision K-22, the Yellowback lead architect,
 2026-11-01): a ycashd-compatible wallet-RPC façade in front of a wallet-less node, kogany or
 ycash6 `-disablewallet`. The normative plan is the workspace's
@@ -47,7 +47,7 @@ the repository's `rust-toolchain.toml`.
 |---|---|---|
 | S0 | the shell: crate layout, façade skeleton (auth, the full method table answering `-32601`, forwarding with the backend's cookie, `help`, `stop`), the `YEWD_BIN` harness contract, the `yewd` CI job | **this revision** |
 | S1 | wallet state and sync; the read-only wallet subset (against ycash6 `-disablewallet`; kogany after W7-a/b) | **this revision** (§3.1) |
-| S2 | builders and the signer boundary | — |
+| S2 | builders and the signer boundary | **this revision** (§3.2): 40/47; Sapling in the signer remains |
 | S3 | roles: attestor `attest` mode, Hawkeye member, x402 `rpcWalletSigner` | — |
 | S4 | the façade complete: all 47, R7, the K-25 stock set, error parity, hazards H1–H11 | — |
 | S5 | the parity gate (three-way matrix, the 48 wallet-needing scripts, 7 nightly days) | — |
@@ -161,6 +161,93 @@ yew-core's note store and light-client sync if the barrier moves to lightwalletd
 - Not run here, and why: the same gate on **kogany** (W7-a/b not merged; the harness's kogany
   backend for a yewd pair is the next harness step), and the unchanged `vault_rpc_contract.py` /
   `yellowback_rpc_contract.py` (they call S2's builders before their reads; S4's gate).
+
+### 3.2 S2: builders and the signer boundary
+
+**What it serves.** Of the 47: all 22 R5 RPCs (`wallet/src/vaultrpc.rs`: the act RPCs, the vault
+RPCs, the remembered builds of 07/N-2 with re-funding, `HandoffSend`'s foreign-input and outflow
+refusals and its preview) and 18 of the 25 R6 RPCs (`wallet/src/yed.rs`: `yed_send`, `yed_sendmany`,
+`yed_estimatesend`, `yed_redeem`, `yed_estimateredeem`, `yed_lockcoins`, `yed_unlockcoin`;
+`mint.rs`: `yed_mint` in the two-step flow, `wait` or the poll, `yed_sweepcarriers`; `claim.rs`:
+`yed_claim`, `yed_claimnotice`'s unarmed refusal) — **40/47**; the seven left are S3's
+(`yed_buildcancel`, `yed_signcancelcosign`, the five attestor RPCs). Of the K-25 stock set:
+`sendtoaddress`, `sendmany`, `lockunspent`, `fundrawtransaction`, `signrawtransaction`,
+`getrawchangeaddress` (16/34 with S1's reads). Not yet: `z_sendmany` and its three operation RPCs,
+a Sapling `from`/`to` of `yed_mint`/`yed_redeem` (the Sapling build in the signer, below).
+
+**How the builders bind yew-core (F-S2-2).** yew-core's builders take its `Wallet` (the seed, the
+SQLite store, the gRPC client) and sign in-process, so the façade cannot call them without breaking
+K-24. S2 binds yew-core's pure parts instead — the floor-aware selector (`coinselect.rs`), the
+payload codec, the V/I templates (`vault.rs`), `build::redeem::plan_vault_spend`,
+`build::claim::plan_claim`, the ZIP-243 sighash and serializer (`tx.rs`), the fee and price
+arithmetic (`params.rs`) — and takes the facts ycashd reads in-process from node RPCs
+(`yed_getinfo`, `yed_getvault`, `yed_estimatecollateral`, `yed_listclaimable`, `yed_getfeepayee`,
+`yed_buildbundle`, `set_getinfo`, `vault_list`, `gettxout`), with the node's dry run
+(`yed_validaterawtransaction`: MINT-1..10, RED-1..5, MP-1) before a YED transaction is committed. No
+yew-core change was needed; the viewing-only `Shielded` constructor S1 proposed waits for the
+Sapling build in the signer.
+
+**The signer (K-24).** Protocol version 1 (`yewd-proto`; README "The signer"): requests `hello`,
+`public`, `sign`, `sign_act`, `sign_set`, `list_signed`, `import_signed`, `acknowledge_restore`
+over a mode-0600 Unix socket with a peer-UID check; every input bound to a prevout (outpoint,
+script, amount), every key named by derivation and checked against its script, the preview and the
+outflow recomputed from the bytes, every digest recomputed. The sign-once records live in the
+signer (`signonce.json`, fsynced before a signature leaves). The YV act codec and the set messages
+are re-derived from ycash6 `src/vault/act.cpp` (plan §4.3 rule 1) and checked against
+`vault_vectors.json`.
+
+**Findings.**
+- **F-S2-1** (interface): a Unix socket address takes at most 104 bytes on macOS and the harness's
+  datadirs are longer; resolution: `<signer dir>/signer.sock` when it fits, else
+  `/tmp/yewd-<uid>/<16 hex of SHA-256(dir)>.sock` (directory 0700, owner-checked), computed alike on
+  both ends.
+- **F-S2-2** (above): yew-core's builders are bound to its signing `Wallet`; S2 composes its pure
+  parts with node facts. Proposed mapping §24 row: "M24-xx | YEW builds and signs in one `Wallet` |
+  the façade holds no key | pure planners + node facts in `yewd-wallet`, signatures in `yewd-signer` |
+  interface".
+- **F-S2-3** (decision): ycashd's `ValidateSetSpend` (`set-sign-invalid`) runs `vault::CheckTx` on the
+  unsigned spend in-process; no RPC dry-runs an unsigned set spend. yewd judges the structural part
+  (a cancel before the intent's delay, an unlock's intents and byte-identical re-lock, S-2's value) and
+  lets the rest reach the node at `vault_send`. Proposed: an additive node read for W7-b (a set-spend
+  dry run), C++ lines first (§4.3 rule 5).
+- **F-S2-4** (decision): while the attestation layer is armed, a mint's or claim's attestor fee
+  payee (AFEE-W, `DefaultAttestPayee`) and a claim notice's `pEmerg` are not reported by any RPC in a
+  form a wallet-less builder can use; yewd refuses those cases ("not served yet"). Unarmed mints and
+  claims (the regtest default) are served. Proposed: `yed_estimatecollateral` / `yed_listclaimable`
+  report `attestPayee` (additive, C++ lines first).
+- **F-S2-5** (record): yew-core's `gate.rs` classifies inputs from its store; the signer has none.
+  The signer applies its own path shapes plus the preview and outflow checks; `gate.rs` proper would
+  need façade-supplied classes it cannot verify.
+- **F-S2-6** (record): ycashd's one-shot vault builders sign with no outflow limit; the signer always
+  enforces one, so the façade passes the outflow the request implies (amount + flat fee + folded
+  change). No contract value changes.
+- **F-S2-7** (decision for S4): `signrawtransaction` with `privatekeys` (even `[]`, the x402 verify
+  call) is forwarded to the node, so keys never enter the façade; kogany has no `signrawtransaction`
+  (W7), so that form needs a kogany RPC or a local verifier.
+- **F-S2-8** (remaining work): the Sapling build in the signer (`z_sendmany` t→z/z→t/z→z, its
+  operation ids, a Sapling `from`/`to` in `yed_mint`/`yed_redeem`) needs note witnesses; the façade
+  tracks note positions only. Plan: the façade keeps incremental witnesses during its block scan (the
+  frontier from `z_gettreestate`, then each block's commitments) and hands notes and witnesses to the
+  signer, which holds the spending key and proves.
+- **F-S2-9** (harness): `kogany.start_yewd_pair` can reach a backend that listens before it writes its
+  cookie and fails on the 401; the S2 gate treats that 401 as warm-up. For the harness chunk.
+
+### S2 exit gate (as run)
+
+- `yewd/scripts/check-yewd.sh`: fmt, clippy `-D warnings`, the crates' tests, including
+  `signer/tests/vault_vectors.rs` (`acts[]`, `actsInvalid[]`, `actScriptsInvalid[]`, `setSigMsgs[]`,
+  `signatures[]`, `signaturesInvalid[]`, `ownerSpends[]` replayed through the signer's codecs and
+  signing functions, byte for byte) and `signer/tests/policy.rs` (the refusals: no prevout, a prevout
+  not spent, a negative amount, a key not owning its script, a lying preview — mutated amount, swapped
+  recipient, foreign input, wrong fee —, outflow above the cap, template inputs on the YEC path, owner
+  keys off the owner path, sign-once across a signer restart, a restored seed until acknowledged,
+  another protocol version, the socket's mode). `pq_wallet_vectors.json` has no signing section; its
+  derivation section replays as in S1.
+- `yewd/qa/s2_wallet_builders.py` on ycash6 `vaults/kogany-compat` (`65cb4ae0f` binaries, harness
+  `f4967b0d7`): see the S2 report for the run.
+- Not run here: the same gate on kogany (W4/W5/W7 not merged), and the mixed kogany + ycash6-peer
+  acceptance check of the plan's S2 row (the acceptance by every ycash6 node of the network is what
+  this gate checks).
 
 ## 4. CI (workspace plan §5)
 
