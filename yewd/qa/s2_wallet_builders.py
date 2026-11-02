@@ -328,17 +328,17 @@ class YewdS2(YellowbackTestFramework):
         assert_equal(strip(urows['%s:0' % usent], ign), strip(rows[intent], ign))
         bc = vc.call(y, 'vault_buildcancel', '%s:0' % usent)
         assert_equal(bc['required'], 1)
+        vc.error('the template input is not a vault', y, 'set_signunlock', bc['hex'])
         sc = vc.call(y, 'set_signcancel', bc['hex'])
         assert_equal(sc['complete'], True)
         cancel = vc.call(y, 'vault_send', sc['hex'])
         self.confirm(cancel)
         assert '%s:0' % cancel in {r['outpoint'] for r in vc.call(y, 'vault_list', {'setid': sid})}
-        vc.error('the template input is not an intent', y, 'set_signcancel', bu['hex'])
-        vc.error('the template input is not a vault', y, 'set_signunlock', bc['hex'])
 
         print('vaults: the sign-once record refuses a second, different unlock of a signed vault')
         relock = '%s:1' % sent
         x = vc.call(y, 'vault_buildunlock', relock, [{'address': dest, 'amount': 1}])
+        vc.error('the template input is not an intent', y, 'set_signcancel', x['hex'])
         vc.call(y, 'set_signunlock', x['hex'])
         x2 = vc.call(y, 'vault_buildunlock', relock, [{'address': dest, 'amount': Decimal('0.5')}], True)
         vc.error('set-sign-once', y, 'set_signunlock', x2['hex'])
