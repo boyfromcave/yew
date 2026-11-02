@@ -2028,11 +2028,33 @@ impl Wallet {
         }
         .ok_or_else(|| invalid("not an unspent intent output"))?;
         for i in &parent.vin {
-            if let Some(vc) = node_coin(node, &i.prevout).await? {
-                if yv::parse_vault(&vc.script).is_some()
-                    && yew_core::keys::sha256(&vc.script) == ip.vault_hash
+            // the parent spends its vault in the mempool, so the node's UTXO view (with the mempool)
+            // no longer has it: read the vault's own transaction instead
+            let script = match node_coin(node, &i.prevout).await? {
+                Some(vc) => Some(vc.script),
+                None => match node::call(
+                    node,
+                    "getrawtransaction",
+                    serde_json::json!([txid_hex(&i.prevout.txid), 0]),
+                )
+                .await
                 {
-                    return Ok((vc.script, next.height as i64, false));
+                    Ok(v) => v
+                        .as_str()
+                        .and_then(crate::build::parse_hex_tx)
+                        .and_then(|t| {
+                            t.vout
+                                .get(i.prevout.n as usize)
+                                .map(|o| o.script_pubkey.clone())
+                        }),
+                    Err(_) => None,
+                },
+            };
+            if let Some(script) = script {
+                if yv::parse_vault(&script).is_some()
+                    && yew_core::keys::sha256(&script) == ip.vault_hash
+                {
+                    return Ok((script, next.height as i64, false));
                 }
             }
         }
