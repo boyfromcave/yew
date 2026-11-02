@@ -41,6 +41,11 @@ cargo build --manifest-path yewd/Cargo.toml
 yewd/scripts/check-yewd.sh
 # with a backend: the regtest round trip (facade/tests/regtest.rs)
 YEWD_TEST_YCASHD=/path/to/ycashd YEWD_TEST_REQUIRE_BACKEND=1 cargo test --manifest-path yewd/Cargo.toml --test regtest
+# the S1 exit gate on ycash6's functional framework (ycash6 vaults/kogany-compat: the YEWD_BIN harness)
+YCASH6_QA=<ycash6>/qa/rpc-tests ZCASHD=<ycash6>/src/ycashd YEWD_BIN=<target>/debug/yewd \
+  <workspace>/.venv/bin/python yewd/qa/s1_wallet_reads.py --tmpdir=<dir>
+# the pinned PQ wallet vectors from kogany (else yew's byte-identical copy is replayed)
+YEWD_PQ_WALLET_VECTORS=<kogany>/testdata/yellowback/pq_wallet_vectors.json cargo test --manifest-path yewd/Cargo.toml -p yewd-signer
 ```
 
 ## The method table

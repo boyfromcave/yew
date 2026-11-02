@@ -1641,11 +1641,16 @@ impl Wallet {
     /// Ycash v4 wallet forms; they answer `isvalid: false` here.
     pub fn z_validateaddress(&self, p: &[Value]) -> Result<J, RpcError> {
         if p.len() != 1 {
-            return Err(RpcError::new(code::MISC_ERROR, "z_validateaddress \"address\""));
+            return Err(RpcError::new(
+                code::MISC_ERROR,
+                "z_validateaddress \"address\"",
+            ));
         }
         let a = p_str(p, 0)?.unwrap_or("");
         let mut o = J::obj();
-        if let Ok(pa) = zcash_keys::encoding::decode_payment_address(self.network.sapling_address_hrp(), a) {
+        if let Ok(pa) =
+            zcash_keys::encoding::decode_payment_address(self.network.sapling_address_hrp(), a)
+        {
             let bytes = pa.to_bytes();
             let mut pkd = bytes[11..].to_vec();
             pkd.reverse(); // uint256::GetHex
@@ -1656,8 +1661,14 @@ impl Wallet {
             o.push("diversifier", J::Str(hex::encode(&bytes[..11])));
             o.push("diversifiedtransmissionkey", J::Str(hex::encode(pkd)));
             o.push("ismine", J::Bool(self.view.owns_address(a).is_some()));
-        } else if let Some(script) = parse_taddr_script(self.network, a).filter(|_| ykeys::parse_pq_yec_address(self.network, a).is_err()) {
-            let kind = if yew_core::script::p2sh_hash(&script).is_some() { "p2sh" } else { "p2pkh" };
+        } else if let Some(script) = parse_taddr_script(self.network, a)
+            .filter(|_| ykeys::parse_pq_yec_address(self.network, a).is_err())
+        {
+            let kind = if yew_core::script::p2sh_hash(&script).is_some() {
+                "p2sh"
+            } else {
+                "p2pkh"
+            };
             o.push("isvalid", J::Bool(true));
             o.push("address", J::Str(a.into()));
             o.push("address_type", J::Str(kind.into()));

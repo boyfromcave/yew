@@ -27,7 +27,10 @@ impl Signer for TestSigner {
 }
 
 fn signer() -> Box<dyn Signer> {
-    Box::new(TestSigner(yewd_signer::Keystore::from_mnemonic(Network::Regtest, PHRASE)))
+    Box::new(TestSigner(yewd_signer::Keystore::from_mnemonic(
+        Network::Regtest,
+        PHRASE,
+    )))
 }
 
 #[derive(Default)]
@@ -50,7 +53,17 @@ impl MockNode {
     /// Append a block (on top of the current tip) holding `txs`; `salt` makes sibling blocks differ.
     fn mine(&self, txs: Vec<Vec<u8>>, salt: u8) -> String {
         let mut c = self.0.lock().unwrap();
-        let prev = c.blocks.last().map(|(h, _)| hex::decode(h).unwrap().into_iter().rev().collect::<Vec<u8>>()).unwrap_or(vec![0; 32]);
+        let prev = c
+            .blocks
+            .last()
+            .map(|(h, _)| {
+                hex::decode(h)
+                    .unwrap()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<u8>>()
+            })
+            .unwrap_or(vec![0; 32]);
         let mut raw = Vec::new();
         raw.extend_from_slice(&4u32.to_le_bytes());
         raw.extend_from_slice(&prev);
@@ -68,7 +81,11 @@ impl MockNode {
         }
         let hash = rev_hex(&yew_core::keys::sha256d(&raw));
         c.blocks.push((hash.clone(), raw));
-        let mined: Vec<String> = txs.iter().map(|t| Transaction::parse(t).unwrap().1).map(|id| rev_hex(&id)).collect();
+        let mined: Vec<String> = txs
+            .iter()
+            .map(|t| Transaction::parse(t).unwrap().1)
+            .map(|id| rev_hex(&id))
+            .collect();
         c.mempool.retain(|(id, _)| !mined.contains(id));
         hash
     }
@@ -106,12 +123,24 @@ impl Node for MockNode {
                     let h = p[0].as_u64().unwrap() as usize;
                     match c.blocks.get(h) {
                         Some((hash, _)) => json!(hash),
-                        None => return Err(NodeError::Rpc { code: -8, message: "Block height out of range".into() }),
+                        None => {
+                            return Err(NodeError::Rpc {
+                                code: -8,
+                                message: "Block height out of range".into(),
+                            })
+                        }
                     }
                 }
                 "getblock" => {
                     let want = p[0].as_str().unwrap();
-                    let (_, raw) = c.blocks.iter().find(|(h, _)| h == want).ok_or(NodeError::Rpc { code: -5, message: "Block not found".into() })?;
+                    let (_, raw) =
+                        c.blocks
+                            .iter()
+                            .find(|(h, _)| h == want)
+                            .ok_or(NodeError::Rpc {
+                                code: -5,
+                                message: "Block not found".into(),
+                            })?;
                     if p[1].as_u64() == Some(0) {
                         json!(hex::encode(raw))
                     } else {
@@ -119,15 +148,29 @@ impl Node for MockNode {
                     }
                 }
                 "getblockchaininfo" => json!({"upgrades": {}}),
-                "getrawmempool" => json!(c.mempool.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>()),
+                "getrawmempool" => json!(c
+                    .mempool
+                    .iter()
+                    .map(|(id, _)| id.clone())
+                    .collect::<Vec<_>>()),
                 "getrawtransaction" => {
                     let want = p[0].as_str().unwrap();
                     match c.mempool.iter().find(|(id, _)| id == want) {
                         Some((_, raw)) => json!(hex::encode(raw)),
-                        None => return Err(NodeError::Rpc { code: -5, message: "No such mempool transaction".into() }),
+                        None => {
+                            return Err(NodeError::Rpc {
+                                code: -5,
+                                message: "No such mempool transaction".into(),
+                            })
+                        }
                     }
                 }
-                m => return Err(NodeError::Rpc { code: -32601, message: format!("mock: {m}") }),
+                m => {
+                    return Err(NodeError::Rpc {
+                        code: -32601,
+                        message: format!("mock: {m}"),
+                    })
+                }
             })
         })
     }
@@ -135,10 +178,16 @@ impl Node for MockNode {
 
 fn coinbase(height: u32, script: Vec<u8>, value: i64) -> Vec<u8> {
     let mut t = Transaction::new_v4();
-    let mut i = TxIn::new(OutPoint { txid: [0; 32], n: u32::MAX });
+    let mut i = TxIn::new(OutPoint {
+        txid: [0; 32],
+        n: u32::MAX,
+    });
     i.script_sig = vec![0x03, height as u8, (height >> 8) as u8, 0];
     t.vin.push(i);
-    t.vout.push(TxOut { value, script_pubkey: script });
+    t.vout.push(TxOut {
+        value,
+        script_pubkey: script,
+    });
     t.expiry_height = 0;
     t.serialize().unwrap()
 }
@@ -148,7 +197,10 @@ fn payment(from: OutPoint, script: Vec<u8>, value: i64) -> Vec<u8> {
     let mut i = TxIn::new(from);
     i.script_sig = vec![0x51]; // never validated by the wallet
     t.vin.push(i);
-    t.vout.push(TxOut { value, script_pubkey: script });
+    t.vout.push(TxOut {
+        value,
+        script_pubkey: script,
+    });
     t.serialize().unwrap()
 }
 
@@ -178,7 +230,14 @@ async fn sync_reorg_and_reload() {
         node.mine(vec![tx], 0);
     }
     // a payment to a lookahead key in block 6 (from a foreign coin)
-    let pay = payment(OutPoint { txid: [7; 32], n: 0 }, lookahead.clone(), 300_000_000);
+    let pay = payment(
+        OutPoint {
+            txid: [7; 32],
+            n: 0,
+        },
+        lookahead.clone(),
+        300_000_000,
+    );
     let pay_id = rev_hex(&Transaction::parse(&pay).unwrap().1);
     node.mine(vec![coinbase(6, foreign.clone(), 1), pay.clone()], 0);
     assert!(w.sync(&node).await.unwrap());
@@ -203,7 +262,10 @@ async fn sync_reorg_and_reload() {
     // the coinbases of blocks 1-4 stay, block 5's is gone, the payment is back in the mempool
     assert_eq!(heights, vec![None, Some(1), Some(2), Some(3), Some(4)]);
     assert!(w.st.wtx[&pay_id].block.is_none());
-    assert_eq!(w.st.tip.as_ref().unwrap().hash, node.0.lock().unwrap().blocks[7].0);
+    assert_eq!(
+        w.st.tip.as_ref().unwrap().hash,
+        node.0.lock().unwrap().blocks[7].0
+    );
 
     // evicted from the mempool: dropped from the wallet
     node.clear_mempool();
@@ -217,10 +279,20 @@ async fn sync_reorg_and_reload() {
     assert_eq!(w.st.wtx[&pay_id].block.as_ref().unwrap().height, 8);
 
     // the state file reloads to the same wallet
-    let coins: Vec<_> = w.coins.iter().map(|c| (c.txid.clone(), c.vout, c.value, c.height)).collect();
+    let coins: Vec<_> = w
+        .coins
+        .iter()
+        .map(|c| (c.txid.clone(), c.vout, c.value, c.height))
+        .collect();
     drop(w);
     let mut w = Wallet::open(&d, Network::Regtest, signer(), 0).unwrap();
-    assert_eq!(w.coins.iter().map(|c| (c.txid.clone(), c.vout, c.value, c.height)).collect::<Vec<_>>(), coins);
+    assert_eq!(
+        w.coins
+            .iter()
+            .map(|c| (c.txid.clone(), c.vout, c.value, c.height))
+            .collect::<Vec<_>>(),
+        coins
+    );
     assert!(!w.sync(&node).await.unwrap());
 
     // a reorg below everything the window remembers: a full rescan from the birthday
@@ -230,7 +302,10 @@ async fn sync_reorg_and_reload() {
     }
     w.sync(&node).await.unwrap();
     assert_eq!(w.tip_height(), 3);
-    assert_eq!(w.coins.iter().map(|c| c.value).collect::<Vec<_>>(), vec![2_000_000_000; 3]);
+    assert_eq!(
+        w.coins.iter().map(|c| c.value).collect::<Vec<_>>(),
+        vec![2_000_000_000; 3]
+    );
     let _ = cb_ids;
 }
 
@@ -248,25 +323,58 @@ async fn read_rpcs_over_the_mock_chain() {
     // two mature coinbases (depth 102 and 101), 100 immature
     let b = w.call(&node, "getbalance", &[]).await.unwrap().text();
     assert_eq!(b, "20.00000000");
-    let info: Value = serde_json::from_str(&w.call(&node, "getwalletinfo", &[]).await.unwrap().text()).unwrap();
+    let info: Value =
+        serde_json::from_str(&w.call(&node, "getwalletinfo", &[]).await.unwrap().text()).unwrap();
     assert_eq!(info["immature_balance"].to_string(), "1000.0");
-    let rows: Value = serde_json::from_str(&w.call(&node, "listunspent", &[]).await.unwrap().text()).unwrap();
+    let rows: Value =
+        serde_json::from_str(&w.call(&node, "listunspent", &[]).await.unwrap().text()).unwrap();
     assert_eq!(rows.as_array().unwrap().len(), 2);
     assert_eq!(rows[0]["generated"], true);
     let a = w.call(&node, "getnewaddress", &[]).await.unwrap().text();
     assert!(a.starts_with("\"sm"), "{a}");
-    let e = w.call(&node, "getnewaddress", &[json!(""), json!("pq")]).await.unwrap_err();
-    assert_eq!((e.code, e.message.as_str()), (-8, "post-quantum addresses need the vault upgrade active at the next block"));
-    let e = w.call(&node, "gettransaction", &[json!("00".repeat(32))]).await.unwrap_err();
+    let e = w
+        .call(&node, "getnewaddress", &[json!(""), json!("pq")])
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (e.code, e.message.as_str()),
+        (
+            -8,
+            "post-quantum addresses need the vault upgrade active at the next block"
+        )
+    );
+    let e = w
+        .call(&node, "gettransaction", &[json!("00".repeat(32))])
+        .await
+        .unwrap_err();
     assert_eq!(e.code, -5);
     let txid = rows[0]["txid"].as_str().unwrap();
-    let t: Value = serde_json::from_str(&w.call(&node, "gettransaction", &[json!(txid)]).await.unwrap().text()).unwrap();
+    let t: Value = serde_json::from_str(
+        &w.call(&node, "gettransaction", &[json!(txid)])
+            .await
+            .unwrap()
+            .text(),
+    )
+    .unwrap();
     assert_eq!(t["details"][0]["category"], "generate");
     assert_eq!(t["generated"], true);
-    let owner: Value = serde_json::from_str(&w.call(&node, "vault_getnewowner", &[]).await.unwrap().text()).unwrap();
-    assert_eq!(owner["owner"].as_str().unwrap(), format!("01{}", owner["keyhash"].as_str().unwrap()));
+    let owner: Value = serde_json::from_str(
+        &w.call(&node, "vault_getnewowner", &[])
+            .await
+            .unwrap()
+            .text(),
+    )
+    .unwrap();
+    assert_eq!(
+        owner["owner"].as_str().unwrap(),
+        format!("01{}", owner["keyhash"].as_str().unwrap())
+    );
     let z = w.call(&node, "z_getnewaddress", &[]).await.unwrap().text();
     assert!(z.starts_with("\"yregtestsapling1"));
-    let zb = w.call(&node, "z_getbalance", &[serde_json::from_str(&z).unwrap()]).await.unwrap().text();
+    let zb = w
+        .call(&node, "z_getbalance", &[serde_json::from_str(&z).unwrap()])
+        .await
+        .unwrap()
+        .text();
     assert_eq!(zb, "0.00000000");
 }
