@@ -615,7 +615,94 @@ and the runner knows it.
 
 ### S5 exit gate (as run)
 
-<!-- S5 MATRIX -->
+**Not met.** Column 3 runs every one of the 50 wallet-needing scripts end to end; **10 pass twice in a
+row** on one build (rounds C and D below), and every other failure is classified, almost all to kogany
+node gaps (the findings above) that a sidecar cannot close under §4.3 rule 1. The nightly's seven days
+are wall clock: `.github/workflows/yewd-parity.yml` is written (report-only) and **pending** its first
+scheduled runs on `vaults/kogany-compat`.
+
+Builds: kogany `eaac2b78d` (`zakurad --features ycash`, debug, `$WS/wt/.bin/kc-yewd-s5/zakurad`); yewd at
+yew `kc/yewd-s5` (`yewd`, `yewd-signer`, debug; the 07:44 build for rounds C and D and the mixed re-run);
+ycashd `$WS/wt/.bin/ycash6-kc-w9m` (ycash6 `vaults/kogany-compat` src, the `-lightwalletd` and
+`z_validateaddress -disablewallet` fixes; ycash6 `9db96a75b`'s `src/` is the same); the harness at ycash6
+`kc/yewd-s5`. Each script on its own (`--srcdir`, a distinct `--portseed`, `--tmpdir`, two or three at
+once on a shared host), as `yewd/qa/s5_parity.py` runs them:
+
+    YCASH6=<ycash6 kc/yewd-s5> ZCASHD=<ycashd> YEWD_BIN=<yewd> ZAKURAD=<zakurad> KOGANY_LIVE=W1-Y1,W2-b \
+        <venv>/bin/python yewd/qa/s5_parity.py --columns ycash6,rig,pair,pair-mixed --rounds 2 --out <dir>
+
+Column 1 is the plain run, column 2 `KOGANY_SIDECAR=1` (with the manifest's `mirror`/`mempool` flags),
+column 3 `YEWD_KOGANY`, 3m `YEWD_YCASH6_PEER=1`. Round D re-ran round C's passes (and
+`yellowback_chainviz`, which passed an earlier round) on the same build. Two of column 1's scripts lost
+their first run to another run's port (`Unable to start HTTP server`) and pass on a re-run.
+
+| script | 1. ycash6 | 2. kogany + ycash6 rig | 3. kogany + yewd (round C) | 3. round D (same build) | 3m. mixed: + one ycash6 peer |
+|---|---|---|---|---|---|
+| z_validateaddress_nowallet | pass | pass | FAIL: kogany: z_validateaddress shape | — | FAIL: kogany: z_validateaddress shape |
+| vault_upgrade | pass | FAIL | FAIL: kogany: getblockchaininfo shape | — | FAIL: kogany: getblockchaininfo shape |
+| vault_primitive | pass | pass | FAIL: kogany: reject text | — | FAIL: kogany: reject text |
+| vault_slashing | pass | pass | pass | pass | pass |
+| vault_pq_reorg | pass | FAIL | FAIL: kogany: reconsiderblock of a block it did not invalidate | — | FAIL: kogany: reconsiderblock of a block it did not invalidate |
+| vault_dos | pass | FAIL | FAIL: reads ycashd internals (F-S5-13) | — | FAIL: reads ycashd internals (F-S5-13) |
+| vault_rpc | pass | pass | FAIL: reads ycashd internals (F-S5-13) | — | FAIL: reads ycashd internals (F-S5-13) |
+| vault_rpc_contract | pass | pass | pass | pass | pass |
+| vault_pq_relay | pass | pass | pass | pass | pass |
+| vault_bridge | pass | pass | FAIL: kogany: reject text | — | FAIL: kogany: reject text |
+| vault_pq | pass | pass | FAIL: kogany: PQ owner spend not in its template | — | FAIL: kogany: PQ owner spend not in its template |
+| vault_pq_wallet | pass | FAIL | pass | pass | FAIL: cache: founders reward (F-S5-18) |
+| vault_pq_wallet_restore | pass | FAIL | FAIL: yewd: seed-only restore (F-S5-17) | — | FAIL: cache: founders reward (F-S5-18) |
+| wallet_pq_address | pass | FAIL | FAIL: kogany: getaddressmempool | — | FAIL: cache: founders reward (F-S5-18) |
+| yellowback_lifecycle | pass | pass | FAIL: kogany: no disconnectnode (F-S5-6) | — | FAIL: kogany: no disconnectnode (F-S5-6) |
+| yellowback_activation_reorg | pass | pass | FAIL: kogany: no disconnectnode (F-S5-6) | — | FAIL: peer kept an invalidated branch (mirror added after this pass) |
+| yellowback_reorg_restart | pass | pass | FAIL: kogany: reorged txs not back in mempool (F-S5-7) | — | FAIL: peer kept an invalidated branch (mirror added after this pass) |
+| yellowback_claim | pass | pass | FAIL: kogany: submitblock bare rejected (F-S5-4) | — | FAIL: kogany: submitblock bare rejected (F-S5-4) |
+| yellowback_interm | pass | pass | FAIL: kogany: submitblock bare rejected (F-S5-4) | — | FAIL: kogany: submitblock bare rejected (F-S5-4) |
+| yellowback_index | pass | FAIL | FAIL: reads ycashd internals (F-S5-13) | — | FAIL: reads ycashd internals (F-S5-13) |
+| yellowback_upgrade | pass | pass | FAIL: reads ycashd internals (F-S5-13) | — | FAIL: peer kept an invalidated branch (mirror added after this pass) |
+| yellowback_rpc_contract | pass | pass | FAIL: kogany: setquote payout (F-S5-3) | — | FAIL: kogany: setquote payout (F-S5-3) |
+| yellowback_redeem_boundary | pass | pass | FAIL: kogany: submitblock bare rejected (F-S5-4) | — | FAIL: kogany: submitblock bare rejected (F-S5-4) |
+| yellowback_cancel_limit | pass | pass | FAIL: kogany: armed reads | — | FAIL: kogany: armed reads |
+| yellowback_pq | pass | pass | FAIL: kogany: params.pq.falconHeight (F-S5-11) | — | FAIL: 401 on rpc_port (port taken by another run) |
+| yellowback_pq_dayone | pass | pass | FAIL: kogany: params.pq.falconHeight (F-S5-11) | — | FAIL: kogany: params.pq.falconHeight (F-S5-11) |
+| yellowback_void_mint | pass | pass | FAIL: kogany: yed_getstats.supplyCapCents null | — | FAIL: kogany: yed_getstats.supplyCapCents null |
+| yellowback_mint_armed | pass | pass | FAIL: kogany: yed_getstats armed fields | — | FAIL: kogany: yed_getstats armed fields |
+| yellowback_wallet_restore | pass | pass | pass | pass | pass |
+| yellowback_sapling | pass | pass | pass | pass | pass |
+| yellowback_wallet_lifecycle | pass | pass | FAIL: kogany: payout = miner address (F-S5-12) | — | FAIL: kogany: payout = miner address (F-S5-12) |
+| yellowback_hardening | pass | FAIL | FAIL: reads ycashd datadir (F-S5-13) | — | FAIL: reads ycashd datadir (F-S5-13) |
+| yellowback_stock_node | pass | FAIL | FAIL: kogany: getblocktemplate maxtime | — | FAIL: kogany: getblocktemplate maxtime |
+| yellowback_fees | pass | FAIL | pass | pass | pass |
+| yellowback_fees_reaccept | pass | pass | FAIL: kogany starts on a config ycashd refuses (F-S5-13) | — | FAIL: kogany starts on a config ycashd refuses (F-S5-13) |
+| yellowback_fee | pass | FAIL | pass | pass | pass |
+| yellowback_mempool_limits | pass | FAIL | FAIL: kogany: yed_getvault of a raw mint | — | FAIL: kogany: yed_getvault of a raw mint |
+| vault_policy | pass | pass | pass | pass | pass |
+| vault_refee | pass | pass | pass | pass | pass |
+| yellowback_wr_flags | pass | pass | FAIL: yewd: no consolidation (F-S5-15) | — | FAIL: yewd: no consolidation (F-S5-15) |
+| yellowback_attest_evict | pass | pass | FAIL: kogany: set_getinfo active seats | — | FAIL: kogany: set_getinfo active seats |
+| yellowback_attest_rejoin | pass | pass | FAIL: kogany: attestor records | — | FAIL: kogany: attestor records |
+| yellowback_attest_live | pass | pass | FAIL: kogany: attestor records | — | FAIL: kogany: attestor records |
+| yellowback_pricefeed | pass | pass | FAIL: kogany: yed_getstats mintableClasses | — | FAIL: kogany: yed_getstats mintableClasses |
+| yellowback_mining | pass | FAIL | FAIL: kogany: getblocktemplate maxtime | — | FAIL: kogany: getblocktemplate maxtime |
+| yellowback_stratum | pass | pass | FAIL: yolo on a pair: miner exit | — | FAIL: peer kept an invalidated branch (mirror added after this pass) |
+| yellowback_attest | pass | pass | FAIL: kogany: yed_gettxinfo rows | — | FAIL: kogany: yed_gettxinfo rows |
+| yellowback_attest_wallet | pass | pass | FAIL: no payout-free coinbase (F-S5-9) | — | FAIL: no payout-free coinbase (F-S5-9) |
+| yellowback_attest_bond | pass | pass | FAIL: kogany: attestor records | — | FAIL: kogany: attestor records |
+| yellowback_chainviz | pass | FAIL | FAIL: chain-viz mempool feed timing | FAIL: chain-viz mempool feed timing | FAIL: chain-viz mempool feed timing |
+| **pass** | 50/50 | 36/50 | 10/50 | 10/11 | 9/50 |
+
+
+**State hashes.** The harness asserts `vault_getinfo.statehash` and `yed_getstatehash` equal across the
+pairs at every `sync_blocks`, and in the mixed variant equal to the ycash6 peer's (with the peer at the
+pairs' tip, holding their mempool): in the passing mixed runs 6 to 259 sync points per script agreed with
+ycash6, every pair-built transaction reached and was accepted by the ycashd peer (fed by the harness when
+kogany's gossip did not bring it: up to 24 per script), and every block the pairs mined (up to 328 per
+script, solved by the harness) was accepted by ycash6. Across columns the chains differ (other keys, other
+blocks), so equality across columns is the per-run cross-line equality, not one hash for all three.
+
+**Still to do for S5** (beyond the kogany gaps): F-S5-17 (`-mnemonicfile` seed-only restore), F-S5-15
+(consolidation), F-S5-9 needs a node option on both lines, the chain-viz mempool-timing failure
+(`yellowback_chainviz`: the mint reaches chain-viz's mempool snapshot later than its 15 s wait on a pair),
+`yellowback_stratum`'s miner exit on a pair; then the gate's rounds and the nightly's seven days.
 
 ## 4. CI (workspace plan §5)
 
