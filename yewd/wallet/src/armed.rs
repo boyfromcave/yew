@@ -228,8 +228,29 @@ impl Wallet {
             at["qHighBps"].as_i64().unwrap_or(6667),
         );
         if a_mint.is_none() || a_claim.is_none() {
+            // BundleAt's message: the selected seqs at (R, selector) against the bundle's
+            let sel = node::call(
+                node,
+                "yed_getselection",
+                serde_json::json!([r, selector_hex]),
+            )
+            .await
+            .map_err(node_err)?;
+            let selected: Vec<u64> = sel["selected"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x["seq"].as_u64()).collect())
+                .unwrap_or_default();
+            let have: Vec<u64> = atts.iter().map(|a| a.seq as u64).collect();
+            let missing: Vec<String> = selected
+                .iter()
+                .filter(|q| !have.contains(q))
+                .map(|q| q.to_string())
+                .collect();
+            let count = selected.len() - missing.len();
             return Err(crate::mint::build_error(format!(
-                "bundle-insufficient: the bundle's statistics are undefined at {r} (BUNDLE-1)"
+                "bundle-insufficient: {count} of {} selected attestors have a fresh attestation; missing seq {} (BUNDLE-1 at {r}: stat)",
+                selected.len(),
+                if missing.is_empty() { "none".to_string() } else { missing.join(",") }
             )));
         }
         Ok(BundleFacts {
