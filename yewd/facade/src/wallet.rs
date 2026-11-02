@@ -250,6 +250,17 @@ impl WalletService {
         Ok(r.text())
     }
 
+    /// A read the wallet answers without forwarding (`z_validateaddress`).
+    pub async fn local(&self, method: &str, params: &[Value]) -> Result<String, RpcError> {
+        let mut slot = self.wallet.lock().await;
+        self.ensure_open(&mut slot).await?;
+        let w = slot.as_mut().expect("opened");
+        match method {
+            "z_validateaddress" => Ok(w.z_validateaddress(params)?.text()),
+            _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
+        }
+    }
+
     /// Complete a forwarded node read (`result` is its JSON text).
     pub async fn augment(
         &self,

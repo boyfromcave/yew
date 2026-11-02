@@ -287,6 +287,14 @@ impl Facade {
             Ok(p) => p,
             Err(m) => return error_reply(code::INVALID_REQUEST, m, id),
         };
+        // z_validateaddress is answered from the address and the wallet: a ycash6 -disablewallet
+        // backend stops on it (it dereferences its absent wallet)
+        if method == "z_validateaddress" {
+            return match self.wallet.local(method, &params).await {
+                Ok(text) => raw_result_reply(&text, id),
+                Err(e) => error_reply(e.code, &e.message, id),
+            };
+        }
         // vault_list's `mine` is the wallet's filter: the node is asked without it
         let body = if method == "vault_list" {
             let stripped = yewd_wallet::Wallet::strip_mine(&params);

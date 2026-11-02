@@ -204,7 +204,7 @@ impl Wallet {
     }
 
     /// `CWalletTx::IsTrusted`: confirmed, or in the mempool with every input an own output.
-    fn trusted(&self, txid: &str, asof: Option<u32>) -> bool {
+    pub fn trusted(&self, txid: &str, asof: Option<u32>) -> bool {
         let d = self.tx_depth(txid, asof);
         if d >= 1 {
             return true;
@@ -243,7 +243,7 @@ impl Wallet {
     }
 
     /// `GetBalance(asOfHeight, ISMINE_SPENDABLE, min_depth)`.
-    fn balance(&self, asof: Option<u32>, min_depth: i64) -> i64 {
+    pub fn balance(&self, asof: Option<u32>, min_depth: i64) -> i64 {
         self.st
             .wtx
             .keys()
@@ -253,7 +253,7 @@ impl Wallet {
     }
 
     /// The coins `AvailableCoins` lists: unspent, not locked, mature, in the view.
-    fn available_coins(&self, asof: Option<u32>) -> Vec<(&Coin, i64)> {
+    pub fn available_coins(&self, asof: Option<u32>) -> Vec<(&Coin, i64)> {
         self.coins
             .iter()
             .filter_map(|c| {
@@ -967,7 +967,7 @@ impl Wallet {
     }
 
     /// Outpoints the wallet's own mempool transactions spend.
-    fn mempool_spent(&self) -> BTreeSet<(String, u32)> {
+    pub fn mempool_spent(&self) -> BTreeSet<(String, u32)> {
         self.parsed_all()
             .filter(|(t, _)| self.tx_depth(t, None) == 0)
             .flat_map(|(_, p)| {
@@ -1476,7 +1476,7 @@ impl Wallet {
         o.push("canRedeem", J::Bool(open && h >= owner_height && !pending));
         let early = if st == "ACTIVE" && h + 1 < v["lockHeight"].as_i64().unwrap_or(0) {
             let class = v["termClass"].as_str().unwrap_or("");
-            let bps = info["params"]["termClasses"]
+            let bps = info["params"]["classes"]
                 .as_array()
                 .and_then(|a| a.iter().find(|c| c["class"].as_str() == Some(class)))
                 .and_then(|c| c["earlyRedeemFeeBps"].as_i64());
@@ -1632,6 +1632,41 @@ impl Wallet {
                 Ok(result.to_string())
             }
         }
+    }
+
+    /// `z_validateaddress "address"`, answered here (`rpc/misc.cpp` `DescribePaymentAddressVisitor`):
+    /// ycash6 started with `-disablewallet` dereferences its absent wallet in this call
+    /// (`LOCK2(cs_main, pwalletMain->cs_wallet)`) and stops, so it is never forwarded to it. Every
+    /// field comes from the address itself plus `ismine`. Sprout and unified addresses are not
+    /// Ycash v4 wallet forms; they answer `isvalid: false` here.
+    pub fn z_validateaddress(&self, p: &[Value]) -> Result<J, RpcError> {
+        if p.len() != 1 {
+            return Err(RpcError::new(code::MISC_ERROR, "z_validateaddress \"address\""));
+        }
+        let a = p_str(p, 0)?.unwrap_or("");
+        let mut o = J::obj();
+        if let Ok(pa) = zcash_keys::encoding::decode_payment_address(self.network.sapling_address_hrp(), a) {
+            let bytes = pa.to_bytes();
+            let mut pkd = bytes[11..].to_vec();
+            pkd.reverse(); // uint256::GetHex
+            o.push("isvalid", J::Bool(true));
+            o.push("address", J::Str(a.into()));
+            o.push("address_type", J::Str("sapling".into()));
+            o.push("type", J::Str("sapling".into()));
+            o.push("diversifier", J::Str(hex::encode(&bytes[..11])));
+            o.push("diversifiedtransmissionkey", J::Str(hex::encode(pkd)));
+            o.push("ismine", J::Bool(self.view.owns_address(a).is_some()));
+        } else if let Some(script) = parse_taddr_script(self.network, a).filter(|_| ykeys::parse_pq_yec_address(self.network, a).is_err()) {
+            let kind = if yew_core::script::p2sh_hash(&script).is_some() { "p2sh" } else { "p2pkh" };
+            o.push("isvalid", J::Bool(true));
+            o.push("address", J::Str(a.into()));
+            o.push("address_type", J::Str(kind.into()));
+            o.push("type", J::Str(kind.into()));
+            o.push("ismine", J::Bool(self.book.owns_script(&script).is_some()));
+        } else {
+            o.push("isvalid", J::Bool(false));
+        }
+        Ok(o)
     }
 
     /// The node's `vault_list` filter without the wallet-only `mine` key.
