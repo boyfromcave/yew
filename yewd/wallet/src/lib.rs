@@ -634,6 +634,18 @@ impl Wallet {
                 moved |= self.mark_used(owner);
             }
         }
+        // a vault or intent this wallet's PQ key owns uses that key too (ycashd marks the owner key
+        // seen on chain: a restored wallet never hands it out again, vault_pq_wallet_restore.py)
+        for &i in &p.owned_templates {
+            let s = &p.tx.vout[i as usize].script_pubkey;
+            let id = yew_core::vault::parse_vault(s)
+                .map(|v| v.owner)
+                .or_else(|| yew_core::vault::parse_intent(s).map(|v| v.owner));
+            if let Some(k) = id.and_then(|id| self.book.pq_by_id(&id)) {
+                let owner = Owner::Pq(k.scheme, k.index);
+                moved |= self.mark_used(owner);
+            }
+        }
         let time_received = self
             .st
             .wtx
