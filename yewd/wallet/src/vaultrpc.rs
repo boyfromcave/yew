@@ -2394,10 +2394,9 @@ impl Wallet {
         // without a live Yellowback (no yed_getinfo) ycashd's YedFeeRate() is -pqfeerate, by default
         // the relay floor (DEFAULT_MIN_RELAY_TX_FEE, 100 zat/kB); its floor rate (YedFloorSizeFee) is
         // max(floorZatPerKB, -pqfeerate) with a price and -pqfeerate without one (vault_pq_wallet.py)
-        const RELAY_FLOOR: i64 = 100;
         let fallback = net
             .and_then(|n| n["fallbackZatPerKB"].as_i64())
-            .unwrap_or(RELAY_FLOOR);
+            .unwrap_or_else(crate::pq_fee_rate);
         let priced_now = net.is_some_and(|n| !n["priceMicroUsd"].is_null());
         let rate = net
             .and_then(|n| n["yellowback"]["zatPerKB"].as_i64())

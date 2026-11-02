@@ -76,6 +76,7 @@ pub const KNOWN: &[&str] = &[
     "backendindexer",
     "disablewallet",
     "mocktime",
+    "pqfeerate",
     "printtoconsole",
     "debug",
     "help",
@@ -121,6 +122,8 @@ pub struct Config {
     pub disable_wallet: bool,
     /// `-mocktime=<t>` (ycashd's): the façade's clock starts mocked (H11).
     pub mocktime: i64,
+    /// `-pqfeerate=<YEC/kB>` (ycashd's wallet fee option): the size-priced fees' rate without a price.
+    pub pq_fee_rate: i64,
     /// Options given but not understood (reported at start).
     pub ignored: Vec<String>,
 }
@@ -380,6 +383,14 @@ impl Config {
                 wallet_file: a.get("wallet").map(PathBuf::from),
                 rescan: a.flag("rescan"),
                 salvage: a.flag("salvagewallet"),
+            },
+            pq_fee_rate: match a.get("pqfeerate") {
+                Some(v) => yewd_wallet::json::parse_amount(v)
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| {
+                        ConfigError(format!("Invalid amount for -pqfeerate=<amount>: '{v}'"))
+                    })?,
+                None => 0,
             },
             mocktime: match a.get("mocktime") {
                 Some(v) => v.parse().map_err(|_| {

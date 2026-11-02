@@ -61,6 +61,7 @@ pub async fn start_with(cfg: &Config, signer: wallet::SignerSource) -> std::io::
     );
     service.disabled = cfg.disable_wallet;
     yewd_wallet::set_mocktime(cfg.mocktime);
+    yewd_wallet::set_pq_fee_rate(cfg.pq_fee_rate);
     let wallet = Arc::new(service);
     *wallet.opts.lock().unwrap_or_else(|e| e.into_inner()) = cfg.wallet_args.clone();
     if !cfg.disable_wallet && (cfg.wallet_poll_ms > 0 || cfg.backend_indexer.is_some()) {

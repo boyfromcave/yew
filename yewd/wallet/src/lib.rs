@@ -215,6 +215,22 @@ pub struct ChainFacts {
 /// forwards set it, as ycashd's `SetMockTime`; 0 = the system clock.
 static MOCKTIME: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
+/// `-pqfeerate` (ycashd's, zat per kB): the size-priced fees' rate while no attested price is known
+/// (the node reports none: Yellowback not live); 0 = ycashd's default, the relay floor (100 zat/kB).
+static PQ_FEE_RATE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+pub fn set_pq_fee_rate(zat_per_kb: i64) {
+    PQ_FEE_RATE.store(zat_per_kb.max(0), std::sync::atomic::Ordering::SeqCst);
+}
+
+/// `::pqFeeRate`: `-pqfeerate`, by default `-minrelaytxfee` (`DEFAULT_MIN_RELAY_TX_FEE`, 100 zat/kB).
+pub fn pq_fee_rate() -> i64 {
+    match PQ_FEE_RATE.load(std::sync::atomic::Ordering::SeqCst) {
+        0 => 100,
+        r => r,
+    }
+}
+
 pub fn set_mocktime(t: i64) {
     MOCKTIME.store(t.max(0), std::sync::atomic::Ordering::SeqCst);
 }

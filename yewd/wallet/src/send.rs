@@ -75,14 +75,16 @@ async fn pq_spend_fee(
         Ok(v) => {
             let n = &v["params"]["fees"]["network"];
             (
-                n["plain"]["zatPerKB"].as_i64().unwrap_or(100),
+                n["plain"]["zatPerKB"]
+                    .as_i64()
+                    .unwrap_or_else(crate::pq_fee_rate),
                 n["yellowback"]["maxTxFeeZat"]
                     .as_i64()
                     .unwrap_or(10_000_000),
             )
         }
         // -pqfeerate's default, the relay floor (DEFAULT_MIN_RELAY_TX_FEE), and -maxtxfee's
-        Err(_) => (100, 10_000_000),
+        Err(_) => (crate::pq_fee_rate(), 10_000_000),
     };
     let unsigned = tx
         .serialize()
