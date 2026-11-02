@@ -115,6 +115,9 @@ pub fn merged_listing(backend: &str, served: impl Fn(&str) -> bool) -> String {
         }
         let pos = match have.iter().position(|(c, _)| c == cat) {
             Some(p) => p,
+            // a node without a live Yellowback lists no Yellowback category, and a ycashd wallet
+            // node then registers no yed_ command either (yellowback_stock_node.py): none is added
+            None if cat == "Yellowback" => continue,
             None => {
                 // a category the backend lacks: after the last reference category before it
                 let before: Vec<&String> = reference
@@ -193,10 +196,15 @@ mod tests {
 
     #[test]
     fn the_listing_merges_into_ycashd_categories() {
-        let backend = "== Blockchain ==\ngetblockcount\n\n== Util ==\nvalidateaddress \"address\"";
+        let backend = "== Blockchain ==\ngetblockcount\n\n== Util ==\nvalidateaddress \"address\"\n\n== Yellowback ==\nyed_getinfo";
         let out = merged_listing(backend, |m| m == "getbalance" || m == "yed_mint");
         assert!(out.contains("== Wallet ==\ngetbalance ("), "{out}");
         assert!(out.contains("yed_mint cents lockBlocks"), "{out}");
+        // a node without a live Yellowback (no Yellowback category): no yed_ line is added
+        let stock = "== Blockchain ==\ngetblockcount";
+        let out = merged_listing(stock, |m| m == "getbalance" || m == "yed_mint");
+        assert!(!out.contains("yed_"), "{out}");
+        assert!(out.contains("getbalance"), "{out}");
         assert!(
             out.starts_with("== Blockchain ==\ngetblockcount\n"),
             "{out}"

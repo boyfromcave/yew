@@ -10,6 +10,7 @@ pub mod allowip;
 pub mod auth;
 pub mod backend;
 pub mod config;
+pub mod indexer;
 pub mod methods;
 pub mod server;
 pub mod wallet;
@@ -51,16 +52,24 @@ pub async fn start_with(cfg: &Config, signer: wallet::SignerSource) -> std::io::
         }
     };
     let backend = Arc::new(backend::Backend::new(cfg.backend, cfg.backend_auth.clone()));
-    let wallet = Arc::new(wallet::WalletService::new(
+    let mut service = wallet::WalletService::new(
         cfg.network,
         &cfg.datadir,
         backend.clone(),
         signer,
         cfg.debug,
-    ));
+    );
+    service.disabled = cfg.disable_wallet;
+    yewd_wallet::set_mocktime(cfg.mocktime);
+    yewd_wallet::set_pq_fee_rate(cfg.pq_fee_rate);
+    yewd_wallet::set_falcon_height(cfg.falcon_height);
+    let wallet = Arc::new(service);
     *wallet.opts.lock().unwrap_or_else(|e| e.into_inner()) = cfg.wallet_args.clone();
-    if cfg.wallet_poll_ms > 0 {
+    if !cfg.disable_wallet && (cfg.wallet_poll_ms > 0 || cfg.backend_indexer.is_some()) {
         wallet.spawn_poll(std::time::Duration::from_millis(cfg.wallet_poll_ms));
+    }
+    if let Some(addr) = cfg.backend_indexer.filter(|_| !cfg.disable_wallet) {
+        indexer::spawn(addr, wallet.wake.clone(), cfg.debug);
     }
     let (facade, rx) = server::Facade::new(
         creds,

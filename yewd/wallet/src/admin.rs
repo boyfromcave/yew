@@ -74,7 +74,8 @@ pub const NEEDS_UNLOCK: &[&str] = &[
     "yed_redeem",
     "yed_claim",
     "yed_claimnotice",
-    "yed_sweepcarriers",
+    // yed_sweepcarriers: unlock checked only when something lapsed is swept (mint.rs; ycashd reads
+    // the outstanding carriers without the passphrase, yellowback_wallet_restore.py)
     "yed_buildcancel",
     "yed_signcancelcosign",
     "yed_registerattestor",
@@ -175,10 +176,7 @@ fn dump_string(s: &str) -> String {
 }
 
 fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    crate::now()
 }
 
 impl Wallet {
@@ -602,6 +600,18 @@ impl Wallet {
         self.st.birthday = 0;
         self.rewind(None);
         self.sync(node).await?;
+        // audit C-1 / H8: the imported YED outputs are locked before the RPC returns, so no plain
+        // YEC selection spends them (yellowback_wallet_restore.py); a node without a live Yellowback
+        // has none to read
+        if let Ok(tokens) = self.tokens(node).await {
+            for t in tokens {
+                if let (Some(txid), Some(vout)) = (t["txid"].as_str(), t["vout"].as_u64()) {
+                    self.st.locks.insert(format!("{txid}:{vout}"));
+                }
+            }
+            self.save()
+                .map_err(|e| RpcError::new(code::WALLET_ERROR, e))?;
+        }
         Ok(J::Null)
     }
 

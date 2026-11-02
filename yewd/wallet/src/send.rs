@@ -38,7 +38,86 @@ pub const SERVED: &[&str] = &[
 /// default relay fee, 54 zat; ycashd adds such change to the fee).
 const DUST: i64 = 54;
 
+/// `GetPQDustThreshold` at `ONE_THIRD_DUST_THRESHOLD_RATE` (100 zat/kB): 3 × the fee of the output
+/// plus the input that spends it, the input a post-quantum spend for `TX_PQPKH`, 148 bytes otherwise
+/// (`CTxOut::GetDustThreshold`: 54 zat for P2PKH).
+fn dust_threshold(script: &[u8]) -> i64 {
+    let out = 8 + if script.len() > 252 { 3 } else { 1 } + script.len();
+    let input = match yew_core::pq::pqpkh_of(script) {
+        Some(id) => crate::yed::pq_input_size(id.scheme),
+        None => 148,
+    };
+    3 * (100 * (out + input) as i64 / 1000)
+}
+
+/// The scriptSig a wallet coin's input will carry: a post-quantum signature's pushes for
+/// `TX_PQPKH`, the P2PKH maximum otherwise.
+fn script_sig_size(script: &[u8]) -> usize {
+    match yew_core::pq::pqpkh_of(script) {
+        Some(id) => yew_core::pq::pq_sig_pushes_size(id.scheme).unwrap_or(MAX_P2PKH_SCRIPT_SIG),
+        None => MAX_P2PKH_SCRIPT_SIG,
+    }
+}
+
+/// ycashd's fee of a transaction with a post-quantum input (`CWallet::CreateTransaction`,
+/// quantum plan §4.5, D-Q-23 (b), D-Q-26): max(min(max(policy fee, PQSizeFee(LEGACY_DEFAULT_FEE,
+/// bytes)), PQMaxTxFee()), the ZIP-317 conventional fee), the plain rate and the cap as the node
+/// reports them (`yed_getinfo.params.fees.network`: `plain.zatPerKB`, `yellowback.maxTxFeeZat`);
+/// without a live Yellowback the -pqfeerate default (the relay floor, 100 zat/kB) and -maxtxfee.
+async fn pq_spend_fee(
+    node: &dyn Node,
+    tx: &Transaction,
+    sizes: &[usize],
+    conventional: i64,
+) -> Result<i64, RpcError> {
+    const LEGACY_DEFAULT_FEE: i64 = 1000;
+    let (rate, cap) = match node::call(node, "yed_getinfo", serde_json::json!([])).await {
+        Ok(v) => {
+            let n = &v["params"]["fees"]["network"];
+            (
+                n["plain"]["zatPerKB"]
+                    .as_i64()
+                    .unwrap_or_else(crate::pq_fee_rate),
+                n["yellowback"]["maxTxFeeZat"]
+                    .as_i64()
+                    .unwrap_or(10_000_000),
+            )
+        }
+        // -pqfeerate's default, the relay floor (DEFAULT_MIN_RELAY_TX_FEE), and -maxtxfee's
+        Err(_) => (crate::pq_fee_rate(), 10_000_000),
+    };
+    let unsigned = tx
+        .serialize()
+        .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?
+        .len();
+    let compact = |n: usize| if n <= 252 { 1 } else { 3 };
+    let bytes = unsigned + sizes.iter().map(|n| n + compact(*n) - 1).sum::<usize>();
+    let size_fee = LEGACY_DEFAULT_FEE.max(rate * bytes as i64 / 1000);
+    Ok(conventional.max(size_fee).min(cap).max(conventional))
+}
+
 impl Wallet {
+    /// ycashd's `EnsurePQRecipientPayable` (`wallet/rpcwallet.cpp`): a post-quantum recipient only
+    /// once the vault upgrade, and for FN-DSA-512 Falcon, is active at the next block.
+    fn ensure_pq_payable(&self, script: &[u8]) -> Result<(), RpcError> {
+        let Some(id) = yew_core::pq::pqpkh_of(script) else {
+            return Ok(());
+        };
+        if !self.vault_active_next() {
+            return Err(RpcError::new(
+                code::INVALID_ADDRESS_OR_KEY,
+                "post-quantum addresses can be paid only once the vault upgrade is active at the next block",
+            ));
+        }
+        if id.scheme == 2 && !self.falcon_next() {
+            return Err(RpcError::new(
+                code::INVALID_ADDRESS_OR_KEY,
+                "an FN-DSA-512 (scheme 2) post-quantum address can be paid only once Falcon is active at the next block",
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn send_call(
         &mut self,
         node: &dyn Node,
@@ -62,12 +141,13 @@ impl Wallet {
         &self,
         node: &dyn Node,
         min_depth: i64,
+        with_pq: bool,
     ) -> Result<Vec<(OutPoint, i64, Vec<u8>)>, RpcError> {
         let spent = self.mempool_spent();
         let reserved = self.yed_reserved(node).await?;
         let mut v = Vec::new();
         for (c, d) in self.available_coins(None) {
-            if !matches!(c.owner, Owner::T(..))
+            if !(matches!(c.owner, Owner::T(..)) || with_pq && matches!(c.owner, Owner::Pq(..)))
                 || spent.contains(&(c.txid.clone(), c.vout))
                 || reserved.contains(&(c.txid.clone(), c.vout))
             {
@@ -104,7 +184,9 @@ impl Wallet {
         min_depth: i64,
     ) -> Result<String, RpcError> {
         let next = next_block(node).await?;
-        let coins = self.spendable_yec(node, min_depth).await?;
+        // ycashd's AvailableCoins: the wallet's TX_PQPKH coins are selected too (wallet_pq_address.py,
+        // yellowback_fees_reaccept.py), priced as a PQ spend below
+        let coins = self.spendable_yec(node, min_depth, true).await?;
         let total: i64 = recipients.iter().map(|r| r.1).sum();
         let subtract = recipients.iter().filter(|r| r.2).count() as i64;
         let mut fee = 10_000i64;
@@ -118,12 +200,20 @@ impl Wallet {
                     let share = fee / subtract + if first_sub { fee % subtract } else { 0 };
                     first_sub = false;
                     v -= share;
-                    if v <= DUST {
-                        return Err(RpcError::new(
-                            code::WALLET_ERROR,
-                            "The transaction amount is too small to pay the fee",
-                        ));
-                    }
+                }
+                // CreateTransaction: a recipient below its dust threshold (a TX_PQPKH one priced
+                // with its real spend size, GetPQDustThreshold) is refused
+                if v < dust_threshold(s) {
+                    return Err(RpcError::new(
+                        code::WALLET_ERROR,
+                        if !*sub {
+                            "Transaction amount too small"
+                        } else if v < 0 {
+                            "The transaction amount is too small to pay the fee"
+                        } else {
+                            "The transaction amount is too small to send after the fee has been deducted"
+                        },
+                    ));
                 }
                 tx.vout.push(TxOut {
                     value: v,
@@ -169,10 +259,16 @@ impl Wallet {
                     script_pubkey: s,
                 });
             }
-            let sizes = vec![MAX_P2PKH_SCRIPT_SIG; tx.vin.len()];
-            let want = tx
+            let sizes: Vec<usize> = chosen.iter().map(|c| script_sig_size(&c.2)).collect();
+            let mut want = tx
                 .zip317_conventional_fee(&sizes)
                 .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
+            if chosen
+                .iter()
+                .any(|c| yew_core::pq::pqpkh_of(&c.2).is_some())
+            {
+                want = pq_spend_fee(node, &tx, &sizes, want).await?;
+            }
             if want > fee {
                 fee = want;
                 continue;
@@ -224,6 +320,7 @@ impl Wallet {
                 format!("Invalid Ycash transparent address: {a}"),
             )
         })?;
+        self.ensure_pq_payable(&script)?;
         let amount = amount_param(&p[1])?;
         if amount <= 0 {
             return Err(RpcError::new(code::TYPE_ERROR, "Invalid amount for send"));
@@ -275,6 +372,7 @@ impl Wallet {
                     format!("Invalid Ycash transparent address: {name}"),
                 )
             })?;
+            self.ensure_pq_payable(&script)?;
             if !seen.insert(script.clone()) {
                 return Err(invalid(format!(
                     "Invalid parameter, duplicated address: {name}"
@@ -550,12 +648,21 @@ impl Wallet {
         {
             Ok(v) => Ok(J::Raw(v.to_string())),
             Err(NodeError::Rpc { code: -32601, .. }) => {
-                let v = node::call(
+                let v = match node::call(
                     node,
                     "yed_validaterawtransaction",
                     serde_json::json!([signed_hex]),
                 )
-                .await?;
+                .await
+                {
+                    Ok(v) => v,
+                    // kogany verifies scripts only through yed_validaterawtransaction, which it
+                    // answers only while Yellowback is live and once W7-b serves it (finding
+                    // F-S5-2): the façade's own completeness (every input carries a scriptSig;
+                    // the ones it signed are its signer's) stands in
+                    Err(NodeError::Rpc { .. }) => return Ok(local_completeness(&out, signed_hex)),
+                    Err(e) => return Err(e.into()),
+                };
                 let complete = v["valid"].as_bool().unwrap_or(false);
                 let mut o = J::obj().with("hex", signed_hex).with("complete", complete);
                 if !complete {
@@ -572,6 +679,35 @@ impl Wallet {
             Err(e) => Err(e.into()),
         }
     }
+}
+
+/// `signrawtransaction`'s answer when the node has no verifier (F-S5-2): `complete` when every
+/// input carries a scriptSig, and ycashd's error object (`TxInErrorToJSON`) for each that does not,
+/// with the text ycashd's interpreter gives an empty scriptSig.
+fn local_completeness(tx: &Transaction, signed_hex: String) -> J {
+    let mut errors = Vec::new();
+    for i in &tx.vin {
+        if i.script_sig.is_empty() {
+            errors.push(
+                J::obj()
+                    .with("txid", yew_core::tx::txid_hex(&i.prevout.txid))
+                    .with("vout", i.prevout.n as i64)
+                    .with("scriptSig", String::new())
+                    .with("sequence", i.sequence as i64)
+                    .with(
+                        "error",
+                        "Operation not valid with the current stack size".to_string(),
+                    ),
+            );
+        }
+    }
+    let mut o = J::obj()
+        .with("hex", signed_hex)
+        .with("complete", errors.is_empty());
+    if !errors.is_empty() {
+        o.push("errors", J::Arr(errors));
+    }
+    o
 }
 
 impl Wallet {
@@ -613,7 +749,7 @@ impl Wallet {
             .map(|i| (txid_hex(&i.prevout.txid), i.prevout.n))
             .collect();
         let coins: Vec<_> = self
-            .spendable_yec(node, 0)
+            .spendable_yec(node, 0, false)
             .await?
             .into_iter()
             .filter(|c| !used.contains(&(txid_hex(&c.0.txid), c.0.n)))

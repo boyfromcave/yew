@@ -73,6 +73,12 @@ pub const KNOWN: &[&str] = &[
     "salvagewallet",
     "paramsdir",
     "backendexitgrace",
+    "backendindexer",
+    "disablewallet",
+    "mocktime",
+    "pqfeerate",
+    "pqfalconheight",
+    "pqfalcon",
     "printtoconsole",
     "debug",
     "help",
@@ -110,6 +116,18 @@ pub struct Config {
     /// With `-stopbackend`: exit when the backend has been unreachable this many seconds after
     /// it was reachable (the pair is one node, H6); 0 = never.
     pub backend_exit_grace: u64,
+    /// kogany's indexer gRPC listener (`-backendindexer=<ip:port>`): its `ChainTipChange` and
+    /// `MempoolChange` streams wake the wallet (H3, H4); never the source of truth.
+    pub backend_indexer: Option<SocketAddr>,
+    /// `-disablewallet` (ycashd's): no wallet is opened and no wallet method is served; the façade
+    /// is the node's RPC alone (a node a script starts without a wallet, in the harness's pairs).
+    pub disable_wallet: bool,
+    /// `-mocktime=<t>` (ycashd's): the façade's clock starts mocked (H11).
+    pub mocktime: i64,
+    /// `-pqfeerate=<YEC/kB>` (ycashd's wallet fee option): the size-priced fees' rate without a price.
+    pub pq_fee_rate: i64,
+    /// `-pqfalconheight=<h>` / `-pqfalcon=1` (= 0): the regtest Falcon height; -1 = not given.
+    pub falcon_height: i64,
     /// Options given but not understood (reported at start).
     pub ignored: Vec<String>,
 }
@@ -369,6 +387,35 @@ impl Config {
                 wallet_file: a.get("wallet").map(PathBuf::from),
                 rescan: a.flag("rescan"),
                 salvage: a.flag("salvagewallet"),
+            },
+            falcon_height: match (a.get("pqfalconheight"), a.get("pqfalcon")) {
+                (Some(v), _) => v.parse().map_err(|_| {
+                    ConfigError(format!("yewd: -pqfalconheight={v} is not a height"))
+                })?,
+                (None, Some("1" | "")) => 0,
+                _ => -1,
+            },
+            pq_fee_rate: match a.get("pqfeerate") {
+                Some(v) => yewd_wallet::json::parse_amount(v)
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| {
+                        ConfigError(format!("Invalid amount for -pqfeerate=<amount>: '{v}'"))
+                    })?,
+                None => 0,
+            },
+            mocktime: match a.get("mocktime") {
+                Some(v) => v.parse().map_err(|_| {
+                    ConfigError(format!("yewd: -mocktime={v} is not a number of seconds"))
+                })?,
+                None => 0,
+            },
+            disable_wallet: a.get("disablewallet").is_some_and(|v| v != "0")
+                || a.flag("disablewallet"),
+            backend_indexer: match a.get("backendindexer") {
+                Some(v) => Some(v.parse().map_err(|_| {
+                    ConfigError(format!("yewd: -backendindexer={v} is not an ip:port"))
+                })?),
+                None => None,
             },
             backend_exit_grace: match a.get("backendexitgrace") {
                 Some(v) => v.parse().map_err(|_| {

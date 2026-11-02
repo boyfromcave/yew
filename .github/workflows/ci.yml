@@ -350,6 +350,12 @@ jobs:
           - {stage: s3-roles, blocking: false, script: yewd/qa/s3_roles.py, args: --stage=roles}
           - {stage: s3-attest_wallet, blocking: false, script: yewd/qa/s3_roles.py, args: --stage=attest_wallet}
           - {stage: s3-attest_bond, blocking: false, script: yewd/qa/s3_roles.py, args: --stage=attest_bond}
+          # S4: the two contract suites with every node a pair (backend ycash6 -disablewallet) and the
+          # façade leg against a plain ycashd wallet node. Column 3 (kogany behind yewd, S5) is the
+          # yewd-parity workflow's nightly.
+          - {stage: s4-contract-vault, blocking: false, script: yewd/qa/s4_contract.py, args: --suite=vault}
+          - {stage: s4-contract-yellowback, blocking: false, script: yewd/qa/s4_contract.py, args: --suite=yellowback}
+          - {stage: s4-facade, blocking: false, script: yewd/qa/s4_facade.py}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

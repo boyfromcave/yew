@@ -229,6 +229,10 @@ pub struct WalletService {
     pub debug: bool,
     /// The wallet options the command line gave (S4).
     pub opts: std::sync::Mutex<WalletArgs>,
+    /// Woken by kogany's indexer streams (`crate::indexer`): a sync between polls (H3, H4).
+    pub wake: Arc<tokio::sync::Notify>,
+    /// `-disablewallet`: never opened; the façade answers no wallet method.
+    pub disabled: bool,
 }
 
 /// The ycashd wallet arguments yewd gives meaning to (S4; the harness hands them over).
@@ -260,6 +264,8 @@ impl WalletService {
             wallet: Mutex::new(None),
             debug,
             opts: std::sync::Mutex::new(WalletArgs::default()),
+            wake: Arc::new(tokio::sync::Notify::new()),
+            disabled: false,
         }
     }
 
@@ -274,7 +280,11 @@ impl WalletService {
         };
         let digest = yewd_proto::backup_digest(&path)?;
         let marker = self.wallet_dir().join("restored.sha256");
-        if std::fs::read_to_string(&marker).ok().as_deref() == Some(digest.as_str()) {
+        // -salvagewallet rebuilds the wallet from the file whatever was restored before (ycashd
+        // salvages wallet.dat at every start it is given): the restore marker is set again
+        if !args.salvage
+            && std::fs::read_to_string(&marker).ok().as_deref() == Some(digest.as_str())
+        {
             return None;
         }
         Some((path, digest))
@@ -357,7 +367,7 @@ impl WalletService {
         network: Network,
         datadir: &Path,
         signer_bin: PathBuf,
-    ) -> Result<String, String> {
+    ) -> Result<(String, Option<String>), String> {
         let dir = datadir.join(network.subdir());
         let ps = ProcessSigner {
             bin: signer_bin,
@@ -371,7 +381,10 @@ impl WalletService {
             Box::new(ps),
             birthday,
         )?;
-        Ok(w.taddr(yewd_wallet::keys::EXTERNAL, 0))
+        Ok((
+            w.taddr(yewd_wallet::keys::EXTERNAL, 0),
+            w.sapling_coinbase_address(),
+        ))
     }
 
     async fn ensure_open<'a>(
@@ -518,12 +531,20 @@ impl WalletService {
         w.augment(&self.node, method, params, result).await
     }
 
-    /// The poll fallback: sync every `every` until the process stops.
+    /// The poll fallback: sync every `every` (never when zero) or when the indexer streams wake
+    /// the wallet, until the process stops.
     pub fn spawn_poll(self: &Arc<Self>, every: Duration) {
         let me = self.clone();
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(every).await;
+                if every.is_zero() {
+                    me.wake.notified().await;
+                } else {
+                    tokio::select! {
+                        _ = tokio::time::sleep(every) => {}
+                        _ = me.wake.notified() => {}
+                    }
+                }
                 let mut slot = me.wallet.lock().await;
                 if me.ensure_open(&mut slot).await.is_err() {
                     continue;

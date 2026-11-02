@@ -233,6 +233,30 @@ impl Facade {
             eprintln!("yewd: {method}");
         }
         let class = methods::classify(&method);
+        if self.wallet.disabled {
+            // -disablewallet: ycashd registers no wallet method, so each is "Method not found";
+            // the augmented reads and sendrawtransaction are the node's own, the raw helpers stay
+            return match class {
+                Some(Class::Wallet { .. }) => {
+                    error_reply(code::METHOD_NOT_FOUND, "Method not found", id)
+                }
+                Some(Class::Local) => {
+                    let params = match params_of(env.params) {
+                        Ok(p) => p,
+                        Err(m) => return error_reply(code::INVALID_REQUEST, m, id),
+                    };
+                    match self.wallet.raw_helper(&method, &params).await {
+                        Ok(text) => raw_result_reply(&text, id),
+                        Err(e) => error_reply(e.code, &e.message, id),
+                    }
+                }
+                Some(Class::Own) if method == "help" => {
+                    self.help(path, body.clone(), env.params, id).await
+                }
+                Some(Class::Own) => self.stop(path, id).await,
+                _ => self.forward(path, body.clone(), id).await,
+            };
+        }
         // ycash6's table arity check (rpc/server.cpp), before the handler: -32602 with the help text
         if matches!(class, Some(Class::Wallet { .. } | Class::Local)) {
             if let Ok(p) = params_of(env.params) {
@@ -247,7 +271,9 @@ impl Facade {
             Some(Class::Wallet { .. }) if method == "encryptwallet" => {
                 // ycashd stops after encrypting (StartShutdown); the pair is one node (H6)
                 let r = self.wallet_call(&method, env.params, id).await;
-                if r.0 == StatusCode::OK {
+                let took = serde_json::from_slice::<serde_json::Value>(&r.1)
+                    .is_ok_and(|v| v.get("error").is_none_or(|e| e.is_null()));
+                if r.0 == StatusCode::OK && took {
                     self.begin_stop("/").await;
                 }
                 r
@@ -271,6 +297,15 @@ impl Facade {
                 &methods::not_implemented_message(&method, stage),
                 id,
             ),
+            // F-S5-10: the post-quantum refusals of two methods outside K-25, as ycashd answers them
+            Some(Class::OutOfScope) if method == "z_shieldcoinbase" => {
+                let params = params_of(env.params).unwrap_or_default();
+                let net = crate::wallet::core_network(self.wallet.network);
+                match yewd_wallet::zsend::pq_refusal_only(net, &method, &params) {
+                    Ok(j) => raw_result_reply(&j.text(), id),
+                    Err(e) => error_reply(e.code, &e.message, id),
+                }
+            }
             Some(Class::OutOfScope) => error_reply(
                 code::METHOD_NOT_FOUND,
                 &methods::out_of_scope_message(&method),
@@ -297,6 +332,18 @@ impl Facade {
                     return error_reply(e.code, &e.message, id);
                 }
                 self.forward(path, body.clone(), id).await
+            }
+            // H11: setmocktime reaches the node (kogany W7-e) and, once it took it, the façade's clock
+            None if method == "setmocktime" => {
+                let r = self.forward(path, body.clone(), id).await;
+                if r.0 == StatusCode::OK {
+                    if let Ok(p) = params_of(env.params) {
+                        if let Some(t) = p.first().and_then(|v| v.as_i64()) {
+                            yewd_wallet::set_mocktime(t);
+                        }
+                    }
+                }
+                r
             }
             None => self.forward(path, body.clone(), id).await,
         }

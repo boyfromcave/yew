@@ -49,7 +49,7 @@ def methods():
     import re
     with open(table) as f:
         src = f.read()
-    for block in ('VAULT_WALLET', 'YED_WALLET', 'PQ_WALLET', 'STOCK_WALLET', 'ROLE_WALLET'):
+    for block in ('VAULT_WALLET', 'YED_WALLET', 'PQ_WALLET', 'STOCK_WALLET', 'ROLE_WALLET', 'GATE_WALLET'):
         body = src.split('pub const %s' % block, 1)[1].split('];', 1)[0]
         names += re.findall(r'\("([a-z_]+)",', body)
     for block in ('LOCAL',):

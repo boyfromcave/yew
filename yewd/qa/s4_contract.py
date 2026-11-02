@@ -74,7 +74,10 @@ def _pair_argv_h8(yewd_bin, ycashd_bin, datadir, i, args):
     return _pair_argv(yewd_bin, ycashd_bin, datadir, i, list(args) + ['-mineraddress=%s' % addr, '-minetolocalwallet=0'])
 
 
-kogany.yewd_pair_argv = _pair_argv_h8
+# ycash6 kc/yewd-s5 and later take the H8 step in the harness itself (kogany.yewd_init_wallet,
+# yewd_coinbase_address: the same rule); the patch stays for an older harness only
+if not hasattr(kogany, 'yewd_init_wallet'):
+    kogany.yewd_pair_argv = _pair_argv_h8
 
 # F-S2-9: a backend that listens before it writes its cookie answers 401 (a warm-up).
 _kcall = kogany.KoganyRPC.__call__
