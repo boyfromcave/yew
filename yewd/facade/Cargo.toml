@@ -30,6 +30,10 @@ base64.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 libc.workspace = true
+# kogany's indexer streams (H3, H4): the gRPC client and its codec, the versions yew-core locks.
+tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "channel"] }
+tonic-prost = "=0.14.6"
+prost = "=0.14.4"
 
 [dev-dependencies]
 yewd-signer = { path = "../signer" }

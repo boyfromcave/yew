@@ -24,6 +24,7 @@ Usage: yewd [options]
   -backendrpccookiefile=<file>    the node's .cookie (re-read after a 401)
   -backendrpcuser=<u> -backendrpcpassword=<p>   instead of the cookie
   -stopbackend                `stop` stops the node too (the harness bundle)
+  -backendindexer=<ip:port>   kogany's indexer gRPC listener: its chain-tip and mempool streams wake the wallet
   -signer=<socket>            a running signer's Unix socket (default: start yewd-signer serve)
   -signerbin=<file>           the yewd-signer binary (default: beside yewd)
   -walletpoll=<ms>            how often the wallet follows the node between calls (default 1000; 0 = only at calls)

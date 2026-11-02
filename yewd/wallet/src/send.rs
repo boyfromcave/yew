@@ -550,12 +550,21 @@ impl Wallet {
         {
             Ok(v) => Ok(J::Raw(v.to_string())),
             Err(NodeError::Rpc { code: -32601, .. }) => {
-                let v = node::call(
+                let v = match node::call(
                     node,
                     "yed_validaterawtransaction",
                     serde_json::json!([signed_hex]),
                 )
-                .await?;
+                .await
+                {
+                    Ok(v) => v,
+                    // kogany verifies scripts only through yed_validaterawtransaction, which it
+                    // answers only while Yellowback is live and once W7-b serves it (finding
+                    // F-S5-2): the façade's own completeness (every input carries a scriptSig;
+                    // the ones it signed are its signer's) stands in
+                    Err(NodeError::Rpc { .. }) => return Ok(local_completeness(&out, signed_hex)),
+                    Err(e) => return Err(e.into()),
+                };
                 let complete = v["valid"].as_bool().unwrap_or(false);
                 let mut o = J::obj().with("hex", signed_hex).with("complete", complete);
                 if !complete {
@@ -572,6 +581,32 @@ impl Wallet {
             Err(e) => Err(e.into()),
         }
     }
+}
+
+/// `signrawtransaction`'s answer when the node has no verifier (F-S5-2): `complete` when every
+/// input carries a scriptSig, and ycashd's error object (`TxInErrorToJSON`) for each that does not,
+/// with the text ycashd's interpreter gives an empty scriptSig.
+fn local_completeness(tx: &Transaction, signed_hex: String) -> J {
+    let mut errors = Vec::new();
+    for i in &tx.vin {
+        if i.script_sig.is_empty() {
+            errors.push(
+                J::obj()
+                    .with("txid", yew_core::tx::txid_hex(&i.prevout.txid))
+                    .with("vout", i.prevout.n as i64)
+                    .with("scriptSig", String::new())
+                    .with("sequence", i.sequence as i64)
+                    .with("error", "Operation not valid with the current stack size".to_string()),
+            );
+        }
+    }
+    let mut o = J::obj()
+        .with("hex", signed_hex)
+        .with("complete", errors.is_empty());
+    if !errors.is_empty() {
+        o.push("errors", J::Arr(errors));
+    }
+    o
 }
 
 impl Wallet {

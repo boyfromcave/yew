@@ -229,6 +229,8 @@ pub struct WalletService {
     pub debug: bool,
     /// The wallet options the command line gave (S4).
     pub opts: std::sync::Mutex<WalletArgs>,
+    /// Woken by kogany's indexer streams (`crate::indexer`): a sync between polls (H3, H4).
+    pub wake: Arc<tokio::sync::Notify>,
 }
 
 /// The ycashd wallet arguments yewd gives meaning to (S4; the harness hands them over).
@@ -260,6 +262,7 @@ impl WalletService {
             wallet: Mutex::new(None),
             debug,
             opts: std::sync::Mutex::new(WalletArgs::default()),
+            wake: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -518,12 +521,20 @@ impl WalletService {
         w.augment(&self.node, method, params, result).await
     }
 
-    /// The poll fallback: sync every `every` until the process stops.
+    /// The poll fallback: sync every `every` (never when zero) or when the indexer streams wake
+    /// the wallet, until the process stops.
     pub fn spawn_poll(self: &Arc<Self>, every: Duration) {
         let me = self.clone();
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(every).await;
+                if every.is_zero() {
+                    me.wake.notified().await;
+                } else {
+                    tokio::select! {
+                        _ = tokio::time::sleep(every) => {}
+                        _ = me.wake.notified() => {}
+                    }
+                }
                 let mut slot = me.wallet.lock().await;
                 if me.ensure_open(&mut slot).await.is_err() {
                     continue;

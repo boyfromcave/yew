@@ -73,6 +73,7 @@ pub const KNOWN: &[&str] = &[
     "salvagewallet",
     "paramsdir",
     "backendexitgrace",
+    "backendindexer",
     "printtoconsole",
     "debug",
     "help",
@@ -110,6 +111,9 @@ pub struct Config {
     /// With `-stopbackend`: exit when the backend has been unreachable this many seconds after
     /// it was reachable (the pair is one node, H6); 0 = never.
     pub backend_exit_grace: u64,
+    /// kogany's indexer gRPC listener (`-backendindexer=<ip:port>`): its `ChainTipChange` and
+    /// `MempoolChange` streams wake the wallet (H3, H4); never the source of truth.
+    pub backend_indexer: Option<SocketAddr>,
     /// Options given but not understood (reported at start).
     pub ignored: Vec<String>,
 }
@@ -369,6 +373,12 @@ impl Config {
                 wallet_file: a.get("wallet").map(PathBuf::from),
                 rescan: a.flag("rescan"),
                 salvage: a.flag("salvagewallet"),
+            },
+            backend_indexer: match a.get("backendindexer") {
+                Some(v) => Some(v.parse().map_err(|_| {
+                    ConfigError(format!("yewd: -backendindexer={v} is not an ip:port"))
+                })?),
+                None => None,
             },
             backend_exit_grace: match a.get("backendexitgrace") {
                 Some(v) => v.parse().map_err(|_| {
