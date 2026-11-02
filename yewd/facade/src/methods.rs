@@ -16,13 +16,14 @@
 /// What the façade does with a method.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
-    /// A wallet RPC the façade will serve (the 47, R7 and the K-25 stock set). Answers `-32601`
-    /// with `yewd: not yet implemented` until the named chunk implements it.
+    /// A wallet RPC the façade serves (the 47, R7 and the K-25 stock set), tagged with the chunk
+    /// that implemented it; one not served (none since S4) answers `-32601 yewd: not yet
+    /// implemented`.
     Wallet { group: Group, stage: Stage },
     /// A ycashd wallet RPC outside the façade's scope (K-25 (a)): `-32601`, never forwarded.
     OutOfScope,
-    /// A raw-transaction helper ycashd serves without a wallet and Zakura lacks; S4 serves it
-    /// locally from yew-core's `tx.rs`. Forwarded until then.
+    /// A raw-transaction helper ycashd serves without a wallet and Zakura lacks, answered by the
+    /// façade itself (S4, `yewd-wallet/src/raw.rs`).
     Local,
     /// A node RPC whose answer carries wallet fields (`ismine`, `mine`, `wallet`, the balance in
     /// `getinfo`). Forwarded; from S1 the façade adds the wallet fields to the backend's answer.
@@ -154,20 +155,20 @@ pub const STOCK_WALLET: &[(&str, Stage)] = &[
     ("z_exportwallet", S4),
     ("z_getbalance", S1),
     ("z_getnewaddress", S1),
-    ("z_getoperationresult", S2),
-    ("z_getoperationstatus", S2),
+    ("z_getoperationresult", S4),
+    ("z_getoperationstatus", S4),
     ("z_importwallet", S4),
-    ("z_listoperationids", S2),
+    ("z_listoperationids", S4),
     ("z_listunspent", S1),
-    ("z_sendmany", S2),
+    ("z_sendmany", S4),
 ];
 
 /// K-25: the 4 stock wallet RPCs only the roles call (attestor `signmessage`; x402).
 pub const ROLE_WALLET: &[(&str, Stage)] = &[
     ("getrawchangeaddress", S3),
     ("signmessage", S3),
-    ("z_getnewdiversifiedaddress", S3),
-    ("z_listreceivedbyaddress", S3),
+    ("z_getnewdiversifiedaddress", S4),
+    ("z_listreceivedbyaddress", S4),
 ];
 
 /// The rest of ycashd's wallet table (`src/wallet/rpcwallet.cpp`, `rpcdump.cpp`, the
@@ -214,14 +215,14 @@ pub const OUT_OF_SCOPE: &[&str] = &[
     "z_validatepaymentdisclosure",
 ];
 
-/// Raw-transaction helpers served locally from S4 (Zakura's method table has none of them).
+/// Raw-transaction helpers served locally (S4; Zakura's method table has none of them).
 pub const LOCAL: &[&str] = &[
     "createrawtransaction",
     "decoderawtransaction",
     "decodescript",
 ];
 
-/// Node RPCs whose answers carry wallet fields the façade fills from S1.
+/// Node RPCs whose answers carry wallet fields the façade fills (S1; `yed_getinfo` from S4).
 pub const AUGMENTED: &[&str] = &[
     "getinfo",
     "validateaddress",
@@ -270,7 +271,7 @@ pub fn classify(method: &str) -> Option<Class> {
 pub fn answered_locally(method: &str) -> bool {
     matches!(
         classify(method),
-        Some(Class::Wallet { .. } | Class::OutOfScope | Class::Own)
+        Some(Class::Wallet { .. } | Class::OutOfScope | Class::Own | Class::Local)
     )
 }
 
@@ -337,7 +338,7 @@ mod tests {
         ] {
             assert_eq!(classify(m), None, "{m}");
         }
-        assert!(!answered_locally("decoderawtransaction"));
+        assert!(answered_locally("decoderawtransaction"));
         assert!(!answered_locally("validateaddress"));
     }
 }

@@ -1,6 +1,6 @@
 # yewd — the YEW core as a daemon: plan
 
-**Revision 4 (2026-11-01), S3** (revision 3: S2; revision 2: S1; revision 1: S0). `yewd` is the third shell on the YEW core, in `yew/yewd/`
+**Revision 5 (2026-11-02), S4** (revision 4: S3; revision 3: S2; revision 2: S1; revision 1: S0). `yewd` is the third shell on the YEW core, in `yew/yewd/`
 beside `yew/app/` and `yew/web/` (workspace decision K-22, the Yellowback lead architect,
 2026-11-01): a ycashd-compatible wallet-RPC façade in front of a wallet-less node, kogany or
 ycash6 `-disablewallet`. The normative plan is the workspace's
@@ -45,11 +45,11 @@ the repository's `rust-toolchain.toml`.
 
 | Chunk | Scope (workspace plan §3b) | State |
 |---|---|---|
-| S0 | the shell: crate layout, façade skeleton (auth, the full method table answering `-32601`, forwarding with the backend's cookie, `help`, `stop`), the `YEWD_BIN` harness contract, the `yewd` CI job | **this revision** |
-| S1 | wallet state and sync; the read-only wallet subset (against ycash6 `-disablewallet`; kogany after W7-a/b) | **this revision** (§3.1) |
-| S2 | builders and the signer boundary | **this revision** (§3.2): 40/47; the Sapling build in the signer remains (F-S2-8) |
-| S3 | roles: attestor `attest` mode, Hawkeye member, x402 `rpcWalletSigner` | **this revision** (§3.3): 47/47 |
-| S4 | the façade complete: all 47, R7, the K-25 stock set, error parity, hazards H1–H11 | — |
+| S0 | the shell: crate layout, façade skeleton (auth, the full method table answering `-32601`, forwarding with the backend's cookie, `help`, `stop`), the `YEWD_BIN` harness contract, the `yewd` CI job | done |
+| S1 | wallet state and sync; the read-only wallet subset (against ycash6 `-disablewallet`; kogany after W7-a/b) | done (§3.1) |
+| S2 | builders and the signer boundary | done (§3.2): 40/47; the Sapling build in the signer: S4 |
+| S3 | roles: attestor `attest` mode, Hawkeye member, x402 `rpcWalletSigner` | done (§3.3): 47/47 |
+| S4 | the façade complete: all 47, R7, the K-25 stock set, error parity, hazards H1–H11 | **this revision** (§3.4): 47/47, R7, 34/34, the raw helpers |
 | S5 | the parity gate (three-way matrix, the 48 wallet-needing scripts, 7 nightly days) | — |
 
 ### S0 exit gate (as run)
@@ -360,6 +360,137 @@ check also runs without the file).
 - Hawkeye `crates/hawkeye/tests/regtest_self_signing.rs` with F-S3-2's test change, against ycash6
   alone and against `ycashd_pair.py` (pass both); `bond_exit.rs` (mock) passes.
 - Not run here: the same on kogany (W5/W7 not merged).
+
+### 3.4 S4: the façade complete
+
+**What it serves.** Every method of the façade's table: of the 47, all (S1–S3); R7's `z_importpqkey`;
+of the K-25 stock set **34/34** — S4 added `addmultisigaddress`, `backupwallet`, `encryptwallet`,
+`walletpassphrase`, `walletlock`, `settxfee`, `importwallet`, `z_exportwallet`, `z_importwallet`,
+`z_getnewdiversifiedaddress`, `z_listreceivedbyaddress` (`wallet/src/admin.rs`) and `z_sendmany`,
+`z_getoperationstatus`, `z_getoperationresult`, `z_listoperationids` (`wallet/src/zsend.rs`) — and the
+three raw helpers `createrawtransaction`, `decoderawtransaction`, `decodescript`, answered by the façade
+(`wallet/src/raw.rs`: `TxToJSON`, `ScriptToAsmStr`, `Solver`, `ExtractDestinations`, `ParseHashO`
+re-expressed; kogany needs no change for them). No method answers "not yet implemented" any more.
+
+**Arity, help, errors.** ycash6 checks arity in its RPC table before a handler runs
+(`src/rpc/server.cpp` `CRPCTable::execute`, the parameter lists of `src/rpc/client.cpp`): `-32602`
+"Not enough|Too many parameters for method `<m>`. Needed exactly <n> | at least <a> and at most <b>,
+but received <k>", a blank line, the help text. The façade does the same from
+`facade/src/ycashd_rpc.json` (every method's help text and bounds, generated from a plain ycash6
+wallet node by `qa/gen_ycashd_rpc_table.py`; regenerate with `yewd/PIN`'s ycash6), `help <method>`
+answers ycashd's text (`walletlock`/`walletpassphrase`: "help: unknown command" on an unencrypted wallet,
+as ycashd), and the `help` listing is the backend's with ycashd's lines for the façade's methods merged
+into ycashd's categories. Errors are ycashd's codes and texts method by method (`s4_facade.py` provokes
+33 of them on both). Amounts: a negative one is `-3 "Amount out of range"` as `MoneyRange`.
+
+**The rest of the K-25 stock set.**
+- *Encryption* (`signer/src/seal.rs`): `encryptwallet` seals the phrase and the imported keys
+  (ChaCha20-Poly1305 under PBKDF2-HMAC-SHA256 of the passphrase) and stops the pair as ycashd stops;
+  the signer starts locked, answers `public` from its public cache, and refuses everything that needs a
+  key (`locked`); `walletpassphrase` (`-14` on a wrong passphrase, `-15` unencrypted), `walletlock`, the
+  timeout; `getwalletinfo`/`getinfo` carry `unlocked_until`. A locked wallet refuses the methods of
+  `admin.rs` `NEEDS_UNLOCK` with `-13`, as `EnsureWalletIsUnlocked`.
+- *Dumps*: `z_exportwallet` is written by the signer in ycashd's format (the WIF lines with
+  `hdkeypath`, the `pqseed=` lines with `owner=`/`addr=`/`yecaddr=`, the `vaultsetsig=`/`vaultbuild=`/
+  `vaultrecipient=` lines, the Sapling key lines, the recovery phrase); ycashd's `importwallet` reads it
+  and yewd's `importwallet`/`z_importwallet` read ycashd's (the signer reads the file: keys, PQ seeds,
+  sign-once records; the façade takes the public parts and rescans). `z_importpqkey` checks a dump line's
+  `owner=`/`addr=`/`yecaddr=` before importing.
+- *Backup*: `backupwallet` writes one file (the signer's files and the façade's state, by the signer);
+  `-wallet=<it>` (or `<datadir>/<net>/wallet.dat`) restores it once at open (`yewd-signer restore`),
+  `-salvagewallet` sets the sign-once restore marker, `-rescan` reads the chain again.
+- `settxfee` (reported in `getwalletinfo.paytxfee`), `addmultisigaddress` (the same P2SH address as ycashd
+  for the same keys; `validateaddress` shows the redeem script), `z_getnewdiversifiedaddress`,
+  `z_listreceivedbyaddress`.
+
+**Sapling in the signer (F-S2-8, resolved).** The façade keeps each received note (the note itself and
+its tree position, `NoteRow`) and computes Merkle paths on demand: the node's tree state below the
+earliest note (`z_gettreestate`, its `finalState` or `skipHash`), then every Sapling output of the blocks
+up to the anchor (the tip), appended in chain order (`zsend.rs` `sapling_paths`); no witness is stored,
+so a reorg needs nothing. The signer checks every path against the anchor and the note against its
+account and scope, and builds:
+- `z_sendmany` (`sapling_build`): t→z, z→t, z→z, t→t with librustzcash6's builder, P2PKH inputs signed
+  by the signer's keys, the exact fee (ZIP-317's conventional fee, Sapling outputs padded to two, or the
+  caller's, refused above 4× as ycashd), a Sapling source's change back to that address (ycashd's legacy
+  address), coinbase only when shielded and without change; asynchronous operations with ycashd's status
+  objects (`opid-…`, `creation_time`, `result.txid`, `execution_secs`, `method`, `params`), the
+  input-selection errors as the operation's error;
+- the YED builders' Sapling shapes (`sign` with a `SaplingPart`): a **mint funded from a Sapling address**
+  (the carrier step from its notes too: no transparent input), a **redemption paying a Sapling address**
+  (ycashd's order: change, payload, fee, attestor fee, residual; the collateral is the note) and a **bond
+  withdrawal paying one**. The Sapling bundle is built and proven first, every transparent digest is then
+  made over the whole transaction (librustzcash6's ZIP-243 with `hashShieldedSpends`/`hashShieldedOutputs`),
+  the carrier, template, bond and coin inputs are signed as without a Sapling part, and the spends and the
+  binding signature are authorized last. `yellowback_sapling.py` runs unchanged with every node a pair.
+
+**The armed layer (F-S2-4, resolved; F-S1-4).** No new RPC was needed: `BundleAt` takes the pool's
+bundle (`yed_buildbundle`: seqs, `aMint`, `aClaim`) or computes a given `bundleHex`'s statistics
+(`BundleStat`, `WeightedQuantile` over `yed_listattestors R` weights); `AttestFeeFor`'s payee is
+`DefaultAttestPayee` (yew-core's, over `getblockhash R`, the selector, the bundle's seqs;
+`params.policy.preferredAttestor` first) paid to its `bondKeyAddress`, the fee AFEE-1′ at
+`params.attest.attestFeeBps`; armed mints and claims carry it; `yed_claimnotice` is served (NOT-1's
+`notice-standing`, `notice-not-underwater` at `pEmerg = min(xClaim, aClaim)`); `yed_listpositions`'
+`canNotice` is `EstimateClaim`'s. `yed_listtransactions` gains the carrier fields of a two-step action,
+the `carrier` rows of an uncompleted carrier, the `expired` rows of own payload transactions that left
+the mempool unmined, and `claim_release`/`claim_cancel` (F-S1-5, resolved).
+
+**Smaller S4 items.** `lockunspent` refuses to unlock a YED-held outpoint (`yed-locked-outpoint`);
+`yed_getinfo` is augmented (`lockedOutputs`, `protectedByIndex`); the YED outputs a wallet commits are
+locked at once (`LockOwn`); YEC selection takes confirmed coins first (`SelectCoins`' passes); the
+builders refuse before the start height (`index-below-start`) as ycashd's builder `Context`;
+`signrawtransaction` with keys is signed by the façade when the backend has no such method (kogany,
+F-S2-7) and forwarded otherwise; `z_validateaddress` stays the façade's (needed for kogany, harmless on
+the fixed ycash6 `eac62c942`+).
+
+**Lifecycle (H5, H6).** `stop` stops both (`-stopbackend`), `encryptwallet` stops both, and with
+`-stopbackend` yewd exits once its backend has been gone `-backendexitgrace` seconds (default 20) after
+it was up — the pair is one node, so a node that stops itself (`AbortNode`) takes yewd with it, while a
+restart within the grace is followed (S1's soak); `yellowback_rpc_contract.py`'s storage fault depends
+on it. Signals, the cookie (written at start, removed at exit, the backend's re-read after a 401) are S0's.
+
+**Findings.**
+- **F-S4-1** (harness): the pair's backend mines only through `-mineraddress`, and ycashd takes a P2PKH
+  `-mineraddress` as its default `-yellowbackpayoutaddress` (MINER-2, `init.cpp`), which a ycashd wallet
+  node mining to its keypool never has (`yellowback_rpc_contract.py`'s `no-payout-address`). The S4 runner
+  gives no coinbase address to a Yellowback-live node that names no payout address (the suites mine there
+  only before the attestor set). For the harness chunk: take the H8 step (`-initwallet`, then the backend
+  with the coinbase address) with that rule, or give kogany's `miner_address` without a payout default.
+- **F-S4-2** (record): a caller's `bundleHex` while armed: its statistics are computed by the façade
+  (`BundleStat` over the attestors' weights at `R`) rather than read from the node.
+- **F-S4-3** (decision for the harness): the harness routes `-experimentalfeatures
+  -developerencryptwallet` to the backend; yewd allows `encryptwallet` unless `-developerencryptwallet=0`,
+  so a pair never answers ycashd's "wallet encryption is disabled" by default.
+- **F-S4-4** (record): the raw helpers' refusals: the C++ deserializer's texts ("TX decode failed: …:
+  unspecified iostream_category error") cannot be reproduced; a backend with the helper (ycash6) gives
+  its own, one without it (kogany) gets the façade's.
+- **F-S4-5** (record): ycashd lists `walletlock`/`walletpassphrase` in `help` only on an encrypted wallet;
+  the façade's listing never does (their topic help follows the state, as ycashd's).
+- **F-S4-6** (record): `z_importwallet` of another wallet's Sapling spending keys skips them (logged): the
+  signer spends its own account only (K-24's one account); their transparent keys, PQ seeds and
+  sign-once records are imported.
+- **F-S4-7** (record): imported post-quantum seeds (`pqimported.json`) are gated by the lock but not sealed
+  at rest; the phrase and the imported transparent keys are.
+- **F-S4-8** (record): `z_sendmany`'s privacy policies: `LegacyCompat` is `AllowFullyTransparent`
+  (ycashd's legacy strategy for non-unified addresses); of the policy refusals only the transparent
+  recipient one is reproduced (no unified address exists on Ycash).
+- **F-S4-9** (record, found by the `yellowback_sapling.py` probe): YEC selection spent the wallet's own
+  unconfirmed change before confirmed coins; ycashd's `SelectCoins` tries confirmed coins first. Fixed.
+- **F-S4-10** (record, same probe): ycashd locks the YED outputs it commits (`LockOwn`); yewd now does.
+- **F-S4-11** (remaining, H11): `setmocktime` is forwarded to the node; the façade's own clock (unlock
+  timeouts, dump times) is the system clock.
+- **F-S4-12** (remaining): the kogany side of `signrawtransaction` with keys (F-S2-7's resolution) runs
+  only against a backend without the method; exercised once W7 lands.
+
+**Hazards (plan §3b S4) and their tests.** H1 (barrier) and H2 (reorg rewind) and H5 (start order, `-28`):
+S1's soak and every gate since; H6 (`stop`, `encryptwallet`, the backend stopping itself):
+`facade/tests/table.rs`, `s4_facade.py`, `yellowback_rpc_contract.py`'s storage fault on a pair; H8
+(coinbase): the runners' H8 step; H9 (one writer, coin locks): the wallet mutex and `lockunspent`/LockOwn;
+H10 (signer locked or away): `s4_facade.py`'s locked wallet (`-13`, nothing half-signed), S2's policy
+tests; H7 (`allowyedburn`): S2. Not testable on a ycash6 backend: H3/H4 (kogany's indexer streams; the
+poll stands in) and H11 (F-S4-11).
+
+### S4 exit gate (as run)
+
 
 ## 4. CI (workspace plan §5)
 
