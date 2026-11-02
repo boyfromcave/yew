@@ -83,6 +83,27 @@ async fn pq_spend_fee(
 }
 
 impl Wallet {
+    /// ycashd's `EnsurePQRecipientPayable` (`wallet/rpcwallet.cpp`): a post-quantum recipient only
+    /// once the vault upgrade, and for FN-DSA-512 Falcon, is active at the next block.
+    fn ensure_pq_payable(&self, script: &[u8]) -> Result<(), RpcError> {
+        let Some(id) = yew_core::pq::pqpkh_of(script) else {
+            return Ok(());
+        };
+        if !self.vault_active_next() {
+            return Err(RpcError::new(
+                code::INVALID_ADDRESS_OR_KEY,
+                "post-quantum addresses can be paid only once the vault upgrade is active at the next block",
+            ));
+        }
+        if id.scheme == 2 && !self.falcon_next() {
+            return Err(RpcError::new(
+                code::INVALID_ADDRESS_OR_KEY,
+                "an FN-DSA-512 (scheme 2) post-quantum address can be paid only once Falcon is active at the next block",
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn send_call(
         &mut self,
         node: &dyn Node,
@@ -277,6 +298,7 @@ impl Wallet {
                 format!("Invalid Ycash transparent address: {a}"),
             )
         })?;
+        self.ensure_pq_payable(&script)?;
         let amount = amount_param(&p[1])?;
         if amount <= 0 {
             return Err(RpcError::new(code::TYPE_ERROR, "Invalid amount for send"));
@@ -328,6 +350,7 @@ impl Wallet {
                     format!("Invalid Ycash transparent address: {name}"),
                 )
             })?;
+            self.ensure_pq_payable(&script)?;
             if !seen.insert(script.clone()) {
                 return Err(invalid(format!(
                     "Invalid parameter, duplicated address: {name}"
