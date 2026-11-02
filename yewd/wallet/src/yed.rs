@@ -49,22 +49,22 @@ const UNLOCK_ACKNOWLEDGEMENT: &str = "I understand this burns YED";
 
 /// A YED coin of the wallet: a confirmed token at one of its holder scripts.
 #[derive(Clone, Debug)]
-struct YedCoin {
-    outpoint: OutPoint,
-    cents: i64,
-    script: Vec<u8>,
-    value: i64,
+pub(crate) struct YedCoin {
+    pub(crate) outpoint: OutPoint,
+    pub(crate) cents: i64,
+    pub(crate) script: Vec<u8>,
+    pub(crate) value: i64,
 }
 
 /// What the builders need of the node's Yellowback parameters (`yed_getinfo`).
 #[derive(Clone, Debug)]
-struct YedInfo {
-    index_height: i64,
-    ref_lag: i64,
-    ref_window: i64,
-    flat_fee: i64,
-    rate_per_kb: i64,
-    max_fee: i64,
+pub(crate) struct YedInfo {
+    pub(crate) index_height: i64,
+    pub(crate) ref_lag: i64,
+    pub(crate) ref_window: i64,
+    pub(crate) flat_fee: i64,
+    pub(crate) rate_per_kb: i64,
+    pub(crate) max_fee: i64,
 }
 
 /// `PQSpendInputSize`: a post-quantum input's serialized size.
@@ -74,7 +74,7 @@ fn pq_input_size(scheme: u8) -> usize {
 }
 
 /// The bytes `YedEstimatedSize` counts for one input.
-fn input_bytes(script: &[u8]) -> usize {
+pub(crate) fn input_bytes(script: &[u8]) -> usize {
     match yew_core::pq::pqpkh_of(script) {
         Some(id) => pq_input_size(id.scheme),
         None => 150,
@@ -83,14 +83,14 @@ fn input_bytes(script: &[u8]) -> usize {
 
 impl YedInfo {
     /// `YedNetworkFee`: max(flat, min(max(flat, rate × size), cap)) over the estimated size.
-    fn network_fee(&self, scripts: &[&[u8]]) -> i64 {
+    pub(crate) fn network_fee(&self, scripts: &[&[u8]]) -> i64 {
         let bytes = 1000 + scripts.iter().map(|s| input_bytes(s)).sum::<usize>() as i64;
         let sized = self.flat_fee.max(self.rate_per_kb * bytes / 1000);
         self.flat_fee.max(sized.min(self.max_fee))
     }
 }
 
-async fn yed_info(node: &dyn Node) -> Result<YedInfo, RpcError> {
+pub(crate) async fn yed_info(node: &dyn Node) -> Result<YedInfo, RpcError> {
     let v = node::call(node, "yed_getinfo", serde_json::json!([])).await?;
     let p = &v["params"];
     let net = &p["fees"]["network"];
@@ -170,7 +170,7 @@ impl Wallet {
 
     /// The spendable YED coins in the selector's canonical order (`RankedCoins`): confirmed tokens at
     /// this wallet's scripts not spent by a mempool transaction.
-    async fn ranked_coins(&self, node: &dyn Node) -> Result<Vec<YedCoin>, RpcError> {
+    pub(crate) async fn ranked_coins(&self, node: &dyn Node) -> Result<Vec<YedCoin>, RpcError> {
         let spent = self.mempool_spent();
         let mut v = Vec::new();
         for t in self.tokens(node).await? {
@@ -220,7 +220,7 @@ impl Wallet {
 
     /// `SelectYec` / `PickYecCoins`: confirmed plain YEC coins (never a token, a vault or P2SH),
     /// smallest first, largest first when that would cross a cap; the fee follows a PQ coin.
-    async fn pick_yec(&self, node: &dyn Node, needed: i64, info: &YedInfo, prior: &[Vec<u8>], fee0: i64) -> Result<(Vec<(OutPoint, i64, Vec<u8>)>, i64), RpcError> {
+    pub(crate) async fn pick_yec(&self, node: &dyn Node, needed: i64, info: &YedInfo, prior: &[Vec<u8>], fee0: i64) -> Result<(Vec<(OutPoint, i64, Vec<u8>)>, i64), RpcError> {
         if needed <= 0 {
             return Ok((vec![], fee0));
         }
@@ -290,7 +290,7 @@ impl Wallet {
 
     /// A fresh YED holder script for change (`FreshHolderScript`): a Falcon key from the Falcon
     /// height, else a new P2PKH key (in the book with purpose `yellowback-change`).
-    fn fresh_holder(&mut self) -> Result<Vec<u8>, RpcError> {
+    pub(crate) fn fresh_holder(&mut self) -> Result<Vec<u8>, RpcError> {
         if self.falcon_next() {
             let id = self.new_pq(2)?;
             return yew_core::pq::pqpkh_script(&id).ok_or_else(|| RpcError::new(code::WALLET_ERROR, "keypool-empty: cannot draw a post-quantum holder key"));
@@ -521,7 +521,7 @@ impl Wallet {
     // ------------------------------------------------------------------ redeem
 
     /// The vault record (`yed_getvault`), `vault-not-found` as ycashd.
-    async fn yed_vault(node: &dyn Node, txid: &str) -> Result<Value, RpcError> {
+    pub(crate) async fn yed_vault(node: &dyn Node, txid: &str) -> Result<Value, RpcError> {
         match node::call(node, "yed_getvault", serde_json::json!([txid])).await {
             Ok(v) => Ok(v),
             Err(crate::node::NodeError::Rpc { message, .. }) if message.contains("vault-not-found") => {
@@ -532,7 +532,7 @@ impl Wallet {
     }
 
     /// The txid of a mempool transaction spending `op`, if any (`MempoolSpenderOf`).
-    async fn mempool_spender(node: &dyn Node, op: &OutPoint) -> Result<Option<String>, RpcError> {
+    pub(crate) async fn mempool_spender(node: &dyn Node, op: &OutPoint) -> Result<Option<String>, RpcError> {
         if crate::build::node_coin(node, op).await?.is_some() {
             return Ok(None);
         }
@@ -551,7 +551,7 @@ impl Wallet {
 
     /// FEE-W's payee for a vault spend at `r` (`yed_getfeepayee r <outpoint selector>`); `None`
     /// under FEE-0 (no eligible payee).
-    async fn spend_payee(node: &dyn Node, r: i64, op: &OutPoint) -> Result<Option<String>, RpcError> {
+    pub(crate) async fn spend_payee(node: &dyn Node, r: i64, op: &OutPoint) -> Result<Option<String>, RpcError> {
         let mut sel = op.txid.to_vec();
         sel.extend_from_slice(&op.n.to_le_bytes());
         match node::call(node, "yed_getfeepayee", serde_json::json!([r, hex::encode(sel)])).await {

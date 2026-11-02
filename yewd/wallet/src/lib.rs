@@ -23,6 +23,7 @@
 //! Sapling sides with the reorg handling in one place.
 
 pub mod build;
+pub mod claim;
 pub mod json;
 pub mod keys;
 pub mod mint;

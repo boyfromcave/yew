@@ -369,25 +369,65 @@ class YewdS2(YellowbackTestFramework):
     # --- YED ------------------------------------------------------------------------------------
 
     def stage_yed(self, user, y):
-        try:
-            y.yed_estimatesend(y.yed_getnewaddress(), 100)
-        except JSONRPCException as e:
-            if e.error['code'] == -32601:
-                print('YED: the YED builders are not served yet (%s)' % e.error['message'])
-                return
-            raise
-        print('YED: a transfer in, yed_send out, compared with ycashd')
-        wallet_mint(self, user, 10000, 48)
-        self.mine_on(POOLS[1])
-        ya = y.yed_getnewaddress()
-        user.yed_send(ya, 5000)
-        self.confirm(user.getrawmempool()[0]) if user.getrawmempool() else self.mine_on(POOLS[0])
+        yc = self.yc
+        print('YED: yed_mint on yewd and on ycashd with the same request (the two-step flow), compared')
+        ym = yc.check('yed_mint', wallet_mint(self, y, 10000, 48))
+        um = yc.check('yed_mint', wallet_mint(self, user, 10000, 48))
+        self.confirm(ym['txid'], um['txid'])
+        ign = ('txid', 'ownerHash', 'ownerAddress', 'mintHeight', 'refHeight', 'lockHeight', 'claimHeight', 'scriptPubKey',
+               'collateralZat', 'collateral', 'feePaidZat', 'underwaterAt', 'pMint', 'cancelQuietUntil')
+        yv, uv = user.yed_getvault(ym['txid']), user.yed_getvault(um['txid'])
+        assert_equal(strip(yv, ign), strip(uv, ign))
+        assert_equal((yv['status'], yv['mintedCents']), ('ACTIVE', 10000))
+        ti = ('txid', 'height', 'blockhash', 'feeZat', 'collateralZat', 'payee', 'outputs', 'inputs', 'index', 'refHeight',
+              'lockHeight', 'claimHeight', 'pMint', 'owner', 'ownerHash', 'vault')
+        yt, ut = user.yed_gettxinfo(ym['txid']), user.yed_gettxinfo(um['txid'])
+        assert_equal(strip(yt, ti), strip(ut, ti))
+        pos = yc.check('yed_listpositions', y.yed_listpositions())
+        assert ym['txid'] in [p['txid'] for p in pos]
+        assert_equal(yc.check('yed_getbalance', y.yed_getbalance())['confirmedCents'], 10000)
+
+        print('YED: yed_estimatesend, yed_send, yed_sendmany (yewd), the same send by ycashd, compared')
+        est = yc.check('yed_estimatesend', y.yed_estimatesend(3000))
+        assert_equal((est['workable'], est['changeCents']), (True, 7000))
         ua = user.yed_getnewaddress()
-        r = self.yc.check('yed_send', y.yed_send(ua, 1500))
-        self.confirm(r['txid'])
-        ti = user.yed_gettxinfo(r['txid'])
-        assert_equal(ti['type'], 'transfer')
-        self.served['yed'].add('yed_send')
+        r = yc.check('yed_send', y.yed_send(ua, 3000))
+        u = yc.check('yed_send', user.yed_send(y.yed_getnewaddress(), 3000))
+        self.confirm(r['txid'], u['txid'])
+        a, b = user.yed_gettxinfo(r['txid']), user.yed_gettxinfo(u['txid'])
+        assert_equal((a['type'], a.get('verdict')), (b['type'], b.get('verdict')))
+        assert_equal(r['changeCents'], u['changeCents'])
+        many = yc.check('yed_sendmany', y.yed_sendmany({user.yed_getnewaddress(): 1000, user.yed_getnewaddress(): 1500}))
+        self.confirm(many['txid'])
+        yrc.assert_rpc_error('bad-xfer-amount', y.yed_send, ua, 50)
+        yrc.assert_rpc_error('not-a-yellowback-address', y.yed_send, user.getnewaddress(), 500)
+        assert_equal(yc.check('yed_getbalance', y.yed_getbalance())['confirmedCents'], 10000 - 3000 + 3000 - 2500)
+
+        print('YED: yed_estimateredeem and yed_redeem of the yewd vault (early: IT-9), the same by ycashd, compared')
+        user.yed_send(y.yed_getnewaddress(), 6000)
+        self.confirm(user.getrawmempool()[0])
+        q = yc.check('yed_estimateredeem', y.yed_estimateredeem(ym['txid']))
+        uq = yc.check('yed_estimateredeem', user.yed_estimateredeem(um['txid']))
+        assert_equal((q['canRedeem'], q['early'], q['burnedCents']), (True, True, 10000))
+        assert_equal((q['canRedeem'], q['early'], q['termClass'], q['earlyRedeemFeeBps']), (uq['canRedeem'], uq['early'], uq['termClass'], uq['earlyRedeemFeeBps']))
+        rd = yc.check('yed_redeem', y.yed_redeem(ym['txid']))
+        urd = yc.check('yed_redeem', user.yed_redeem(um['txid']))
+        self.confirm(rd['txid'], urd['txid'])
+        assert_equal((rd['burnedCents'], rd['extraBurnCents']), (urd['burnedCents'], urd['extraBurnCents']))
+        assert_equal(user.yed_getvault(ym['txid'])['status'], user.yed_getvault(um['txid'])['status'])
+        assert_equal(user.yed_gettxinfo(rd['txid'])['type'], user.yed_gettxinfo(urd['txid'])['type'])
+        e = rpc_error(y.yed_redeem, ym['txid'])
+        assert 'vault-not-active' in e['message'], e
+        for m in ('yed_mint', 'yed_estimatesend', 'yed_send', 'yed_sendmany', 'yed_estimateredeem', 'yed_redeem'):
+            self.served['yed'].add(m)
+
+        print('YED: yed_lockcoins, yed_unlockcoin')
+        locked = y.yed_lockcoins()
+        assert locked, 'no YED coin locked'
+        un = y.yed_unlockcoin(locked[0]['txid'], locked[0]['vout'], 'I understand this burns YED')
+        assert_equal((un['unlocked'], un['wasYellowbackLocked']), (True, True))
+        yrc.assert_rpc_error('unlock-acknowledgement-missing', y.yed_unlockcoin, locked[0]['txid'], locked[0]['vout'], 'no')
+        self.served['yed'].update(['yed_lockcoins', 'yed_unlockcoin'])
 
 
 if __name__ == '__main__':

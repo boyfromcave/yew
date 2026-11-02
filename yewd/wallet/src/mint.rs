@@ -36,6 +36,8 @@ const CARRIER_WAIT_SECS: u64 = 300;
 /// A mint between its carrier and its MINT (ycashd keeps it in memory only, as here).
 #[derive(Clone, Debug)]
 pub struct PendingMint {
+    /// `None` for a mint; the claim's arguments for a claim.
+    pub claim: Option<crate::claim::ClaimArgs>,
     pub carrier: OutPoint,
     pub cents: i64,
     pub lock_blocks: i64,
@@ -135,7 +137,7 @@ impl Wallet {
     /// Fund `tx` (outputs already set; `input_value` from its other inputs) with plain YEC at the
     /// flat fee raised to the ZIP-317 conventional fee of the shape (P-2), change to a change key;
     /// `extra` inputs (a carrier) are appended after the funding. Returns the funding coins.
-    async fn fund_yed(
+    pub(crate) async fn fund_yed(
         &mut self,
         node: &dyn Node,
         base: &Transaction,
@@ -224,7 +226,7 @@ impl Wallet {
         }
         // the carrier
         let carrier = self.build_carrier(node, &bundle, r, "", only.as_deref()).await?;
-        let pending = PendingMint { carrier, cents, lock_blocks, from: from.clone(), max_collateral, est: est.clone() };
+        let pending = PendingMint { claim: None, carrier, cents, lock_blocks, from: from.clone(), max_collateral, est: est.clone() };
         if !wait {
             self.pending.push(pending);
             return Ok(J::obj()
@@ -255,7 +257,7 @@ impl Wallet {
     }
 
     /// Wait until the carrier confirms (`WaitForCarrier`), following the node meanwhile.
-    async fn wait_carrier(&mut self, node: &dyn Node, carrier: &OutPoint) -> Result<(), RpcError> {
+    pub(crate) async fn wait_carrier(&mut self, node: &dyn Node, carrier: &OutPoint) -> Result<(), RpcError> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(CARRIER_WAIT_SECS);
         loop {
             if let Some(c) = node_coin(node, carrier).await? {
@@ -312,8 +314,12 @@ impl Wallet {
         for pm in std::mem::take(&mut self.pending) {
             match node_coin(node, &pm.carrier).await {
                 Ok(Some(c)) if c.height.is_some() => {
-                    if let Err(e) = self.complete_mint(node, &pm).await {
-                        eprintln!("yewd: the pending mint on carrier {} failed: {e}", op_str(&pm.carrier));
+                    let r = match &pm.claim {
+                        None => self.complete_mint(node, &pm).await,
+                        Some(a) => self.complete_claim(node, a, &pm).await,
+                    };
+                    if let Err(e) = r {
+                        eprintln!("yewd: the pending transaction on carrier {} failed: {e}", op_str(&pm.carrier));
                     }
                 }
                 Ok(Some(_)) => keep.push(pm),
