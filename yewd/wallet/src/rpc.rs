@@ -69,17 +69,29 @@ pub const AUGMENTED: &[&str] = &[
 
 pub fn served(method: &str) -> bool {
     SERVED.contains(&method)
+        || crate::vaultrpc::SERVED.contains(&method)
+        || crate::send::SERVED.contains(&method)
 }
 
-fn invalid(m: impl Into<String>) -> RpcError {
+/// Every served wallet method, S1's reads and S2's builders.
+pub fn all_served() -> Vec<&'static str> {
+    SERVED
+        .iter()
+        .chain(crate::vaultrpc::SERVED)
+        .chain(crate::send::SERVED)
+        .copied()
+        .collect()
+}
+
+pub(crate) fn invalid(m: impl Into<String>) -> RpcError {
     RpcError::new(code::INVALID_PARAMETER, m)
 }
 
-fn param(p: &[Value], i: usize) -> Option<&Value> {
+pub(crate) fn param(p: &[Value], i: usize) -> Option<&Value> {
     p.get(i).filter(|v| !v.is_null())
 }
 
-fn p_int(p: &[Value], i: usize, default: i64) -> Result<i64, RpcError> {
+pub(crate) fn p_int(p: &[Value], i: usize, default: i64) -> Result<i64, RpcError> {
     match param(p, i) {
         None => Ok(default),
         Some(Value::Number(n)) => n
@@ -89,7 +101,7 @@ fn p_int(p: &[Value], i: usize, default: i64) -> Result<i64, RpcError> {
     }
 }
 
-fn p_bool(p: &[Value], i: usize, default: bool) -> Result<bool, RpcError> {
+pub(crate) fn p_bool(p: &[Value], i: usize, default: bool) -> Result<bool, RpcError> {
     match param(p, i) {
         None => Ok(default),
         Some(Value::Bool(b)) => Ok(*b),
@@ -97,7 +109,7 @@ fn p_bool(p: &[Value], i: usize, default: bool) -> Result<bool, RpcError> {
     }
 }
 
-fn p_str(p: &[Value], i: usize) -> Result<Option<&str>, RpcError> {
+pub(crate) fn p_str(p: &[Value], i: usize) -> Result<Option<&str>, RpcError> {
     match param(p, i) {
         None => Ok(None),
         Some(Value::String(s)) => Ok(Some(s)),
@@ -105,7 +117,7 @@ fn p_str(p: &[Value], i: usize) -> Result<Option<&str>, RpcError> {
     }
 }
 
-fn arity(method: &str, p: &[Value], max: usize) -> Result<(), RpcError> {
+pub(crate) fn arity(method: &str, p: &[Value], max: usize) -> Result<(), RpcError> {
     if p.len() > max {
         return Err(RpcError::new(
             code::MISC_ERROR,
@@ -116,7 +128,7 @@ fn arity(method: &str, p: &[Value], max: usize) -> Result<(), RpcError> {
 }
 
 /// `parseMinconf`: a non-negative integer.
-fn minconf(p: &[Value], i: usize, default: i64) -> Result<i64, RpcError> {
+pub(crate) fn minconf(p: &[Value], i: usize, default: i64) -> Result<i64, RpcError> {
     let m = p_int(p, i, default)?;
     if m < 0 {
         return Err(invalid("Invalid parameter, minconf must be non-negative"));
@@ -309,6 +321,8 @@ impl Wallet {
             "yed_listaddresses" => self.yed_listaddresses(node, p).await,
             "yed_listtransactions" => self.yed_listtransactions(node, p).await,
             "yed_listpositions" => self.yed_listpositions(node, p).await,
+            m if crate::vaultrpc::SERVED.contains(&m) => self.vault_call(node, m, p).await,
+            m if crate::send::SERVED.contains(&m) => self.send_call(node, m, p).await,
             _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
         }
     }
@@ -640,14 +654,14 @@ impl Wallet {
 
     // ------------------------------------------------------------------ addresses
 
-    fn vault_active_next(&self) -> bool {
+    pub(crate) fn vault_active_next(&self) -> bool {
         self.chain
             .vault_activation
             .is_some_and(|h| h <= self.tip_height() + 1)
     }
 
     /// The holder policy (quantum spec A-13): FN-DSA-512 once Falcon is active at the next block.
-    fn falcon_next(&self) -> bool {
+    pub(crate) fn falcon_next(&self) -> bool {
         match self.chain.falcon_active {
             Some(f) => f,
             // mainnet and testnet run Falcon from the vault activation (D-Q-2); regtest only with
@@ -657,7 +671,7 @@ impl Wallet {
     }
 
     /// Hand out the next PQ key of `scheme`.
-    fn new_pq(&mut self, scheme: u8) -> Result<PqKeyId, RpcError> {
+    pub(crate) fn new_pq(&mut self, scheme: u8) -> Result<PqKeyId, RpcError> {
         let index = self.st.pq_issued(scheme);
         self.st.set_pq_issued(scheme, index + 1);
         self.refresh_keys().map_err(|e| {
@@ -794,15 +808,13 @@ impl Wallet {
             ))
     }
 
-    /// `set_listsigned`: the sign-once records live with the member keys, in the signer (K-24);
-    /// S1 has no member keys, so no record exists and nothing is restored.
+    /// `set_listsigned`: the sign-once records live with the member keys, in the signer (K-24).
     fn set_listsigned(&self, p: &[Value]) -> Result<J, RpcError> {
         if !p.is_empty() {
             return Err(RpcError::new(code::MISC_ERROR, "set_listsigned"));
         }
-        Ok(J::obj()
-            .with("restored", false)
-            .with("records", J::Arr(vec![])))
+        let r = self.signed_records()?;
+        Ok(crate::vaultrpc::records_json(&r))
     }
 
     // ------------------------------------------------------------------ Sapling
@@ -936,7 +948,7 @@ impl Wallet {
     /// The YED tokens at this wallet's holder scripts, from the node's index (`yed_listtokens`,
     /// at most 100 addresses a call). Only the scripts that ever received an output are asked
     /// about (a token output is an output to the script, so the wallet has seen it).
-    async fn tokens(&self, node: &dyn Node) -> Result<Vec<Value>, RpcError> {
+    pub(crate) async fn tokens(&self, node: &dyn Node) -> Result<Vec<Value>, RpcError> {
         let used: BTreeSet<Vec<u8>> = self.coins.iter().map(|c| c.script.clone()).collect();
         let addrs: Vec<String> = self
             .holder_scripts()

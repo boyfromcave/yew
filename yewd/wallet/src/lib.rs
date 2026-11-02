@@ -22,12 +22,15 @@
 //! address index is not there to ask, and one block reader serves the transparent, PQ and
 //! Sapling sides with the reorg handling in one place.
 
+pub mod build;
 pub mod json;
 pub mod keys;
 pub mod node;
 pub mod rpc;
 pub mod sapling;
+pub mod send;
 pub mod state;
+pub mod vaultrpc;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
@@ -52,10 +55,14 @@ pub const VAULT_BRANCH_ID: u32 = yew_core::params::VAULT_BRANCH_ID;
 /// Coinbase maturity (`COINBASE_MATURITY`): spendable at depth 101.
 pub const COINBASE_MATURITY: u32 = 100;
 
-/// The signer as the wallet sees it: a source of public material (S1). S2 extends it with the
-/// sign request.
+/// The signer as the wallet sees it: a source of public material (S1) and, from S2, the
+/// signing protocol of `yewd-proto` (K-24). A signer that cannot sign (S1's child process for
+/// `-initwallet`) answers every other request with an error, which the wallet maps to `-13`.
 pub trait Signer: Send + Sync {
     fn public(&self, req: &PublicRequest) -> Result<PublicBundle, String>;
+    fn request(&self, _r: yewd_proto::Request) -> Result<yewd_proto::Response, String> {
+        Err("this signer does not sign".into())
+    }
 }
 
 /// A JSON-RPC error the wallet answers with (code, message), ycashd's codes.
@@ -98,8 +105,14 @@ pub mod code {
     pub const TYPE_ERROR: i64 = -3;
     pub const WALLET_ERROR: i64 = -4;
     pub const INVALID_ADDRESS_OR_KEY: i64 = -5;
+    pub const WALLET_INSUFFICIENT_FUNDS: i64 = -6;
     pub const INVALID_PARAMETER: i64 = -8;
+    pub const WALLET_UNLOCK_NEEDED: i64 = -13;
+    pub const DESERIALIZATION_ERROR: i64 = -22;
+    pub const TRANSACTION_ERROR: i64 = -25;
+    pub const TRANSACTION_REJECTED: i64 = -26;
     pub const IN_WARMUP: i64 = -28;
+    pub const INTERNAL_ERROR: i64 = -32603;
     pub const METHOD_NOT_FOUND: i64 = -32601;
 }
 

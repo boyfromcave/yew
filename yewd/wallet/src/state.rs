@@ -80,8 +80,18 @@ pub struct State {
     pub tip: Option<Tip>,
     pub recent: Vec<Tip>,
     pub wtx: BTreeMap<String, WalletTx>,
-    /// Locked outpoints (`txid:n`), as ycashd's `setLockedCoins`.
+    /// Locked outpoints (`txid:n`), as ycashd's `setLockedCoins`; persisted (ycashd keeps them in
+    /// memory only, but the coins its vault builds lock are re-locked from `mapVaultBuilds` at
+    /// load: the same set survives a restart).
     pub locks: BTreeSet<String>,
+    /// The remembered vault and act builds (ycashd `mapVaultBuilds`, the `vaultbuild` row, 07/N-2):
+    /// template outpoint (or an act's `vin[0]`) → the unsigned transaction, hex.
+    #[serde(default)]
+    pub builds: BTreeMap<String, String>,
+    /// The intent recipients this wallet built (`mapVaultRecipients`): recipient hash (raw hex) →
+    /// the recipient script, hex.
+    #[serde(default)]
+    pub recipients: BTreeMap<String, String>,
 }
 
 impl State {
@@ -99,6 +109,8 @@ impl State {
             recent: Vec::new(),
             wtx: BTreeMap::new(),
             locks: BTreeSet::new(),
+            builds: BTreeMap::new(),
+            recipients: BTreeMap::new(),
         }
     }
 

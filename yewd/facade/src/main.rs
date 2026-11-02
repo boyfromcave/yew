@@ -24,7 +24,7 @@ Usage: yewd [options]
   -backendrpccookiefile=<file>    the node's .cookie (re-read after a 401)
   -backendrpcuser=<u> -backendrpcpassword=<p>   instead of the cookie
   -stopbackend                `stop` stops the node too (the harness bundle)
-  -signer=<socket>            the signer's Unix socket (reserved, S2)
+  -signer=<socket>            a running signer's Unix socket (default: start yewd-signer serve)
   -signerbin=<file>           the yewd-signer binary (default: beside yewd)
   -walletpoll=<ms>            how often the wallet follows the node between calls (default 1000; 0 = only at calls)
   -initwallet                 create the wallet (seed in the signer, birthday 0), print its coinbase address, exit

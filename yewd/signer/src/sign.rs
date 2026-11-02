@@ -499,7 +499,7 @@ impl SignerCore {
                 }
             }
         }
-        if !secrets.is_empty() {
+        {
             let mut once = self.lock();
             match once.check(&set_hex, &prevout, r.role, &sighash_hex) {
                 Check::Same => {}
@@ -512,6 +512,8 @@ impl SignerCore {
                         ),
                     )
                 }
+                // nothing is recorded until a signature is about to leave the signer
+                Check::Absent if secrets.is_empty() => {}
                 Check::Absent => {
                     if once.restored && !r.acknowledge_restore {
                         return no(

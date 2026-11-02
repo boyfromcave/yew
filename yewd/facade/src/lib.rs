@@ -30,6 +30,9 @@ pub struct Running {
 
 /// Write the cookie (when no password is configured), bind and serve.
 pub async fn start(cfg: &Config) -> std::io::Result<Running> {
+    if let Some(sock) = &cfg.signer {
+        return start_with(cfg, wallet::SignerSource::Socket(sock.clone())).await;
+    }
     let bin = cfg
         .signer_bin
         .clone()
