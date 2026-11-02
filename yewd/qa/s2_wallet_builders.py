@@ -46,7 +46,7 @@ from test_framework import yellowback_util as yu                              # 
 from test_framework.authproxy import JSONRPCException                         # noqa: E402
 from test_framework.util import assert_equal                                  # noqa: E402
 from test_framework.vault_contract import Contract as VaultContract           # noqa: E402
-from test_framework.yellowback_attest import wallet_mint                      # noqa: E402
+from test_framework.yellowback_attest import wallet_mint, wallet_claim                      # noqa: E402
 from test_framework.yellowback_util import POOLS, REF_LAG, USER, YellowbackTestFramework  # noqa: E402
 import yellowback_rpc_contract as yrc                                         # noqa: E402
 
@@ -395,6 +395,7 @@ class YewdS2(YellowbackTestFramework):
 
     def stage_yed(self, user, y):
         yc = self.yc
+        vc = self.vc
         print('YED: yed_mint on yewd and on ycashd with the same request (the two-step flow), compared')
         ym = yc.check('yed_mint', wallet_mint(self, y, 10000, 48))
         um = yc.check('yed_mint', wallet_mint(self, user, 10000, 48))
@@ -453,6 +454,37 @@ class YewdS2(YellowbackTestFramework):
         assert_equal((un['unlocked'], un['wasYellowbackLocked']), (True, True))
         yrc.assert_rpc_error('unlock-acknowledgement-missing', y.yed_unlockcoin, locked[0]['txid'], locked[0]['vout'], 'no')
         self.served['yed'].update(['yed_lockcoins', 'yed_unlockcoin'])
+
+        print('YED: yed_claim after a price crash: yewd claims one ycashd vault, ycashd claims another, compared')
+        va = yc.check('yed_mint', wallet_mint(self, user, 10000, 48))
+        vb = yc.check('yed_mint', wallet_mint(self, user, 10000, 48))
+        self.confirm(va['txid'], vb['txid'])
+        user.yed_send(y.yed_getnewaddress(), 8000)
+        self.confirm(user.getrawmempool()[0])
+        yrc.assert_rpc_error('claim-not-underwater', y.yed_claim, va['txid'])
+        for i in POOLS:
+            yu.set_quote(self.nodes[i], '0.01')
+        self.mine_round_robin(POOLS, 64)
+        self.sync()
+        yc_ = yc.check('yed_claim', wallet_claim(self, y, va['txid']))
+        uc_ = yc.check('yed_claim', wallet_claim(self, user, vb['txid']))
+        self.confirm(yc_['txid'], uc_['txid'])
+        assert_equal((yc_['burnedCents'], yc_['claimPath']), (uc_['burnedCents'], uc_['claimPath']))
+        ga, gb = user.yed_getvault(va['txid']), user.yed_getvault(vb['txid'])
+        assert_equal((ga['status'], [x['role'] for x in ga['intents']]), (gb['status'], [x['role'] for x in gb['intents']]))
+        assert_equal(ga['status'], 'CLAIMING')
+        assert_equal(user.yed_gettxinfo(yc_['txid'])['type'], user.yed_gettxinfo(uc_['txid'])['type'])
+        self.mine_round_robin(POOLS, ga['intents'][0]['releaseHeight'] - 1 - user.getblockcount())
+        self.sync()
+        rel = vc.call(y, 'vault_release', '%s:0' % yc_['txid'])
+        self.confirm(rel)
+        assert_equal(user.yed_getvault(va['txid'])['status'], 'CLAIMED')
+        assert_equal(y.yed_sweepcarriers()['outstanding'], 0)
+        for i in POOLS:
+            yu.set_quote(self.nodes[i], 50)
+        self.mine_round_robin(POOLS, 64 + REF_LAG)
+        self.sync()
+        self.served['yed'].update(['yed_claim', 'yed_sweepcarriers'])
 
 
 if __name__ == '__main__':
