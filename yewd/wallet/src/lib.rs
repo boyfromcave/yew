@@ -231,6 +231,22 @@ pub fn pq_fee_rate() -> i64 {
     }
 }
 
+/// `-pqfalconheight` (`-pqfalcon=1` = 0), ycashd's regtest Falcon height, which the wallet reads
+/// from its own options as ycashd's does (no node RPC reports it outside a live Yellowback);
+/// -1 = not given.
+static FALCON_HEIGHT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+
+pub fn set_falcon_height(h: i64) {
+    FALCON_HEIGHT.store(h, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn falcon_height() -> Option<i64> {
+    match FALCON_HEIGHT.load(std::sync::atomic::Ordering::SeqCst) {
+        h if h >= 0 => Some(h),
+        _ => None,
+    }
+}
+
 pub fn set_mocktime(t: i64) {
     MOCKTIME.store(t.max(0), std::sync::atomic::Ordering::SeqCst);
 }

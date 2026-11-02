@@ -77,6 +77,8 @@ pub const KNOWN: &[&str] = &[
     "disablewallet",
     "mocktime",
     "pqfeerate",
+    "pqfalconheight",
+    "pqfalcon",
     "printtoconsole",
     "debug",
     "help",
@@ -124,6 +126,8 @@ pub struct Config {
     pub mocktime: i64,
     /// `-pqfeerate=<YEC/kB>` (ycashd's wallet fee option): the size-priced fees' rate without a price.
     pub pq_fee_rate: i64,
+    /// `-pqfalconheight=<h>` / `-pqfalcon=1` (= 0): the regtest Falcon height; -1 = not given.
+    pub falcon_height: i64,
     /// Options given but not understood (reported at start).
     pub ignored: Vec<String>,
 }
@@ -383,6 +387,13 @@ impl Config {
                 wallet_file: a.get("wallet").map(PathBuf::from),
                 rescan: a.flag("rescan"),
                 salvage: a.flag("salvagewallet"),
+            },
+            falcon_height: match (a.get("pqfalconheight"), a.get("pqfalcon")) {
+                (Some(v), _) => v.parse().map_err(|_| {
+                    ConfigError(format!("yewd: -pqfalconheight={v} is not a height"))
+                })?,
+                (None, Some("1" | "")) => 0,
+                _ => -1,
             },
             pq_fee_rate: match a.get("pqfeerate") {
                 Some(v) => yewd_wallet::json::parse_amount(v)

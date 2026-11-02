@@ -759,7 +759,13 @@ impl Wallet {
             Some(f) => f,
             // mainnet and testnet run Falcon from the vault activation (D-Q-2); regtest only with
             // -pqfalconheight, which the node reports in yed_getinfo
-            None => self.network != yew_core::params::Network::Regtest && self.vault_active_next(),
+            None => match crate::falcon_height() {
+                // regtest -pqfalconheight: from that height, with the vault upgrade (IsPQFalconActive)
+                Some(h) => self.vault_active_next() && (self.tip_height() as i64 + 1) >= h,
+                None => {
+                    self.network != yew_core::params::Network::Regtest && self.vault_active_next()
+                }
+            },
         }
     }
 
