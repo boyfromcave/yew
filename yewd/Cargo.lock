@@ -3869,6 +3869,10 @@ dependencies = [
 name = "yewd-signer"
 version = "0.1.0"
 dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "yew-core",
  "yewd-proto",
 ]
 

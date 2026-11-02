@@ -2,3 +2,7 @@
 # The `yewd` job builds against these, never against a branch tip (plan §5).
 ycash6 65cb4ae0ff19094d9185b00c264c7dc8c1610f63 vaults/kogany-compat 2026-11-01
 kogany b90fc9b197212a1607612809a6c06de4caccf542 vaults/kogany-compat 2026-11-01
+# The pinned vector files yewd replays (kogany testdata/yellowback/PIN, byte copies of ycash6 src/test/data):
+# vector <file> <sha256>. Read by path from a kogany vaults/kogany-compat checkout beside yew (or yew's own
+# byte-identical copy core/tests/vectors/), and refused unless the bytes hash to this value.
+vector pq_wallet_vectors.json 053c765de96e0b943b1d4c7ad1b93bc6dac6c0f2f4c1087a7779f2fd504db34c
