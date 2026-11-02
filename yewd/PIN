@@ -1,0 +1,4 @@
+# The node revisions yewd's CI legs pull (the pattern of core/tests/vectors/PIN): <repo> <commit> <branch> <date>.
+# The `yewd` job builds against these, never against a branch tip (plan §5).
+ycash6 65cb4ae0ff19094d9185b00c264c7dc8c1610f63 vaults/kogany-compat 2026-11-01
+kogany b90fc9b197212a1607612809a6c06de4caccf542 vaults/kogany-compat 2026-11-01

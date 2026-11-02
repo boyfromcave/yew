@@ -1,0 +1,375 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
+//! The command line and the configuration file, ycashd-style: `-name=value`, `-name` (= 1),
+//! `-noname` (= 0), `--name` accepted too; the file holds `name=value` lines, `#` comments.
+//! The command line wins over the file. The contract is documented in `yewd/README.md`
+//! ("Command line") for the harness (`YEWD_BIN`).
+
+use std::collections::BTreeMap;
+use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
+
+use crate::allowip::AllowIp;
+
+/// The network, which picks the default RPC port and the data subdirectory (as ycashd's
+/// `chainparamsbase.cpp`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Network {
+    Main,
+    Test,
+    Regtest,
+}
+
+impl Network {
+    /// ycashd's default RPC port, so tools that assume it reach the façade.
+    pub fn default_rpc_port(self) -> u16 {
+        match self {
+            Network::Main => 8832,
+            Network::Test | Network::Regtest => 18832,
+        }
+    }
+
+    /// The subdirectory of `-datadir` that holds `.cookie` (empty on mainnet).
+    pub fn subdir(self) -> &'static str {
+        match self {
+            Network::Main => "",
+            Network::Test => "testnet",
+            Network::Regtest => "regtest",
+        }
+    }
+}
+
+/// The options yewd understands. Others are reported as ignored (stderr) and do not stop it,
+/// so a harness can pass ycashd's wallet arguments wholesale (S4 gives them meaning).
+pub const KNOWN: &[&str] = &[
+    "conf",
+    "datadir",
+    "regtest",
+    "testnet",
+    "rpcbind",
+    "rpcport",
+    "rpcuser",
+    "rpcpassword",
+    "rpcallowip",
+    "rpccookiefile",
+    "backendrpcconnect",
+    "backendrpcport",
+    "backendrpccookiefile",
+    "backendrpcuser",
+    "backendrpcpassword",
+    "stopbackend",
+    "signer",
+    "printtoconsole",
+    "debug",
+    "help",
+    "?",
+    "version",
+];
+
+/// The resolved configuration.
+#[derive(Clone, Debug)]
+pub struct Config {
+    pub network: Network,
+    pub datadir: PathBuf,
+    /// Where the façade listens.
+    pub bind: Vec<SocketAddr>,
+    /// `rpcuser:rpcpassword`, or `None` for cookie authentication.
+    pub user_pass: Option<(String, String)>,
+    /// The cookie file the façade writes when `user_pass` is `None`.
+    pub cookie_file: PathBuf,
+    pub allow: AllowIp,
+    /// The backend's JSON-RPC endpoint (kogany, or ycash6 `-disablewallet`).
+    pub backend: SocketAddr,
+    pub backend_auth: BackendAuth,
+    /// `stop` stops the backend too (the harness bundle: the pair is one node, hazard H6).
+    pub stop_backend: bool,
+    /// Reserved for S2: the signer's Unix-domain socket.
+    pub signer: Option<PathBuf>,
+    pub debug: bool,
+    /// Options given but not understood (reported at start).
+    pub ignored: Vec<String>,
+}
+
+/// How the façade authenticates to the backend.
+#[derive(Clone, Debug)]
+pub enum BackendAuth {
+    /// The backend's `.cookie` (`__cookie__:<hex>`), re-read whenever the backend answers 401
+    /// (a restarted backend writes a new one).
+    Cookie(PathBuf),
+    UserPass(String, String),
+}
+
+#[derive(Debug)]
+pub struct ConfigError(pub String);
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+fn err<T>(m: impl Into<String>) -> Result<T, ConfigError> {
+    Err(ConfigError(m.into()))
+}
+
+/// Parsed `name -> values` (a name may repeat: `rpcbind`, `rpcallowip`).
+#[derive(Clone, Debug, Default)]
+pub struct Args(BTreeMap<String, Vec<String>>);
+
+impl Args {
+    /// From the command line (without the program name).
+    pub fn from_cli<I: IntoIterator<Item = String>>(it: I) -> Result<Self, ConfigError> {
+        let mut a = Args::default();
+        for arg in it {
+            let Some(body) = arg.strip_prefix("--").or_else(|| arg.strip_prefix('-')) else {
+                return err(format!(
+                    "yewd: unexpected argument {arg:?} (options start with -)"
+                ));
+            };
+            a.push_option(body);
+        }
+        Ok(a)
+    }
+
+    /// From a configuration file's text.
+    pub fn from_conf(text: &str) -> Self {
+        let mut a = Args::default();
+        for line in text.lines() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if !line.is_empty() {
+                a.push_option(line);
+            }
+        }
+        a
+    }
+
+    fn push_option(&mut self, body: &str) {
+        let (name, value) = match body.split_once('=') {
+            Some((n, v)) => (n.trim().to_string(), v.trim().to_string()),
+            None => match body.strip_prefix("no") {
+                // `-nofoo` = `-foo=0`, as ycashd (only for a known option, so `-nonsense` stays itself)
+                Some(rest) if KNOWN.contains(&rest) => (rest.to_string(), "0".to_string()),
+                _ => (body.to_string(), "1".to_string()),
+            },
+        };
+        self.0.entry(name).or_default().push(value);
+    }
+
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.0.get(name).and_then(|v| v.last()).map(String::as_str)
+    }
+
+    pub fn all(&self, name: &str) -> &[String] {
+        self.0.get(name).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn flag(&self, name: &str) -> bool {
+        matches!(self.get(name), Some(v) if v != "0" && !v.is_empty())
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.0.contains_key(name)
+    }
+
+    /// `other` fills what `self` lacks (the command line over the file).
+    pub fn over(mut self, other: Args) -> Self {
+        for (k, v) in other.0 {
+            self.0.entry(k).or_insert(v);
+        }
+        self
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
+    }
+}
+
+fn default_datadir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".yewd")
+}
+
+fn parse_port(name: &str, v: &str) -> Result<u16, ConfigError> {
+    match v.parse::<u16>() {
+        Ok(p) if p > 0 => Ok(p),
+        _ => err(format!("yewd: -{name}={v} is not a port")),
+    }
+}
+
+fn parse_bind(v: &str, port: u16) -> Result<SocketAddr, ConfigError> {
+    if let Ok(sa) = v.parse::<SocketAddr>() {
+        return Ok(sa);
+    }
+    let host = v.trim_start_matches('[').trim_end_matches(']');
+    match host.parse::<IpAddr>() {
+        Ok(ip) => Ok(SocketAddr::new(ip, port)),
+        Err(_) => err(format!(
+            "yewd: -rpcbind={v} is not an IP address (host names are not resolved)"
+        )),
+    }
+}
+
+impl Config {
+    /// Resolve the command line, reading `-conf` (default `<datadir>/yewd.conf`, optional).
+    pub fn load(cli: Args) -> Result<Self, ConfigError> {
+        let datadir = cli
+            .get("datadir")
+            .map(PathBuf::from)
+            .unwrap_or_else(default_datadir);
+        let conf_given = cli.get("conf").map(PathBuf::from);
+        let conf_path = match &conf_given {
+            Some(p) if p.is_relative() => datadir.join(p),
+            Some(p) => p.clone(),
+            None => datadir.join("yewd.conf"),
+        };
+        let file = match std::fs::read_to_string(&conf_path) {
+            Ok(t) => Args::from_conf(&t),
+            Err(e) if conf_given.is_none() && e.kind() == std::io::ErrorKind::NotFound => {
+                Args::default()
+            }
+            Err(e) => return err(format!("yewd: cannot read {}: {e}", conf_path.display())),
+        };
+        Self::resolve(cli.over(file), datadir)
+    }
+
+    /// Resolve already merged options.
+    pub fn resolve(a: Args, datadir: PathBuf) -> Result<Self, ConfigError> {
+        let network = match (a.flag("regtest"), a.flag("testnet")) {
+            (true, true) => return err("yewd: -regtest and -testnet together"),
+            (true, false) => Network::Regtest,
+            (false, true) => Network::Test,
+            _ => Network::Main,
+        };
+        let port = match a.get("rpcport") {
+            Some(v) => parse_port("rpcport", v)?,
+            None => network.default_rpc_port(),
+        };
+        let bind = if a.all("rpcbind").is_empty() {
+            vec![SocketAddr::from(([127, 0, 0, 1], port))]
+        } else {
+            a.all("rpcbind")
+                .iter()
+                .map(|v| parse_bind(v, port))
+                .collect::<Result<_, _>>()?
+        };
+        let user_pass = match (a.get("rpcuser"), a.get("rpcpassword")) {
+            (_, None) | (_, Some("")) => None,
+            (u, Some(p)) => Some((u.unwrap_or("").to_string(), p.to_string())),
+        };
+        let netdir = datadir.join(network.subdir());
+        let cookie_file = match a.get("rpccookiefile") {
+            Some(p) if Path::new(p).is_relative() => netdir.join(p),
+            Some(p) => PathBuf::from(p),
+            None => netdir.join(".cookie"),
+        };
+        let allow =
+            AllowIp::parse(a.all("rpcallowip")).map_err(|e| ConfigError(format!("yewd: {e}")))?;
+        let backend_host = a.get("backendrpcconnect").unwrap_or("127.0.0.1");
+        let Some(backend_port) = a.get("backendrpcport") else {
+            return err("yewd: -backendrpcport is required (the wallet-less node's RPC port)");
+        };
+        let backend_port = parse_port("backendrpcport", backend_port)?;
+        let backend = parse_bind(backend_host, backend_port).map_err(|_| {
+            ConfigError(format!(
+                "yewd: -backendrpcconnect={backend_host} is not an IP address"
+            ))
+        })?;
+        let backend_auth = match (a.get("backendrpccookiefile"), a.get("backendrpcpassword")) {
+            (Some(c), None) => BackendAuth::Cookie(PathBuf::from(c)),
+            (None, Some(p)) => BackendAuth::UserPass(
+                a.get("backendrpcuser").unwrap_or("").to_string(),
+                p.to_string(),
+            ),
+            (Some(_), Some(_)) => {
+                return err("yewd: give -backendrpccookiefile or -backendrpcpassword, not both")
+            }
+            (None, None) => return err(
+                "yewd: -backendrpccookiefile (or -backendrpcuser/-backendrpcpassword) is required",
+            ),
+        };
+        let ignored = a
+            .names()
+            .filter(|n| !KNOWN.contains(n))
+            .map(|n| format!("-{n}"))
+            .collect();
+        Ok(Config {
+            network,
+            datadir,
+            bind,
+            user_pass,
+            cookie_file,
+            allow,
+            backend,
+            backend_auth,
+            stop_backend: a.flag("stopbackend"),
+            signer: a.get("signer").map(PathBuf::from),
+            debug: a.has("debug"),
+            ignored,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cli(v: &[&str]) -> Args {
+        Args::from_cli(v.iter().map(|s| s.to_string())).unwrap()
+    }
+
+    #[test]
+    fn regtest_defaults() {
+        let c = Config::resolve(
+            cli(&[
+                "-regtest",
+                "-backendrpcport=28832",
+                "-backendrpccookiefile=/b/.cookie",
+            ]),
+            PathBuf::from("/d"),
+        )
+        .unwrap();
+        assert_eq!(c.network, Network::Regtest);
+        assert_eq!(c.bind, vec!["127.0.0.1:18832".parse().unwrap()]);
+        assert_eq!(c.cookie_file, PathBuf::from("/d/regtest/.cookie"));
+        assert!(c.user_pass.is_none());
+        assert!(!c.stop_backend);
+        assert_eq!(c.backend, "127.0.0.1:28832".parse().unwrap());
+    }
+
+    #[test]
+    fn cli_over_file_and_ignored_options() {
+        let file = Args::from_conf(
+            "regtest=1\nrpcuser=u\nrpcpassword=p # c\nrpcport=19000\nshowmetrics=0\n",
+        );
+        let a = cli(&[
+            "-rpcport=19001",
+            "--stopbackend",
+            "-keypool=1",
+            "-backendrpcport=1",
+            "-backendrpcpassword=x",
+        ])
+        .over(file);
+        let c = Config::resolve(a, PathBuf::from("/d")).unwrap();
+        assert_eq!(c.bind[0].port(), 19001);
+        assert_eq!(c.user_pass, Some(("u".into(), "p".into())));
+        assert!(c.stop_backend);
+        assert_eq!(
+            c.ignored,
+            vec!["-keypool".to_string(), "-showmetrics".to_string()]
+        );
+    }
+
+    #[test]
+    fn negation_and_errors() {
+        assert!(!cli(&["-nostopbackend"]).flag("stopbackend"));
+        assert!(Config::resolve(cli(&["-regtest"]), PathBuf::from("/d")).is_err());
+        assert!(Config::resolve(cli(&["-backendrpcport=1"]), PathBuf::from("/d")).is_err());
+        assert!(Args::from_cli(["plain".to_string()]).is_err());
+    }
+}
