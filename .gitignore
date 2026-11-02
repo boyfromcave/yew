@@ -14,3 +14,4 @@ app/android/local.properties
 # Owner-only signing material (plan §7 W0a [owner])
 app/ios/ExportOptions.plist
 .DS_Store
+__pycache__/
