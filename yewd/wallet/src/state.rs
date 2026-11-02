@@ -80,8 +80,37 @@ pub struct State {
     pub tip: Option<Tip>,
     pub recent: Vec<Tip>,
     pub wtx: BTreeMap<String, WalletTx>,
-    /// Locked outpoints (`txid:n`), as ycashd's `setLockedCoins`.
+    /// Locked outpoints (`txid:n`), as ycashd's `setLockedCoins`; persisted (ycashd keeps them in
+    /// memory only, but the coins its vault builds lock are re-locked from `mapVaultBuilds` at
+    /// load: the same set survives a restart).
     pub locks: BTreeSet<String>,
+    /// The remembered vault and act builds (ycashd `mapVaultBuilds`, the `vaultbuild` row, 07/N-2):
+    /// template outpoint (or an act's `vin[0]`) → the unsigned transaction, hex.
+    #[serde(default)]
+    pub builds: BTreeMap<String, String>,
+    /// The intent recipients this wallet built (`mapVaultRecipients`): recipient hash (raw hex) →
+    /// the recipient script, hex.
+    #[serde(default)]
+    pub recipients: BTreeMap<String, String>,
+    /// The v3 carriers this wallet funded (ycashd `carriers.dat`, W7): carrier outpoint → record,
+    /// until the MINT/CLAIM spends it or `yed_sweepcarriers` reclaims it.
+    #[serde(default)]
+    pub carriers: BTreeMap<String, CarrierRec>,
+}
+
+/// A carrier (`CarrierRecord`): its key (external chain index), the bundle it commits to, its
+/// reference height and selector.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CarrierRec {
+    pub index: u32,
+    /// The compressed public key, hex.
+    pub pk: String,
+    /// The bundle bytes, hex (empty while unarmed).
+    pub bundle: String,
+    pub ref_height: i64,
+    /// The selector, hex (empty for a MINT).
+    pub selector: String,
+    pub created_height: i64,
 }
 
 impl State {
@@ -99,6 +128,9 @@ impl State {
             recent: Vec::new(),
             wtx: BTreeMap::new(),
             locks: BTreeSet::new(),
+            builds: BTreeMap::new(),
+            recipients: BTreeMap::new(),
+            carriers: BTreeMap::new(),
         }
     }
 

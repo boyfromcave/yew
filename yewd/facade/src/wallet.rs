@@ -2,10 +2,15 @@
 // Distributed under the MIT software license, see the accompanying
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
-//! The façade's wallet: `yewd-wallet` over the backend connection, the signer as a child
-//! process (S1; K-24: the seed never enters this process), the barrier every wallet RPC passes
-//! (H1) and the poll that keeps the wallet at the node's tip between calls (the fallback the
-//! plan requires anyway; ycash6 has no indexer streams).
+//! The façade's wallet: `yewd-wallet` over the backend connection, the signer as a separate
+//! process on a Unix socket (K-24: the seed never enters this process; S2), the barrier every
+//! wallet RPC passes (H1) and the poll that keeps the wallet at the node's tip between calls (the
+//! fallback the plan requires anyway; ycash6 has no indexer streams).
+//!
+//! **The signer process.** Unless `-signer=<socket>` names a signer someone else runs, the façade
+//! starts `yewd-signer serve -socket=<datadir>/<net>/signer/signer.sock -watchstdin` as its child
+//! (after `init`), keeps the child's standard input open, and so stops it by exiting: the signer
+//! exits when that pipe closes. Every signature is requested over the socket ([`SocketSigner`]).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -86,6 +91,86 @@ impl Signer for ProcessSigner {
     }
 }
 
+/// The signer over its Unix socket (K-24 (a)): the protocol of `yewd-proto`.
+pub struct SocketSigner {
+    client: yewd_proto::client::SocketClient,
+    /// The signer process this façade started (killed with the façade).
+    _child: Option<std::sync::Mutex<std::process::Child>>,
+}
+
+impl SocketSigner {
+    pub fn connect(path: PathBuf) -> SocketSigner {
+        SocketSigner {
+            client: yewd_proto::client::SocketClient::new(path),
+            _child: None,
+        }
+    }
+
+    /// Start `bin serve` for the signer directory `dir` and wait until it listens.
+    pub fn spawn(bin: &Path, dir: &Path, network: Network) -> Result<SocketSigner, String> {
+        use std::io::BufRead;
+        use std::process::Stdio;
+        let sock = yewd_proto::client::socket_path(dir, my_uid());
+        let mut cmd = Command::new(bin);
+        cmd.arg(format!("-datadir={}", dir.display()));
+        if let Some(f) = net_flag(network) {
+            cmd.arg(f);
+        }
+        cmd.arg("serve")
+            .arg(format!("-socket={}", sock.display()))
+            .arg("-watchstdin")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("cannot run the signer {}: {e}", bin.display()))?;
+        let out = child.stdout.take().ok_or("the signer has no stdout")?;
+        let mut line = String::new();
+        std::io::BufReader::new(out)
+            .read_line(&mut line)
+            .map_err(|e| format!("the signer did not start: {e}"))?;
+        if !line.contains("listening") {
+            let _ = child.kill();
+            return Err(format!("the signer did not start: {}", line.trim()));
+        }
+        Ok(SocketSigner {
+            client: yewd_proto::client::SocketClient::new(sock),
+            _child: Some(std::sync::Mutex::new(child)),
+        })
+    }
+}
+
+impl Drop for SocketSigner {
+    fn drop(&mut self) {
+        if let Some(c) = &self._child {
+            if let Ok(mut c) = c.lock() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+        }
+    }
+}
+
+impl Signer for SocketSigner {
+    fn public(&self, req: &PublicRequest) -> Result<PublicBundle, String> {
+        match self.client.call(yewd_proto::Request::Public(req.clone()))? {
+            yewd_proto::Response::Public(b) => Ok(b),
+            yewd_proto::Response::Refused(r) => Err(format!("{}: {}", r.code, r.reason)),
+            other => Err(format!("unexpected signer answer {other:?}")),
+        }
+    }
+
+    fn request(&self, r: yewd_proto::Request) -> Result<yewd_proto::Response, String> {
+        self.client.call(r)
+    }
+}
+
+fn my_uid() -> u32 {
+    // SAFETY: geteuid has no preconditions.
+    unsafe { libc::geteuid() }
+}
+
 /// The signer binary: `-signerbin`, else `yewd-signer` beside this executable.
 pub fn default_signer_bin() -> PathBuf {
     std::env::current_exe()
@@ -126,8 +211,10 @@ impl Node for BackendNode {
 
 /// How the wallet's signer is made.
 pub enum SignerSource {
-    /// `yewd-signer` as a child process (production).
+    /// `yewd-signer` as a child process serving the socket (production).
     Process(PathBuf),
+    /// A signer already serving the socket at this path (`-signer=<socket>`).
+    Socket(PathBuf),
     /// An in-process signer (the façade's own tests only).
     Given(Box<dyn Signer>),
 }
@@ -217,16 +304,29 @@ impl WalletService {
         };
         let (signer, birthday): (Box<dyn Signer>, u32) = match source {
             SignerSource::Process(bin) => {
+                let dir = self.dir.join("signer");
                 let ps = ProcessSigner {
-                    bin,
-                    dir: self.dir.join("signer"),
+                    bin: bin.clone(),
+                    dir: dir.clone(),
                     network: self.network,
                 };
                 let b = ps
                     .init(height)
                     .map_err(|e| RpcError::new(code::WALLET_ERROR, format!("yewd: {e}")))?;
-                (Box::new(ps), b)
+                let s = match SocketSigner::spawn(&bin, &dir, self.network) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        *self.signer.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some(SignerSource::Process(bin));
+                        return Err(RpcError::new(
+                            code::WALLET_UNLOCK_NEEDED,
+                            format!("yewd: {e}"),
+                        ));
+                    }
+                };
+                (Box::new(s), b)
             }
+            SignerSource::Socket(path) => (Box::new(SocketSigner::connect(path)), height),
             SignerSource::Given(s) => (s, height),
         };
         let w = Wallet::open(
@@ -248,6 +348,36 @@ impl WalletService {
         w.sync(&self.node).await?;
         let r: J = w.call(&self.node, method, params).await?;
         Ok(r.text())
+    }
+
+    /// `sendrawtransaction`'s H7 guard (`allowyedburn`): the type checks of `RPCTypeCheck`, then
+    /// the refusal of a transaction that destroys this wallet's YED unless the caller allows it.
+    pub async fn burn_guard(&self, params: &[Value]) -> Result<(), RpcError> {
+        for (i, want) in [(1usize, "bool"), (2, "bool")] {
+            if let Some(v) = params.get(i).filter(|v| !v.is_null()) {
+                if !v.is_boolean() {
+                    let got = match v {
+                        Value::String(_) => "string",
+                        Value::Number(_) => "number",
+                        Value::Array(_) => "array",
+                        Value::Object(_) => "object",
+                        _ => "null",
+                    };
+                    return Err(RpcError::new(
+                        code::TYPE_ERROR,
+                        format!("Expected type {want}, got {got}"),
+                    ));
+                }
+            }
+        }
+        if params.get(2).and_then(|v| v.as_bool()) == Some(true) {
+            return Ok(());
+        }
+        let mut slot = self.wallet.lock().await;
+        self.ensure_open(&mut slot).await?;
+        let w = slot.as_mut().expect("opened");
+        w.sync(&self.node).await?;
+        w.yed_burn_guard(&self.node, params).await
     }
 
     /// A read the wallet answers without forwarding (`z_validateaddress`).
@@ -290,6 +420,8 @@ impl WalletService {
                         if me.debug {
                             eprintln!("yewd: wallet sync: {e}");
                         }
+                    } else if !w.pending.is_empty() {
+                        w.complete_pending(&me.node).await;
                     }
                 }
             }

@@ -32,6 +32,7 @@ serde_json = { version = "=1.0.151", features = ["raw_value"] }
 base64 = "=0.22.1"
 getrandom = "=0.2.17"
 hex = "=0.4.3"
+libc = "=0.2.189"
 yewd-proto = { path = "proto" }
 # The wallet's chain reading (S1): the block and transaction parser and the Sapling viewing side,
 # from the same sources and revisions yew-core already locks (one copy of each in the graph).

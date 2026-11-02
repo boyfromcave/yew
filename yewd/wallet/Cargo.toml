@@ -21,7 +21,7 @@ zcash_protocol.workspace = true
 zcash_keys.workspace = true
 sapling-crypto.workspace = true
 zip32.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 yewd-signer = { path = "../signer" }
-tokio = { workspace = true }

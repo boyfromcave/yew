@@ -3851,6 +3851,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "libc",
  "serde",
  "serde_json",
  "tokio",
@@ -3864,8 +3865,11 @@ dependencies = [
 name = "yewd-proto"
 version = "0.1.0"
 dependencies = [
+ "hex",
+ "secp256k1 0.33.1",
  "serde",
  "serde_json",
+ "yew-core",
 ]
 
 [[package]]
@@ -3873,6 +3877,8 @@ name = "yewd-signer"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "libc",
+ "secp256k1 0.33.1",
  "serde",
  "serde_json",
  "yew-core",

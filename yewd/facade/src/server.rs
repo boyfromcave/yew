@@ -255,6 +255,18 @@ impl Facade {
                     .await
             }
             // node RPCs and the raw helpers (S4 serves them locally): forwarded unchanged
+            // H7: sendrawtransaction's allowyedburn is the wallet's guard (ycash6
+            // rpc/rawtransaction.cpp); the node accepts the flag and ignores it
+            None if method == "sendrawtransaction" => {
+                let params = match params_of(env.params) {
+                    Ok(p) => p,
+                    Err(m) => return error_reply(code::INVALID_REQUEST, m, id),
+                };
+                if let Err(e) = self.wallet.burn_guard(&params).await {
+                    return error_reply(e.code, &e.message, id);
+                }
+                self.forward(path, body.clone(), id).await
+            }
             Some(Class::Local) | None => self.forward(path, body.clone(), id).await,
         }
     }

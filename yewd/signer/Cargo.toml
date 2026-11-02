@@ -21,3 +21,5 @@ yew-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
+libc.workspace = true
+secp256k1 = { workspace = true, features = ["recovery"] }

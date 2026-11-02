@@ -110,7 +110,7 @@ async fn batches_mix_local_and_forwarded() {
     )
     .await;
     let c = client(&f, "u", "p");
-    let body = r#"[{"id":1,"method":"getblockcount","params":[]},{"id":2,"method":"yed_mint","params":[]},{"id":3,"method":"sendtoaddress"}]"#;
+    let body = r#"[{"id":1,"method":"getblockcount","params":[]},{"id":2,"method":"yed_signattestation","params":[]},{"id":3,"method":"backupwallet"}]"#;
     let (status, out) = c.call("/", Bytes::from(body)).await.unwrap();
     assert_eq!(status, StatusCode::OK);
     let v: Vec<serde_json::Value> = serde_json::from_slice(&out).unwrap();
@@ -145,7 +145,7 @@ async fn help_lists_the_wallet_table() {
     for (m, _, _) in methods::wallet_methods() {
         assert!(text.contains(&format!("\n{m}  ")), "{m}");
     }
-    let (_, v, _) = call(&c, "help", r#"["vault_lock"]"#).await;
+    let (_, v, _) = call(&c, "help", r#"["yed_registerattestor"]"#).await;
     assert!(v["result"]
         .as_str()
         .unwrap()
@@ -240,7 +240,7 @@ async fn unreachable_backend_answers_warmup() {
         -28
     );
     assert_eq!(
-        call(&client(&f, "u", "p"), "sendtoaddress", "[]").await.1["error"]["code"],
+        call(&client(&f, "u", "p"), "backupwallet", "[]").await.1["error"]["code"],
         -32601
     );
 }

@@ -88,7 +88,8 @@ pub struct Config {
     pub backend_auth: BackendAuth,
     /// `stop` stops the backend too (the harness bundle: the pair is one node, hazard H6).
     pub stop_backend: bool,
-    /// Reserved for S2: the signer's Unix-domain socket.
+    /// A signer someone else runs: its Unix-domain socket (`yewd-signer serve`); without it the
+    /// façade starts its own signer process.
     pub signer: Option<PathBuf>,
     /// The `yewd-signer` binary (S1 runs it as a child process); default beside `yewd`.
     pub signer_bin: Option<PathBuf>,

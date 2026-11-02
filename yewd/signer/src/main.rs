@@ -4,17 +4,20 @@
 
 //! `yewd-signer`: the separate process that holds the seed (workspace plan §3b, K-24).
 //!
-//! S1 commands (the façade runs them as a child process; S2 replaces this with the Unix-socket
-//! server and adds signing):
+//! Commands:
 //!
 //! ```text
 //! yewd-signer -datadir=<dir> [-regtest|-testnet] init [-mnemonic="<words>"] [-birthday=<h>]
 //! yewd-signer -datadir=<dir> [-regtest|-testnet] public [-pq=<scheme>:<from>:<count>]...
+//! yewd-signer -datadir=<dir> [-regtest|-testnet] serve [-socket=<path>] [-watchstdin]
 //! yewd-signer -version
 //! ```
 //!
 //! `init` prints `{"created": bool, "birthday": n}`; `public` prints the
-//! [`yewd_proto::PublicBundle`] JSON. Errors go to stderr with exit status 1.
+//! [`yewd_proto::PublicBundle`] JSON; `serve` (S2) answers the protocol of `yewd-proto` on the Unix
+//! socket (`<dir>/signer.sock` by default), prints `{"listening": "<path>"}` once it accepts, and with
+//! `-watchstdin` exits when its standard input closes (the façade that started it is gone).
+//! Errors go to stderr with exit status 1.
 
 use std::path::PathBuf;
 
@@ -26,6 +29,7 @@ fn usage() -> ! {
     eprintln!(
         "usage: yewd-signer -datadir=<dir> [-regtest|-testnet] init [-mnemonic=\"<words>\"] [-birthday=<h>]\n       \
          yewd-signer -datadir=<dir> [-regtest|-testnet] public [-pq=<scheme>:<from>:<count>]...\n       \
+         yewd-signer -datadir=<dir> [-regtest|-testnet] serve [-socket=<path>] [-watchstdin]\n       \
          yewd-signer -version"
     );
     std::process::exit(2)
@@ -43,6 +47,8 @@ fn main() {
     let mut mnemonic: Option<String> = None;
     let mut birthday = 0u64;
     let mut req = PublicRequest::default();
+    let mut socket: Option<PathBuf> = None;
+    let mut watch_stdin = false;
     for arg in std::env::args().skip(1) {
         let body = arg
             .strip_prefix("--")
@@ -64,6 +70,8 @@ fn main() {
             "regtest" => network = Network::Regtest,
             "testnet" => network = Network::Testnet,
             "mnemonic" => mnemonic = Some(value),
+            "socket" => socket = Some(PathBuf::from(value)),
+            "watchstdin" => watch_stdin = true,
             "birthday" => birthday = value.parse().unwrap_or_else(|_| usage()),
             "pq" => {
                 let parts: Vec<&str> = value.split(':').collect();
@@ -103,6 +111,16 @@ fn main() {
             match ks.public(&req) {
                 Ok(b) => println!("{}", serde_json::to_string(&b).expect("serializable")),
                 Err(e) => fail(e),
+            }
+        }
+        Some("serve") => {
+            let ks = Keystore::load(&dir, network).unwrap_or_else(|e| fail(e));
+            let core = yewd_signer::sign::SignerCore::open(ks, &dir).unwrap_or_else(|e| fail(e));
+            let path = socket.unwrap_or_else(|| {
+                yewd_proto::client::socket_path(&dir, yewd_signer::server::my_uid())
+            });
+            if let Err(e) = yewd_signer::server::serve(core, path, watch_stdin) {
+                fail(e)
             }
         }
         _ => usage(),
