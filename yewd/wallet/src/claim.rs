@@ -332,7 +332,19 @@ impl Wallet {
                 .and_then(|b| b.try_into().ok())
                 .unwrap_or([0; 32]),
         };
-        let residual = a.row["residualZat"].as_i64().unwrap_or(0);
+        // ClaimAt at the carrier's R with the carrier's bundle (not the preflight row's figure)
+        let (claim_path, residual) = claim_residual(
+            collateral,
+            minted,
+            v["pMint"].as_i64().unwrap_or(0),
+            p_claim,
+            p_emerg,
+        )
+        .ok_or_else(|| {
+            build_error(
+                "claim-not-underwater: the cap price is undefined at the reference height".into(),
+            )
+        })?;
         let utxo = |c: &crate::yed::YedCoin| yew_core::coins::Utxo {
             outpoint: c.outpoint,
             address: String::new(),
@@ -521,10 +533,7 @@ impl Wallet {
                 )
                 .with("pClaim", crate::armed::opt(p_claim))
                 .with("pEmerg", crate::armed::opt(p_emerg))
-                .with(
-                    "claimPath",
-                    a.row["claimPath"].as_str().unwrap_or("").to_string(),
-                )
+                .with("claimPath", claim_path)
                 .with("bundleSeqs", pm.facts.seqs_json())
                 .with("attestFeeZat", attest_fee)
                 .with(
@@ -784,6 +793,83 @@ impl Wallet {
             .with("pEmerg", crate::armed::opt(n.2))
             .with("bundleSeqs", pm.facts.seqs_json())
             .with("emergencyOpenAt", r + n.3))
+    }
+}
+
+/// RED-5' (`params.cpp` `residualMinCents`; not reported by `yed_getinfo`): $0.48 at the vault's pMint.
+const RESIDUAL_MIN_CENTS: i64 = 48;
+
+/// `ResidualMinZat` (`math.h`): `max(RESIDUAL_MIN_ZAT, ⌈cents · 10⁴ · COIN / pMint⌉)`.
+fn residual_min_zat(p_mint: i64) -> i64 {
+    let floor = yew_core::params::RESIDUAL_MIN_ZAT;
+    if p_mint <= 0 {
+        return floor;
+    }
+    let z = (RESIDUAL_MIN_CENTS as u128
+        * yew_core::params::BPS as u128
+        * yew_core::params::COIN as u128)
+        .div_ceil(p_mint as u128);
+    i64::try_from(z).map(|z| z.max(floor)).unwrap_or(floor)
+}
+
+/// `ClaimAt`'s residual (txbuilder.cpp, RED-5b/RED-5'): path (a) when underwater at `pClaim`
+/// (cap at `pClaim`, margin `claimThresholdBps`), else path (b) (cap at `pEmerg`, margin 10⁴);
+/// `(claimPath, residualZat)`; `None` when the cap price is undefined.
+fn claim_residual(
+    collateral: i64,
+    minted: i64,
+    p_mint: i64,
+    p_claim: Option<i64>,
+    p_emerg: Option<i64>,
+) -> Option<(&'static str, i64)> {
+    let th = yew_core::params::CLAIM_THRESHOLD_BPS;
+    let a = crate::armed::is_underwater(collateral, p_claim, minted, th);
+    let cap = if a { p_claim } else { p_emerg }.filter(|p| *p > 0)?;
+    let margin = if a { th } else { yew_core::params::BPS };
+    let max = (minted.max(0) as u128 * margin as u128 * yew_core::params::COIN as u128)
+        .div_ceil(cap as u128);
+    let r = i64::try_from(max)
+        .ok()
+        .filter(|m| collateral > *m)
+        .map(|m| collateral - m)
+        .unwrap_or(0);
+    let r = if r >= residual_min_zat(p_mint) { r } else { 0 };
+    Some((if a { "a" } else { "b" }, r))
+}
+
+#[cfg(test)]
+mod residual_tests {
+    use super::*;
+
+    #[test]
+    fn residual_paths_and_floor() {
+        // 100 YED at pEmerg 0.80 USD: claimant max 125 YEC; 200 YEC collateral leaves 75 YEC
+        let coin = yew_core::params::COIN as i64;
+        let (c, m) = (200 * coin, 10_000);
+        // underwater at pClaim 0.60 (a): cap = 10000·1.25·COIN/0.6 = 208.33 YEC > collateral -> 0
+        assert_eq!(
+            claim_residual(c, m, 1_000_000, Some(600_000), Some(600_000)),
+            Some(("a", 0))
+        );
+        // pClaim 1.00 not underwater (a) -> path (b) at pEmerg 0.80: 125 YEC
+        assert_eq!(
+            claim_residual(c, m, 1_000_000, Some(1_000_000), Some(800_000)),
+            Some(("b", 75 * coin))
+        );
+        assert_eq!(claim_residual(c, m, 1_000_000, Some(1_000_000), None), None);
+        // RED-5': 0.48 YEC at pMint 1.00 USD floors a smaller residual
+        assert_eq!(residual_min_zat(1_000_000), 48_000_000);
+        assert_eq!(residual_min_zat(0), yew_core::params::RESIDUAL_MIN_ZAT);
+        assert_eq!(
+            claim_residual(
+                125 * coin + 47_000_000,
+                m,
+                1_000_000,
+                Some(1_000_000),
+                Some(800_000)
+            ),
+            Some(("b", 0))
+        );
     }
 }
 
