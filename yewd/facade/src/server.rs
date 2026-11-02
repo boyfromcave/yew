@@ -271,7 +271,9 @@ impl Facade {
             Some(Class::Wallet { .. }) if method == "encryptwallet" => {
                 // ycashd stops after encrypting (StartShutdown); the pair is one node (H6)
                 let r = self.wallet_call(&method, env.params, id).await;
-                if r.0 == StatusCode::OK {
+                let took = serde_json::from_slice::<serde_json::Value>(&r.1)
+                    .is_ok_and(|v| v.get("error").is_none_or(|e| e.is_null()));
+                if r.0 == StatusCode::OK && took {
                     self.begin_stop("/").await;
                 }
                 r
@@ -321,6 +323,18 @@ impl Facade {
                     return error_reply(e.code, &e.message, id);
                 }
                 self.forward(path, body.clone(), id).await
+            }
+            // H11: setmocktime reaches the node (kogany W7-e) and, once it took it, the façade's clock
+            None if method == "setmocktime" => {
+                let r = self.forward(path, body.clone(), id).await;
+                if r.0 == StatusCode::OK {
+                    if let Ok(p) = params_of(env.params) {
+                        if let Some(t) = p.first().and_then(|v| v.as_i64()) {
+                            yewd_wallet::set_mocktime(t);
+                        }
+                    }
+                }
+                r
             }
             None => self.forward(path, body.clone(), id).await,
         }

@@ -204,7 +204,20 @@ pub struct ChainFacts {
     pub falcon_active: Option<bool>,
 }
 
-fn now() -> i64 {
+/// The façade's mock clock (H11, F-S4-11): `-mocktime` at start and every `setmocktime` the façade
+/// forwards set it, as ycashd's `SetMockTime`; 0 = the system clock.
+static MOCKTIME: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+pub fn set_mocktime(t: i64) {
+    MOCKTIME.store(t.max(0), std::sync::atomic::Ordering::SeqCst);
+}
+
+/// ycashd's `GetTime()`: the mock time when set, else the system clock.
+pub fn now() -> i64 {
+    let m = MOCKTIME.load(std::sync::atomic::Ordering::SeqCst);
+    if m > 0 {
+        return m;
+    }
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

@@ -75,6 +75,7 @@ pub const KNOWN: &[&str] = &[
     "backendexitgrace",
     "backendindexer",
     "disablewallet",
+    "mocktime",
     "printtoconsole",
     "debug",
     "help",
@@ -118,6 +119,8 @@ pub struct Config {
     /// `-disablewallet` (ycashd's): no wallet is opened and no wallet method is served; the façade
     /// is the node's RPC alone (a node a script starts without a wallet, in the harness's pairs).
     pub disable_wallet: bool,
+    /// `-mocktime=<t>` (ycashd's): the façade's clock starts mocked (H11).
+    pub mocktime: i64,
     /// Options given but not understood (reported at start).
     pub ignored: Vec<String>,
 }
@@ -377,6 +380,12 @@ impl Config {
                 wallet_file: a.get("wallet").map(PathBuf::from),
                 rescan: a.flag("rescan"),
                 salvage: a.flag("salvagewallet"),
+            },
+            mocktime: match a.get("mocktime") {
+                Some(v) => v.parse().map_err(|_| {
+                    ConfigError(format!("yewd: -mocktime={v} is not a number of seconds"))
+                })?,
+                None => 0,
             },
             disable_wallet: a.get("disablewallet").is_some_and(|v| v != "0")
                 || a.flag("disablewallet"),
