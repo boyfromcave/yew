@@ -98,16 +98,28 @@ pub(crate) async fn yed_info(node: &dyn Node) -> Result<YedInfo, RpcError> {
         index_height: v["height"].as_i64().unwrap_or(0),
         ref_lag: p["refLag"].as_i64().unwrap_or(2),
         ref_window: p["refWindow"].as_i64().unwrap_or(40),
-        flat_fee: p["feeZat"].as_i64().or_else(|| net["flatZat"].as_i64()).unwrap_or(10_000),
+        flat_fee: p["feeZat"]
+            .as_i64()
+            .or_else(|| net["flatZat"].as_i64())
+            .unwrap_or(10_000),
         rate_per_kb: net["yellowback"]["zatPerKB"].as_i64().unwrap_or(0),
-        max_fee: net["yellowback"]["maxTxFeeZat"].as_i64().unwrap_or(crate::build::DEFAULT_MAX_TX_FEE),
+        max_fee: net["yellowback"]["maxTxFeeZat"]
+            .as_i64()
+            .unwrap_or(crate::build::DEFAULT_MAX_TX_FEE),
     })
 }
 
 /// A build failure with ycashd's code (`ThrowBuildError`): the rule identifiers `-26`... as the
 /// node maps them; the parameter identifiers `-8`; the rest `-4`.
 fn build_error(msg: String) -> RpcError {
-    const PARAM: &[&str] = &["bad-xfer-amount", "not-a-yellowback-address", "bad-address", "vault-not-found", "vault-not-active", "vault-not-owned"];
+    const PARAM: &[&str] = &[
+        "bad-xfer-amount",
+        "not-a-yellowback-address",
+        "bad-address",
+        "vault-not-found",
+        "vault-not-active",
+        "vault-not-owned",
+    ];
     if PARAM.iter().any(|p| msg.starts_with(p)) {
         RpcError::new(code::INVALID_PARAMETER, msg)
     } else if msg.starts_with("mempool-check-failed") || msg.starts_with("vault-spend-") {
@@ -118,25 +130,45 @@ fn build_error(msg: String) -> RpcError {
 }
 
 impl Wallet {
-    pub async fn yed_call(&mut self, node: &dyn Node, method: &str, p: &[Value]) -> Result<J, RpcError> {
+    pub async fn yed_call(
+        &mut self,
+        node: &dyn Node,
+        method: &str,
+        p: &[Value],
+    ) -> Result<J, RpcError> {
         match method {
             "yed_send" => {
                 if p.len() != 2 {
-                    return Err(RpcError::new(code::MISC_ERROR, "yed_send \"yedaddress\" cents"));
+                    return Err(RpcError::new(
+                        code::MISC_ERROR,
+                        "yed_send \"yedaddress\" cents",
+                    ));
                 }
                 let dest = self.parse_yed_address(&p[0])?;
-                let cents = p[1].as_i64().ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type number"))?;
+                let cents = p[1]
+                    .as_i64()
+                    .ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type number"))?;
                 self.do_send(node, vec![(dest, cents)]).await
             }
             "yed_sendmany" => {
                 if p.len() != 1 {
-                    return Err(RpcError::new(code::MISC_ERROR, "yed_sendmany {\"yedaddress\":cents,...}"));
+                    return Err(RpcError::new(
+                        code::MISC_ERROR,
+                        "yed_sendmany {\"yedaddress\":cents,...}",
+                    ));
                 }
-                let o = p[0].as_object().ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type object"))?;
+                let o = p[0]
+                    .as_object()
+                    .ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type object"))?;
                 let mut r = Vec::new();
                 for (k, v) in o {
                     let dest = self.parse_yed_address(&Value::String(k.clone()))?;
-                    r.push((dest, v.as_i64().ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type number"))?));
+                    r.push((
+                        dest,
+                        v.as_i64().ok_or_else(|| {
+                            RpcError::new(code::TYPE_ERROR, "Expected type number")
+                        })?,
+                    ));
                 }
                 self.do_send(node, r).await
             }
@@ -164,7 +196,10 @@ impl Wallet {
                 }
             }
         }
-        let prefix: String = yew_core::keys::encode_yellowback(self.network, &[0u8; 20]).chars().take(2).collect();
+        let prefix: String = yew_core::keys::encode_yellowback(self.network, &[0u8; 20])
+            .chars()
+            .take(2)
+            .collect();
         Err(invalid(format!("not-a-yellowback-address: expected a Yellowback address of this network (prefix '{prefix}')")))
     }
 
@@ -179,33 +214,55 @@ impl Wallet {
             if spent.contains(&(txid.clone(), vout)) {
                 continue;
             }
-            let Some(c) = self.coins.iter().find(|c| c.txid == txid && c.vout == vout) else { continue };
+            let Some(c) = self.coins.iter().find(|c| c.txid == txid && c.vout == vout) else {
+                continue;
+            };
             v.push(YedCoin {
-                outpoint: OutPoint { txid: yew_core::tx::txid_from_hex(&txid).map_err(|e| RpcError::new(code::MISC_ERROR, e))?, n: vout },
+                outpoint: OutPoint {
+                    txid: yew_core::tx::txid_from_hex(&txid)
+                        .map_err(|e| RpcError::new(code::MISC_ERROR, e))?,
+                    n: vout,
+                },
                 cents: t["cents"].as_i64().unwrap_or(0),
                 script: c.script.clone(),
                 value: c.value,
             });
         }
         v.sort_by(|a, b| {
-            (a.cents, txid_hex(&a.outpoint.txid), a.outpoint.n).cmp(&(b.cents, txid_hex(&b.outpoint.txid), b.outpoint.n))
+            (a.cents, txid_hex(&a.outpoint.txid), a.outpoint.n).cmp(&(
+                b.cents,
+                txid_hex(&b.outpoint.txid),
+                b.outpoint.n,
+            ))
         });
         Ok(v)
     }
 
     /// `SelectYed` (a transfer never burns).
-    fn select_yed(coins: &[YedCoin], needed: i64) -> Result<(Vec<YedCoin>, i64, &'static str), RpcError> {
+    fn select_yed(
+        coins: &[YedCoin],
+        needed: i64,
+    ) -> Result<(Vec<YedCoin>, i64, &'static str), RpcError> {
         let cents: Vec<i64> = coins.iter().map(|c| c.cents).collect();
         let have: i64 = cents.iter().sum();
-        let s = coinselect::select_floor_aware(&cents, needed, MIN_OUTPUT_CENTS as i64, MAX_INPUTS, false);
+        let s = coinselect::select_floor_aware(
+            &cents,
+            needed,
+            MIN_OUTPUT_CENTS as i64,
+            MAX_INPUTS,
+            false,
+        );
         if !s.ok {
             if s.insufficient {
-                return Err(build_error(format!("insufficient-yed: need {needed} cents, have {have} confirmed and spendable")));
+                return Err(build_error(format!(
+                    "insufficient-yed: need {needed} cents, have {have} confirmed and spendable"
+                )));
             }
             if s.too_many_inputs {
                 return Err(build_error(format!("too-many-inputs: more than {MAX_INPUTS} YED inputs would be needed; consolidate first")));
             }
-            let alt = coinselect::nearest_workable(&cents, needed, MIN_OUTPUT_CENTS as i64, MAX_INPUTS);
+            let alt =
+                coinselect::nearest_workable(&cents, needed, MIN_OUTPUT_CENTS as i64, MAX_INPUTS);
             let show = |o: Option<i64>| o.map(|v| v.to_string()).unwrap_or_else(|| "none".into());
             return Err(build_error(format!(
                 "change-floor: {needed} cents cannot be sent from these coins without change below the ${}.{:02} minimum output; nearest workable amounts: below {}, above {}",
@@ -215,12 +272,23 @@ impl Wallet {
                 show(alt.above)
             )));
         }
-        Ok((s.inputs.iter().map(|&i| coins[i].clone()).collect(), s.change, s.stage.name()))
+        Ok((
+            s.inputs.iter().map(|&i| coins[i].clone()).collect(),
+            s.change,
+            s.stage.name(),
+        ))
     }
 
     /// `SelectYec` / `PickYecCoins`: confirmed plain YEC coins (never a token, a vault or P2SH),
     /// smallest first, largest first when that would cross a cap; the fee follows a PQ coin.
-    pub(crate) async fn pick_yec(&self, node: &dyn Node, needed: i64, info: &YedInfo, prior: &[Vec<u8>], fee0: i64) -> Result<(Vec<(OutPoint, i64, Vec<u8>)>, i64), RpcError> {
+    pub(crate) async fn pick_yec(
+        &self,
+        node: &dyn Node,
+        needed: i64,
+        info: &YedInfo,
+        prior: &[Vec<u8>],
+        fee0: i64,
+    ) -> Result<(Vec<(OutPoint, i64, Vec<u8>)>, i64), RpcError> {
         if needed <= 0 {
             return Ok((vec![], fee0));
         }
@@ -232,10 +300,18 @@ impl Wallet {
         let spent = self.mempool_spent();
         let reserved = self.yed_reserved(node).await?;
         for (c, d) in self.available_coins(None) {
-            if d < 1 || !matches!(c.owner, Owner::Pq(..)) || spent.contains(&(c.txid.clone(), c.vout)) || reserved.contains(&(c.txid.clone(), c.vout)) {
+            if d < 1
+                || !matches!(c.owner, Owner::Pq(..))
+                || spent.contains(&(c.txid.clone(), c.vout))
+                || reserved.contains(&(c.txid.clone(), c.vout))
+            {
                 continue;
             }
-            let op = OutPoint { txid: yew_core::tx::txid_from_hex(&c.txid).map_err(|e| RpcError::new(code::MISC_ERROR, e))?, n: c.vout };
+            let op = OutPoint {
+                txid: yew_core::tx::txid_from_hex(&c.txid)
+                    .map_err(|e| RpcError::new(code::MISC_ERROR, e))?,
+                n: c.vout,
+            };
             cand.push((op, c.value, c.script.clone()));
         }
         let attempt = |order: &[usize]| -> (Vec<usize>, i64, i64, bool, bool) {
@@ -285,7 +361,10 @@ impl Wallet {
                 crate::rpc::format_money(sel)
             )));
         }
-        Ok((picked.into_iter().map(|i| cand[i].clone()).collect(), fee_or_need))
+        Ok((
+            picked.into_iter().map(|i| cand[i].clone()).collect(),
+            fee_or_need,
+        ))
     }
 
     /// A fresh YED holder script for change (`FreshHolderScript`): a Falcon key from the Falcon
@@ -293,26 +372,41 @@ impl Wallet {
     pub(crate) fn fresh_holder(&mut self) -> Result<Vec<u8>, RpcError> {
         if self.falcon_next() {
             let id = self.new_pq(2)?;
-            return yew_core::pq::pqpkh_script(&id).ok_or_else(|| RpcError::new(code::WALLET_ERROR, "keypool-empty: cannot draw a post-quantum holder key"));
+            return yew_core::pq::pqpkh_script(&id).ok_or_else(|| {
+                RpcError::new(
+                    code::WALLET_ERROR,
+                    "keypool-empty: cannot draw a post-quantum holder key",
+                )
+            });
         }
         let pk = self.new_wallet_key()?;
         let h = yew_core::keys::hash160(&pk);
         self.st.book.insert(
             yew_core::keys::encode_p2pkh(self.network, &h),
-            crate::state::BookEntry { label: String::new(), purpose: "yellowback-change".into() },
+            crate::state::BookEntry {
+                label: String::new(),
+                purpose: "yellowback-change".into(),
+            },
         );
         Ok(yew_core::script::p2pkh_script(&h))
     }
 
     /// `DoSend` / `BuildTransfer`.
-    async fn do_send(&mut self, node: &dyn Node, recipients: Vec<(Vec<u8>, i64)>) -> Result<J, RpcError> {
+    async fn do_send(
+        &mut self,
+        node: &dyn Node,
+        recipients: Vec<(Vec<u8>, i64)>,
+    ) -> Result<J, RpcError> {
         let info = yed_info(node).await?;
         let next = next_block(node).await?;
         if recipients.is_empty() {
             return Err(build_error("no recipients".into()));
         }
         if recipients.len() > MAX_ASSIGNMENTS - 1 {
-            return Err(build_error(format!("at most {} recipients per transaction", MAX_ASSIGNMENTS - 1)));
+            return Err(build_error(format!(
+                "at most {} recipients per transaction",
+                MAX_ASSIGNMENTS - 1
+            )));
         }
         let falcon = self.falcon_next();
         for (s, _) in &recipients {
@@ -342,16 +436,32 @@ impl Wallet {
         }
         let mut assignments = Vec::new();
         for (i, (s, c)) in recipients.iter().enumerate() {
-            base.vout.push(TxOut { value: TOKEN_VALUE, script_pubkey: s.clone() });
-            assignments.push(Assignment { vout: i as u8, cents: *c as u32 });
+            base.vout.push(TxOut {
+                value: TOKEN_VALUE,
+                script_pubkey: s.clone(),
+            });
+            assignments.push(Assignment {
+                vout: i as u8,
+                cents: *c as u32,
+            });
         }
         if change > 0 {
             let s = self.fresh_holder()?;
-            base.vout.push(TxOut { value: TOKEN_VALUE, script_pubkey: s });
-            assignments.push(Assignment { vout: recipients.len() as u8, cents: change as u32 });
+            base.vout.push(TxOut {
+                value: TOKEN_VALUE,
+                script_pubkey: s,
+            });
+            assignments.push(Assignment {
+                vout: recipients.len() as u8,
+                cents: change as u32,
+            });
         }
-        let pl = payload::encode(&Payload::Transfer { assignments }).ok_or_else(|| build_error("cannot encode the transfer payload".into()))?;
-        base.vout.push(TxOut { value: 0, script_pubkey: payload::payload_script(&pl) });
+        let pl = payload::encode(&Payload::Transfer { assignments })
+            .ok_or_else(|| build_error("cannot encode the transfer payload".into()))?;
+        base.vout.push(TxOut {
+            value: 0,
+            script_pubkey: payload::payload_script(&pl),
+        });
         let token_in: i64 = sel.iter().map(|c| c.value).sum();
         let token_out = (recipients.len() as i64 + (change > 0) as i64) * TOKEN_VALUE;
         let yed_scripts: Vec<Vec<u8>> = sel.iter().map(|c| c.script.clone()).collect();
@@ -362,14 +472,19 @@ impl Wallet {
             let scripts: Vec<&[u8]> = yed_scripts.iter().map(|s| s.as_slice()).collect();
             let fee0 = fee_floor.max(info.network_fee(&scripts));
             let yec_needed = token_out + fee0 - token_in;
-            let (yec, fee) = self.pick_yec(node, yec_needed, &info, &yed_scripts, fee0).await?;
+            let (yec, fee) = self
+                .pick_yec(node, yec_needed, &info, &yed_scripts, fee0)
+                .await?;
             let selected: i64 = yec.iter().map(|c| c.1).sum();
             let yec_change = selected - yec_needed - (fee - fee0);
             for c in &yec {
                 tx.vin.push(TxIn::new(c.0));
             }
             if yec_change > 0 {
-                tx.vout.push(TxOut { value: yec_change, script_pubkey: change_script.clone() });
+                tx.vout.push(TxOut {
+                    value: yec_change,
+                    script_pubkey: change_script.clone(),
+                });
             }
             // P-2: the ZIP-317 conventional fee of the signed shape
             let sizes: Vec<usize> = sel
@@ -384,35 +499,66 @@ impl Wallet {
                 fee_floor = conventional;
                 continue;
             }
-            let mut prevs: Vec<NodeCoin> = sel.iter().map(|c| NodeCoin { value: c.value, script: c.script.clone(), height: None, coinbase: false }).collect();
-            prevs.extend(yec.iter().map(|c| NodeCoin { value: c.1, script: c.2.clone(), height: None, coinbase: false }));
+            let mut prevs: Vec<NodeCoin> = sel
+                .iter()
+                .map(|c| NodeCoin {
+                    value: c.value,
+                    script: c.script.clone(),
+                    height: None,
+                    coinbase: false,
+                })
+                .collect();
+            prevs.extend(yec.iter().map(|c| NodeCoin {
+                value: c.1,
+                script: c.2.clone(),
+                height: None,
+                coinbase: false,
+            }));
             break (tx, prevs, fee);
         };
-        let keys: Vec<KeyRef> = prevs.iter().map(|p| self.key_of_script(&p.script).unwrap_or(KeyRef::None)).collect();
+        let keys: Vec<KeyRef> = prevs
+            .iter()
+            .map(|p| self.key_of_script(&p.script).unwrap_or(KeyRef::None))
+            .collect();
         // the outflow the request implies: the recipients' token outputs and the fee
         let cap = recipients.len() as i64 * TOKEN_VALUE + fee + 1;
-        let signed = self.sign_inputs(&tx, &prevs, &keys, &[], GatePath::Yed, cap, next.branch).await?;
+        let signed = self
+            .sign_inputs(&tx, &prevs, &keys, &[], GatePath::Yed, cap, next.branch)
+            .await?;
         let txid = self.broadcast(node, &signed, Some(info.max_fee)).await?;
-        Ok(J::obj().with("txid", txid).with("changeCents", change).with("expiryHeight", expiry as i64))
+        Ok(J::obj()
+            .with("txid", txid)
+            .with("changeCents", change)
+            .with("expiryHeight", expiry as i64))
     }
 
     /// `yed_estimatesend {"yedaddress":cents,...}|cents`.
     async fn yed_estimatesend(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
         if p.len() != 1 {
-            return Err(RpcError::new(code::MISC_ERROR, "yed_estimatesend {\"yedaddress\":cents,...}|cents"));
+            return Err(RpcError::new(
+                code::MISC_ERROR,
+                "yed_estimatesend {\"yedaddress\":cents,...}|cents",
+            ));
         }
-        let bad = || invalid(format!("bad-xfer-amount: each amount must be between {MIN_OUTPUT_CENTS} and {MAX_OUTPUT_CENTS} cents"));
+        let bad = || {
+            invalid(format!("bad-xfer-amount: each amount must be between {MIN_OUTPUT_CENTS} and {MAX_OUTPUT_CENTS} cents"))
+        };
         let (amount, recipients) = if let Some(o) = p[0].as_object() {
             if o.is_empty() {
                 return Err(invalid("no recipients"));
             }
             if o.len() > MAX_ASSIGNMENTS - 1 {
-                return Err(invalid(format!("at most {} recipients per transaction", MAX_ASSIGNMENTS - 1)));
+                return Err(invalid(format!(
+                    "at most {} recipients per transaction",
+                    MAX_ASSIGNMENTS - 1
+                )));
             }
             let mut a = 0i64;
             for (k, v) in o {
                 self.parse_yed_address(&Value::String(k.clone()))?;
-                let one = v.as_i64().ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type number"))?;
+                let one = v
+                    .as_i64()
+                    .ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type number"))?;
                 if one < MIN_OUTPUT_CENTS as i64 || one > MAX_OUTPUT_CENTS {
                     return Err(bad());
                 }
@@ -420,7 +566,11 @@ impl Wallet {
             }
             (a, o.len())
         } else {
-            (p[0].as_i64().ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type number"))?, 1)
+            (
+                p[0].as_i64()
+                    .ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type number"))?,
+                1,
+            )
         };
         if amount < MIN_OUTPUT_CENTS as i64 || amount > MAX_OUTPUT_CENTS {
             return Err(bad());
@@ -429,7 +579,13 @@ impl Wallet {
         let coins = self.ranked_coins(node).await?;
         let cents: Vec<i64> = coins.iter().map(|c| c.cents).collect();
         let spendable: i64 = cents.iter().sum();
-        let s = coinselect::select_floor_aware(&cents, amount, MIN_OUTPUT_CENTS as i64, MAX_INPUTS, false);
+        let s = coinselect::select_floor_aware(
+            &cents,
+            amount,
+            MIN_OUTPUT_CENTS as i64,
+            MAX_INPUTS,
+            false,
+        );
         let mut o = J::obj()
             .with("amountCents", amount)
             .with("recipients", recipients as i64)
@@ -440,7 +596,16 @@ impl Wallet {
             let scripts: Vec<&[u8]> = sel.iter().map(|c| c.script.as_slice()).collect();
             o.push(
                 "inputs",
-                J::Arr(sel.iter().map(|c| J::obj().with("txid", txid_hex(&c.outpoint.txid)).with("vout", c.outpoint.n as i64).with("cents", c.cents)).collect()),
+                J::Arr(
+                    sel.iter()
+                        .map(|c| {
+                            J::obj()
+                                .with("txid", txid_hex(&c.outpoint.txid))
+                                .with("vout", c.outpoint.n as i64)
+                                .with("cents", c.cents)
+                        })
+                        .collect(),
+                ),
             );
             o.push("selectedCents", J::Int(s.selected));
             o.push("changeCents", J::Int(s.change));
@@ -449,8 +614,15 @@ impl Wallet {
             o.push("error", J::Str(String::new()));
             o.push("alternatives", J::Null);
         } else {
-            let alt = coinselect::nearest_workable(&cents, amount, MIN_OUTPUT_CENTS as i64, MAX_INPUTS);
-            let err = if s.insufficient { "insufficient-yed" } else if s.too_many_inputs { "too-many-inputs" } else { "change-floor" };
+            let alt =
+                coinselect::nearest_workable(&cents, amount, MIN_OUTPUT_CENTS as i64, MAX_INPUTS);
+            let err = if s.insufficient {
+                "insufficient-yed"
+            } else if s.too_many_inputs {
+                "too-many-inputs"
+            } else {
+                "change-floor"
+            };
             o.push("inputs", J::Arr(vec![]));
             o.push("selectedCents", J::Int(0));
             o.push("changeCents", J::Int(0));
@@ -459,7 +631,9 @@ impl Wallet {
             o.push("error", J::Str(err.into()));
             o.push(
                 "alternatives",
-                J::obj().with("below", alt.below.map(J::Int).unwrap_or(J::Null)).with("above", alt.above.map(J::Int).unwrap_or(J::Null)),
+                J::obj()
+                    .with("below", alt.below.map(J::Int).unwrap_or(J::Null))
+                    .with("above", alt.above.map(J::Int).unwrap_or(J::Null)),
             );
         }
         Ok(o)
@@ -474,7 +648,11 @@ impl Wallet {
         let reserved: BTreeSet<(String, u32)> = self.yed_reserved(node).await?;
         let mut out = Vec::new();
         for (t, n) in &reserved {
-            if self.coins.iter().any(|c| c.txid == *t && c.vout == *n && !c.spent) {
+            if self
+                .coins
+                .iter()
+                .any(|c| c.txid == *t && c.vout == *n && !c.spent)
+            {
                 self.st.locks.insert(format!("{t}:{n}"));
                 out.push(J::obj().with("txid", t.clone()).with("vout", *n as i64));
             }
@@ -486,13 +664,18 @@ impl Wallet {
     /// `yed_unlockcoin "txid" n "acknowledgement"`.
     async fn yed_unlockcoin(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
         if p.len() != 3 {
-            return Err(RpcError::new(code::MISC_ERROR, "yed_unlockcoin \"txid\" n \"acknowledgement\""));
+            return Err(RpcError::new(
+                code::MISC_ERROR,
+                "yed_unlockcoin \"txid\" n \"acknowledgement\"",
+            ));
         }
         let txid = p[0].as_str().unwrap_or("").to_lowercase();
         if txid.len() != 64 || !txid.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err(invalid("txid must be of length 64"));
         }
-        let n = p[1].as_i64().ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type number"))?;
+        let n = p[1]
+            .as_i64()
+            .ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type number"))?;
         if n < 0 {
             return Err(invalid("vout must not be negative"));
         }
@@ -524,7 +707,9 @@ impl Wallet {
     pub(crate) async fn yed_vault(node: &dyn Node, txid: &str) -> Result<Value, RpcError> {
         match node::call(node, "yed_getvault", serde_json::json!([txid])).await {
             Ok(v) => Ok(v),
-            Err(crate::node::NodeError::Rpc { message, .. }) if message.contains("vault-not-found") => {
+            Err(crate::node::NodeError::Rpc { message, .. })
+                if message.contains("vault-not-found") =>
+            {
                 Err(invalid(format!("vault-not-found: no vault at {txid}:0")))
             }
             Err(e) => Err(e.into()),
@@ -532,7 +717,10 @@ impl Wallet {
     }
 
     /// The txid of a mempool transaction spending `op`, if any (`MempoolSpenderOf`).
-    pub(crate) async fn mempool_spender(node: &dyn Node, op: &OutPoint) -> Result<Option<String>, RpcError> {
+    pub(crate) async fn mempool_spender(
+        node: &dyn Node,
+        op: &OutPoint,
+    ) -> Result<Option<String>, RpcError> {
         if crate::build::node_coin(node, op).await?.is_some() {
             return Ok(None);
         }
@@ -551,19 +739,41 @@ impl Wallet {
 
     /// FEE-W's payee for a vault spend at `r` (`yed_getfeepayee r <outpoint selector>`); `None`
     /// under FEE-0 (no eligible payee).
-    pub(crate) async fn spend_payee(node: &dyn Node, r: i64, op: &OutPoint) -> Result<Option<String>, RpcError> {
+    pub(crate) async fn spend_payee(
+        node: &dyn Node,
+        r: i64,
+        op: &OutPoint,
+    ) -> Result<Option<String>, RpcError> {
         let mut sel = op.txid.to_vec();
         sel.extend_from_slice(&op.n.to_le_bytes());
-        match node::call(node, "yed_getfeepayee", serde_json::json!([r, hex::encode(sel)])).await {
-            Ok(v) => Ok(v["preferred"].as_str().or_else(|| v["default"]["payoutAddress"].as_str()).map(str::to_string)),
-            Err(crate::node::NodeError::Rpc { message, .. }) if message.contains("fee-no-eligible-payee") => Ok(None),
+        match node::call(
+            node,
+            "yed_getfeepayee",
+            serde_json::json!([r, hex::encode(sel)]),
+        )
+        .await
+        {
+            Ok(v) => Ok(v["preferred"]
+                .as_str()
+                .or_else(|| v["default"]["payoutAddress"].as_str())
+                .map(str::to_string)),
+            Err(crate::node::NodeError::Rpc { message, .. })
+                if message.contains("fee-no-eligible-payee") =>
+            {
+                Ok(None)
+            }
             Err(e) => Err(e.into()),
         }
     }
 
     /// IT-9': the early-redeem fee of an ACTIVE vault redeemed at `r + 1` (0 at or past lockHeight,
     /// under FEE-0, for an unknown class).
-    async fn early_fee(node: &dyn Node, v: &Value, r: i64, payee: bool) -> Result<(i64, i64, i64), RpcError> {
+    async fn early_fee(
+        node: &dyn Node,
+        v: &Value,
+        r: i64,
+        payee: bool,
+    ) -> Result<(i64, i64, i64), RpcError> {
         let info = node::call(node, "yed_getinfo", serde_json::json!([])).await?;
         let class = v["termClass"].as_str().unwrap_or("");
         let idx = match class {
@@ -572,11 +782,15 @@ impl Wallet {
             "C" => 2,
             _ => usize::MAX,
         };
-        let bps = info["params"]["earlyRedeemFeeBps"].get(idx).and_then(|b| b.as_i64()).unwrap_or(0);
+        let bps = info["params"]["earlyRedeemFeeBps"]
+            .get(idx)
+            .and_then(|b| b.as_i64())
+            .unwrap_or(0);
         let minted = v["mintedCents"].as_i64().unwrap_or(0);
         let p_mint = v["pMint"].as_i64().unwrap_or(0);
         let active = v["status"].as_str() == Some("ACTIVE");
-        if !active || !payee || r + 1 >= v["lockHeight"].as_i64().unwrap_or(0) || idx == usize::MAX {
+        if !active || !payee || r + 1 >= v["lockHeight"].as_i64().unwrap_or(0) || idx == usize::MAX
+        {
             return Ok((0, 0, bps));
         }
         let zat = yew_core::params::early_redeem_fee_zat(minted as u64, bps, p_mint);
@@ -587,10 +801,14 @@ impl Wallet {
     /// `yed_redeem "vaultTxid" ( "to" )` (`BuildRedeem` → `BuildVaultSpend`, owner path).
     async fn yed_redeem(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
         if p.is_empty() || p.len() > 2 {
-            return Err(RpcError::new(code::MISC_ERROR, "yed_redeem \"vaultTxid\" ( \"to\" )"));
+            return Err(RpcError::new(
+                code::MISC_ERROR,
+                "yed_redeem \"vaultTxid\" ( \"to\" )",
+            ));
         }
         let txid_s = p[0].as_str().unwrap_or("").to_lowercase();
-        let txid = yew_core::tx::txid_from_hex(&txid_s).map_err(|_| invalid("vaultTxid must be hexadecimal string of length 64"))?;
+        let txid = yew_core::tx::txid_from_hex(&txid_s)
+            .map_err(|_| invalid("vaultTxid must be hexadecimal string of length 64"))?;
         let op = OutPoint { txid, n: 0 };
         let to = p.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
         // N1: a pending spend is refused before coin selection
@@ -602,24 +820,47 @@ impl Wallet {
         let next = next_block(node).await?;
         let status = v["status"].as_str().unwrap_or("").to_string();
         if status != "ACTIVE" && status != "VOID" {
-            return Err(build_error(format!("vault-not-active: the vault is {status}")));
+            return Err(build_error(format!(
+                "vault-not-active: the vault is {status}"
+            )));
         }
         let owner = yew_core::pq::PqKeyId {
             scheme: v["ownerScheme"].as_u64().unwrap_or(0) as u8,
-            hash: hex::decode(v["ownerHash"].as_str().unwrap_or("")).ok().and_then(|b| b.try_into().ok()).unwrap_or([0; 32]),
+            hash: hex::decode(v["ownerHash"].as_str().unwrap_or(""))
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .unwrap_or([0; 32]),
         };
         let owner_key = self
             .owner_ref(&owner, yew_core::vault::SEL_OWNER)
-            .ok_or_else(|| build_error("vault-not-owned: the vault owner key is not in this wallet".into()))?;
-        let owner_height = v["ownerHeight"].as_i64().or_else(|| {
-            // the V template's ownerHeight (U-23): parse it from the script
-            hex::decode(v["scriptPubKey"].as_str().unwrap_or("")).ok().and_then(|s| yew_core::vault::parse_vault(&s)).map(|vp| vp.owner_height)
-        }).unwrap_or(0);
+            .ok_or_else(|| {
+                build_error("vault-not-owned: the vault owner key is not in this wallet".into())
+            })?;
+        let owner_height = v["ownerHeight"]
+            .as_i64()
+            .or_else(|| {
+                // the V template's ownerHeight (U-23): parse it from the script
+                hex::decode(v["scriptPubKey"].as_str().unwrap_or(""))
+                    .ok()
+                    .and_then(|s| yew_core::vault::parse_vault(&s))
+                    .map(|vp| vp.owner_height)
+            })
+            .unwrap_or(0);
         if info.index_height < owner_height {
-            return Err(RpcError::new(-26, format!("vault-locked: the vault is locked until height {owner_height} (tip {})", info.index_height)));
+            return Err(RpcError::new(
+                -26,
+                format!(
+                    "vault-locked: the vault is locked until height {owner_height} (tip {})",
+                    info.index_height
+                ),
+            ));
         }
-        let vault_script = hex::decode(v["scriptPubKey"].as_str().unwrap_or("")).map_err(|_| build_error("vault-not-found: cannot reconstruct the vault script".into()))?;
-        let vp = yew_core::vault::parse_vault(&vault_script).ok_or_else(|| build_error("vault-not-found: cannot reconstruct the vault script".into()))?;
+        let vault_script = hex::decode(v["scriptPubKey"].as_str().unwrap_or("")).map_err(|_| {
+            build_error("vault-not-found: cannot reconstruct the vault script".into())
+        })?;
+        let vp = yew_core::vault::parse_vault(&vault_script).ok_or_else(|| {
+            build_error("vault-not-found: cannot reconstruct the vault script".into())
+        })?;
         let r = info.index_height;
         let active = status == "ACTIVE";
         let minted = v["mintedCents"].as_i64().unwrap_or(0);
@@ -632,7 +873,13 @@ impl Wallet {
             let coins = self.ranked_coins(node).await?;
             let cents: Vec<i64> = coins.iter().map(|c| c.cents).collect();
             let have: i64 = cents.iter().sum();
-            let s = coinselect::select_floor_aware(&cents, minted, MIN_OUTPUT_CENTS as i64, MAX_INPUTS, true);
+            let s = coinselect::select_floor_aware(
+                &cents,
+                minted,
+                MIN_OUTPUT_CENTS as i64,
+                MAX_INPUTS,
+                true,
+            );
             if !s.ok {
                 if s.insufficient {
                     return Err(build_error(format!("insufficient-yed: need {minted} cents, have {have} confirmed and spendable")));
@@ -644,19 +891,31 @@ impl Wallet {
             extra_burn = s.extra_burn;
             payee = Self::spend_payee(node, r, &op).await?;
             if let Some(py) = &payee {
-                fee_zat = yew_core::build::terms::protocol_fee(minted as u64, v["pMint"].as_i64().unwrap_or(0), py).map_err(|e| build_error(e.to_string()))?;
+                fee_zat = yew_core::build::terms::protocol_fee(
+                    minted as u64,
+                    v["pMint"].as_i64().unwrap_or(0),
+                    py,
+                )
+                .map_err(|e| build_error(e.to_string()))?;
             }
             let (e, _, _) = Self::early_fee(node, &v, r, payee.is_some()).await?;
             early = e;
             fee_zat += early;
         }
-        let change_script = if change > 0 { self.fresh_holder()? } else { Vec::new() };
+        let change_script = if change > 0 {
+            self.fresh_holder()?
+        } else {
+            Vec::new()
+        };
         let collateral_script = if to.is_empty() {
             let pk = self.new_wallet_key()?;
             yew_core::script::p2pkh_script(&yew_core::keys::hash160(&pk))
-        } else if let Some(sc) = crate::rpc::parse_taddr_script(self.network, &to).filter(|sc| yew_core::script::p2pkh_hash(sc).is_some()) {
+        } else if let Some(sc) = crate::rpc::parse_taddr_script(self.network, &to)
+            .filter(|sc| yew_core::script::p2pkh_hash(sc).is_some())
+        {
             sc
-        } else if to.starts_with("ys") || to.starts_with("zregtestsapling") || to.starts_with("zs") {
+        } else if to.starts_with("ys") || to.starts_with("zregtestsapling") || to.starts_with("zs")
+        {
             return Err(RpcError::new(code::WALLET_ERROR, "yewd: a Sapling destination for the collateral is built in the signer (plan K-24), not served yet; pass a transparent address"));
         } else {
             return Err(build_error("bad-address: to: not a transparent (s1…) or Sapling (ys1…) address of this network".into()));
@@ -674,7 +933,10 @@ impl Wallet {
             })
             .collect();
         let payee_script = match &payee {
-            Some(a) => Some(crate::rpc::parse_taddr_script(self.network, a).ok_or_else(|| build_error(format!("the payee {a} is not an address")))?),
+            Some(a) => Some(
+                crate::rpc::parse_taddr_script(self.network, a)
+                    .ok_or_else(|| build_error(format!("the payee {a} is not an address")))?,
+            ),
             None => None,
         };
         let yed_scripts: Vec<&[u8]> = yed_inputs.iter().map(|c| c.script.as_slice()).collect();
@@ -703,32 +965,62 @@ impl Wallet {
         };
         // B L-1: the owner's PQ spend priced by size; clamped for a small vault (review L-1)
         let owner_bytes = pq_input_size(owner.scheme);
-        let bytes = 1000 + owner_bytes as i64 + yed_scripts.iter().map(|s| input_bytes(s) as i64).sum::<i64>();
-        let priced = info.flat_fee.max((info.rate_per_kb * bytes / 1000).min(info.max_fee));
+        let bytes = 1000
+            + owner_bytes as i64
+            + yed_scripts
+                .iter()
+                .map(|s| input_bytes(s) as i64)
+                .sum::<i64>();
+        let priced = info
+            .flat_fee
+            .max((info.rate_per_kb * bytes / 1000).min(info.max_fee));
         let yed_value: i64 = yed_inputs.iter().map(|c| c.value).sum();
-        let spendable = collateral + yed_value - if payee.is_some() { fee_zat } else { 0 } - if change > 0 { TOKEN_VALUE } else { 0 };
+        let spendable = collateral + yed_value
+            - if payee.is_some() { fee_zat } else { 0 }
+            - if change > 0 { TOKEN_VALUE } else { 0 };
         let floor_fee = info.flat_fee.max(5_000 * bytes / 1000);
-        shape.network_fee = if spendable - priced > 54 { priced } else { priced.min(floor_fee) };
+        shape.network_fee = if spendable - priced > 54 {
+            priced
+        } else {
+            priced.min(floor_fee)
+        };
         let expiry = (r + info.ref_window) as u32;
         if expiry < next.height + EXPIRING_SOON {
             return Err(build_error("expiring-too-soon: the transaction would expire too soon; the index is too far behind the chain".into()));
         }
         let mut keys = vec![owner_key];
-        keys.extend(yed_inputs.iter().map(|c| self.key_of_script(&c.script).unwrap_or(KeyRef::None)));
-        let mut prevs = vec![NodeCoin { value: collateral, script: vault_script.clone(), height: None, coinbase: false }];
-        prevs.extend(yed_inputs.iter().map(|c| NodeCoin { value: c.value, script: c.script.clone(), height: None, coinbase: false }));
+        keys.extend(
+            yed_inputs
+                .iter()
+                .map(|c| self.key_of_script(&c.script).unwrap_or(KeyRef::None)),
+        );
+        let mut prevs = vec![NodeCoin {
+            value: collateral,
+            script: vault_script.clone(),
+            height: None,
+            coinbase: false,
+        }];
+        prevs.extend(yed_inputs.iter().map(|c| NodeCoin {
+            value: c.value,
+            script: c.script.clone(),
+            height: None,
+            coinbase: false,
+        }));
         let mut signed;
         let mut plan;
         let mut pass = 0;
         loop {
-            plan = yew_core::build::redeem::plan_vault_spend(&shape).map_err(|e| build_error(e.to_string()))?;
+            plan = yew_core::build::redeem::plan_vault_spend(&shape)
+                .map_err(|e| build_error(e.to_string()))?;
             let mut tx = Transaction::new_v4();
             tx.lock_time = plan.lock_time;
             tx.expiry_height = expiry;
             tx.vin = plan.vin.clone();
             tx.vout = plan.vout.clone();
             let cap = collateral + yed_value + 1;
-            signed = self.sign_inputs(&tx, &prevs, &keys, &[], GatePath::Owner, cap, next.branch).await?;
+            signed = self
+                .sign_inputs(&tx, &prevs, &keys, &[], GatePath::Owner, cap, next.branch)
+                .await?;
             // P-2: never below the ZIP-317 conventional fee of the signed shape
             let sizes: Vec<usize> = signed.vin.iter().map(|i| i.script_sig.len()).collect();
             let conventional = signed.zip317_conventional_fee(&sizes).unwrap_or(0);
@@ -740,14 +1032,17 @@ impl Wallet {
         }
         // MP-1 (K7): an enforcing miner's verdict on the spend, before it is committed
         let raw = crate::build::tx_hex(&signed)?;
-        if let Ok(val) = node::call(node, "yed_validaterawtransaction", serde_json::json!([raw])).await {
+        if let Ok(val) =
+            node::call(node, "yed_validaterawtransaction", serde_json::json!([raw])).await
+        {
             if val["wouldBeRejected"].as_bool() == Some(true) {
                 let verdict = val["verdict"].as_str().unwrap_or("rejected");
                 return Err(RpcError::new(-26, format!("mempool-check-failed:{verdict}: an enforcing miner would refuse this vault spend (MP-1)")));
             }
         }
         let txid = self.broadcast(node, &signed, None).await?;
-        let to_text = crate::keys::script_address(self.network, &collateral_script).unwrap_or_default();
+        let to_text =
+            crate::keys::script_address(self.network, &collateral_script).unwrap_or_default();
         Ok(J::obj()
             .with("txid", txid)
             .with("burnedCents", (plan.burn_cents - extra_burn).max(0))
@@ -762,10 +1057,14 @@ impl Wallet {
     /// `yed_estimateredeem "vaultTxid"`.
     async fn yed_estimateredeem(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
         if p.len() != 1 {
-            return Err(RpcError::new(code::MISC_ERROR, "yed_estimateredeem \"vaultTxid\""));
+            return Err(RpcError::new(
+                code::MISC_ERROR,
+                "yed_estimateredeem \"vaultTxid\"",
+            ));
         }
         let txid_s = p[0].as_str().unwrap_or("").to_lowercase();
-        let txid = yew_core::tx::txid_from_hex(&txid_s).map_err(|_| invalid("vaultTxid must be hexadecimal string of length 64"))?;
+        let txid = yew_core::tx::txid_from_hex(&txid_s)
+            .map_err(|_| invalid("vaultTxid must be hexadecimal string of length 64"))?;
         let op = OutPoint { txid, n: 0 };
         let v = Self::yed_vault(node, &txid_s).await?;
         let info = yed_info(node).await?;
@@ -776,12 +1075,24 @@ impl Wallet {
         let p_mint = v["pMint"].as_i64().unwrap_or(0);
         let payee = Self::spend_payee(node, tip, &op).await?;
         let (early, early_cents, bps) = Self::early_fee(node, &v, tip, payee.is_some()).await?;
-        let fee1 = if active && payee.is_some() { yew_core::params::protocol_fee_zat(minted as u64, p_mint).unwrap_or(crate::build::MAX_MONEY) } else { 0 };
+        let fee1 = if active && payee.is_some() {
+            yew_core::params::protocol_fee_zat(minted as u64, p_mint)
+                .unwrap_or(crate::build::MAX_MONEY)
+        } else {
+            0
+        };
         let owner = yew_core::pq::PqKeyId {
             scheme: v["ownerScheme"].as_u64().unwrap_or(0) as u8,
-            hash: hex::decode(v["ownerHash"].as_str().unwrap_or("")).ok().and_then(|b| b.try_into().ok()).unwrap_or([0; 32]),
+            hash: hex::decode(v["ownerHash"].as_str().unwrap_or(""))
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .unwrap_or([0; 32]),
         };
-        let owner_height = hex::decode(v["scriptPubKey"].as_str().unwrap_or("")).ok().and_then(|s| yew_core::vault::parse_vault(&s)).map(|vp| vp.owner_height).unwrap_or(0);
+        let owner_height = hex::decode(v["scriptPubKey"].as_str().unwrap_or(""))
+            .ok()
+            .and_then(|s| yew_core::vault::parse_vault(&s))
+            .map(|vp| vp.owner_height)
+            .unwrap_or(0);
         let spendable: i64 = self.ranked_coins(node).await?.iter().map(|c| c.cents).sum();
         let error = if !(active || status == "VOID") {
             format!("vault-not-active: the vault is {status}")
@@ -799,20 +1110,40 @@ impl Wallet {
         Ok(J::obj()
             .with("vault", format!("{txid_s}:0"))
             .with("status", status)
-            .with("termClass", v["termClass"].as_str().unwrap_or("").to_string())
+            .with(
+                "termClass",
+                v["termClass"].as_str().unwrap_or("").to_string(),
+            )
             .with("lockHeight", v["lockHeight"].as_i64().unwrap_or(0))
             .with("height", tip + 1)
-            .with("early", active && tip + 1 < v["lockHeight"].as_i64().unwrap_or(0))
+            .with(
+                "early",
+                active && tip + 1 < v["lockHeight"].as_i64().unwrap_or(0),
+            )
             .with("burnedCents", if active { minted } else { 0 })
             .with("collateralZat", v["collateralZat"].as_i64().unwrap_or(0))
             .with("pMint", p_mint)
-            .with("protocolFeeCents", if active && payee.is_some() { yew_core::params::protocol_fee_cents(minted as u64) as i64 } else { 0 })
+            .with(
+                "protocolFeeCents",
+                if active && payee.is_some() {
+                    yew_core::params::protocol_fee_cents(minted as u64)
+                } else {
+                    0
+                },
+            )
             .with("protocolFeeZat", fee1)
             .with("feeZat", fee1 + early)
             .with("earlyRedeemFeeBps", bps)
             .with("earlyRedeemFeeCents", early_cents)
             .with("earlyRedeemFeeZat", early)
-            .with("payee", if active { payee.map(J::Str).unwrap_or(J::Null) } else { J::Null })
+            .with(
+                "payee",
+                if active {
+                    payee.map(J::Str).unwrap_or(J::Null)
+                } else {
+                    J::Null
+                },
+            )
             .with("canRedeem", error.is_empty())
             .with("error", error))
     }

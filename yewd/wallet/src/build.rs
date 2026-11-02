@@ -60,7 +60,12 @@ pub fn amount_param(v: &Value) -> Result<i64, RpcError> {
     let text = match v {
         Value::Number(n) => n.to_string(),
         Value::String(s) => s.clone(),
-        _ => return Err(RpcError::new(code::TYPE_ERROR, "Amount is not a number or string")),
+        _ => {
+            return Err(RpcError::new(
+                code::TYPE_ERROR,
+                "Amount is not a number or string",
+            ))
+        }
     };
     let bad = || RpcError::new(code::TYPE_ERROR, "Invalid amount");
     let (neg, t) = match text.strip_prefix('-') {
@@ -77,10 +82,18 @@ pub fn amount_param(v: &Value) -> Result<i64, RpcError> {
         return Ok(if neg { -(z as i64) } else { z as i64 });
     }
     let (i, frac) = t.split_once('.').unwrap_or((t, ""));
-    if i.is_empty() && frac.is_empty() || frac.len() > 8 || !i.chars().all(|c| c.is_ascii_digit()) || !frac.chars().all(|c| c.is_ascii_digit()) {
+    if i.is_empty() && frac.is_empty()
+        || frac.len() > 8
+        || !i.chars().all(|c| c.is_ascii_digit())
+        || !frac.chars().all(|c| c.is_ascii_digit())
+    {
         return Err(bad());
     }
-    let whole: i64 = if i.is_empty() { 0 } else { i.parse().map_err(|_| bad())? };
+    let whole: i64 = if i.is_empty() {
+        0
+    } else {
+        i.parse().map_err(|_| bad())?
+    };
     let mut f = frac.to_string();
     while f.len() < 8 {
         f.push('0');
@@ -97,14 +110,22 @@ pub fn amount_param(v: &Value) -> Result<i64, RpcError> {
 
 /// `ParseOutPoint`: `"txid:n"` or `{"txid", "vout"}`.
 pub fn outpoint_param(v: &Value, name: &str) -> Result<OutPoint, RpcError> {
-    let bad = || RpcError::new(code::INVALID_PARAMETER, format!("{name} must be \"txid:n\" or {{\"txid\", \"vout\"}}"));
+    let bad = || {
+        RpcError::new(
+            code::INVALID_PARAMETER,
+            format!("{name} must be \"txid:n\" or {{\"txid\", \"vout\"}}"),
+        )
+    };
     let (t, n) = match v {
         Value::String(s) => {
             let (t, n) = s.rsplit_once(':').ok_or_else(bad)?;
             (t.to_string(), n.parse::<u32>().map_err(|_| bad())?)
         }
         Value::Object(o) => (
-            o.get("txid").and_then(|t| t.as_str()).ok_or_else(bad)?.to_string(),
+            o.get("txid")
+                .and_then(|t| t.as_str())
+                .ok_or_else(bad)?
+                .to_string(),
             o.get("vout").and_then(|n| n.as_u64()).ok_or_else(bad)? as u32,
         ),
         _ => return Err(bad()),
@@ -152,17 +173,28 @@ pub async fn next_block(node: &dyn Node) -> Result<Next, RpcError> {
     let branch = info["consensus"]["nextblock"]
         .as_str()
         .and_then(|s| u32::from_str_radix(s, 16).ok())
-        .ok_or_else(|| RpcError::new(code::MISC_ERROR, "yewd: the node reports no consensus.nextblock"))?;
+        .ok_or_else(|| {
+            RpcError::new(
+                code::MISC_ERROR,
+                "yewd: the node reports no consensus.nextblock",
+            )
+        })?;
     Ok(Next { height, branch })
 }
 
 /// The node's view of an unspent output (chain tip and mempool); `None` when spent or unknown.
 pub async fn node_coin(node: &dyn Node, o: &OutPoint) -> Result<Option<NodeCoin>, RpcError> {
-    let v = node::call(node, "gettxout", serde_json::json!([txid_hex(&o.txid), o.n, true])).await?;
+    let v = node::call(
+        node,
+        "gettxout",
+        serde_json::json!([txid_hex(&o.txid), o.n, true]),
+    )
+    .await?;
     if v.is_null() {
         return Ok(None);
     }
-    let value = zat_of(&v["value"]).ok_or_else(|| RpcError::new(code::MISC_ERROR, "yewd: gettxout: no value"))?;
+    let value = zat_of(&v["value"])
+        .ok_or_else(|| RpcError::new(code::MISC_ERROR, "yewd: gettxout: no value"))?;
     let script = hex::decode(v["scriptPubKey"]["hex"].as_str().unwrap_or(""))
         .map_err(|e| RpcError::new(code::MISC_ERROR, format!("yewd: gettxout: {e}")))?;
     let conf = v["confirmations"].as_u64().unwrap_or(0) as u32;
@@ -190,7 +222,10 @@ pub fn signer_error(e: Result<Response, String>) -> RpcError {
     match e {
         Ok(Response::Refused(r)) => {
             let c = match r.code.as_str() {
-                refuse::SET_SIGN_ONCE | refuse::SET_SIGN_RESTORED | refuse::OUTFLOW | refuse::FOREIGN_INPUT => code::WALLET_ERROR,
+                refuse::SET_SIGN_ONCE
+                | refuse::SET_SIGN_RESTORED
+                | refuse::OUTFLOW
+                | refuse::FOREIGN_INPUT => code::WALLET_ERROR,
                 refuse::BAD_VERSION => code::WALLET_UNLOCK_NEEDED,
                 _ => code::WALLET_ERROR,
             };
@@ -201,8 +236,14 @@ pub fn signer_error(e: Result<Response, String>) -> RpcError {
                 RpcError::new(c, format!("yewd-signer refused ({}): {}", r.code, r.reason))
             }
         }
-        Ok(other) => RpcError::new(code::INTERNAL_ERROR, format!("yewd: unexpected signer answer {other:?}")),
-        Err(m) => RpcError::new(code::WALLET_UNLOCK_NEEDED, format!("Error: the signer is not available ({m})")),
+        Ok(other) => RpcError::new(
+            code::INTERNAL_ERROR,
+            format!("yewd: unexpected signer answer {other:?}"),
+        ),
+        Err(m) => RpcError::new(
+            code::WALLET_UNLOCK_NEEDED,
+            format!("Error: the signer is not available ({m})"),
+        ),
     }
 }
 
@@ -249,8 +290,12 @@ impl Wallet {
     pub fn new_change(&mut self) -> Result<Vec<u8>, RpcError> {
         let index = self.st.issued.internal;
         self.st.issued.internal = index + 1;
-        self.refresh_keys().map_err(|e| RpcError::new(code::WALLET_ERROR, e))?;
-        let k = self.book.key(INTERNAL, index).expect("derived by refresh_keys");
+        self.refresh_keys()
+            .map_err(|e| RpcError::new(code::WALLET_ERROR, e))?;
+        let k = self
+            .book
+            .key(INTERNAL, index)
+            .expect("derived by refresh_keys");
         Ok(yew_core::script::p2pkh_script(&k.hash))
     }
 
@@ -259,8 +304,13 @@ impl Wallet {
     pub fn new_wallet_key(&mut self) -> Result<[u8; 33], RpcError> {
         let index = self.st.issued.external;
         self.st.issued.external = index + 1;
-        self.refresh_keys().map_err(|e| RpcError::new(code::WALLET_ERROR, e))?;
-        Ok(self.book.key(crate::keys::EXTERNAL, index).expect("derived").pubkey)
+        self.refresh_keys()
+            .map_err(|e| RpcError::new(code::WALLET_ERROR, e))?;
+        Ok(self
+            .book
+            .key(crate::keys::EXTERNAL, index)
+            .expect("derived")
+            .pubkey)
     }
 
     pub fn lock_coin(&mut self, o: &OutPoint) {
@@ -277,16 +327,25 @@ impl Wallet {
 
     /// `EligibleCoins`: the wallet's confirmed, mature, unlocked P2PKH coins outside `used`,
     /// largest first, each also unspent and confirmed in the node's view.
-    pub async fn eligible(&self, node: &dyn Node, used: &HashSet<OutPoint>) -> Result<Vec<Chosen>, RpcError> {
+    pub async fn eligible(
+        &self,
+        node: &dyn Node,
+        used: &HashSet<OutPoint>,
+    ) -> Result<Vec<Chosen>, RpcError> {
         let spent = self.mempool_spent();
         let reserved = self.yed_reserved(node).await?;
         let mut out = Vec::new();
         for (c, d) in self.available_coins(None) {
-            if d < 1 || !matches!(c.owner, Owner::T(..)) || spent.contains(&(c.txid.clone(), c.vout)) || reserved.contains(&(c.txid.clone(), c.vout)) {
+            if d < 1
+                || !matches!(c.owner, Owner::T(..))
+                || spent.contains(&(c.txid.clone(), c.vout))
+                || reserved.contains(&(c.txid.clone(), c.vout))
+            {
                 continue;
             }
             let op = OutPoint {
-                txid: yew_core::tx::txid_from_hex(&c.txid).map_err(|e| RpcError::new(code::MISC_ERROR, e))?,
+                txid: yew_core::tx::txid_from_hex(&c.txid)
+                    .map_err(|e| RpcError::new(code::MISC_ERROR, e))?,
                 n: c.vout,
             };
             if used.contains(&op) {
@@ -302,7 +361,11 @@ impl Wallet {
                 script: c.script.clone(),
             });
         }
-        out.sort_by(|a, b| b.value.cmp(&a.value).then((a.outpoint.txid, a.outpoint.n).cmp(&(b.outpoint.txid, b.outpoint.n))));
+        out.sort_by(|a, b| {
+            b.value
+                .cmp(&a.value)
+                .then((a.outpoint.txid, a.outpoint.n).cmp(&(b.outpoint.txid, b.outpoint.n)))
+        });
         Ok(out)
     }
 
@@ -320,7 +383,10 @@ impl Wallet {
         }
         for (txid, p) in self.parsed_all() {
             let mempool = self.st.wtx.get(txid).is_some_and(|w| w.block.is_none());
-            let payload = p.tx.vout.iter().any(|o| yew_core::script::is_op_return(&o.script_pubkey) && !yewd_proto::act::is_act_output(&o.script_pubkey));
+            let payload = p.tx.vout.iter().any(|o| {
+                yew_core::script::is_op_return(&o.script_pubkey)
+                    && !yewd_proto::act::is_act_output(&o.script_pubkey)
+            });
             if mempool && payload {
                 for n in 0..p.tx.vout.len() {
                     r.insert((txid.clone(), n as u32));
@@ -364,7 +430,10 @@ impl Wallet {
         if got < needed {
             return Err(RpcError::new(
                 code::WALLET_INSUFFICIENT_FUNDS,
-                format!("insufficient confirmed transparent funds: need {} more", money(needed - got)),
+                format!(
+                    "insufficient confirmed transparent funds: need {} more",
+                    money(needed - got)
+                ),
             ));
         }
         for c in &chosen {
@@ -373,7 +442,10 @@ impl Wallet {
         let change = got - needed;
         if change >= VAULT_RPC_MIN_CHANGE {
             let script = self.new_change()?;
-            tx.vout.push(TxOut { value: change, script_pubkey: script });
+            tx.vout.push(TxOut {
+                value: change,
+                script_pubkey: script,
+            });
         }
         for c in &chosen {
             self.lock_coin(&c.outpoint);
@@ -383,12 +455,17 @@ impl Wallet {
     }
 
     pub fn persist_state(&self) -> Result<(), RpcError> {
-        self.save().map_err(|e| RpcError::new(code::WALLET_ERROR, e))
+        self.save()
+            .map_err(|e| RpcError::new(code::WALLET_ERROR, e))
     }
 
     /// Every input's prevout from the node's view (`None` for an input the node does not know:
     /// spent, or never seen).
-    pub async fn prevouts_of(&self, node: &dyn Node, tx: &Transaction) -> Result<Vec<Option<NodeCoin>>, RpcError> {
+    pub async fn prevouts_of(
+        &self,
+        node: &dyn Node,
+        tx: &Transaction,
+    ) -> Result<Vec<Option<NodeCoin>>, RpcError> {
         let mut v = Vec::with_capacity(tx.vin.len());
         for i in &tx.vin {
             v.push(node_coin(node, &i.prevout).await?);
@@ -424,7 +501,11 @@ impl Wallet {
                 },
                 key: keys[i],
                 carrier_bundle: match keys[i] {
-                    KeyRef::Carrier { .. } => self.st.carriers.get(&op_str(&vin.prevout)).map(|c| c.bundle.clone()),
+                    KeyRef::Carrier { .. } => self
+                        .st
+                        .carriers
+                        .get(&op_str(&vin.prevout))
+                        .map(|c| c.bundle.clone()),
                     _ => None,
                 },
             });
@@ -434,7 +515,11 @@ impl Wallet {
         for (n, o) in tx.vout.iter().enumerate() {
             if let Some(k) = self.key_of_script(&o.script_pubkey) {
                 own.insert(n as u32);
-                own_outputs.push(OwnOutput { n: n as u32, key: k, bond_locktime: None });
+                own_outputs.push(OwnOutput {
+                    n: n as u32,
+                    key: k,
+                    bond_locktime: None,
+                });
             }
         }
         for e in extra_own {
@@ -443,9 +528,13 @@ impl Wallet {
             }
         }
         let proto_prevouts: Vec<Prevout> = inputs.iter().map(|i| i.prevout.clone()).collect();
-        let preview = yewd_proto::preview::compute(self.network, tx, &proto_prevouts, &signed, &own);
+        let preview =
+            yewd_proto::preview::compute(self.network, tx, &proto_prevouts, &signed, &own);
         let req = SignRequest {
-            tx: hex::encode(tx.serialize().map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?),
+            tx: hex::encode(
+                tx.serialize()
+                    .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?,
+            ),
             branch_id: branch,
             inputs,
             own_outputs,
@@ -455,10 +544,14 @@ impl Wallet {
         };
         match self.signer.request(Request::Sign(req)) {
             Ok(Response::Signed(s)) => {
-                let raw = hex::decode(&s.tx).map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
-                Transaction::parse(&raw)
-                    .map(|(t, _)| t)
-                    .map_err(|e| RpcError::new(code::INTERNAL_ERROR, format!("yewd: the signer's transaction: {e}")))
+                let raw = hex::decode(&s.tx)
+                    .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
+                Transaction::parse(&raw).map(|(t, _)| t).map_err(|e| {
+                    RpcError::new(
+                        code::INTERNAL_ERROR,
+                        format!("yewd: the signer's transaction: {e}"),
+                    )
+                })
             }
             other => Err(signer_error(other)),
         }
@@ -480,34 +573,64 @@ impl Wallet {
         let mut keys = Vec::with_capacity(prevouts.len());
         for (i, p) in prevouts.into_iter().enumerate() {
             let p = p.ok_or_else(|| {
-                RpcError::new(code::TRANSACTION_ERROR, format!("Missing inputs: input {i} ({}) is spent or unknown", op_str(&tx.vin[i].prevout)))
+                RpcError::new(
+                    code::TRANSACTION_ERROR,
+                    format!(
+                        "Missing inputs: input {i} ({}) is spent or unknown",
+                        op_str(&tx.vin[i].prevout)
+                    ),
+                )
             })?;
-            let template = yew_core::vault::parse_vault(&p.script).is_some() || yew_core::vault::parse_intent(&p.script).is_some();
-            keys.push(if template { KeyRef::None } else { self.key_of_script(&p.script).unwrap_or(KeyRef::None) });
+            let template = yew_core::vault::parse_vault(&p.script).is_some()
+                || yew_core::vault::parse_intent(&p.script).is_some();
+            keys.push(if template {
+                KeyRef::None
+            } else {
+                self.key_of_script(&p.script).unwrap_or(KeyRef::None)
+            });
             coins.push(p);
         }
         // a SET_JOIN bond of a member key this wallet holds is its own output (HandoffSend's rule)
         let mut own = Vec::new();
         for o in &tx.vout {
             if let Ok(a) = yewd_proto::act::decode(&o.script_pubkey) {
-                if let yewd_proto::act::Body::Join { member_key, bond_locktime, bond_vout, .. } = a.body {
+                if let yewd_proto::act::Body::Join {
+                    member_key,
+                    bond_locktime,
+                    bond_vout,
+                    ..
+                } = a.body
+                {
                     if let Some(k) = self.key_of_pubkey(&member_key) {
-                        own.push(OwnOutput { n: bond_vout as u32, key: k, bond_locktime: Some(bond_locktime) });
+                        own.push(OwnOutput {
+                            n: bond_vout as u32,
+                            key: k,
+                            bond_locktime: Some(bond_locktime),
+                        });
                     }
                 }
             }
         }
-        self.sign_inputs(tx, &coins, &keys, &own, path, cap, next.branch).await
+        self.sign_inputs(tx, &coins, &keys, &own, path, cap, next.branch)
+            .await
     }
 
     /// `Broadcast`: the vault/Yellowback fee cap (`absurdly-high-fee`), then the node's
     /// `sendrawtransaction`; the wallet picks the transaction up from the mempool at once.
-    pub async fn broadcast(&mut self, node: &dyn Node, tx: &Transaction, cap: Option<i64>) -> Result<String, RpcError> {
-        let raw = tx.serialize().map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
+    pub async fn broadcast(
+        &mut self,
+        node: &dyn Node,
+        tx: &Transaction,
+        cap: Option<i64>,
+    ) -> Result<String, RpcError> {
+        let raw = tx
+            .serialize()
+            .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
         if let Some(cap) = cap {
             let prevouts = self.prevouts_of(node, tx).await?;
             if prevouts.iter().all(Option::is_some) {
-                let fee: i64 = prevouts.iter().flatten().map(|p| p.value).sum::<i64>() - tx.output_total();
+                let fee: i64 =
+                    prevouts.iter().flatten().map(|p| p.value).sum::<i64>() - tx.output_total();
                 if fee > cap {
                     return Err(RpcError::new(
                         code::TRANSACTION_REJECTED,
@@ -520,7 +643,13 @@ impl Wallet {
                 }
             }
         }
-        let txid = match node::call(node, "sendrawtransaction", serde_json::json!([hex::encode(&raw), true])).await {
+        let txid = match node::call(
+            node,
+            "sendrawtransaction",
+            serde_json::json!([hex::encode(&raw), true]),
+        )
+        .await
+        {
             Ok(v) => v.as_str().unwrap_or_default().to_string(),
             Err(NodeError::Rpc { code, message }) => return Err(RpcError::new(code, message)),
             Err(e) => return Err(e.into()),
@@ -568,13 +697,19 @@ impl Wallet {
                 i.script_sig.clear();
             }
         }
-        let hex = hex::encode(t.serialize().map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?);
+        let hex = hex::encode(
+            t.serialize()
+                .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?,
+        );
         self.st.builds.insert(op_str(templ), hex);
         self.persist_state()
     }
 
     pub fn build_of(&self, templ: &OutPoint) -> Option<Transaction> {
-        self.st.builds.get(&op_str(templ)).and_then(|h| parse_hex_tx(h))
+        self.st
+            .builds
+            .get(&op_str(templ))
+            .and_then(|h| parse_hex_tx(h))
     }
 }
 
@@ -585,14 +720,20 @@ pub fn parse_hex_tx(h: &str) -> Option<Transaction> {
 
 /// `DecodeMutable`: `-22 TX decode failed`.
 pub fn decode_tx_param(v: &Value) -> Result<Transaction, RpcError> {
-    let s = v.as_str().ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type string"))?;
+    let s = v
+        .as_str()
+        .ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type string"))?;
     parse_hex_tx(s).ok_or_else(|| RpcError::new(code::DESERIALIZATION_ERROR, "TX decode failed"))
 }
 
 pub fn tx_hex(t: &Transaction) -> Result<String, RpcError> {
-    Ok(hex::encode(t.serialize().map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?))
+    Ok(hex::encode(t.serialize().map_err(|e| {
+        RpcError::new(code::INTERNAL_ERROR, e.to_string())
+    })?))
 }
 
 pub fn txid_of(t: &Transaction) -> Result<String, RpcError> {
-    Ok(txid_hex(&t.txid().map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?))
+    Ok(txid_hex(&t.txid().map_err(|e| {
+        RpcError::new(code::INTERNAL_ERROR, e.to_string())
+    })?))
 }

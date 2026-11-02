@@ -358,8 +358,9 @@ impl SignerCore {
                     let sig = secp256k1::ecdsa::sign(secp256k1::Message::from_digest(digest), &sk);
                     let mut der = sig.serialize_der().to_vec();
                     der.push(SIGHASH_ALL as u8);
-                    tx.vin[i].script_sig = yew_core::script::carrier_script_sig(&bundle, &der, &redeem)
-                        .map_err(|e| (refuse::FAILED, e.to_string()))?;
+                    tx.vin[i].script_sig =
+                        yew_core::script::carrier_script_sig(&bundle, &der, &redeem)
+                            .map_err(|e| (refuse::FAILED, e.to_string()))?;
                     digest
                 }
                 (KeyRef::PqOwner { selector, .. }, Derived::Pq(k)) => {
@@ -614,8 +615,10 @@ fn carrier_bundle(h: Option<&str>) -> Result<Vec<u8>, Refused> {
 fn owns_input(k: &KeyRef, d: &Derived, script: &[u8], bundle: Option<&str>) -> Result<(), String> {
     match (k, d) {
         (KeyRef::Carrier { .. }, Derived::T(_, pk)) => {
-            let b = hex::decode(bundle.ok_or("a carrier input carries its bundle")?).map_err(|e| e.to_string())?;
-            let redeem = yew_core::script::carrier_script(pk, &keys::sha256(&b)).map_err(|e| e.to_string())?;
+            let b = hex::decode(bundle.ok_or("a carrier input carries its bundle")?)
+                .map_err(|e| e.to_string())?;
+            let redeem = yew_core::script::carrier_script(pk, &keys::sha256(&b))
+                .map_err(|e| e.to_string())?;
             if yew_core::script::p2sh_of(&redeem) == script {
                 Ok(())
             } else {

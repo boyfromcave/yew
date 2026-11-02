@@ -33,7 +33,7 @@ fn dir(name: &str) -> PathBuf {
     d
 }
 
-fn core(d: &PathBuf) -> SignerCore {
+fn core(d: &std::path::Path) -> SignerCore {
     SignerCore::open(Keystore::from_mnemonic(Network::Regtest, PHRASE), d).unwrap()
 }
 
@@ -43,7 +43,10 @@ fn p2pkh_of(c: &SignerCore, chain: u32, index: u32) -> Vec<u8> {
 }
 
 fn op(n: u8) -> OutPoint {
-    OutPoint { txid: [n; 32], n: n as u32 }
+    OutPoint {
+        txid: [n; 32],
+        n: n as u32,
+    }
 }
 
 fn opstr(o: &OutPoint) -> String {
@@ -54,20 +57,39 @@ fn opstr(o: &OutPoint) -> String {
 fn payment(c: &SignerCore) -> (Transaction, Vec<SignInput>, Vec<OwnOutput>) {
     let mut tx = Transaction::new_v4();
     tx.vin.push(TxIn::new(op(1)));
-    tx.vout.push(TxOut { value: 200_000_000, script_pubkey: yew_core::script::p2pkh_script(&[9u8; 20]) });
-    tx.vout.push(TxOut { value: 299_990_000, script_pubkey: p2pkh_of(c, 1, 0) });
+    tx.vout.push(TxOut {
+        value: 200_000_000,
+        script_pubkey: yew_core::script::p2pkh_script(&[9u8; 20]),
+    });
+    tx.vout.push(TxOut {
+        value: 299_990_000,
+        script_pubkey: p2pkh_of(c, 1, 0),
+    });
     let inputs = vec![SignInput {
-        prevout: Prevout { outpoint: opstr(&op(1)), script: hex::encode(p2pkh_of(c, 0, 0)), amount_zat: 500_000_000 },
+        prevout: Prevout {
+            outpoint: opstr(&op(1)),
+            script: hex::encode(p2pkh_of(c, 0, 0)),
+            amount_zat: 500_000_000,
+        },
         key: KeyRef::Bip32 { chain: 0, index: 0 },
         carrier_bundle: None,
     }];
-    let own = vec![OwnOutput { n: 1, key: KeyRef::Bip32 { chain: 1, index: 0 }, bond_locktime: None }];
+    let own = vec![OwnOutput {
+        n: 1,
+        key: KeyRef::Bip32 { chain: 1, index: 0 },
+        bond_locktime: None,
+    }];
     (tx, inputs, own)
 }
 
 fn request(tx: &Transaction, inputs: Vec<SignInput>, own: Vec<OwnOutput>, cap: i64) -> SignRequest {
     let prev: Vec<Prevout> = inputs.iter().map(|i| i.prevout.clone()).collect();
-    let signed: BTreeSet<u32> = inputs.iter().enumerate().filter(|(_, i)| i.key != KeyRef::None).map(|(n, _)| n as u32).collect();
+    let signed: BTreeSet<u32> = inputs
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| i.key != KeyRef::None)
+        .map(|(n, _)| n as u32)
+        .collect();
     let mine: BTreeSet<u32> = own.iter().map(|o| o.n).collect();
     let preview = yewd_proto::preview::compute(Network::Regtest, tx, &prev, &signed, &mine);
     SignRequest {
@@ -98,11 +120,15 @@ fn signs_a_bound_payment_and_the_signature_verifies() {
     let c = core(&d);
     let (tx, inputs, own) = payment(&c);
     let r = ask(&c, Request::Sign(request(&tx, inputs, own, 210_000_000)));
-    let Response::Signed(s) = r else { panic!("{r:?}") };
+    let Response::Signed(s) = r else {
+        panic!("{r:?}")
+    };
     let (signed, _) = Transaction::parse(&hex::decode(&s.tx).unwrap()).unwrap();
     assert!(!signed.vin[0].script_sig.is_empty());
     // the digest the signer reports is the ZIP-243 sighash recomputed from the bytes
-    let want = tx.sighash(0, &p2pkh_of(&c, 0, 0), 500_000_000, 1, BRANCH).unwrap();
+    let want = tx
+        .sighash(0, &p2pkh_of(&c, 0, 0), 500_000_000, 1, BRANCH)
+        .unwrap();
     assert_eq!(s.sighashes[0].as_deref(), Some(hex::encode(want).as_str()));
 }
 
@@ -157,7 +183,11 @@ fn refuses_a_preview_that_lies() {
     two.vin.push(TxIn::new(op(3)));
     let mut ins = inputs.clone();
     ins.push(SignInput {
-        prevout: Prevout { outpoint: opstr(&op(3)), script: hex::encode(p2pkh_of(&c, 0, 2)), amount_zat: 100_000_000 },
+        prevout: Prevout {
+            outpoint: opstr(&op(3)),
+            script: hex::encode(p2pkh_of(&c, 0, 2)),
+            amount_zat: 100_000_000,
+        },
         key: KeyRef::Bip32 { chain: 0, index: 2 },
         carrier_bundle: None,
     });
@@ -168,7 +198,10 @@ fn refuses_a_preview_that_lies() {
     // the fee shown is not the fee paid
     let mut r = honest;
     r.preview.fee_zat += 1;
-    assert_eq!(refused(ask(&c, Request::Sign(r))).0, refuse::PREVIEW_MISMATCH);
+    assert_eq!(
+        refused(ask(&c, Request::Sign(r))).0,
+        refuse::PREVIEW_MISMATCH
+    );
 }
 
 #[test]
@@ -177,9 +210,15 @@ fn refuses_an_outflow_above_the_cap() {
     let c = core(&d);
     let (tx, inputs, own) = payment(&c);
     // the wallet pays 2 YEC + 0.0001 fee beyond its change
-    let (code, why) = refused(ask(&c, Request::Sign(request(&tx, inputs.clone(), own.clone(), 200_009_999))));
+    let (code, why) = refused(ask(
+        &c,
+        Request::Sign(request(&tx, inputs.clone(), own.clone(), 200_009_999)),
+    ));
     assert_eq!(code, refuse::OUTFLOW, "{why}");
-    assert!(matches!(ask(&c, Request::Sign(request(&tx, inputs, own, 200_010_000))), Response::Signed(_)));
+    assert!(matches!(
+        ask(&c, Request::Sign(request(&tx, inputs, own, 200_010_000))),
+        Response::Signed(_)
+    ));
 }
 
 #[test]
@@ -188,32 +227,62 @@ fn refuses_template_inputs_on_the_yec_path_and_owner_keys_elsewhere() {
     let c = core(&d);
     let root = PqSeedRoot::from_seed(&keys::seed_from_mnemonic(PHRASE, "").unwrap());
     let owner = PqKey::from_seed(1, &root.derive(1, 0)).unwrap().id();
-    let vp = VaultParams { tag: *b"TEST", cancel_set_id: [5; 32], delay: 3, set_id: [5; 32], owner_height: 100, owner, app_height: 0 };
+    let vp = VaultParams {
+        tag: *b"TEST",
+        cancel_set_id: [5; 32],
+        delay: 3,
+        set_id: [5; 32],
+        owner_height: 100,
+        owner,
+        app_height: 0,
+    };
     let v = vault::build_vault(&vp).unwrap();
     let mut tx = Transaction::new_v4();
     tx.vin.push(TxIn::new(op(4)));
-    tx.vout.push(TxOut { value: 90_000, script_pubkey: p2pkh_of(&c, 0, 0) });
+    tx.vout.push(TxOut {
+        value: 90_000,
+        script_pubkey: p2pkh_of(&c, 0, 0),
+    });
     let inputs = vec![SignInput {
-        prevout: Prevout { outpoint: opstr(&op(4)), script: hex::encode(&v), amount_zat: 100_000 },
-        key: KeyRef::PqOwner { scheme: 1, index: 0, selector: 2 },
+        prevout: Prevout {
+            outpoint: opstr(&op(4)),
+            script: hex::encode(&v),
+            amount_zat: 100_000,
+        },
+        key: KeyRef::PqOwner {
+            scheme: 1,
+            index: 0,
+            selector: 2,
+        },
         carrier_bundle: None,
     }];
-    let own = vec![OwnOutput { n: 0, key: KeyRef::Bip32 { chain: 0, index: 0 }, bond_locktime: None }];
+    let own = vec![OwnOutput {
+        n: 0,
+        key: KeyRef::Bip32 { chain: 0, index: 0 },
+        bond_locktime: None,
+    }];
     let mut r = request(&tx, inputs.clone(), own.clone(), i64::MAX);
     assert_eq!(refused(ask(&c, Request::Sign(r.clone()))).0, refuse::GATE);
     r.gate_path = GatePath::Vault;
     assert_eq!(refused(ask(&c, Request::Sign(r.clone()))).0, refuse::GATE);
     // the owner path signs it, with the owner's post-quantum key, and the signature verifies
     r.gate_path = GatePath::Owner;
-    let Response::Signed(s) = ask(&c, Request::Sign(r)) else { panic!() };
+    let Response::Signed(s) = ask(&c, Request::Sign(r)) else {
+        panic!()
+    };
     let (signed, _) = Transaction::parse(&hex::decode(&s.tx).unwrap()).unwrap();
-    let (sel, sig, pk) = vault::parse_owner_script_sig(vault::Kind::Vault, &signed.vin[0].script_sig).unwrap();
+    let (sel, sig, pk) =
+        vault::parse_owner_script_sig(vault::Kind::Vault, &signed.vin[0].script_sig).unwrap();
     assert_eq!(sel, 2);
     let digest = tx.sighash(0, &v, 100_000, 1, BRANCH).unwrap();
     assert!(yew_core::pq::verify(1, &pk, &sig[..sig.len() - 1], &digest));
     // another owner index does not own the vault
     let mut wrong = inputs;
-    wrong[0].key = KeyRef::PqOwner { scheme: 1, index: 1, selector: 2 };
+    wrong[0].key = KeyRef::PqOwner {
+        scheme: 1,
+        index: 1,
+        selector: 2,
+    };
     let mut r = request(&tx, wrong, own, i64::MAX);
     r.gate_path = GatePath::Owner;
     assert_eq!(refused(ask(&c, Request::Sign(r))).0, refuse::KEY_MISMATCH);
@@ -224,7 +293,11 @@ fn set_request(tx: &Transaction, v: &[u8], set: [u8; 32], keys: Vec<KeyRef>) -> 
         tx: hex::encode(tx.serialize().unwrap()),
         branch_id: BRANCH,
         index: 0,
-        prevout: Prevout { outpoint: opstr(&tx.vin[0].prevout), script: hex::encode(v), amount_zat: 1_000_000_000 },
+        prevout: Prevout {
+            outpoint: opstr(&tx.vin[0].prevout),
+            script: hex::encode(v),
+            amount_zat: 1_000_000_000,
+        },
         set_id: yew_core::tx::txid_hex(&set),
         role: 1,
         keys,
@@ -236,46 +309,87 @@ fn set_request(tx: &Transaction, v: &[u8], set: [u8; 32], keys: Vec<KeyRef>) -> 
 fn sign_once_survives_a_restart_and_refuses_a_second_sighash() {
     let d = dir("once");
     let set = [6u8; 32];
-    let owner = yew_core::pq::PqKeyId { scheme: 1, hash: [8; 32] };
-    let vp = VaultParams { tag: *b"TEST", cancel_set_id: set, delay: 3, set_id: set, owner_height: 100, owner, app_height: 0 };
+    let owner = yew_core::pq::PqKeyId {
+        scheme: 1,
+        hash: [8; 32],
+    };
+    let vp = VaultParams {
+        tag: *b"TEST",
+        cancel_set_id: set,
+        delay: 3,
+        set_id: set,
+        owner_height: 100,
+        owner,
+        app_height: 0,
+    };
     let v = vault::build_vault(&vp).unwrap();
     let member = KeyRef::Bip32 { chain: 0, index: 5 };
     let unlock = |pay: i64| {
         let mut tx = Transaction::new_v4();
         tx.vin.push(TxIn::new(op(9)));
-        tx.vout.push(TxOut { value: pay, script_pubkey: yew_core::script::p2pkh_script(&[1u8; 20]) });
+        tx.vout.push(TxOut {
+            value: pay,
+            script_pubkey: yew_core::script::p2pkh_script(&[1u8; 20]),
+        });
         tx
     };
     let a = unlock(400_000_000);
     let b = unlock(300_000_000);
     {
         let c = core(&d);
-        let Response::SetSigs(s) = ask(&c, Request::SignSet(set_request(&a, &v, set, vec![member]))) else { panic!() };
+        let Response::SetSigs(s) =
+            ask(&c, Request::SignSet(set_request(&a, &v, set, vec![member])))
+        else {
+            panic!()
+        };
         assert_eq!(s.sigs.len(), 1);
         // the signature recovers to the member key over the set message
         let msg: [u8; 32] = hex::decode(&s.msg).unwrap().try_into().unwrap();
         let sig: [u8; 65] = hex::decode(&s.sigs[0]).unwrap().try_into().unwrap();
-        assert_eq!(yewd_proto::act::recover(&msg, &sig).unwrap(), c.bip32_pubkey(0, 5).unwrap());
+        assert_eq!(
+            yewd_proto::act::recover(&msg, &sig).unwrap(),
+            c.bip32_pubkey(0, 5).unwrap()
+        );
         // the same transaction re-funded (another fee input) has the same sighash: idempotent
         let mut refunded = a.clone();
         refunded.vin.push(TxIn::new(op(10)));
-        assert!(matches!(ask(&c, Request::SignSet(set_request(&refunded, &v, set, vec![member]))), Response::SetSigs(_)));
+        assert!(matches!(
+            ask(
+                &c,
+                Request::SignSet(set_request(&refunded, &v, set, vec![member]))
+            ),
+            Response::SetSigs(_)
+        ));
     }
     // a restarted signer keeps the record and refuses a different spend of the same outpoint
     let c = core(&d);
-    let (code, why) = refused(ask(&c, Request::SignSet(set_request(&b, &v, set, vec![member]))));
+    let (code, why) = refused(ask(
+        &c,
+        Request::SignSet(set_request(&b, &v, set, vec![member])),
+    ));
     assert_eq!(code, refuse::SET_SIGN_ONCE, "{why}");
     assert!(why.starts_with("set-sign-once"));
     // even asked for no signature (the wallet only reports), the conflict is refused
-    assert_eq!(refused(ask(&c, Request::SignSet(set_request(&b, &v, set, vec![])))).0, refuse::SET_SIGN_ONCE);
-    let Response::Records(r) = ask(&c, Request::ListSigned) else { panic!() };
+    assert_eq!(
+        refused(ask(&c, Request::SignSet(set_request(&b, &v, set, vec![])))).0,
+        refuse::SET_SIGN_ONCE
+    );
+    let Response::Records(r) = ask(&c, Request::ListSigned) else {
+        panic!()
+    };
     assert_eq!(r.records.len(), 1);
     // an import of a differing record is refused whole
     let mut other = r.records[0].clone();
     other.sighash = "00".repeat(32);
-    assert_eq!(refused(ask(&c, Request::ImportSigned(vec![other]))).0, refuse::SET_SIGN_ONCE);
+    assert_eq!(
+        refused(ask(&c, Request::ImportSigned(vec![other]))).0,
+        refuse::SET_SIGN_ONCE
+    );
     // a set that does not govern the vault's unlock branch is refused
-    let (code, _) = refused(ask(&c, Request::SignSet(set_request(&a, &v, [7u8; 32], vec![member]))));
+    let (code, _) = refused(ask(
+        &c,
+        Request::SignSet(set_request(&a, &v, [7u8; 32], vec![member])),
+    ));
     assert_eq!(code, refuse::GATE);
 }
 
@@ -285,18 +399,44 @@ fn a_restored_seed_refuses_until_acknowledged() {
     yewd_signer::init(&d, Network::Regtest, Some(PHRASE), 0).unwrap();
     let c = SignerCore::open(Keystore::load(&d, Network::Regtest).unwrap(), &d).unwrap();
     let set = [6u8; 32];
-    let owner = yew_core::pq::PqKeyId { scheme: 1, hash: [8; 32] };
-    let vp = VaultParams { tag: *b"TEST", cancel_set_id: set, delay: 3, set_id: set, owner_height: 100, owner, app_height: 0 };
+    let owner = yew_core::pq::PqKeyId {
+        scheme: 1,
+        hash: [8; 32],
+    };
+    let vp = VaultParams {
+        tag: *b"TEST",
+        cancel_set_id: set,
+        delay: 3,
+        set_id: set,
+        owner_height: 100,
+        owner,
+        app_height: 0,
+    };
     let v = vault::build_vault(&vp).unwrap();
     let mut tx = Transaction::new_v4();
     tx.vin.push(TxIn::new(op(9)));
-    tx.vout.push(TxOut { value: 1, script_pubkey: vec![0x51] });
+    tx.vout.push(TxOut {
+        value: 1,
+        script_pubkey: vec![0x51],
+    });
     let member = KeyRef::Bip32 { chain: 0, index: 5 };
-    assert_eq!(refused(ask(&c, Request::SignSet(set_request(&tx, &v, set, vec![member])))).0, refuse::SET_SIGN_RESTORED);
+    assert_eq!(
+        refused(ask(
+            &c,
+            Request::SignSet(set_request(&tx, &v, set, vec![member]))
+        ))
+        .0,
+        refuse::SET_SIGN_RESTORED
+    );
     let mut ack = set_request(&tx, &v, set, vec![member]);
     ack.acknowledge_restore = true;
-    assert!(matches!(ask(&c, Request::SignSet(ack)), Response::SetSigs(_)));
-    let Response::Acknowledged(r) = ask(&c, Request::AcknowledgeRestore) else { panic!() };
+    assert!(matches!(
+        ask(&c, Request::SignSet(ack)),
+        Response::SetSigs(_)
+    ));
+    let Response::Acknowledged(r) = ask(&c, Request::AcknowledgeRestore) else {
+        panic!()
+    };
     assert!(!r.restored);
 }
 
@@ -307,7 +447,10 @@ fn refuses_another_protocol_version() {
     let mut e = Envelope::new(Request::Hello);
     e.version = 0;
     assert_eq!(refused(c.handle(&e)).0, refuse::BAD_VERSION);
-    assert!(matches!(c.handle(&Envelope::new(Request::Hello)), Response::Hello(_)));
+    assert!(matches!(
+        c.handle(&Envelope::new(Request::Hello)),
+        Response::Hello(_)
+    ));
 }
 
 #[test]
@@ -324,9 +467,14 @@ fn the_socket_checks_and_answers() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     use std::os::unix::fs::PermissionsExt;
-    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
     let client = yewd_proto::client::SocketClient::new(path);
-    let Response::Hello(h) = client.call(Request::Hello).unwrap() else { panic!() };
+    let Response::Hello(h) = client.call(Request::Hello).unwrap() else {
+        panic!()
+    };
     assert_eq!(h.version, yewd_proto::PROTO_VERSION);
     assert_eq!(h.network, "regtest");
 }

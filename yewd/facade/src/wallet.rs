@@ -318,7 +318,10 @@ impl WalletService {
                     Err(e) => {
                         *self.signer.lock().unwrap_or_else(|e| e.into_inner()) =
                             Some(SignerSource::Process(bin));
-                        return Err(RpcError::new(code::WALLET_UNLOCK_NEEDED, format!("yewd: {e}")));
+                        return Err(RpcError::new(
+                            code::WALLET_UNLOCK_NEEDED,
+                            format!("yewd: {e}"),
+                        ));
                     }
                 };
                 (Box::new(s), b)

@@ -49,14 +49,46 @@ pub struct PendingMint {
 /// ycashd's code for a build refusal (`ThrowBuildError`).
 pub fn build_error(msg: String) -> RpcError {
     const RULE: &[&str] = &[
-        "mintpol-", "mint-unsatisfiable", "vault-locked", "claim-not-yet", "claim-not-underwater", "mempool-check-failed", "intent-",
-        "yed-template-", "bundle-insufficient", "mint9-", "mint10-", "red1-", "red5-", "afee1-", "notice-standing", "notice-not-underwater",
-        "carrier-lapsed", "carrier-unconfirmed", "bad-mint-", "vault-spend-", "vault-claim-", "mint-not-active", "mint-halted-",
-        "mint-supply-cap", "mint-vault-share", "mint-dry-run", "liveness-",
+        "mintpol-",
+        "mint-unsatisfiable",
+        "vault-locked",
+        "claim-not-yet",
+        "claim-not-underwater",
+        "mempool-check-failed",
+        "intent-",
+        "yed-template-",
+        "bundle-insufficient",
+        "mint9-",
+        "mint10-",
+        "red1-",
+        "red5-",
+        "afee1-",
+        "notice-standing",
+        "notice-not-underwater",
+        "carrier-lapsed",
+        "carrier-unconfirmed",
+        "bad-mint-",
+        "vault-spend-",
+        "vault-claim-",
+        "mint-not-active",
+        "mint-halted-",
+        "mint-supply-cap",
+        "mint-vault-share",
+        "mint-dry-run",
+        "liveness-",
     ];
     const PARAM: &[&str] = &[
-        "mint-bad-lock", "bad-mint-amount", "bad-xfer-amount", "vault-not-found", "vault-not-active", "vault-not-owned",
-        "not-a-yellowback-address", "bad-address", "bundle-malformed", "attest-malformed", "carrier-selector",
+        "mint-bad-lock",
+        "bad-mint-amount",
+        "bad-xfer-amount",
+        "vault-not-found",
+        "vault-not-active",
+        "vault-not-owned",
+        "not-a-yellowback-address",
+        "bad-address",
+        "bundle-malformed",
+        "attest-malformed",
+        "carrier-selector",
     ];
     if RULE.iter().any(|p| msg.starts_with(p)) {
         RpcError::new(code::TRANSACTION_REJECTED, msg)
@@ -80,20 +112,34 @@ fn from_script(w: &Wallet, from: &str) -> Result<Option<Vec<u8>>, RpcError> {
     if from.is_empty() {
         return Ok(None);
     }
-    if let Some(s) = crate::rpc::parse_taddr_script(w.network, from).filter(|s| yew_core::script::p2pkh_hash(s).is_some()) {
+    if let Some(s) = crate::rpc::parse_taddr_script(w.network, from)
+        .filter(|s| yew_core::script::p2pkh_hash(s).is_some())
+    {
         return Ok(Some(s));
     }
-    if from.starts_with("ys") || from.starts_with("zregtestsapling") || from.starts_with("zs") || from.starts_with("ytestsapling") {
+    if from.starts_with("ys")
+        || from.starts_with("zregtestsapling")
+        || from.starts_with("zs")
+        || from.starts_with("ytestsapling")
+    {
         return Err(RpcError::new(
             code::WALLET_ERROR,
             "yewd: funding from a Sapling address is the signer's Sapling build (plan K-24), not served yet; pass a transparent address or \"\"",
         ));
     }
-    Err(build_error("bad-address: from: not a transparent (s1…) or Sapling (ys1…) address of this network".into()))
+    Err(build_error(
+        "bad-address: from: not a transparent (s1…) or Sapling (ys1…) address of this network"
+            .into(),
+    ))
 }
 
 impl Wallet {
-    pub async fn mint_call(&mut self, node: &dyn Node, method: &str, p: &[Value]) -> Result<J, RpcError> {
+    pub async fn mint_call(
+        &mut self,
+        node: &dyn Node,
+        method: &str,
+        p: &[Value],
+    ) -> Result<J, RpcError> {
         match method {
             "yed_mint" => self.yed_mint(node, p).await,
             "yed_sweepcarriers" => self.yed_sweepcarriers(node, p).await,
@@ -103,7 +149,12 @@ impl Wallet {
 
     /// Plain YEC coins for a Yellowback build, optionally only those paying `only`: confirmed,
     /// smallest first (`PickYecCoins` without the fee follower: P2PKH inputs only here).
-    async fn yec_for(&self, node: &dyn Node, needed: i64, only: Option<&[u8]>) -> Result<Vec<(OutPoint, i64, Vec<u8>)>, RpcError> {
+    async fn yec_for(
+        &self,
+        node: &dyn Node,
+        needed: i64,
+        only: Option<&[u8]>,
+    ) -> Result<Vec<(OutPoint, i64, Vec<u8>)>, RpcError> {
         if needed <= 0 {
             return Ok(vec![]);
         }
@@ -164,9 +215,15 @@ impl Wallet {
             let got: i64 = coins.iter().map(|c| c.1).sum();
             let change = got - needed.max(0);
             if change > 0 {
-                tx.vout.push(TxOut { value: change, script_pubkey: change_script.clone() });
+                tx.vout.push(TxOut {
+                    value: change,
+                    script_pubkey: change_script.clone(),
+                });
             }
-            let mut sizes: Vec<usize> = coins.iter().map(|c| yew_core::tx::script_sig_size_bound(&c.2)).collect();
+            let mut sizes: Vec<usize> = coins
+                .iter()
+                .map(|c| yew_core::tx::script_sig_size_bound(&c.2))
+                .collect();
             sizes.extend(extra.iter().map(|(_, n)| *n));
             let conventional = tx.zip317_conventional_fee(&sizes).unwrap_or(fee);
             if conventional > fee {
@@ -175,45 +232,82 @@ impl Wallet {
             }
             return Ok((tx, coins));
         }
-        Err(RpcError::new(code::WALLET_ERROR, "the fee did not converge"))
+        Err(RpcError::new(
+            code::WALLET_ERROR,
+            "the fee did not converge",
+        ))
     }
 
     /// `yed_mint cents lockBlocks ( "from" "bundleHex" wait maxCollateralZat )`.
     async fn yed_mint(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
         if p.len() < 2 || p.len() > 6 {
-            return Err(RpcError::new(code::MISC_ERROR, "yed_mint cents lockBlocks ( \"from\" \"bundleHex\" wait maxCollateralZat )"));
+            return Err(RpcError::new(
+                code::MISC_ERROR,
+                "yed_mint cents lockBlocks ( \"from\" \"bundleHex\" wait maxCollateralZat )",
+            ));
         }
-        let cents = p[0].as_i64().ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type number"))?;
-        let lock_blocks = p[1].as_i64().ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type number"))?;
+        let cents = p[0]
+            .as_i64()
+            .ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type number"))?;
+        let lock_blocks = p[1]
+            .as_i64()
+            .ok_or_else(|| RpcError::new(code::TYPE_ERROR, "Expected type number"))?;
         let from = p.get(2).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let bundle_arg = p.get(3).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let wait = p.get(4).and_then(|v| v.as_bool()).unwrap_or(true);
         let max_collateral = match p.get(5) {
             None | Some(Value::Null) => 0,
-            Some(v) => v.as_i64().filter(|n| *n >= 0).ok_or_else(|| invalid("maxCollateralZat must be a non-negative number"))?,
+            Some(v) => v
+                .as_i64()
+                .filter(|n| *n >= 0)
+                .ok_or_else(|| invalid("maxCollateralZat must be a non-negative number"))?,
         };
         let only = from_script(self, &from)?;
         // preflight at R (MINTPOL-1, the bundle, MINT-10, the collateral bound), before any transaction
         let info = node::call(node, "yed_getinfo", serde_json::json!([])).await?;
         let prm = &info["params"];
-        let (min_mint, max_mint) = (prm["minMintCents"].as_i64().unwrap_or(100), prm["maxMintCents"].as_i64().unwrap_or(10_000_000));
+        let (min_mint, max_mint) = (
+            prm["minMintCents"].as_i64().unwrap_or(100),
+            prm["maxMintCents"].as_i64().unwrap_or(10_000_000),
+        );
         if cents < min_mint || cents > max_mint {
-            return Err(build_error(format!("bad-mint-amount: cents must be between {min_mint} and {max_mint}")));
+            return Err(build_error(format!(
+                "bad-mint-amount: cents must be between {min_mint} and {max_mint}"
+            )));
         }
-        let est = node::call(node, "yed_estimatecollateral", serde_json::json!([cents, lock_blocks])).await.map_err(node_build_error)?;
+        let est = node::call(
+            node,
+            "yed_estimatecollateral",
+            serde_json::json!([cents, lock_blocks]),
+        )
+        .await
+        .map_err(node_build_error)?;
         if est["mintBlocked"].as_bool() == Some(true) {
-            return Err(build_error(est["mintBlockedReason"].as_str().unwrap_or("mintpol-").to_string()));
+            return Err(build_error(
+                est["mintBlockedReason"]
+                    .as_str()
+                    .unwrap_or("mintpol-")
+                    .to_string(),
+            ));
         }
-        let collateral = est["requiredZatFloored"].as_i64().or_else(|| est["requiredZat"].as_i64()).ok_or_else(|| build_error("mintpol-no-price: no price the network can mint at".into()))?;
+        let collateral = est["requiredZatFloored"]
+            .as_i64()
+            .or_else(|| est["requiredZat"].as_i64())
+            .ok_or_else(|| {
+                build_error("mintpol-no-price: no price the network can mint at".into())
+            })?;
         if max_collateral > 0 && collateral > max_collateral {
             return Err(RpcError::new(code::WALLET_ERROR, format!("collateral-above-max: the mint needs {collateral} zat of collateral, above the maxCollateralZat of {max_collateral}")));
         }
         let r = est["refHeight"].as_i64().unwrap_or(0);
         let armed = est["armed"].as_bool().unwrap_or(false);
         let bundle = if !bundle_arg.is_empty() {
-            hex::decode(&bundle_arg).map_err(|_| build_error("bundle-malformed: bundleHex is not hex".into()))?
+            hex::decode(&bundle_arg)
+                .map_err(|_| build_error("bundle-malformed: bundleHex is not hex".into()))?
         } else if armed {
-            let b = node::call(node, "yed_buildbundle", serde_json::json!([r, ""])).await.map_err(node_build_error)?;
+            let b = node::call(node, "yed_buildbundle", serde_json::json!([r, ""]))
+                .await
+                .map_err(node_build_error)?;
             hex::decode(b["hex"].as_str().unwrap_or("")).unwrap_or_default()
         } else {
             Vec::new()
@@ -225,8 +319,18 @@ impl Wallet {
             ));
         }
         // the carrier
-        let carrier = self.build_carrier(node, &bundle, r, "", only.as_deref()).await?;
-        let pending = PendingMint { claim: None, carrier, cents, lock_blocks, from: from.clone(), max_collateral, est: est.clone() };
+        let carrier = self
+            .build_carrier(node, &bundle, r, "", only.as_deref())
+            .await?;
+        let pending = PendingMint {
+            claim: None,
+            carrier,
+            cents,
+            lock_blocks,
+            from: from.clone(),
+            max_collateral,
+            est: est.clone(),
+        };
         if !wait {
             self.pending.push(pending);
             return Ok(J::obj()
@@ -257,8 +361,13 @@ impl Wallet {
     }
 
     /// Wait until the carrier confirms (`WaitForCarrier`), following the node meanwhile.
-    pub(crate) async fn wait_carrier(&mut self, node: &dyn Node, carrier: &OutPoint) -> Result<(), RpcError> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(CARRIER_WAIT_SECS);
+    pub(crate) async fn wait_carrier(
+        &mut self,
+        node: &dyn Node,
+        carrier: &OutPoint,
+    ) -> Result<(), RpcError> {
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(CARRIER_WAIT_SECS);
         loop {
             if let Some(c) = node_coin(node, carrier).await? {
                 if c.height.is_some() {
@@ -266,7 +375,10 @@ impl Wallet {
                     return Ok(());
                 }
             } else {
-                return Err(build_error(format!("carrier-unconfirmed: the carrier {} is not an unspent output", op_str(carrier))));
+                return Err(build_error(format!(
+                    "carrier-unconfirmed: the carrier {} is not an unspent output",
+                    op_str(carrier)
+                )));
             }
             if std::time::Instant::now() > deadline {
                 return Err(RpcError::new(code::WALLET_ERROR, "carrier-wait-timeout: the carrier did not confirm; call again (yed_sweepcarriers reclaims it once it lapses)"));
@@ -277,7 +389,14 @@ impl Wallet {
 
     /// `BuildCarrier` (transparent): the carrier output of a fresh key, funded, signed, sent, and
     /// recorded.
-    pub(crate) async fn build_carrier(&mut self, node: &dyn Node, bundle: &[u8], r: i64, selector: &str, only: Option<&[u8]>) -> Result<OutPoint, RpcError> {
+    pub(crate) async fn build_carrier(
+        &mut self,
+        node: &dyn Node,
+        bundle: &[u8],
+        r: i64,
+        selector: &str,
+        only: Option<&[u8]>,
+    ) -> Result<OutPoint, RpcError> {
         let info = node::call(node, "yed_getinfo", serde_json::json!([])).await?;
         let flat = info["params"]["feeZat"].as_i64().unwrap_or(10_000);
         let ref_window = info["params"]["refWindow"].as_i64().unwrap_or(40);
@@ -287,22 +406,61 @@ impl Wallet {
         let h = yew_core::keys::hash160(&pk);
         self.st.book.insert(
             yew_core::keys::encode_p2pkh(self.network, &h),
-            crate::state::BookEntry { label: String::new(), purpose: "yellowback-carrier".into() },
+            crate::state::BookEntry {
+                label: String::new(),
+                purpose: "yellowback-carrier".into(),
+            },
         );
-        let redeem = yew_core::script::carrier_script(&pk, &yew_core::keys::sha256(bundle)).map_err(|e| RpcError::new(code::WALLET_ERROR, e.to_string()))?;
+        let redeem = yew_core::script::carrier_script(&pk, &yew_core::keys::sha256(bundle))
+            .map_err(|e| RpcError::new(code::WALLET_ERROR, e.to_string()))?;
         let mut base = Transaction::new_v4();
         base.expiry_height = (r + ref_window) as u32;
-        base.vout.push(TxOut { value: CARRIER_VALUE, script_pubkey: yew_core::script::p2sh_of(&redeem) });
+        base.vout.push(TxOut {
+            value: CARRIER_VALUE,
+            script_pubkey: yew_core::script::p2sh_of(&redeem),
+        });
         let (tx, coins) = self.fund_yed(node, &base, 0, flat, only, &[]).await?;
-        let prevs: Vec<NodeCoin> = coins.iter().map(|c| NodeCoin { value: c.1, script: c.2.clone(), height: None, coinbase: false }).collect();
-        let keys: Vec<KeyRef> = coins.iter().map(|c| self.key_of_script(&c.2).unwrap_or(KeyRef::None)).collect();
+        let prevs: Vec<NodeCoin> = coins
+            .iter()
+            .map(|c| NodeCoin {
+                value: c.1,
+                script: c.2.clone(),
+                height: None,
+                coinbase: false,
+            })
+            .collect();
+        let keys: Vec<KeyRef> = coins
+            .iter()
+            .map(|c| self.key_of_script(&c.2).unwrap_or(KeyRef::None))
+            .collect();
         let fee: i64 = prevs.iter().map(|c| c.value).sum::<i64>() - tx.output_total();
-        let signed = self.sign_inputs(&tx, &prevs, &keys, &[], GatePath::Yed, CARRIER_VALUE + fee, next.branch).await?;
+        let signed = self
+            .sign_inputs(
+                &tx,
+                &prevs,
+                &keys,
+                &[],
+                GatePath::Yed,
+                CARRIER_VALUE + fee,
+                next.branch,
+            )
+            .await?;
         let txid = self.broadcast(node, &signed, None).await?;
-        let op = OutPoint { txid: yew_core::tx::txid_from_hex(&txid).map_err(|e| RpcError::new(code::INTERNAL_ERROR, e))?, n: 0 };
+        let op = OutPoint {
+            txid: yew_core::tx::txid_from_hex(&txid)
+                .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e))?,
+            n: 0,
+        };
         self.st.carriers.insert(
             op_str(&op),
-            CarrierRec { index, pk: hex::encode(pk), bundle: hex::encode(bundle), ref_height: r, selector: selector.into(), created_height: next.height as i64 - 1 },
+            CarrierRec {
+                index,
+                pk: hex::encode(pk),
+                bundle: hex::encode(bundle),
+                ref_height: r,
+                selector: selector.into(),
+                created_height: next.height as i64 - 1,
+            },
         );
         self.persist_state()?;
         Ok(op)
@@ -319,7 +477,10 @@ impl Wallet {
                         Some(a) => self.complete_claim(node, a, &pm).await,
                     };
                     if let Err(e) = r {
-                        eprintln!("yewd: the pending transaction on carrier {} failed: {e}", op_str(&pm.carrier));
+                        eprintln!(
+                            "yewd: the pending transaction on carrier {} failed: {e}",
+                            op_str(&pm.carrier)
+                        );
                     }
                 }
                 Ok(Some(_)) => keep.push(pm),
@@ -336,18 +497,29 @@ impl Wallet {
         let flat = prm["feeZat"].as_i64().unwrap_or(10_000);
         let ref_window = prm["refWindow"].as_i64().unwrap_or(40);
         let claim_delay = prm["claimDelay"].as_i64().unwrap_or(0);
-        let attestor_set = yew_core::tx::txid_from_hex(prm["attestorSetId"].as_str().unwrap_or("")).map_err(|e| RpcError::new(code::MISC_ERROR, format!("yewd: attestorSetId: {e}")))?;
+        let attestor_set = yew_core::tx::txid_from_hex(prm["attestorSetId"].as_str().unwrap_or(""))
+            .map_err(|e| RpcError::new(code::MISC_ERROR, format!("yewd: attestorSetId: {e}")))?;
         let next = next_block(node).await?;
         let rec = self
             .st
             .carriers
             .get(&op_str(&pm.carrier))
             .cloned()
-            .ok_or_else(|| RpcError::new(code::WALLET_ERROR, "carrier-key-missing: the carrier is not this wallet's"))?;
+            .ok_or_else(|| {
+                RpcError::new(
+                    code::WALLET_ERROR,
+                    "carrier-key-missing: the carrier is not this wallet's",
+                )
+            })?;
         // CheckCarrier
         match node_coin(node, &pm.carrier).await? {
             Some(c) if c.height.is_some() => {}
-            _ => return Err(build_error(format!("carrier-unconfirmed: the carrier {} is not a confirmed unspent output", op_str(&pm.carrier)))),
+            _ => {
+                return Err(build_error(format!(
+                    "carrier-unconfirmed: the carrier {} is not a confirmed unspent output",
+                    op_str(&pm.carrier)
+                )))
+            }
         }
         let r = rec.ref_height;
         if next.height as i64 - ref_window > r {
@@ -357,7 +529,10 @@ impl Wallet {
             )));
         }
         let est = &pm.est;
-        let collateral = est["requiredZatFloored"].as_i64().or_else(|| est["requiredZat"].as_i64()).unwrap_or(0);
+        let collateral = est["requiredZatFloored"]
+            .as_i64()
+            .or_else(|| est["requiredZat"].as_i64())
+            .unwrap_or(0);
         if pm.max_collateral > 0 && collateral > pm.max_collateral {
             return Err(RpcError::new(code::WALLET_ERROR, format!("collateral-above-max: the mint needs {collateral} zat of collateral, above the maxCollateralZat of {}", pm.max_collateral)));
         }
@@ -377,22 +552,41 @@ impl Wallet {
             let h = yew_core::keys::hash160(&pk);
             self.st.book.insert(
                 yew_core::keys::encode_p2pkh(self.network, &h),
-                crate::state::BookEntry { label: String::new(), purpose: "yellowback-vault".into() },
+                crate::state::BookEntry {
+                    label: String::new(),
+                    purpose: "yellowback-vault".into(),
+                },
             );
             yew_core::script::p2pkh_script(&h)
         };
         let owner_bytes = owner.to_bytes();
-        let payee = match node::call(node, "yed_getfeepayee", serde_json::json!([r, hex::encode(owner_bytes)])).await {
-            Ok(v) => v["preferred"].as_str().or_else(|| v["default"]["payoutAddress"].as_str()).map(str::to_string),
-            Err(NodeError::Rpc { message, .. }) if message.contains("fee-no-eligible-payee") => None,
+        let payee = match node::call(
+            node,
+            "yed_getfeepayee",
+            serde_json::json!([r, hex::encode(owner_bytes)]),
+        )
+        .await
+        {
+            Ok(v) => v["preferred"]
+                .as_str()
+                .or_else(|| v["default"]["payoutAddress"].as_str())
+                .map(str::to_string),
+            Err(NodeError::Rpc { message, .. }) if message.contains("fee-no-eligible-payee") => {
+                None
+            }
             Err(e) => return Err(e.into()),
         };
-        let fee_zat = match &payee {
-            Some(_) => yew_core::params::protocol_fee_zat(pm.cents as u64, p_mint).ok_or_else(|| build_error("mint-unsatisfiable: no protocol fee at this price".into()))?,
-            None => 0,
-        };
-        let vp = yew_core::vault::yed_mint_vault_params(&attestor_set, claim_delay, &owner, r as u32);
-        let vault_script = yew_core::vault::build_vault(&vp).ok_or_else(|| build_error("mint-bad-lock: cannot build the vault script".into()))?;
+        let fee_zat =
+            match &payee {
+                Some(_) => yew_core::params::protocol_fee_zat(pm.cents as u64, p_mint).ok_or_else(
+                    || build_error("mint-unsatisfiable: no protocol fee at this price".into()),
+                )?,
+                None => 0,
+            };
+        let vp =
+            yew_core::vault::yed_mint_vault_params(&attestor_set, claim_delay, &owner, r as u32);
+        let vault_script = yew_core::vault::build_vault(&vp)
+            .ok_or_else(|| build_error("mint-bad-lock: cannot build the vault script".into()))?;
         let fee_vout = if payee.is_some() { 3u8 } else { FEE_VOUT_NONE };
         let pl = payload::encode(&Payload::Mint {
             term_class: class_idx,
@@ -406,25 +600,80 @@ impl Wallet {
         .ok_or_else(|| RpcError::new(code::WALLET_ERROR, "cannot encode the mint payload"))?;
         let mut base = Transaction::new_v4();
         base.expiry_height = (r + ref_window) as u32;
-        base.vout.push(TxOut { value: collateral, script_pubkey: vault_script });
-        base.vout.push(TxOut { value: TOKEN_VALUE, script_pubkey: token_script });
-        base.vout.push(TxOut { value: 0, script_pubkey: payload::payload_script(&pl) });
+        base.vout.push(TxOut {
+            value: collateral,
+            script_pubkey: vault_script,
+        });
+        base.vout.push(TxOut {
+            value: TOKEN_VALUE,
+            script_pubkey: token_script,
+        });
+        base.vout.push(TxOut {
+            value: 0,
+            script_pubkey: payload::payload_script(&pl),
+        });
         if let Some(a) = &payee {
-            let s = crate::rpc::parse_taddr_script(self.network, a).ok_or_else(|| RpcError::new(code::MISC_ERROR, format!("yewd: the payee {a} is not an address")))?;
-            base.vout.push(TxOut { value: fee_zat, script_pubkey: s });
+            let s = crate::rpc::parse_taddr_script(self.network, a).ok_or_else(|| {
+                RpcError::new(
+                    code::MISC_ERROR,
+                    format!("yewd: the payee {a} is not an address"),
+                )
+            })?;
+            base.vout.push(TxOut {
+                value: fee_zat,
+                script_pubkey: s,
+            });
         }
         let only = from_script(self, &pm.from)?;
         let bundle = hex::decode(&rec.bundle).unwrap_or_default();
         let carrier_ss = 3 + bundle.len() + 74 + 73;
-        let (tx, coins) = self.fund_yed(node, &base, CARRIER_VALUE, flat, only.as_deref(), &[(pm.carrier, carrier_ss)]).await?;
-        let pk: [u8; 33] = hex::decode(&rec.pk).ok().and_then(|b| b.try_into().ok()).ok_or_else(|| RpcError::new(code::WALLET_ERROR, "carrier-key-missing"))?;
-        let redeem = yew_core::script::carrier_script(&pk, &yew_core::keys::sha256(&bundle)).map_err(|e| RpcError::new(code::WALLET_ERROR, e.to_string()))?;
-        let mut prevs: Vec<NodeCoin> = coins.iter().map(|c| NodeCoin { value: c.1, script: c.2.clone(), height: None, coinbase: false }).collect();
-        prevs.push(NodeCoin { value: CARRIER_VALUE, script: yew_core::script::p2sh_of(&redeem), height: None, coinbase: false });
-        let mut keys: Vec<KeyRef> = coins.iter().map(|c| self.key_of_script(&c.2).unwrap_or(KeyRef::None)).collect();
-        keys.push(KeyRef::Carrier { chain: crate::keys::EXTERNAL, index: rec.index });
-        let outflow = collateral + TOKEN_VALUE + fee_zat + (prevs.iter().map(|c| c.value).sum::<i64>() - tx.output_total()) + 1;
-        let signed = self.sign_inputs(&tx, &prevs, &keys, &[], GatePath::Yed, outflow, next.branch).await?;
+        let (tx, coins) = self
+            .fund_yed(
+                node,
+                &base,
+                CARRIER_VALUE,
+                flat,
+                only.as_deref(),
+                &[(pm.carrier, carrier_ss)],
+            )
+            .await?;
+        let pk: [u8; 33] = hex::decode(&rec.pk)
+            .ok()
+            .and_then(|b| b.try_into().ok())
+            .ok_or_else(|| RpcError::new(code::WALLET_ERROR, "carrier-key-missing"))?;
+        let redeem = yew_core::script::carrier_script(&pk, &yew_core::keys::sha256(&bundle))
+            .map_err(|e| RpcError::new(code::WALLET_ERROR, e.to_string()))?;
+        let mut prevs: Vec<NodeCoin> = coins
+            .iter()
+            .map(|c| NodeCoin {
+                value: c.1,
+                script: c.2.clone(),
+                height: None,
+                coinbase: false,
+            })
+            .collect();
+        prevs.push(NodeCoin {
+            value: CARRIER_VALUE,
+            script: yew_core::script::p2sh_of(&redeem),
+            height: None,
+            coinbase: false,
+        });
+        let mut keys: Vec<KeyRef> = coins
+            .iter()
+            .map(|c| self.key_of_script(&c.2).unwrap_or(KeyRef::None))
+            .collect();
+        keys.push(KeyRef::Carrier {
+            chain: crate::keys::EXTERNAL,
+            index: rec.index,
+        });
+        let outflow = collateral
+            + TOKEN_VALUE
+            + fee_zat
+            + (prevs.iter().map(|c| c.value).sum::<i64>() - tx.output_total())
+            + 1;
+        let signed = self
+            .sign_inputs(&tx, &prevs, &keys, &[], GatePath::Yed, outflow, next.branch)
+            .await?;
         // DryRunOrThrow: MINT-1..10 with the bundle, by the node
         let raw = tx_hex(&signed)?;
         let v = node::call(node, "yed_validaterawtransaction", serde_json::json!([raw])).await?;
@@ -433,10 +682,19 @@ impl Wallet {
             return Err(build_error("mint-dry-run: the dry run saw no mint".into()));
         }
         if verdict != "ok" {
-            return Err(build_error(format!("{verdict}: the wallet's dry run of MINT-1..10 refused this mint at height {}", next.height)));
+            return Err(build_error(format!(
+                "{verdict}: the wallet's dry run of MINT-1..10 refused this mint at height {}",
+                next.height
+            )));
         }
         if !v["valid"].as_bool().unwrap_or(false) {
-            return Err(RpcError::new(code::WALLET_ERROR, format!("yewd: the mint's scripts do not verify: {}", v["invalidReason"].as_str().unwrap_or(""))));
+            return Err(RpcError::new(
+                code::WALLET_ERROR,
+                format!(
+                    "yewd: the mint's scripts do not verify: {}",
+                    v["invalidReason"].as_str().unwrap_or("")
+                ),
+            ));
         }
         let txid = self.broadcast(node, &signed, None).await?;
         self.st.carriers.remove(&op_str(&pm.carrier));
@@ -444,7 +702,10 @@ impl Wallet {
         Ok(J::obj()
             .with("txid", txid.clone())
             .with("vault", format!("{txid}:0"))
-            .with("ownerAddress", yew_core::keys::encode_pq_yellowback(self.network, &owner).unwrap_or_default())
+            .with(
+                "ownerAddress",
+                yew_core::keys::encode_pq_yellowback(self.network, &owner).unwrap_or_default(),
+            )
             .with("termClass", term_class)
             .with("lockHeight", lock_height)
             .with("claimHeight", claim_height)
@@ -481,7 +742,11 @@ impl Wallet {
             let op = crate::build::outpoint_param(&Value::String(k.clone()), "carrier")?;
             match node_coin(node, &op).await? {
                 None => gone.push(k),
-                Some(c) if c.height.is_some() && next.height as i64 - ref_window > rec.ref_height => lapsed.push((op, rec)),
+                Some(c)
+                    if c.height.is_some() && next.height as i64 - ref_window > rec.ref_height =>
+                {
+                    lapsed.push((op, rec))
+                }
                 _ => {}
             }
         }
@@ -502,17 +767,34 @@ impl Wallet {
         let mut keys = Vec::new();
         for (op, rec) in &lapsed {
             tx.vin.push(TxIn::new(*op));
-            let pk: [u8; 33] = hex::decode(&rec.pk).ok().and_then(|b| b.try_into().ok()).unwrap_or([0; 33]);
+            let pk: [u8; 33] = hex::decode(&rec.pk)
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .unwrap_or([0; 33]);
             let bundle = hex::decode(&rec.bundle).unwrap_or_default();
-            let redeem = yew_core::script::carrier_script(&pk, &yew_core::keys::sha256(&bundle)).map_err(|e| RpcError::new(code::WALLET_ERROR, e.to_string()))?;
-            prevs.push(NodeCoin { value: CARRIER_VALUE, script: yew_core::script::p2sh_of(&redeem), height: None, coinbase: false });
-            keys.push(KeyRef::Carrier { chain: crate::keys::EXTERNAL, index: rec.index });
+            let redeem = yew_core::script::carrier_script(&pk, &yew_core::keys::sha256(&bundle))
+                .map_err(|e| RpcError::new(code::WALLET_ERROR, e.to_string()))?;
+            prevs.push(NodeCoin {
+                value: CARRIER_VALUE,
+                script: yew_core::script::p2sh_of(&redeem),
+                height: None,
+                coinbase: false,
+            });
+            keys.push(KeyRef::Carrier {
+                chain: crate::keys::EXTERNAL,
+                index: rec.index,
+            });
         }
         let total = lapsed.len() as i64 * CARRIER_VALUE;
         let fee = flat.min(total - 1);
         let dest = self.new_change()?;
-        tx.vout.push(TxOut { value: total - fee, script_pubkey: dest });
-        let signed = self.sign_inputs(&tx, &prevs, &keys, &[], GatePath::Yed, fee + 1, next.branch).await?;
+        tx.vout.push(TxOut {
+            value: total - fee,
+            script_pubkey: dest,
+        });
+        let signed = self
+            .sign_inputs(&tx, &prevs, &keys, &[], GatePath::Yed, fee + 1, next.branch)
+            .await?;
         let txid = self.broadcast(node, &signed, None).await?;
         for (op, _) in &lapsed {
             self.st.carriers.remove(&op_str(op));
