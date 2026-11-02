@@ -36,8 +36,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # kogany vaults/kogany-compat with every yed_* read live (W7-b, live-reads)
-  KOGANY_REF: 25518495ff4a47f0b6d05d571d493163ab5c23e5
+  # kogany vaults/kogany-compat: every yed_* read live (W7-b), the regtest Falcon height
+  KOGANY_REF: eaac2b78d538b67d5862ef2b930809eb822b9b05
   YCASH6_REPO: boyfromcave/ycash6
   YCASH6_BRANCH: vaults/kogany-compat
   # ycash6 kc/yewd-s5 until merged: the YEWD_KOGANY harness and the pair rows; then the merge commit
