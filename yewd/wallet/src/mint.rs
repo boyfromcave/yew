@@ -52,6 +52,12 @@ pub struct PendingMint {
     pub facts: crate::armed::BundleFacts,
 }
 
+/// MINT-10: `|fast − a| · 10⁴ > max(0, bps) · min(fast, a)`.
+pub fn mint10_diverged(fast: i64, a: i64, bps: i64) -> bool {
+    let diff = (fast as i128 - a as i128).unsigned_abs();
+    diff * yew_core::params::BPS as u128 > bps.max(0) as u128 * fast.min(a).max(0) as u128
+}
+
 /// ycashd's code for a build refusal (`ThrowBuildError`).
 pub fn build_error(msg: String) -> RpcError {
     const RULE: &[&str] = &[
@@ -292,6 +298,20 @@ impl Wallet {
             return estimate(None).await;
         }
         let x_mint = probe["xMint"].as_i64();
+        // MINT-10 (`CombineMint`, W17): the caller's bundle against the pools' fast median at R
+        if let (Some(x), Some(a)) = (x_mint, facts.a_mint) {
+            let px = node::call(node, "yed_getprice", serde_json::json!([r]))
+                .await
+                .map_err(node_build_error)?;
+            let fast = px["pFast"].as_i64().unwrap_or(x);
+            let info = node::call(node, "yed_getinfo", serde_json::json!([])).await?;
+            let bps = info["params"]["attest"]["divergeBpsAttest"]
+                .as_i64()
+                .unwrap_or(0);
+            if mint10_diverged(fast, a, bps) {
+                return Err(build_error(format!("mint10-diverged: the pools' fast median {fast} and the attestors' {a} micro-USD differ by more than {} bps, so minting is paused until they agree", bps.max(0))));
+            }
+        }
         let p_mint = crate::armed::mint_price(x_mint, &facts).ok_or_else(|| {
             build_error("mintpol-no-price: no price the network can mint at".into())
         })?;
@@ -1014,5 +1034,17 @@ fn raw_or_null(v: &Value) -> J {
         J::Null
     } else {
         J::Raw(v.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn mint10_divergence() {
+        // 500 bps: 0.50 vs 0.525 is exactly 500 bps of the lower, not diverged; one more is
+        assert!(!super::mint10_diverged(500_000, 525_000, 500));
+        assert!(super::mint10_diverged(500_000, 525_001, 500));
+        assert!(super::mint10_diverged(1_000_000, 2_000_000, 500));
+        assert!(!super::mint10_diverged(1_000_000, 1_000_000, 0));
     }
 }
