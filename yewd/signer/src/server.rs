@@ -114,8 +114,8 @@ pub fn bind(path: &Path) -> Result<UnixListener, String> {
 pub fn serve_connection(core: &Mutex<SignerCore>, s: UnixStream) {
     match peer_uid(&s) {
         Ok(uid) if uid == my_uid() => {}
-        Ok(uid) => {
-            eprintln!("yewd-signer: refused a connection from uid {uid}");
+        Ok(_) => {
+            eprintln!("yewd-signer: refused a connection from another user");
             return;
         }
         Err(e) => {

@@ -191,12 +191,10 @@ async fn cookie_auth_and_refusals() {
         .unwrap();
     let mut resp = String::new();
     s.read_to_string(&mut resp).await.unwrap();
-    assert!(resp.starts_with("HTTP/1.1 401"), "{resp}");
-    assert!(
-        resp.to_ascii_lowercase()
-            .contains("www-authenticate: basic realm=\"jsonrpc\""),
-        "{resp}"
-    );
+    assert!(resp.starts_with("HTTP/1.1 401"));
+    assert!(resp
+        .to_ascii_lowercase()
+        .contains("www-authenticate: basic realm=\"jsonrpc\""));
 
     // GET is refused as ycashd refuses it
     let mut s = tokio::net::TcpStream::connect(f.addrs[0]).await.unwrap();
@@ -205,7 +203,7 @@ async fn cookie_auth_and_refusals() {
         .unwrap();
     let mut resp = String::new();
     s.read_to_string(&mut resp).await.unwrap();
-    assert!(resp.starts_with("HTTP/1.1 405"), "{resp}");
+    assert!(resp.starts_with("HTTP/1.1 405"));
 
     drop(f);
     assert!(
