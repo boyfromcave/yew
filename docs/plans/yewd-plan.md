@@ -643,30 +643,30 @@ column 3 `YEWD_KOGANY`, 3m `YEWD_YCASH6_PEER=1`. Round D re-ran round C's passes
 `yellowback_chainviz`, which passed an earlier round) on the same build. Two of column 1's scripts lost
 their first run to another run's port (`Unable to start HTTP server`) and pass on a re-run.
 
-| script | 1. ycash6 | 2. kogany + ycash6 rig | 3. kogany + yewd (r11) | 3. round D (earlier build) | 3m. mixed: + one ycash6 peer (r11) |
+| script | 1. ycash6 | 2. kogany + ycash6 rig | 3. kogany + yewd (r12) | 3. round D (earlier build) | 3m. mixed: + one ycash6 peer (r12) |
 |---|---|---|---|---|---|
 | z_validateaddress_nowallet | pass | pass | pass | — | pass |
 | vault_upgrade | pass | FAIL | pass | — | pass |
 | vault_primitive | pass | pass | pass | — | pass |
 | vault_slashing | pass | pass | pass | pass | pass |
 | vault_pq_reorg | pass | FAIL | pass | — | pass |
-| vault_dos | pass | FAIL | FAIL at vault_dos.py:221 | — | FAIL at vault_dos.py:221 |
-| vault_rpc | pass | pass | FAIL at vault_rpc.py:398 | — | FAIL at vault_rpc.py:398 |
+| vault_dos | pass | FAIL | FAIL at vault_dos.py:251 | — | FAIL at vault_dos.py:251 |
+| vault_rpc | pass | pass | pass | — | pass |
 | vault_rpc_contract | pass | pass | pass | pass | pass |
 | vault_pq_relay | pass | pass | pass | pass | pass |
 | vault_bridge | pass | pass | pass | — | pass |
 | vault_pq | pass | pass | pass | — | pass |
 | vault_pq_wallet | pass | FAIL | pass | pass | pass |
 | vault_pq_wallet_restore | pass | FAIL | pass | — | pass |
-| wallet_pq_address | pass | FAIL | FAIL at wallet_pq_address.py:336 | — | FAIL at wallet_pq_address.py:336 |
+| wallet_pq_address | pass | FAIL | FAIL at wallet_pq_address.py:362 | — | FAIL at wallet_pq_address.py:362 |
 | yellowback_lifecycle | pass | pass | pass | — | pass |
-| yellowback_activation_reorg | pass | pass | pass | — | FAIL at yellowback_activation_reorg.py:163 |
-| yellowback_reorg_restart | pass | pass | FAIL at yellowback_reorg_restart.py:179 | — | FAIL at rc |
+| yellowback_activation_reorg | pass | pass | pass | — | pass |
+| yellowback_reorg_restart | pass | pass | pass | — | pass |
 | yellowback_claim | pass | pass | pass | — | pass |
 | yellowback_interm | pass | pass | pass | — | pass |
-| yellowback_index | pass | FAIL | FAIL at yellowback_index.py:283 | — | FAIL at yellowback_index.py:283 |
-| yellowback_upgrade | pass | pass | FAIL at yellowback_upgrade.py:175 | — | FAIL at yellowback_upgrade.py:175 |
-| yellowback_rpc_contract | pass | pass | pass (rerun; r11 run: port clash at start) | — | FAIL at rc |
+| yellowback_index | pass | FAIL | FAIL at yellowback_index.py:91 | — | FAIL at yellowback_index.py:91 |
+| yellowback_upgrade | pass | pass | FAIL at yellowback_upgrade.py:310 | — | FAIL at yellowback_upgrade.py:310 |
+| yellowback_rpc_contract | pass | pass | pass (rerun; r12 run: P2P port clash at start) | — | pass (rerun; r12 run: P2P port clash at start) |
 | yellowback_redeem_boundary | pass | pass | pass | — | pass |
 | yellowback_cancel_limit | pass | pass | pass | — | pass |
 | yellowback_pq | pass | pass | pass | — | pass |
@@ -676,7 +676,7 @@ their first run to another run's port (`Unable to start HTTP server`) and pass o
 | yellowback_wallet_restore | pass | pass | pass | pass | pass |
 | yellowback_sapling | pass | pass | pass | pass | pass |
 | yellowback_wallet_lifecycle | pass | pass | pass | — | pass |
-| yellowback_hardening | pass | FAIL | FAIL at yellowback_hardening.py:287 | — | FAIL at yellowback_hardening.py:287 |
+| yellowback_hardening | pass | FAIL | pass | — | pass |
 | yellowback_stock_node | pass | FAIL | pass | — | pass |
 | yellowback_fees | pass | FAIL | pass | pass | pass |
 | yellowback_fees_reaccept | pass | pass | pass | — | pass |
@@ -689,7 +689,7 @@ their first run to another run's port (`Unable to start HTTP server`) and pass o
 | yellowback_attest_rejoin | pass | pass | pass | — | pass |
 | yellowback_attest_live | pass | pass | pass | — | pass |
 | yellowback_pricefeed | pass | pass | pass | — | pass |
-| yellowback_mining | pass | FAIL | FAIL at yellowback_mining.py:349 | — | FAIL at yellowback_mining.py:349 |
+| yellowback_mining | pass | FAIL | FAIL at yellowback_mining.py:367 | — | FAIL at yellowback_mining.py:367 |
 | yellowback_stratum | pass | pass | pass | — | pass |
 | yellowback_attest | pass | pass | pass | — | pass |
 | yellowback_attest_wallet | pass | pass | pass | — | pass |

@@ -100,12 +100,15 @@ pub fn init(
                 .as_ref()
                 .map(|h| h.to_string())
                 .unwrap_or_default();
-            if ks.mnemonic.is_some()
-                && m.split_whitespace().collect::<Vec<_>>()
-                    != held.split_whitespace().collect::<Vec<_>>()
+            // ycashd's texts (wallet.cpp, -mnemonicfile on an existing wallet)
+            if ks.mnemonic.is_none() {
+                return err("-mnemonicfile applies only when creating a new wallet, and this existing wallet has no mnemonic seed".to_string());
+            }
+            if m.split_whitespace().collect::<Vec<_>>()
+                != held.split_whitespace().collect::<Vec<_>>()
             {
                 return err(format!(
-                    "yewd-signer: {} already holds another seed",
+                    "-mnemonicfile applies only when creating a new wallet, and this wallet has another seed ({})",
                     path.display()
                 ));
             }
