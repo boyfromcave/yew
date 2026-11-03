@@ -1101,25 +1101,28 @@ impl Wallet {
         let mut holder = Vec::new();
         let mut yed_in = 0i64;
         for i in &claim.vin {
-            let Some(c) = node_coin(node, &i.prevout).await? else {
+            // the output the claim spends (gettxout with the mempool would answer null for it)
+            let Some(prev) = node::raw_tx(node, &txid_hex(&i.prevout.txid)).await? else {
                 continue;
             };
-            let Some(addr) = crate::keys::script_address(self.network, &c.script) else {
+            let Some(script) = Transaction::parse(&prev).ok().and_then(|(t, _)| {
+                t.vout
+                    .get(i.prevout.n as usize)
+                    .map(|o| o.script_pubkey.clone())
+            }) else {
                 continue;
             };
-            let toks = match node::call(node, "yed_listtokens", serde_json::json!([[addr]])).await {
-                Ok(t) => t,
-                Err(_) => continue,
+            // the token by outpoint (ycashd's GetToken): its creating transaction's assignment;
+            // yed_listtokens leaves out a token the mempool claim already spends
+            let Some(info) = Self::txinfo(node, &txid_hex(&i.prevout.txid)).await? else {
+                continue;
             };
-            let want = txid_hex(&i.prevout.txid);
-            if let Some(t) = toks.as_array().and_then(|a| {
-                a.iter().find(|t| {
-                    t["txid"].as_str() == Some(want.as_str())
-                        && t["vout"].as_u64() == Some(i.prevout.n as u64)
-                })
+            if let Some(t) = info["assigned"].as_array().and_then(|a| {
+                a.iter()
+                    .find(|t| t["vout"].as_u64() == Some(i.prevout.n as u64))
             }) {
                 if holder.is_empty() {
-                    holder = c.script.clone();
+                    holder = script;
                 }
                 yed_in += t["cents"].as_i64().unwrap_or(0);
             }
