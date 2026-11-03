@@ -35,7 +35,7 @@ on yewd's mints); the runner warns when yellowback_chainviz is selected without 
 CHAINVIZ_BIN that is not executable.
 
     YCASH6=<ycash6 checkout at vaults/kogany-compat (the YEWD_KOGANY harness)> \\
-    ZCASHD=<ycashd> YEWD_BIN=<yewd> ZAKURAD=<zakurad --features ycash> \\
+    ZCASHD=<ycashd> YEWD_BIN=<yewd> KOGANYD=<koganyd, -p kogany --features ycash> \\
     CHAINVIZ_BIN=<chain-viz, current build> \\
         <venv>/bin/python yewd/qa/s5_parity.py --columns pair,pair-mixed,rig,ycash6 \\
         --out <dir> [--jobs 3] [--rounds 2] [--portseed 7000] [--scripts a,b] [--of vault]
@@ -234,7 +234,7 @@ def main():
     ap.add_argument('--ycash6', default=os.environ.get('YCASH6'))
     ap.add_argument('--zcashd', default=os.environ.get('ZCASHD'))
     ap.add_argument('--yewd', default=os.environ.get('YEWD_BIN'))
-    ap.add_argument('--zakurad', default=os.environ.get('ZAKURAD') or os.environ.get('YEWD_KOGANY'))
+    ap.add_argument('--koganyd', '--zakurad', dest='zakurad', default=os.environ.get('KOGANYD') or os.environ.get('ZAKURAD') or os.environ.get('YEWD_KOGANY'))
     ap.add_argument('--chainviz', default=os.environ.get('CHAINVIZ_BIN'),
                     help='the chain-viz binary yellowback_chainviz runs (CHAINVIZ_BIN): a current build')
     args = ap.parse_args()
@@ -245,7 +245,7 @@ def main():
     if not (args.ycash6 and args.zcashd):
         ap.error('YCASH6 and ZCASHD are required')
     if any(c != 'ycash6' for c in columns) and not args.zakurad:
-        ap.error('ZAKURAD is required for the kogany columns')
+        ap.error('KOGANYD (koganyd; ZAKURAD is the old name) is required for the kogany columns')
     if any(c.startswith('pair') for c in columns) and not args.yewd:
         ap.error('YEWD_BIN is required for the pair columns')
     rows = manifest(args.ycash6, of=args.of)
@@ -276,7 +276,7 @@ def main():
         md = table(results, columns, scripts)
         os.makedirs(out, exist_ok=True)
         with open(os.path.join(out, 'matrix.md'), 'w') as fh:
-            used = ['%s `%s`' % (k, v) for k, v in (('ZCASHD', args.zcashd), ('ZAKURAD', args.zakurad),
+            used = ['%s `%s`' % (k, v) for k, v in (('ZCASHD', args.zcashd), ('KOGANYD', args.zakurad),
                                                     ('YEWD_BIN', args.yewd), ('CHAINVIZ_BIN', args.chainviz)) if v]
             fh.write('# S5 matrix, round %d\n\n' % rnd + ', '.join(used) + '\n\n' + md)
         with open(os.path.join(out, 'matrix.json'), 'w') as fh:
