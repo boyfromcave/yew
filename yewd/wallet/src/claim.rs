@@ -7,8 +7,8 @@
 //! `BuildClaim`, `ClaimAt`, `BuildVaultSpend`'s claim branch): the claim of another wallet's
 //! underwater vault in the v3 two-step flow (carrier first, the CLAIM on the confirmed carrier).
 //!
-//! The claim facts at `R` (the index tip at preflight: `claimable`, `claimPath`, `residualZat`,
-//! `pClaim`) are the node's `yed_listclaimable` row for the vault; the CLAIM's shape is yew-core's
+//! The claim facts at `R` (`claimPath`, `residualZat`, `pClaim`, `pEmerg`) are `ClaimAt` with the
+//! bundle facts at `R` (the index tip at preflight, the carrier.s `R` at completion); the CLAIM's shape is yew-core's
 //! `build::claim::plan_claim` (the node's `PlanVaultSpend` claim branch, verbatim); the node
 //! dry-runs RED-1..5 (`yed_validaterawtransaction`) before it is committed.
 
@@ -36,6 +36,15 @@ pub struct ClaimArgs {
     pub max_burn: i64,
     /// The `yed_listclaimable` row at `R`.
     pub row: Value,
+}
+
+/// `ClaimFacts` at `R`.
+struct ClaimFacts {
+    path: &'static str,
+    residual: i64,
+    x_claim: Option<i64>,
+    p_claim: Option<i64>,
+    p_emerg: Option<i64>,
 }
 
 fn selector_hex(op: &OutPoint) -> String {
@@ -121,23 +130,9 @@ impl Wallet {
         let row = Self::claimable_row(node, &vault)
             .await?
             .unwrap_or(Value::Null);
-        if row["claimable"].as_bool() != Some(true) {
-            let pc = row["pClaim"]
-                .as_i64()
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "undefined".into());
-            return Err(build_error(format!(
-                "claim-not-underwater: the vault is not underwater at the reference height {r} by either clause (pClaim {pc}, pEmerg undefined, notice none)"
-            )));
-        }
         let minted = v["mintedCents"].as_i64().unwrap_or(0);
         if max_burn > 0 && minted > max_burn {
             return Err(RpcError::new(code::WALLET_ERROR, format!("claim-burn-above-max: the claim would burn {minted} cents of YED, above the maxBurnCents of {max_burn}")));
-        }
-        let residual = row["residualZat"].as_i64().unwrap_or(0);
-        let collateral = v["collateralZat"].as_i64().unwrap_or(0);
-        if min_out > 0 && collateral - residual < min_out {
-            return Err(RpcError::new(code::WALLET_ERROR, format!("claim-out-below-min: the claim would pay {} zat to the destination, below the minOutZat of {min_out}", collateral - residual)));
         }
         let selector = selector_hex(&op);
         let bundle_bytes = if bundle_arg.is_empty() {
@@ -148,6 +143,12 @@ impl Wallet {
         };
         // BundleAt at (R, the vault's outpoint); the attestor fee at completion (F-S2-4)
         let facts = self.bundle_at(node, r, &selector, &bundle_bytes).await?;
+        let c = Self::claim_at(node, &txid_s, &v, r, &facts).await?;
+        let residual = c.residual;
+        let collateral = v["collateralZat"].as_i64().unwrap_or(0);
+        if min_out > 0 && collateral - residual < min_out {
+            return Err(RpcError::new(code::WALLET_ERROR, format!("claim-out-below-min: the claim would pay {} zat to the destination, below the minOutZat of {min_out}", collateral - residual)));
+        }
         let bundle = facts.bundle.clone();
         let carrier = self
             .build_carrier(node, &bundle, r, &selector, None)
@@ -184,14 +185,18 @@ impl Wallet {
                 .with("carrierTxid", txid_hex(&carrier.txid))
                 .with("pending", true)
                 .with("refHeight", r)
-                .with("xClaim", raw(&row["pClaim"]))
+                .with("xClaim", crate::armed::opt(c.x_claim))
                 .with("aClaim", crate::armed::opt(facts.a_claim))
-                .with("pClaim", raw(&row["pClaim"]))
-                .with("pEmerg", J::Null)
+                .with("pClaim", crate::armed::opt(c.p_claim))
                 .with(
-                    "claimPath",
-                    row["claimPath"].as_str().unwrap_or("").to_string(),
+                    "pEmerg",
+                    if c.path == "b" {
+                        crate::armed::opt(c.p_emerg)
+                    } else {
+                        J::Null
+                    },
                 )
+                .with("claimPath", c.path)
                 .with("bundleSeqs", J::Arr(vec![]))
                 .with("attestFeeZat", 0i64)
                 .with("attestPayee", J::Null)
@@ -625,6 +630,66 @@ impl Wallet {
         self.complete_notice(node, &txid_s, &pending).await
     }
 
+    /// `ClaimAt` (txbuilder.cpp): RED-4 by clause at `R` with the bundle facts, PRICE-2 and RED-5.
+    async fn claim_at(
+        node: &dyn Node,
+        txid_s: &str,
+        v: &Value,
+        r: i64,
+        f: &crate::armed::BundleFacts,
+    ) -> Result<ClaimFacts, RpcError> {
+        let (_, x_claim) = crate::armed::cross_section(node, r).await?;
+        let (p_claim, p_emerg) = crate::armed::claim_prices(x_claim, f);
+        let collateral = v["collateralZat"].as_i64().unwrap_or(0);
+        let minted = v["mintedCents"].as_i64().unwrap_or(0);
+        let th = yew_core::params::CLAIM_THRESHOLD_BPS;
+        if !crate::armed::is_underwater(collateral, p_claim, minted, th) {
+            let info = node::call(node, "yed_getinfo", serde_json::json!([])).await?;
+            let at = &info["params"]["attest"];
+            let ttl = at["emergencyNoticeTtl"].as_i64().unwrap_or(0);
+            let persist = at["emergencyPersist"].as_i64().unwrap_or(0);
+            let ratio = at["emergencyRatioBps"].as_i64().unwrap_or(0);
+            let notice = if f.armed {
+                let n = node::call(node, "yed_getnotice", serde_json::json!([txid_s])).await?;
+                (n["found"].as_bool() == Some(true)).then(|| n["refHeight"].as_i64().unwrap_or(0))
+            } else {
+                None
+            };
+            let persisted = notice.is_some_and(|nr| r - nr >= persist && r - nr <= ttl);
+            if !persisted || !crate::armed::is_underwater(collateral, p_emerg, minted, ratio) {
+                let o = |x: Option<i64>| {
+                    x.map(|x| x.to_string())
+                        .unwrap_or_else(|| "undefined".into())
+                };
+                return Err(build_error(format!(
+                    "claim-not-underwater: the vault is not underwater at the reference height {r} by either clause (pClaim {}, pEmerg {}, notice {})",
+                    o(p_claim),
+                    o(p_emerg),
+                    notice.map(|n| format!("at refHeight {n}")).unwrap_or_else(|| "none".into())
+                )));
+            }
+        }
+        let (path, residual) = claim_residual(
+            collateral,
+            minted,
+            v["pMint"].as_i64().unwrap_or(0),
+            p_claim,
+            p_emerg,
+        )
+        .ok_or_else(|| {
+            build_error(
+                "claim-not-underwater: the cap price is undefined at the reference height".into(),
+            )
+        })?;
+        Ok(ClaimFacts {
+            path,
+            residual,
+            x_claim,
+            p_claim,
+            p_emerg,
+        })
+    }
+
     /// `NoticeAt`: `(xClaim, aClaim, pEmerg, EMERGENCY_PERSIST)`, or the refusal.
     async fn notice_at(
         &self,
@@ -877,13 +942,5 @@ mod residual_tests {
             ),
             Some(("b", 0))
         );
-    }
-}
-
-fn raw(v: &Value) -> J {
-    if v.is_null() {
-        J::Null
-    } else {
-        J::Raw(v.to_string())
     }
 }
