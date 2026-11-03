@@ -79,8 +79,12 @@ pub async fn start_with(cfg: &Config, signer: wallet::SignerSource) -> std::io::
         cfg.stop_backend,
         cfg.debug,
     );
-    if cfg.stop_backend && cfg.backend_exit_grace > 0 {
-        spawn_backend_watch(facade.clone(), cfg.backend, cfg.backend_exit_grace);
+    let lost = match (&cfg.backend_auth, cfg.backend_lost_exit) {
+        (config::BackendAuth::Cookie(c), n) if n > 0 => Some((c.clone(), n)),
+        _ => None,
+    };
+    if cfg.stop_backend && (cfg.backend_exit_grace > 0 || lost.is_some()) {
+        spawn_backend_watch(facade.clone(), cfg.backend, cfg.backend_exit_grace, lost);
     }
     let (addrs, task) = server::serve(facade.clone(), &cfg.bind, rx).await?;
     Ok(Running {
@@ -94,7 +98,14 @@ pub async fn start_with(cfg: &Config, signer: wallet::SignerSource) -> std::io::
 /// H6, the pair is one node: with `-stopbackend` the façade exits once its backend has been gone
 /// (nothing listening) for `grace` seconds after it was up, as when the node stops itself (an
 /// `AbortNode`, a `stop` sent to it directly). A restart within `grace` is followed instead.
-fn spawn_backend_watch(facade: std::sync::Arc<server::Facade>, addr: SocketAddr, grace: u64) {
+/// `lost`: the backend's cookie and `-backendlostexit`: gone with its cookie still on disk (a
+/// crash, not a stop) that long, the façade logs it and SIGKILLs itself, as the node did.
+fn spawn_backend_watch(
+    facade: std::sync::Arc<server::Facade>,
+    addr: SocketAddr,
+    grace: u64,
+    lost: Option<(std::path::PathBuf, u64)>,
+) {
     tokio::spawn(async move {
         let mut seen_up = false;
         let mut down_since: Option<std::time::Instant> = None;
@@ -115,7 +126,14 @@ fn spawn_backend_watch(facade: std::sync::Arc<server::Facade>, addr: SocketAddr,
                 continue;
             }
             let since = *down_since.get_or_insert_with(std::time::Instant::now);
-            if since.elapsed() >= std::time::Duration::from_secs(grace) {
+            if let Some((cookie, n)) = &lost {
+                if cookie.exists() && since.elapsed() >= std::time::Duration::from_secs(*n) {
+                    eprintln!("yewd: the backend was lost (gone {n} s, its cookie {} left behind: it crashed); ending as it did (-backendlostexit)", cookie.display());
+                    // SAFETY: kill(2) on this process's own pid
+                    unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
+                }
+            }
+            if grace > 0 && since.elapsed() >= std::time::Duration::from_secs(grace) {
                 eprintln!("yewd: the backend has been gone {grace} s; stopping (-stopbackend: the pair is one node)");
                 facade.shutdown();
                 return;
