@@ -1387,7 +1387,7 @@ impl Wallet {
     }
 
     /// The node's index record of a transaction (`yed_gettxinfo`), `None` when it has none.
-    async fn txinfo(node: &dyn Node, txid: &str) -> Result<Option<Value>, RpcError> {
+    pub(crate) async fn txinfo(node: &dyn Node, txid: &str) -> Result<Option<Value>, RpcError> {
         match node::call(node, "yed_gettxinfo", serde_json::json!([txid])).await {
             Ok(v) => Ok(Some(v)),
             Err(NodeError::Rpc { code, .. }) if code != crate::code::METHOD_NOT_FOUND => Ok(None),
