@@ -26,8 +26,8 @@
 #                the W1 devnet acceptance (core/tests/devnet.rs) through lightwalletd-dd in front of
 #                a regtest kogany node (the third node line, workspace kogany plan W9-c), its ycash6
 #                test rig standing in for the devnet tool. zakurad is kogany's zakurad-bin artifact
-#                at KOGANY_REF, else built at that commit; ycashd is ycash6's node-bin of
-#                vaults/kogany-compat; lightwalletd-dd is built at proto/PIN.
+#                at KOGANY_REF, else built at that commit; ycashd is ycash6's node-bin at
+#                YCASH6_REF; lightwalletd-dd is built at proto/PIN.
 # Not in this workflow: the devnet acceptance suites (scripts/devnet-*.sh). They need a workspace
 # devnet (an ARMED devnet from ycash-dd, the attest agent, lightwalletd-dd serving --yellowback,
 # the Python test framework), so they run nightly, non-gating, in devnet-nightly.yml: its `hosted`
@@ -537,7 +537,9 @@ jobs:
       # kogany vaults/kogany-compat at W5-f (the YED module registered: the real index answers)
       KOGANY_REF: 1eca93d3f462fb5a10815b4267acb9157843b253
       YCASH6_REPO: boyfromcave/ycash6
-      YCASH6_BRANCH: vaults/kogany-compat
+      # ycash6 vaults/kogany-compat head; moves with the kogany-compat heads (the one ycash6 pin here:
+      # node-bin, qa/ and zcutil all come from this commit)
+      YCASH6_REF: 91763f656c8e857b41c06b7e632a33344f8a0d0d
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -585,18 +587,24 @@ jobs:
         run: |
           if ldd "$ZAKURAD" | grep 'not found'; then echo "::error::zakurad needs a library this runner lacks"; exit 1; fi
           "$ZAKURAD" --version
-      - name: ycashd from ycash6's node-bin (vaults/kogany-compat)
+      - name: ycashd from ycash6's node-bin at YCASH6_REF
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          trusted='select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")'
-          runs=$(gh run list -R "$YCASH6_REPO" -w yellowback-tests.yml -b "$YCASH6_BRANCH" -L 20 --json databaseId,event -q ".[] | $trusted | .databaseId")
+          case "$YCASH6_REF" in *[!0-9a-f]*|'') echo "::error::YCASH6_REF is not a commit id"; exit 1 ;; esac
+          [ ${#YCASH6_REF} -eq 40 ] || { echo "::error::YCASH6_REF is not a full commit id"; exit 1; }
+          # a successful push run of yellowback-tests.yml at exactly YCASH6_REF (never a pull_request run)
+          runs=$(gh run list -R "$YCASH6_REPO" -c "$YCASH6_REF" -w yellowback-tests.yml -L 20 \
+            --json databaseId,conclusion,event,headSha \
+            -q ".[] | select(.headSha == \"$YCASH6_REF\" and .event == \"push\" and .conclusion == \"success\") | .databaseId")
+          got=
           for r in $runs; do
             if gh run download "$r" -R "$YCASH6_REPO" -n node-bin -D "$RUNNER_TEMP/dl" 2>/dev/null; then
-              echo "ycashd from $YCASH6_REPO run $r"; break
+              echo "ycashd from $YCASH6_REPO run $r at $YCASH6_REF"; got=$r; break
             fi
           done
+          [ -n "$got" ] || { echo "::error::no node-bin from a successful push run of $YCASH6_REPO at $YCASH6_REF: move YCASH6_REF"; exit 1; }
           mkdir -p "$RUNNER_TEMP/node"
           tar -xzf "$RUNNER_TEMP/dl/node-bin.tgz" -C "$RUNNER_TEMP/node" src/ycashd src/ycash-cli
           test -x "$RUNNER_TEMP/node/src/ycashd"
@@ -604,10 +612,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ env.YCASH6_REPO }}
-          ref: ${{ env.YCASH6_BRANCH }}
+          ref: ${{ env.YCASH6_REF }}
           path: ycash6
           persist-credentials: false
           sparse-checkout: zcutil
+      - name: ycash6 checkout is YCASH6_REF
+        run: '[ "$(git -C ycash6 rev-parse HEAD)" = "$YCASH6_REF" ] || { echo "::error::ycash6 checkout is not $YCASH6_REF"; exit 1; }'
       - name: fetch zcash params
         run: ycash6/zcutil/fetch-params.sh
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
