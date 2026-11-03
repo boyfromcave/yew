@@ -68,6 +68,9 @@ pub fn mint10_diverged(fast: i64, a: i64, bps: i64) -> bool {
 }
 
 /// ycashd's code for a build refusal (`ThrowBuildError`).
+/// `TX_EXPIRING_SOON_THRESHOLD`.
+const EXPIRING_SOON: i64 = 3;
+
 pub fn build_error(msg: String) -> RpcError {
     const RULE: &[&str] = &[
         "mintpol-",
@@ -734,6 +737,10 @@ impl Wallet {
             }
         }
         let r = rec.ref_height;
+        // ycashd's CheckExpiry (yellowback/txbuilder.cpp:594): the mint expires at r + refWindow
+        if r + ref_window < next.height as i64 + EXPIRING_SOON {
+            return Err(build_error("expiring-too-soon: the transaction would expire too soon; the index is too far behind the chain".to_string()));
+        }
         if next.height as i64 - ref_window > r {
             return Err(build_error(format!(
                 "carrier-lapsed: the carrier's reference height {r} is outside the window at height {}; yed_sweepcarriers reclaims it",

@@ -617,6 +617,13 @@ impl Wallet {
             || !p.received.is_empty()
             || p.nullifiers.iter().any(|n| own_nfs.contains(n))
             || !p.owned_templates.is_empty()
+            // a claim's release or cancel spends the intent of an own claim (a YED payload in a
+            // wallet transaction): yed_history's claim_release / claim_released rows need it
+            || p.tx.vin.first().is_some_and(|i| {
+                self.parsed
+                    .get(&txid_hex(&i.prevout.txid))
+                    .is_some_and(|c| yew_core::payload::find_payload(&c.tx).is_some())
+            })
     }
 
     fn own_sets(&self) -> (BTreeSet<(String, u32)>, BTreeSet<[u8; 32]>) {
