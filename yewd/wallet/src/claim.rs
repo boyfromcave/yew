@@ -532,7 +532,14 @@ impl Wallet {
                     },
                 )
                 .with("pClaim", crate::armed::opt(p_claim))
-                .with("pEmerg", crate::armed::opt(p_emerg))
+                .with(
+                    "pEmerg",
+                    if claim_path == "b" {
+                        crate::armed::opt(p_emerg)
+                    } else {
+                        J::Null
+                    },
+                )
                 .with("claimPath", claim_path)
                 .with("bundleSeqs", pm.facts.seqs_json())
                 .with("attestFeeZat", attest_fee)
