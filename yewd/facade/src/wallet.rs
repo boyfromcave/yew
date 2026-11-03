@@ -740,6 +740,15 @@ impl WalletService {
     }
 }
 
+/// A held `wait=true` slot (audit C-2), released on drop.
+struct WaitSlot<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl Drop for WaitSlot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -775,14 +784,5 @@ mod tests {
             1
         );
         let _ = std::fs::remove_dir_all(&d);
-    }
-}
-
-/// A held `wait=true` slot (audit C-2), released on drop.
-struct WaitSlot<'a>(&'a std::sync::atomic::AtomicUsize);
-
-impl Drop for WaitSlot<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
