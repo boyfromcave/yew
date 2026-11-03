@@ -461,6 +461,10 @@ impl WalletService {
             Box::new(ps),
             birthday,
         )?;
+        let mut w = w;
+        if mnemonic_file.is_some() {
+            w.restore_first_sapling()?;
+        }
         if !wallet_file_given {
             mark_wallet_file(&dir)?;
         }
@@ -564,6 +568,10 @@ impl WalletService {
                 .map_err(|e| RpcError::new(code::WALLET_ERROR, format!("yewd: {e}")))?;
         }
         w.opts = args.opts;
+        if !exists && args.mnemonic_file.is_some() {
+            w.restore_first_sapling()
+                .map_err(|e| RpcError::new(code::WALLET_ERROR, format!("yewd: {e}")))?;
+        }
         if args.rescan {
             w.rescan_all();
         }

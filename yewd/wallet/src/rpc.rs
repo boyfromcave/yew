@@ -840,6 +840,20 @@ impl Wallet {
         self.view.address_at(0).map(|(_, a)| a)
     }
 
+    /// A seed restored from `-mnemonicfile`: issue the first Sapling address before the rescan,
+    /// as ycashd's review B-1 does (`GenerateNewLegacySaplingZKey`, `wallet.cpp`), so a wallet
+    /// with one z-address restores it and its notes. A no-op when one is issued already.
+    pub fn restore_first_sapling(&mut self) -> Result<(), String> {
+        if !self.st.issued.sapling.is_empty() {
+            return Ok(());
+        }
+        if let Some((j, _)) = self.view.address_at(0) {
+            self.st.issued.sapling.push(j);
+            self.persist().map_err(|e| e.message)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn vault_active_next(&self) -> bool {
         self.chain
             .vault_activation
