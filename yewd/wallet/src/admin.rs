@@ -115,6 +115,9 @@ pub struct Opts {
     pub paytxfee: i64,
     /// `-paramsdir`: the Sapling parameters (default ycashd's).
     pub params_dir: Option<PathBuf>,
+    /// `-sendchangeback` (default off): transparent change returns to the largest input's
+    /// address instead of a new change key.
+    pub send_change_back: bool,
 }
 
 impl Default for Opts {
@@ -124,6 +127,7 @@ impl Default for Opts {
             encrypt_allowed: true,
             paytxfee: 0,
             params_dir: None,
+            send_change_back: false,
         }
     }
 }
