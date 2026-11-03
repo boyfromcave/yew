@@ -20,11 +20,23 @@ every script unchanged.
 The script list is the manifest's (ycash6 qa/kogany-mixed-shards.txt, group `pair`, the same 50 as
 `sidecar`), or --scripts. Each script runs on its own (--srcdir, a distinct --portseed, its own
 --tmpdir); a passing script's chain data is removed, its log kept. The table (script x column: pass,
-FAIL and the first error line, seconds; the state-hash points from the harness's KOGANY_STATS_FILE)
-is written as Markdown and JSON. --rounds 2 runs the selection twice ("twice in a row").
+or FAIL at the failure point, seconds; the state-hash points from the harness's KOGANY_STATS_FILE)
+is written as Markdown and JSON. The failure point is the script's own frame of the traceback
+(``<script>.py:<line> <function>``), the error (the first ``Assertion failed`` / ``JSONRPC error``
+/ ``Unexpected exception`` line), the innermost helper frame and the step (the script's last
+narration line before the error); a timeout names the last step. Below the table, "Failure points"
+lists them in full. --rounds 2 runs the selection twice ("twice in a row").
+
+CHAINVIZ_BIN (or --chainviz) names the chain-viz binary yellowback_chainviz runs: set it to a
+current build (boyfromcave/chain-viz `cargo build --release`). Unset, the script falls back to
+``$CARGO_TARGET_DIR/release/chain-viz`` then ``<workspace>/chain-viz/target/release/chain-viz``,
+which may be stale (a chain-viz older than 78fe29a drops v4 PQ mint payloads, so the script fails
+on yewd's mints); the runner warns when yellowback_chainviz is selected without it, and refuses a
+CHAINVIZ_BIN that is not executable.
 
     YCASH6=<ycash6 checkout at vaults/kogany-compat (the YEWD_KOGANY harness)> \\
     ZCASHD=<ycashd> YEWD_BIN=<yewd> ZAKURAD=<zakurad --features ycash> \\
+    CHAINVIZ_BIN=<chain-viz, current build> \\
         <venv>/bin/python yewd/qa/s5_parity.py --columns pair,pair-mixed,rig,ycash6 \\
         --out <dir> [--jobs 3] [--rounds 2] [--portseed 7000] [--scripts a,b] [--of vault]
 
@@ -43,6 +55,48 @@ import time
 
 COLUMNS = ('ycash6', 'rig', 'pair', 'pair-mixed')
 ERR = re.compile(r'(JSONRPC error|Assertion failed|Unexpected exception|key not found)')
+FRAME = re.compile(r'^\s+File "([^"]+)", line (\d+), in (\S+)')
+NOT_A_STEP = re.compile(r'^(\s|Initializing test directory|yewd column|Stopping nodes|Failed|Cleaning up|'
+                        r'Tests successful|Traceback|\S+Error\b|\S+Exception\b)')
+
+
+def failure_point(lines, script, rc, secs):
+    """The failure point of a failed run's log ``lines``: {'at': '<script>.py:<line> <function>',
+    'code': that frame's source line, 'error': the first error line, 'helper': the innermost frame
+    outside the script ('file:line function'), 'step': the script's last narration line before the
+    error}.  Empty strings where the log has nothing (a crash before the framework, a timeout)."""
+    out = {'at': '', 'code': '', 'error': '', 'helper': '', 'step': ''}
+    first = next((n for n, l in enumerate(lines) if ERR.search(l)), None)
+    narration = lines if first is None else lines[:first]
+    for l in reversed(narration):
+        if l.strip() and not NOT_A_STEP.match(l):
+            out['step'] = l.strip()[:200]
+            break
+    if first is None:
+        if rc == 124:
+            out['error'] = 'timeout after %ds' % secs
+        else:
+            tail = [l.strip() for l in lines if l.strip() and not l.startswith(('Stopping', 'Failed', 'yewd column'))]
+            out['error'] = (tail[-1] if tail else 'rc %d' % rc)[:240]
+        return out
+    out['error'] = lines[first].strip()[:240]
+    frames = []
+    for n in range(first + 1, len(lines)):
+        m = FRAME.match(lines[n])
+        if m:
+            code = lines[n + 1].strip() if n + 1 < len(lines) and not FRAME.match(lines[n + 1]) else ''
+            frames.append((m.group(1), int(m.group(2)), m.group(3), code))
+        elif lines[n].startswith(('Stopping nodes', 'Failed')):
+            break
+    own = [f for f in frames if os.path.basename(f[0]) == script + '.py']
+    if own:
+        f = own[-1]
+        out['at'] = '%s.py:%d %s' % (script, f[1], f[2])
+        out['code'] = f[3][:200]
+    if frames and (not own or frames[-1] is not own[-1]):
+        f = frames[-1]
+        out['helper'] = '%s:%d %s' % (os.path.basename(f[0]), f[1], f[2])
+    return out
 
 
 def column_env(col, base, ycash6, zakurad, yewd, script_flags):
@@ -110,10 +164,12 @@ def run_one(col, script, flags, seed, out, args):
     secs = int(time.time() - t0)
     first = ''
     with open(os.path.join(d, script + '.log'), errors='replace') as log:
-        for line in log:
-            if ERR.search(line):
-                first = line.strip()[:240]
-                break
+        lines = log.read().splitlines()
+    for line in lines:
+        if ERR.search(line):
+            first = line.strip()[:240]
+            break
+    point = failure_point(lines, script, rc, secs) if rc != 0 else None
     points = {}
     if os.path.exists(stats):
         with open(stats) as fh:
@@ -126,7 +182,8 @@ def run_one(col, script, flags, seed, out, args):
                     points[k] = points.get(k, 0) + v
     if rc == 0:
         shutil.rmtree(tmp, ignore_errors=True)
-    return {'column': col, 'script': script, 'rc': rc, 'seconds': secs, 'first_error': first, 'points': points}
+    return {'column': col, 'script': script, 'rc': rc, 'seconds': secs, 'first_error': first, 'points': points,
+            'failure_point': point}
 
 
 def table(results, columns, scripts):
@@ -143,8 +200,24 @@ def table(results, columns, scripts):
                 hashes = p.get('statehash_vault', 0) + p.get('statehash_yed', 0)
                 cells.append('pass (%ds%s)' % (r['seconds'], ', %d hash pts' % hashes if hashes else ''))
             else:
-                cells.append('FAIL: %s' % (r['first_error'] or 'rc %d' % r['rc']).replace('|', '/')[:120])
+                fp = r.get('failure_point') or {}
+                at = fp.get('at') or ('timeout' if r['rc'] == 124 else 'rc %d' % r['rc'])
+                err = fp.get('error') or r['first_error']
+                cells.append(('FAIL at %s: %s' % (at, err)).replace('|', '/')[:160])
         lines.append('| %s | %s |' % (s, ' | '.join(cells)))
+    failed = [by[(c, s)] for s in scripts for c in columns if (c, s) in by and by[(c, s)]['rc'] != 0]
+    if failed:
+        lines += ['', '## Failure points', '']
+        for r in failed:
+            fp = r.get('failure_point') or {}
+            lines.append('- **%s** (%s, rc %d, %ds): at `%s`%s' % (
+                r['script'], r['column'], r['rc'], r['seconds'], fp.get('at') or '-',
+                ' `%s`' % fp['code'] if fp.get('code') else ''))
+            lines.append('  - error: %s' % (fp.get('error') or r['first_error'] or '-').replace('|', '/'))
+            if fp.get('helper'):
+                lines.append('  - innermost frame: `%s`' % fp['helper'])
+            if fp.get('step'):
+                lines.append('  - step: %s' % fp['step'].replace('|', '/'))
     return '\n'.join(lines) + '\n'
 
 
@@ -162,6 +235,8 @@ def main():
     ap.add_argument('--zcashd', default=os.environ.get('ZCASHD'))
     ap.add_argument('--yewd', default=os.environ.get('YEWD_BIN'))
     ap.add_argument('--zakurad', default=os.environ.get('ZAKURAD') or os.environ.get('YEWD_KOGANY'))
+    ap.add_argument('--chainviz', default=os.environ.get('CHAINVIZ_BIN'),
+                    help='the chain-viz binary yellowback_chainviz runs (CHAINVIZ_BIN): a current build')
     args = ap.parse_args()
     columns = args.columns.split(',')
     for c in columns:
@@ -178,6 +253,15 @@ def main():
         want = args.scripts.split(',')
         rows = [r for r in rows if r[0] in want] or [(s, []) for s in want]
     scripts = [r[0] for r in rows]
+    if args.chainviz:
+        args.chainviz = os.path.abspath(args.chainviz)
+        if not (os.path.isfile(args.chainviz) and os.access(args.chainviz, os.X_OK)):
+            ap.error('CHAINVIZ_BIN %s is not an executable file' % args.chainviz)
+        os.environ['CHAINVIZ_BIN'] = args.chainviz        # column_env copies the environment
+    elif 'yellowback_chainviz' in scripts:
+        print('s5_parity: warning: yellowback_chainviz without CHAINVIZ_BIN falls back to '
+              '$CARGO_TARGET_DIR or <workspace>/chain-viz/target/release/chain-viz, which may be stale',
+              file=sys.stderr)
     ok = True
     for rnd in range(1, args.rounds + 1):
         out = os.path.join(args.out, 'round%d' % rnd)
@@ -192,7 +276,9 @@ def main():
         md = table(results, columns, scripts)
         os.makedirs(out, exist_ok=True)
         with open(os.path.join(out, 'matrix.md'), 'w') as fh:
-            fh.write('# S5 matrix, round %d\n\n' % rnd + md)
+            used = ['%s `%s`' % (k, v) for k, v in (('ZCASHD', args.zcashd), ('ZAKURAD', args.zakurad),
+                                                    ('YEWD_BIN', args.yewd), ('CHAINVIZ_BIN', args.chainviz)) if v]
+            fh.write('# S5 matrix, round %d\n\n' % rnd + ', '.join(used) + '\n\n' + md)
         with open(os.path.join(out, 'matrix.json'), 'w') as fh:
             json.dump(results, fh, indent=1, sort_keys=True)
         print('round %d\n%s' % (rnd, md))
