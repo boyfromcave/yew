@@ -372,6 +372,7 @@ impl Config {
             },
             debug: a.has("debug"),
             wallet_args: crate::wallet::WalletArgs {
+                rpc_threads: a.get("rpcthreads").and_then(|v| v.parse().ok()),
                 opts: yewd_wallet::admin::Opts {
                     export_dir: a.get("exportdir").map(PathBuf::from),
                     // ycashd needs -experimentalfeatures -developerencryptwallet; the harness hands

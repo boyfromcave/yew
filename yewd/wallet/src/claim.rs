@@ -202,8 +202,8 @@ impl Wallet {
                 .with("attestPayee", J::Null)
                 .with("residualZat", residual));
         }
-        self.wait_carrier(node, &carrier).await?;
-        self.complete_claim(node, &args, &pending).await
+        let _ = args;
+        self.wait_or_park(node, pending).await
     }
 
     /// `CompleteClaim` / `BuildClaim` on a confirmed carrier.
@@ -626,8 +626,7 @@ impl Wallet {
                 .with("bundleSeqs", facts.seqs_json())
                 .with("emergencyOpenAt", r + n.3));
         }
-        self.wait_carrier(node, &carrier).await?;
-        self.complete_notice(node, &txid_s, &pending).await
+        self.wait_or_park(node, pending).await
     }
 
     /// `ClaimAt` (txbuilder.cpp): RED-4 by clause at `R` with the bundle facts, PRICE-2 and RED-5.

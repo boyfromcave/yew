@@ -451,8 +451,77 @@ impl Wallet {
                 .with("attestFeeZat", 0i64)
                 .with("attestPayee", J::Null));
         }
-        self.wait_carrier(node, &carrier).await?;
-        self.complete_mint(node, &pending).await
+        self.wait_or_park(node, pending).await
+    }
+
+    /// `wait=true`: park the completion when the caller waits without the wallet
+    /// ([`Wallet::defer_wait`]), else wait here and complete.
+    pub(crate) async fn wait_or_park(
+        &mut self,
+        node: &dyn Node,
+        pm: PendingMint,
+    ) -> Result<J, RpcError> {
+        if self.defer_wait {
+            let k = op_str(&pm.carrier);
+            self.parked.insert(k.clone(), pm);
+            return Err(RpcError::new(code::CARRIER_PARKED, k));
+        }
+        self.wait_carrier(node, &pm.carrier).await?;
+        self.complete_one(node, &pm).await
+    }
+
+    /// A parked completion, once its carrier confirmed (`confirmed`), else its refusal.
+    pub async fn resume_parked(
+        &mut self,
+        node: &dyn Node,
+        carrier: &str,
+        confirmed: Result<(), RpcError>,
+    ) -> Result<J, RpcError> {
+        let pm = self.parked.remove(carrier).ok_or_else(|| {
+            RpcError::new(code::INTERNAL_ERROR, "yewd: the parked completion is gone")
+        })?;
+        confirmed?;
+        self.sync(node).await?;
+        self.complete_one(node, &pm).await
+    }
+
+    /// Whether a carrier confirmed (`Ok(true)`), is still unconfirmed (`Ok(false)`), or is not an
+    /// unspent output (the refusal `WaitForCarrier` gives).
+    pub async fn carrier_confirmed(node: &dyn Node, carrier: &str) -> Result<bool, RpcError> {
+        let op = crate::build::outpoint_param(&Value::String(carrier.to_string()), "carrier")?;
+        match node_coin(node, &op).await? {
+            Some(c) => Ok(c.height.is_some()),
+            None => Err(build_error(format!(
+                "carrier-unconfirmed: the carrier {carrier} is not an unspent output"
+            ))),
+        }
+    }
+
+    /// The completion of one pending transaction on its confirmed carrier.
+    async fn complete_one(&mut self, node: &dyn Node, pm: &PendingMint) -> Result<J, RpcError> {
+        if let Some(t) = &pm.notice {
+            return self.complete_notice(node, t, pm).await;
+        }
+        match (&pm.claim, &pm.equivocation) {
+            (Some(a), _) => self.complete_claim(node, a, pm).await,
+            (None, Some((a, b))) => {
+                let dec = |h: &str| {
+                    hex::decode(h)
+                        .ok()
+                        .and_then(|b| yew_core::bundle::Attestation::decode(&b))
+                };
+                match (dec(a), dec(b)) {
+                    (Some(a), Some(b)) => {
+                        self.complete_equivocation(node, &a, &b, &pm.carrier).await
+                    }
+                    _ => Err(RpcError::new(
+                        code::INTERNAL_ERROR,
+                        "a pending report's attestations",
+                    )),
+                }
+            }
+            (None, None) => self.complete_mint(node, pm).await,
+        }
     }
 
     /// Wait until the carrier confirms (`WaitForCarrier`), following the node meanwhile.
@@ -618,30 +687,7 @@ impl Wallet {
         for pm in std::mem::take(&mut self.pending) {
             match node_coin(node, &pm.carrier).await {
                 Ok(Some(c)) if c.height.is_some() => {
-                    let r = if let Some(t) = &pm.notice {
-                        self.complete_notice(node, t, &pm).await
-                    } else {
-                        match (&pm.claim, &pm.equivocation) {
-                            (Some(a), _) => self.complete_claim(node, a, &pm).await,
-                            (None, Some((a, b))) => {
-                                let dec = |h: &str| {
-                                    hex::decode(h)
-                                        .ok()
-                                        .and_then(|b| yew_core::bundle::Attestation::decode(&b))
-                                };
-                                match (dec(a), dec(b)) {
-                                    (Some(a), Some(b)) => {
-                                        self.complete_equivocation(node, &a, &b, &pm.carrier).await
-                                    }
-                                    _ => Err(RpcError::new(
-                                        code::INTERNAL_ERROR,
-                                        "a pending report's attestations",
-                                    )),
-                                }
-                            }
-                            (None, None) => self.complete_mint(node, &pm).await,
-                        }
-                    };
+                    let r = self.complete_one(node, &pm).await;
                     if let Err(e) = r {
                         eprintln!(
                             "yewd: the pending transaction on carrier {} failed: {e}",
