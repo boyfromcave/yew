@@ -540,7 +540,7 @@ Other harness steps: **H8 for every pair** (`yewd -initwallet`, then the backend
 address; F-S4-1's rule; on kogany a node that names `-yellowbackpayoutaddress` mines to that address,
 F-S5-12); the 200-block cache (`cache_behavior='current'`) is mined by the run's own pairs
 (`yewd_build_cache`: the cached ycashd chain and wallets are read by neither a pair's backend nor yewd);
-`connect_nodes` uses `addnode "add"` and tolerates `-23` for a kogany pair; `-disablewallet`,
+`connect_nodes` uses `addnode "onetry"` for a kogany pair (F-S5-6); `-disablewallet`,
 `-pqfeerate`, `-pqfalcon[height]` and `-salvagewallet` reach yewd too; every proxy of a pair is wrapped
 (helpers make their own); a pair that lacks a mempool transaction another pair holds is fed it after a
 grace (kogany's gossip, as the rig's W9-a/F-3), the ycash6 peer likewise, and the peer follows the pairs'
@@ -642,59 +642,59 @@ column 3 `YEWD_KOGANY`, 3m `YEWD_YCASH6_PEER=1`. Round D re-ran round C's passes
 `yellowback_chainviz`, which passed an earlier round) on the same build. Two of column 1's scripts lost
 their first run to another run's port (`Unable to start HTTP server`) and pass on a re-run.
 
-| script | 1. ycash6 | 2. kogany + ycash6 rig | 3. kogany + yewd (round C) | 3. round D (same build) | 3m. mixed: + one ycash6 peer |
+| script | 1. ycash6 | 2. kogany + ycash6 rig | 3. kogany + yewd (r10) | 3. round D (earlier build) | 3m. mixed: + one ycash6 peer (r10, partial) |
 |---|---|---|---|---|---|
-| z_validateaddress_nowallet | pass | pass | FAIL: kogany: z_validateaddress shape | — | FAIL: kogany: z_validateaddress shape |
-| vault_upgrade | pass | FAIL | FAIL: kogany: getblockchaininfo shape | — | FAIL: kogany: getblockchaininfo shape |
-| vault_primitive | pass | pass | FAIL: kogany: reject text | — | FAIL: kogany: reject text |
+| z_validateaddress_nowallet | pass | pass | pass | — | pass |
+| vault_upgrade | pass | FAIL | FAIL: kogany: a regtest kogany does not refuse NU5..NU6.2 scheduled with Vault at in | — | — (not finished) |
+| vault_primitive | pass | pass | FAIL: kogany: the disconnected unlock does not return to the mempool | — | FAIL: as column 3 |
 | vault_slashing | pass | pass | pass | pass | pass |
-| vault_pq_reorg | pass | FAIL | FAIL: kogany: reconsiderblock of a block it did not invalidate | — | FAIL: kogany: reconsiderblock of a block it did not invalidate |
-| vault_dos | pass | FAIL | FAIL: reads ycashd internals (F-S5-13) | — | FAIL: reads ycashd internals (F-S5-13) |
-| vault_rpc | pass | pass | FAIL: reads ycashd internals (F-S5-13) | — | FAIL: reads ycashd internals (F-S5-13) |
+| vault_pq_reorg | pass | FAIL | FAIL: kogany: a reorg-resurrected Falcon spend is not evicted one block below Falcon | — | FAIL: as column 3 |
+| vault_dos | pass | FAIL | FAIL: excluded: reads <datadir>/debug.log directly | — | FAIL: as column 3 |
+| vault_rpc | pass | pass | FAIL: excluded: vault DB wipe of the ycashd datadir and debug.log | — | — (not finished) |
 | vault_rpc_contract | pass | pass | pass | pass | pass |
 | vault_pq_relay | pass | pass | pass | pass | pass |
-| vault_bridge | pass | pass | FAIL: kogany: reject text | — | FAIL: kogany: reject text |
-| vault_pq | pass | pass | FAIL: kogany: PQ owner spend not in its template | — | FAIL: kogany: PQ owner spend not in its template |
-| vault_pq_wallet | pass | FAIL | pass | pass | FAIL: cache: founders reward (F-S5-18) |
-| vault_pq_wallet_restore | pass | FAIL | FAIL: yewd: seed-only restore (F-S5-17) | — | FAIL: cache: founders reward (F-S5-18) |
-| wallet_pq_address | pass | FAIL | FAIL: kogany: getaddressmempool | — | FAIL: cache: founders reward (F-S5-18) |
-| yellowback_lifecycle | pass | pass | FAIL: kogany: no disconnectnode (F-S5-6) | — | FAIL: kogany: no disconnectnode (F-S5-6) |
-| yellowback_activation_reorg | pass | pass | FAIL: kogany: no disconnectnode (F-S5-6) | — | FAIL: peer kept an invalidated branch (mirror added after this pass) |
-| yellowback_reorg_restart | pass | pass | FAIL: kogany: reorged txs not back in mempool (F-S5-7) | — | FAIL: peer kept an invalidated branch (mirror added after this pass) |
-| yellowback_claim | pass | pass | FAIL: kogany: submitblock bare rejected (F-S5-4) | — | FAIL: kogany: submitblock bare rejected (F-S5-4) |
-| yellowback_interm | pass | pass | FAIL: kogany: submitblock bare rejected (F-S5-4) | — | FAIL: kogany: submitblock bare rejected (F-S5-4) |
-| yellowback_index | pass | FAIL | FAIL: reads ycashd internals (F-S5-13) | — | FAIL: reads ycashd internals (F-S5-13) |
-| yellowback_upgrade | pass | pass | FAIL: reads ycashd internals (F-S5-13) | — | FAIL: peer kept an invalidated branch (mirror added after this pass) |
-| yellowback_rpc_contract | pass | pass | FAIL: kogany: setquote payout (F-S5-3) | — | FAIL: kogany: setquote payout (F-S5-3) |
-| yellowback_redeem_boundary | pass | pass | FAIL: kogany: submitblock bare rejected (F-S5-4) | — | FAIL: kogany: submitblock bare rejected (F-S5-4) |
-| yellowback_cancel_limit | pass | pass | FAIL: kogany: armed reads | — | FAIL: kogany: armed reads |
-| yellowback_pq | pass | pass | FAIL: kogany: params.pq.falconHeight (F-S5-11) | — | FAIL: 401 on rpc_port (port taken by another run) |
-| yellowback_pq_dayone | pass | pass | FAIL: kogany: params.pq.falconHeight (F-S5-11) | — | FAIL: kogany: params.pq.falconHeight (F-S5-11) |
-| yellowback_void_mint | pass | pass | FAIL: kogany: yed_getstats.supplyCapCents null | — | FAIL: kogany: yed_getstats.supplyCapCents null |
-| yellowback_mint_armed | pass | pass | FAIL: kogany: yed_getstats armed fields | — | FAIL: kogany: yed_getstats armed fields |
-| yellowback_wallet_restore | pass | pass | pass | pass | pass |
-| yellowback_sapling | pass | pass | pass | pass | pass |
-| yellowback_wallet_lifecycle | pass | pass | FAIL: kogany: payout = miner address (F-S5-12) | — | FAIL: kogany: payout = miner address (F-S5-12) |
-| yellowback_hardening | pass | FAIL | FAIL: reads ycashd datadir (F-S5-13) | — | FAIL: reads ycashd datadir (F-S5-13) |
-| yellowback_stock_node | pass | FAIL | FAIL: kogany: getblocktemplate maxtime | — | FAIL: kogany: getblocktemplate maxtime |
-| yellowback_fees | pass | FAIL | pass | pass | pass |
-| yellowback_fees_reaccept | pass | pass | FAIL: kogany starts on a config ycashd refuses (F-S5-13) | — | FAIL: kogany starts on a config ycashd refuses (F-S5-13) |
-| yellowback_fee | pass | FAIL | pass | pass | pass |
-| yellowback_mempool_limits | pass | FAIL | FAIL: kogany: yed_getvault of a raw mint | — | FAIL: kogany: yed_getvault of a raw mint |
-| vault_policy | pass | pass | pass | pass | pass |
-| vault_refee | pass | pass | pass | pass | pass |
-| yellowback_wr_flags | pass | pass | FAIL: yewd: no consolidation (F-S5-15) | — | FAIL: yewd: no consolidation (F-S5-15) |
-| yellowback_attest_evict | pass | pass | FAIL: kogany: set_getinfo active seats | — | FAIL: kogany: set_getinfo active seats |
-| yellowback_attest_rejoin | pass | pass | FAIL: kogany: attestor records | — | FAIL: kogany: attestor records |
-| yellowback_attest_live | pass | pass | FAIL: kogany: attestor records | — | FAIL: kogany: attestor records |
-| yellowback_pricefeed | pass | pass | FAIL: kogany: yed_getstats mintableClasses | — | FAIL: kogany: yed_getstats mintableClasses |
-| yellowback_mining | pass | FAIL | FAIL: kogany: getblocktemplate maxtime | — | FAIL: kogany: getblocktemplate maxtime |
-| yellowback_stratum | pass | pass | FAIL: yolo on a pair: miner exit | — | FAIL: peer kept an invalidated branch (mirror added after this pass) |
-| yellowback_attest | pass | pass | FAIL: kogany: yed_gettxinfo rows | — | FAIL: kogany: yed_gettxinfo rows |
-| yellowback_attest_wallet | pass | pass | FAIL: no payout-free coinbase (F-S5-9) | — | FAIL: no payout-free coinbase (F-S5-9) |
-| yellowback_attest_bond | pass | pass | FAIL: kogany: attestor records | — | FAIL: kogany: attestor records |
-| yellowback_chainviz | pass | FAIL | FAIL: chain-viz mempool feed timing | FAIL: chain-viz mempool feed timing | FAIL: chain-viz mempool feed timing |
-| **pass** | 50/50 | 36/50 | 10/50 | 10/11 | 9/50 |
+| vault_bridge | pass | pass | pass | — | pass |
+| vault_pq | pass | pass | pass | — | pass |
+| vault_pq_wallet | pass | FAIL | pass | pass | pass |
+| vault_pq_wallet_restore | pass | FAIL | pass | — | pass |
+| wallet_pq_address | pass | FAIL | FAIL: yewd: -sendchangeback=1 with a PQ input: no change output to the rq address | — | FAIL: as column 3 |
+| yellowback_lifecycle | pass | pass | FAIL: kogany: yed_gettxinfo of an expired, never-mined observer mint: tx-not-found | — | FAIL: as column 3 |
+| yellowback_activation_reorg | pass | pass | pass | — | FAIL: harness: peer kept the invalidated block |
+| yellowback_reorg_restart | pass | pass | pass | — | FAIL: harness: peer kept the invalidated block |
+| yellowback_claim | pass | pass | pass | — | pass |
+| yellowback_interm | pass | pass | pass | — | pass |
+| yellowback_index | pass | FAIL | FAIL: kogany: "the undo walk did not run": crash:<h> fault / undo log line on the ba | — | FAIL: as column 3 |
+| yellowback_upgrade | pass | pass | FAIL: excluded: opens node<i>/regtest/debug.log directly | — | FAIL: as column 3 |
+| yellowback_rpc_contract | pass | pass | FAIL: kogany: test_fault=storage:commit: koganyd stops during initialization | — | — (not finished) |
+| yellowback_redeem_boundary | pass | pass | pass | — | pass |
+| yellowback_cancel_limit | pass | pass | FAIL: yewd: yed_claim path | — | FAIL: as column 3 |
+| yellowback_pq | pass | pass | pass | — | pass |
+| yellowback_pq_dayone | pass | pass | pass | — | pass |
+| yellowback_void_mint | pass | pass | FAIL: yewd: gettransaction after a reorg: "Invalid or non-wallet transaction id" | — | — (not finished) |
+| yellowback_mint_armed | pass | pass | pass | — | — (not finished) |
+| yellowback_wallet_restore | pass | pass | pass | pass | — (not finished) |
+| yellowback_sapling | pass | pass | pass | pass | — (not finished) |
+| yellowback_wallet_lifecycle | pass | pass | FAIL: yewd: audit C-2: wait=true calls not capped at half of -rpcthreads | — | — (not finished) |
+| yellowback_hardening | pass | FAIL | FAIL: excluded: h6: ycashd datadir layout | — | — (not finished) |
+| yellowback_stock_node | pass | FAIL | FAIL: kogany: no "BAN THRESHOLD EXCEEDED" line in the backend log | — | — (not finished) |
+| yellowback_fees | pass | FAIL | FAIL: kogany: HALT-1 leg: carrier-wait-timeout, the carrier never confirmed | pass | — (not finished) |
+| yellowback_fees_reaccept | pass | pass | FAIL: excluded: init-error text of -yellowbackmaxtxfee below the floor | — | — (not finished) |
+| yellowback_fee | pass | FAIL | pass | pass | — (not finished) |
+| yellowback_mempool_limits | pass | FAIL | FAIL: yewd: gettransaction of an evicted filler: "Invalid or non-wallet transactio | — | — (not finished) |
+| vault_policy | pass | pass | pass | pass | — (not finished) |
+| vault_refee | pass | pass | pass | pass | — (not finished) |
+| yellowback_wr_flags | pass | pass | excluded:pair (F-S5-15) | — | excluded:pair |
+| yellowback_attest_evict | pass | pass | pass | — | — (not finished) |
+| yellowback_attest_rejoin | pass | pass | pass | — | — (not finished) |
+| yellowback_attest_live | pass | pass | pass | — | — (not finished) |
+| yellowback_pricefeed | pass | pass | pass | — | — (not finished) |
+| yellowback_mining | pass | FAIL | FAIL: kogany: yed_gettag finds a tag for a quote older than -yellowbackquotemaxage | — | — (not finished) |
+| yellowback_stratum | pass | pass | FAIL: kogany: username-notext: the coinbase scriptSig differs | — | — (not finished) |
+| yellowback_attest | pass | pass | pass | — | — (not finished) |
+| yellowback_attest_wallet | pass | pass | FAIL: yewd: unarmed two-step mint: m0['source'] '' vs expected | — | — (not finished) |
+| yellowback_attest_bond | pass | pass | pass | — | — (not finished) |
+| yellowback_chainviz | pass | FAIL | pass | FAIL: chain-viz mempool feed timing | — (not finished) |
+| **pass** | 50/50 | 36/50 | 28/49 (+1 excluded) | 10/11 | 13/49 run so far |
 
 
 **State hashes.** The harness asserts `vault_getinfo.statehash` and `yed_getstatehash` equal across the
