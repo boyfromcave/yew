@@ -102,18 +102,25 @@ mod tests {
     fn pbkdf2_rfc7914_vector() {
         // RFC 7914 §11: PBKDF2-HMAC-SHA256("passwd", "salt", 1), the first 32 bytes
         assert_eq!(
-            hex::encode(pbkdf2_sha256(b"passwd", b"salt", 1)),
+            hex::encode(pbkdf2_sha256(
+                &std::hint::black_box(*b"passwd"),
+                &std::hint::black_box(*b"salt"),
+                1
+            )),
             "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc"
         );
     }
 
     #[test]
     fn seal_and_open() {
-        let s = seal("pass", b"secret words").unwrap();
-        assert_eq!(open("pass", &s).as_deref(), Some(&b"secret words"[..]));
-        assert_eq!(open("wrong", &s), None);
+        // a random passphrase per run: the test exercises the round trip, not a fixed key
+        let pass = hex::encode(random::<8>().unwrap());
+        let wrong = format!("{pass}x");
+        let s = seal(&pass, b"secret words").unwrap();
+        assert_eq!(open(&pass, &s).as_deref(), Some(&b"secret words"[..]));
+        assert_eq!(open(&wrong, &s), None);
         let mut t = s.clone();
         t.ct.replace_range(0..2, if &s.ct[0..2] == "00" { "01" } else { "00" });
-        assert_eq!(open("pass", &t), None);
+        assert_eq!(open(&pass, &t), None);
     }
 }

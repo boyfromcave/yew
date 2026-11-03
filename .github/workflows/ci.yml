@@ -545,7 +545,20 @@ jobs:
       # zakurad-bin.tgz: zakurad (dev profile, --features ycash, ubuntu-24.04, the runner's librocksdb)
       # and zakurad-bin.json, from a push, schedule or dispatch run of kogany at KOGANY_REF only (the
       # contract of the workspace's docs/plans/kogany/ci-design.md), never a pull_request run.
-      - name: kogany's zakurad-bin at KOGANY_REF
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: boyfromcave/kogany
+          ref: ${{ env.KOGANY_REF }}
+          path: kogany
+          persist-credentials: false
+      # kogany's setup-zakura-build as its script (librocksdb for zakurad). The fallback build fails at
+      # dependency resolution until boyfromcave/zakura-common-ycash exists on GitHub (kogany plan K-2).
+      - name: kogany build packages
+        env:
+          INSTALL_LIBCLANG: "false"
+          INSTALL_PROTOC: "false"
+        run: bash kogany/.github/actions/setup-zakura-build/install-ubuntu-packages.sh
+      - name: kogany's zakurad-bin at KOGANY_REF (else built here)
         id: zakurad
         env:
           GH_TOKEN: ${{ github.token }}
@@ -565,29 +578,9 @@ jobs:
             fi
           done
           echo "got=false" >> "$GITHUB_OUTPUT"
-          echo "no zakurad-bin of boyfromcave/kogany at $KOGANY_REF: building it here"
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          repository: boyfromcave/kogany
-          ref: ${{ env.KOGANY_REF }}
-          path: kogany
-          persist-credentials: false
-          sparse-checkout: ${{ steps.zakurad.outputs.got == 'true' && '.github/actions/setup-zakura-build' || '' }}
-      # kogany's setup-zakura-build as its script (librocksdb for zakurad). The fallback build fails at
-      # dependency resolution until boyfromcave/zakura-common-ycash exists on GitHub (kogany plan K-2).
-      - name: kogany build packages
-        env:
-          INSTALL_LIBCLANG: "false"
-          INSTALL_PROTOC: "false"
-        run: bash kogany/.github/actions/setup-zakura-build/install-ubuntu-packages.sh
-      - name: build zakurad (kogany at KOGANY_REF, --features ycash)
-        if: steps.zakurad.outputs.got != 'true'
-        working-directory: kogany
-        env:
-          CARGO_INCREMENTAL: 0
-        run: |
-          cargo build --locked -p zakura --features ycash --bin zakurad
+          (cd kogany && CARGO_INCREMENTAL=0 cargo build --locked -p zakura --features ycash --bin zakurad)
           echo "ZAKURAD=$GITHUB_WORKSPACE/kogany/target/debug/zakurad" >> "$GITHUB_ENV"
+          echo "no zakurad-bin of boyfromcave/kogany at $KOGANY_REF: building it here"
       - name: zakurad runs here
         run: |
           if ldd "$ZAKURAD" | grep 'not found'; then echo "::error::zakurad needs a library this runner lacks"; exit 1; fi

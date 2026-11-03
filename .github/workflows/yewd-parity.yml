@@ -73,56 +73,6 @@ jobs:
         run: |
           cargo build --locked --manifest-path yewd/Cargo.toml --bins
           echo "YEWD_BIN=$GITHUB_WORKSPACE/yewd/target/debug/yewd" >> "$GITHUB_ENV"
-      - name: kogany's zakurad-bin at KOGANY_REF
-        id: zakurad
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          trusted='select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")'
-          runs=$(gh run list -R boyfromcave/kogany -c "$KOGANY_REF" -L 50 --json databaseId,event,headSha \
-            -q ".[] | $trusted | .databaseId" 2>/dev/null || true)
-          for r in $runs; do
-            if gh run download "$r" -R boyfromcave/kogany -n zakurad-bin -D "$RUNNER_TEMP/zk-dl" 2>/dev/null \
-               && [ -f "$RUNNER_TEMP/zk-dl/zakurad-bin.tgz" ]; then
-              mkdir -p "$RUNNER_TEMP/zk" && tar xzf "$RUNNER_TEMP/zk-dl/zakurad-bin.tgz" -C "$RUNNER_TEMP/zk"
-              echo "ZAKURAD=$RUNNER_TEMP/zk/zakurad" >> "$GITHUB_ENV"
-              echo "got=true" >> "$GITHUB_OUTPUT"; exit 0
-            fi
-          done
-          echo "got=false" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          repository: boyfromcave/kogany
-          ref: ${{ env.KOGANY_REF }}
-          path: kogany
-          persist-credentials: false
-          sparse-checkout: ${{ steps.zakurad.outputs.got == 'true' && '.github/actions/setup-zakura-build' || '' }}
-      - name: kogany build packages
-        env:
-          INSTALL_LIBCLANG: "false"
-          INSTALL_PROTOC: "false"
-        run: bash kogany/.github/actions/setup-zakura-build/install-ubuntu-packages.sh
-      - name: build zakurad (kogany at KOGANY_REF, --features ycash)
-        if: steps.zakurad.outputs.got != 'true'
-        working-directory: kogany
-        run: |
-          cargo build --locked -p zakura --features ycash --bin zakurad
-          echo "ZAKURAD=$GITHUB_WORKSPACE/kogany/target/debug/zakurad" >> "$GITHUB_ENV"
-      - name: ycashd from ycash6's node-bin
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          trusted='select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")'
-          runs=$(gh run list -R "$YCASH6_REPO" -w yellowback-tests.yml -b "$YCASH6_BRANCH" -L 20 --json databaseId,event -q ".[] | $trusted | .databaseId")
-          for r in $runs; do
-            if gh run download "$r" -R "$YCASH6_REPO" -n node-bin -D "$RUNNER_TEMP/dl" 2>/dev/null; then
-              echo "ycashd from $YCASH6_REPO run $r"; break
-            fi
-          done
-          mkdir -p "$RUNNER_TEMP/node"
-          tar -xzf "$RUNNER_TEMP/dl/node-bin.tgz" -C "$RUNNER_TEMP/node" src/ycashd src/ycash-cli
-          echo "ZCASHD=$RUNNER_TEMP/node/src/ycashd" >> "$GITHUB_ENV"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ env.YCASH6_REPO }}
@@ -146,6 +96,51 @@ jobs:
           site=$(python3 -c 'import site; print(site.getusersitepackages())')
           mkdir -p "$site"
           printf '%s\n' 'from hashlib import blake2b, blake2s  # noqa: F401' > "$site/pyblake2.py"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: boyfromcave/kogany
+          ref: ${{ env.KOGANY_REF }}
+          path: kogany
+          persist-credentials: false
+      - name: kogany build packages
+        env:
+          INSTALL_LIBCLANG: "false"
+          INSTALL_PROTOC: "false"
+        run: bash kogany/.github/actions/setup-zakura-build/install-ubuntu-packages.sh
+      - name: kogany's zakurad-bin at KOGANY_REF (else built here)
+        id: zakurad
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          trusted='select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")'
+          runs=$(gh run list -R boyfromcave/kogany -c "$KOGANY_REF" -L 50 --json databaseId,event,headSha \
+            -q ".[] | $trusted | .databaseId" 2>/dev/null || true)
+          for r in $runs; do
+            if gh run download "$r" -R boyfromcave/kogany -n zakurad-bin -D "$RUNNER_TEMP/zk-dl" 2>/dev/null \
+               && [ -f "$RUNNER_TEMP/zk-dl/zakurad-bin.tgz" ]; then
+              mkdir -p "$RUNNER_TEMP/zk" && tar xzf "$RUNNER_TEMP/zk-dl/zakurad-bin.tgz" -C "$RUNNER_TEMP/zk"
+              echo "ZAKURAD=$RUNNER_TEMP/zk/zakurad" >> "$GITHUB_ENV"
+              echo "got=true" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          done
+          echo "got=false" >> "$GITHUB_OUTPUT"
+          (cd kogany && CARGO_INCREMENTAL=0 cargo build --locked -p zakura --features ycash --bin zakurad)
+          echo "ZAKURAD=$GITHUB_WORKSPACE/kogany/target/debug/zakurad" >> "$GITHUB_ENV"
+      - name: ycashd from ycash6's node-bin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          trusted='select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")'
+          runs=$(gh run list -R "$YCASH6_REPO" -w yellowback-tests.yml -b "$YCASH6_BRANCH" -L 20 --json databaseId,event -q ".[] | $trusted | .databaseId")
+          for r in $runs; do
+            if gh run download "$r" -R "$YCASH6_REPO" -n node-bin -D "$RUNNER_TEMP/dl" 2>/dev/null; then
+              echo "ycashd from $YCASH6_REPO run $r"; break
+            fi
+          done
+          mkdir -p "$RUNNER_TEMP/node"
+          tar -xzf "$RUNNER_TEMP/dl/node-bin.tgz" -C "$RUNNER_TEMP/node" src/ycashd src/ycash-cli
+          echo "ZCASHD=$RUNNER_TEMP/node/src/ycashd" >> "$GITHUB_ENV"
       - name: s5_parity.py (column ${{ matrix.column }}, group ${{ matrix.group }})
         env:
           COLUMN: ${{ matrix.column }}
