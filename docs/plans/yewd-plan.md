@@ -596,10 +596,11 @@ and the runner knows it.
   wipe), init-error texts (`yellowback_fees_reaccept`'s `-yellowbackmaxtxfee` floor).
 - **F-S5-14** (harness, fixed): a script that failed inside `setup_network` never stopped its pairs and
   `wait_bitcoinds` waited forever.
-- **F-S5-15** (yewd, record): ycashd's background Sapling consolidation (`yellowback_wr_flags`'s
-  consolidation builds) is not in yewd. *Status (s5-yewd): not implemented; outside K-25 (an option, no RPC; it
-  would have the signer sign transactions no RPC asked for, K-24), and the script also reads `debug.log` for
-  `-deletetx` (F-S5-13): it needs a column-3 exclusion, not a yewd change.*
+- **F-S5-15** (yewd, decided): ycashd's background Sapling consolidation (`yellowback_wr_flags`'s
+  consolidation builds) is not in yewd. *Decision (the Yellowback lead architect, 2026-11-02): outside K-25 (an
+  option, no RPC; it would have the signer sign transactions no RPC asked for, K-24) and stays out of yewd;
+  `yellowback_wr_flags` is a column-3 exclusion (ycash6 `qa/kogany-mixed-shards.txt` `excluded:pair`), so it is
+  not in the `pair` group.*
 - **F-S5-16** (kogany): transaction gossip between koganys (and to a ycashd peer) is not reliable; the
   harness feeds the gap, as the rig does.
 - **F-S5-17** (yewd, open): the seed-only restore (`-mnemonicfile` with `wallet.dat` wiped,
@@ -705,8 +706,7 @@ kogany's gossip did not bring it: up to 24 per script), and every block the pair
 script, solved by the harness) was accepted by ycash6. Across columns the chains differ (other keys, other
 blocks), so equality across columns is the per-run cross-line equality, not one hash for all three.
 
-**Still to do for S5** (beyond the kogany gaps): F-S5-17 (`-mnemonicfile` seed-only restore), F-S5-15
-(consolidation), F-S5-9 needs a node option on both lines, the chain-viz mempool-timing failure
+**Still to do for S5** (beyond the kogany gaps): F-S5-17 (`-mnemonicfile` seed-only restore), F-S5-9 needs a node option on both lines, the chain-viz mempool-timing failure
 (`yellowback_chainviz`: the mint reaches chain-viz's mempool snapshot later than its 15 s wait on a pair),
 `yellowback_stratum`'s miner exit on a pair; then the gate's rounds and the nightly's seven days.
 
