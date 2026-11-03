@@ -995,6 +995,7 @@ impl Wallet {
         tx.expiry_height = next.height + crate::build::TX_EXPIRY_DELTA;
         let mut prevs = Vec::new();
         let mut keys = Vec::new();
+        let mut sizes = Vec::new();
         for (op, rec) in &lapsed {
             tx.vin.push(TxIn::new(*op));
             let pk: [u8; 33] = hex::decode(&rec.pk)
@@ -1004,6 +1005,12 @@ impl Wallet {
             let bundle = hex::decode(&rec.bundle).unwrap_or_default();
             let redeem = yew_core::script::carrier_script(&pk, &yew_core::keys::sha256(&bundle))
                 .map_err(|e| RpcError::new(code::WALLET_ERROR, e.to_string()))?;
+            // P-2: the scriptSig with its signature at the maximum DER size and hashtype
+            sizes.push(
+                yew_core::script::carrier_script_sig(&bundle, &[0u8; 73], &redeem)
+                    .map(|x| x.len())
+                    .unwrap_or(0),
+            );
             prevs.push(NodeCoin {
                 value: CARRIER_VALUE,
                 script: yew_core::script::p2sh_of(&redeem),
@@ -1016,12 +1023,16 @@ impl Wallet {
             });
         }
         let total = lapsed.len() as i64 * CARRIER_VALUE;
-        let fee = flat.min(total - 1);
         let dest = self.new_change()?;
         tx.vout.push(TxOut {
-            value: total - fee,
+            value: 0,
             script_pubkey: dest,
         });
+        // NetworkFee: max(the flat fee, the ZIP-317 conventional fee of the shape)
+        let fee = flat
+            .max(tx.zip317_conventional_fee(&sizes).unwrap_or(flat))
+            .min(total - 1);
+        tx.vout[0].value = total - fee;
         let signed = self
             .sign_inputs(&tx, &prevs, &keys, &[], GatePath::Yed, fee + 1, next.branch)
             .await?;
