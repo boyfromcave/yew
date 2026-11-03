@@ -101,6 +101,26 @@ pub fn init(
                 .map(|h| h.to_string())
                 .unwrap_or_default();
             // ycashd's texts (wallet.cpp, -mnemonicfile on an existing wallet)
+            if ks.mnemonic.is_none() && ks.encrypted() {
+                // locked: the seed is sealed; the public cache holds its fingerprint
+                let mut given = keys::seed_from_mnemonic(m, "")
+                    .map_err(|e| SignerError(format!("yewd-signer: bad mnemonic: {e}")))?;
+                let fp = hex::encode(seed_fingerprint(&given));
+                keys::wipe(&mut given);
+                match read_public_cache(dir) {
+                    Ok(c) if c.seed_fp != fp => {
+                        return err(format!(
+                            "-mnemonicfile applies only when creating a new wallet, and this wallet has another seed ({})",
+                            path.display()
+                        ))
+                    }
+                    Ok(_) => eprintln!("-mnemonicfile ignored: the wallet exists and has this seed"),
+                    Err(_) => eprintln!(
+                        "-mnemonicfile ignored: the wallet exists (its seed fingerprint is unknown)"
+                    ),
+                }
+                return Ok(false);
+            }
             if ks.mnemonic.is_none() {
                 return err("-mnemonicfile applies only when creating a new wallet, and this existing wallet has no mnemonic seed".to_string());
             }
@@ -112,6 +132,7 @@ pub fn init(
                     path.display()
                 ));
             }
+            eprintln!("-mnemonicfile ignored: the wallet exists and has this seed");
         }
         return Ok(false);
     }

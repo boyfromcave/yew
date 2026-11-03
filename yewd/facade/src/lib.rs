@@ -117,6 +117,21 @@ fn spawn_backend_watch(
             )
             .await
             .is_ok_and(|r| r.is_ok());
+            // a node that aborted can linger (a crash report being written) with its listener
+            // still accepting: with -backendlostexit an RPC must answer too
+            let up = up
+                && (lost.is_none()
+                    || tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        facade.backend.call(
+                            "/",
+                            bytes::Bytes::from_static(
+                                br#"{"jsonrpc":"1.0","id":"watch","method":"getblockcount","params":[]}"#,
+                            ),
+                        ),
+                    )
+                    .await
+                    .is_ok_and(|r| r.is_ok()));
             if up {
                 seen_up = true;
                 down_since = None;

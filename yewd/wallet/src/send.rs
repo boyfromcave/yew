@@ -687,7 +687,13 @@ impl Wallet {
                     Err(NodeError::Rpc { .. }) => return Ok(local_completeness(&out, signed_hex)),
                     Err(e) => return Err(e.into()),
                 };
-                let complete = v["valid"].as_bool().unwrap_or(false);
+                // ycashd's signrawtransaction checks scripts, not sequence locks: an unaged
+                // RELEASE is complete there, so kogany's BIP68 answers count as complete
+                let complete = v["valid"].as_bool().unwrap_or(false)
+                    || matches!(
+                        v["invalidReason"].as_str(),
+                        Some("non-BIP68-final" | "bad-txns-vault-timelock")
+                    );
                 let mut o = J::obj().with("hex", signed_hex).with("complete", complete);
                 if !complete {
                     o.push(
