@@ -758,6 +758,17 @@ impl Wallet {
                 })?
                 .to_string(),
         };
+        // ImportPQKeySeed: a seed of a key this wallet already holds (its own chain, the
+        // lookahead included) keeps that key's index and adds nothing
+        let index = index.or_else(|| {
+            let mut seed = hex::decode(hexs).ok()?;
+            let key = yew_core::pq::PqKey::from_seed(scheme, &seed).ok();
+            yew_core::keys::wipe(&mut seed);
+            self.book
+                .pq_by_id(&key?.id())
+                .map(|k| k.index)
+                .filter(|i| *i < yewd_proto::IMPORTED_PQ_BASE)
+        });
         let q = match self.signer.request(Request::ImportPq(PqImportRequest {
             scheme,
             index,
