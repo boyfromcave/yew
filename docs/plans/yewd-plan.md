@@ -643,14 +643,16 @@ column 3 `YEWD_KOGANY`, 3m `YEWD_YCASH6_PEER=1`. Round D re-ran round C's passes
 `yellowback_chainviz`, which passed an earlier round) on the same build. Two of column 1's scripts lost
 their first run to another run's port (`Unable to start HTTP server`) and pass on a re-run.
 
-| script | 1. ycash6 | 2. kogany + ycash6 rig | 3. kogany + yewd (r12) | 3. round D (earlier build) | 3m. mixed: + one ycash6 peer (r12) |
+r13 (2026-11-03): kogany `4184804fe` (`koganyd --features ycash`, release), yewd `09af858` (release), harness ycash6 `kc/s5-h5`: column 3 46/49, 3m 44/49.
+
+| script | 1. ycash6 | 2. kogany + ycash6 rig | 3. kogany + yewd (r13) | 3. round D (earlier build) | 3m. mixed: + one ycash6 peer (r13) |
 |---|---|---|---|---|---|
 | z_validateaddress_nowallet | pass | pass | pass | — | pass |
-| vault_upgrade | pass | FAIL | pass | — | pass |
+| vault_upgrade | pass | FAIL | pass | — | FAIL at vault_upgrade.py:97 |
 | vault_primitive | pass | pass | pass | — | pass |
 | vault_slashing | pass | pass | pass | pass | pass |
 | vault_pq_reorg | pass | FAIL | pass | — | pass |
-| vault_dos | pass | FAIL | FAIL at vault_dos.py:251 | — | FAIL at vault_dos.py:251 |
+| vault_dos | pass | FAIL | pass | — | pass |
 | vault_rpc | pass | pass | pass | — | pass |
 | vault_rpc_contract | pass | pass | pass | pass | pass |
 | vault_pq_relay | pass | pass | pass | pass | pass |
@@ -658,15 +660,15 @@ their first run to another run's port (`Unable to start HTTP server`) and pass o
 | vault_pq | pass | pass | pass | — | pass |
 | vault_pq_wallet | pass | FAIL | pass | pass | pass |
 | vault_pq_wallet_restore | pass | FAIL | pass | — | pass |
-| wallet_pq_address | pass | FAIL | FAIL at wallet_pq_address.py:362 | — | FAIL at wallet_pq_address.py:362 |
+| wallet_pq_address | pass | FAIL | pass | — | pass |
 | yellowback_lifecycle | pass | pass | pass | — | pass |
 | yellowback_activation_reorg | pass | pass | pass | — | pass |
-| yellowback_reorg_restart | pass | pass | pass | — | pass |
+| yellowback_reorg_restart | pass | pass | FAIL at yellowback_reorg_restart.py:179 | — | FAIL at yellowback_reorg_restart.py:179 |
 | yellowback_claim | pass | pass | pass | — | pass |
 | yellowback_interm | pass | pass | pass | — | pass |
-| yellowback_index | pass | FAIL | FAIL at yellowback_index.py:91 | — | FAIL at yellowback_index.py:91 |
-| yellowback_upgrade | pass | pass | FAIL at yellowback_upgrade.py:310 | — | FAIL at yellowback_upgrade.py:310 |
-| yellowback_rpc_contract | pass | pass | pass (rerun; r12 run: P2P port clash at start) | — | pass (rerun; r12 run: P2P port clash at start) |
+| yellowback_index | pass | FAIL | FAIL at yellowback_index.py:329 | — | FAIL at yellowback_index.py:329 |
+| yellowback_upgrade | pass | pass | pass | — | pass |
+| yellowback_rpc_contract | pass | pass | pass | — | pass |
 | yellowback_redeem_boundary | pass | pass | pass | — | pass |
 | yellowback_cancel_limit | pass | pass | pass | — | pass |
 | yellowback_pq | pass | pass | pass | — | pass |
@@ -681,7 +683,7 @@ their first run to another run's port (`Unable to start HTTP server`) and pass o
 | yellowback_fees | pass | FAIL | pass | pass | pass |
 | yellowback_fees_reaccept | pass | pass | pass | — | pass |
 | yellowback_fee | pass | FAIL | pass | pass | pass |
-| yellowback_mempool_limits | pass | FAIL | FAIL at yellowback_mempool_limits.py:103 | — | FAIL at yellowback_mempool_limits.py:103 |
+| yellowback_mempool_limits | pass | FAIL | pass | — | pass |
 | vault_policy | pass | pass | pass | pass | pass |
 | vault_refee | pass | pass | pass | pass | pass |
 | yellowback_wr_flags | pass | pass | excluded:pair (F-S5-15) | — | excluded:pair |
@@ -691,11 +693,11 @@ their first run to another run's port (`Unable to start HTTP server`) and pass o
 | yellowback_pricefeed | pass | pass | pass | — | pass |
 | yellowback_mining | pass | FAIL | FAIL at yellowback_mining.py:367 | — | FAIL at yellowback_mining.py:367 |
 | yellowback_stratum | pass | pass | pass | — | pass |
-| yellowback_attest | pass | pass | pass | — | pass |
+| yellowback_attest | pass | pass | pass | — | FAIL at yellowback_attest.py:524 |
 | yellowback_attest_wallet | pass | pass | pass | — | pass |
 | yellowback_attest_bond | pass | pass | pass | — | pass |
 | yellowback_chainviz | pass | FAIL | pass | FAIL: chain-viz mempool feed timing | pass |
-| **pass** | 50/50 | 36/50 | 28/49 (+1 excluded) | 10/11 | 13/49 run so far |
+| **pass** | 50/50 | 36/50 | 46/49 (+1 excluded) | 10/11 | 44/49 (+1 excluded) |
 
 
 **State hashes.** The harness asserts `vault_getinfo.statehash` and `yed_getstatehash` equal across the
