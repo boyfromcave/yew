@@ -944,7 +944,7 @@ impl Wallet {
                 "source",
                 match (pm.facts.armed, pm.facts.a_mint, est["xMint"].as_i64()) {
                     (true, Some(a), Some(x)) => (if a < x { "a" } else { "x" }).to_string(),
-                    _ => mint_source(&est),
+                    _ => mint_source(est),
                 },
             )
             .with("bundleSeqs", pm.facts.seqs_json())

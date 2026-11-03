@@ -916,7 +916,7 @@ mod residual_tests {
     #[test]
     fn residual_paths_and_floor() {
         // 100 YED at pEmerg 0.80 USD: claimant max 125 YEC; 200 YEC collateral leaves 75 YEC
-        let coin = yew_core::params::COIN as i64;
+        let coin = yew_core::params::COIN;
         let (c, m) = (200 * coin, 10_000);
         // underwater at pClaim 0.60 (a): cap = 10000·1.25·COIN/0.6 = 208.33 YEC > collateral -> 0
         assert_eq!(
