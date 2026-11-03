@@ -144,6 +144,7 @@ ycashd's wallet arguments (`-keypool`, `-exportdir`, …) and a ycashd-format `y
 | `-mnemonicfile=<file>` | — | ycashd's seed-only restore: a **new** wallet takes its seed from the recovery phrase in `<file>` (the phrase on one line, or a `z_exportwallet` file's `recovery_phrase=` line), read by the signer itself; birthday 0 (a scan from genesis) and the sign-once restore marker set; ignored for a wallet with this seed, refused for one with another (F-S5-17) |
 | `-paramsdir=<dir>` | ycashd's (`~/Library/Application Support/ZcashParams`, `~/.zcash-params`) | the Sapling parameters the signer proves with |
 | `-backendexitgrace=<s>` | 20 | with `-stopbackend`: exit once the backend has been gone this long after it was up (H6: the node stopped itself); 0 = never |
+| `-backendlostexit=<s>` | 10 on regtest, else 0 | with `-stopbackend` and a cookie: once the backend has been gone this long with its cookie left (a crash), log it and end with SIGKILL, as the node did; 0 = never |
 | `-debug` | off | log each method called |
 | `-help`, `-version` | | |
 

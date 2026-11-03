@@ -75,6 +75,7 @@ pub const KNOWN: &[&str] = &[
     "sendchangeback",
     "paramsdir",
     "backendexitgrace",
+    "backendlostexit",
     "backendindexer",
     "disablewallet",
     "mocktime",
@@ -118,6 +119,11 @@ pub struct Config {
     /// With `-stopbackend`: exit when the backend has been unreachable this many seconds after
     /// it was reachable (the pair is one node, H6); 0 = never.
     pub backend_exit_grace: u64,
+    /// With `-stopbackend` and a cookie: `-backendlostexit=<secs>`, end this process with SIGKILL
+    /// once the backend has been gone this long with its cookie left on disk (it crashed: a clean
+    /// stop removes the cookie), so the pair ends as a crashed ycashd would; 0 = never. Default 10
+    /// on regtest, 0 elsewhere.
+    pub backend_lost_exit: u64,
     /// kogany's indexer gRPC listener (`-backendindexer=<ip:port>`): its `ChainTipChange` and
     /// `MempoolChange` streams wake the wallet (H3, H4); never the source of truth.
     pub backend_indexer: Option<SocketAddr>,
@@ -430,6 +436,15 @@ impl Config {
                 })?,
                 None => 20,
             },
+            backend_lost_exit: match a.get("backendlostexit") {
+                Some(v) => v.parse().map_err(|_| {
+                    ConfigError(format!(
+                        "yewd: -backendlostexit={v} is not a number of seconds"
+                    ))
+                })?,
+                None if network == Network::Regtest => 10,
+                None => 0,
+            },
             ignored,
         })
     }
@@ -459,6 +474,7 @@ mod tests {
         assert_eq!(c.cookie_file, PathBuf::from("/d/regtest/.cookie"));
         assert!(c.user_pass.is_none());
         assert!(!c.stop_backend);
+        assert_eq!(c.backend_lost_exit, 10);
         assert_eq!(c.backend, "127.0.0.1:28832".parse().unwrap());
     }
 
