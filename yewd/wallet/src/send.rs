@@ -252,12 +252,36 @@ impl Wallet {
                 tx.vin.push(TxIn::new(c.0));
             }
             let change = got - need;
-            if change > DUST {
-                let s = self.new_change()?;
-                tx.vout.push(TxOut {
-                    value: change,
-                    script_pubkey: s,
-                });
+            if change > 0 {
+                // -sendchangeback: the largest input's address (ycashd 31bacc765); else a new key
+                let back = self
+                    .opts
+                    .send_change_back
+                    .then(|| chosen.iter().max_by_key(|c| c.1).map(|c| c.2.clone()))
+                    .flatten();
+                let s = match back {
+                    Some(s) => s,
+                    None => self.new_change()?,
+                };
+                // review B-4: the change's dust at its real spend size (TX_PQPKH); with
+                // subtractfeefromamount the change is raised to it from the first such recipient
+                let dust = dust_threshold(&s);
+                let mut value = change;
+                if subtract > 0 && value < dust {
+                    let raise = dust - value;
+                    value = dust;
+                    let i = recipients.iter().position(|r| r.2).unwrap_or(0);
+                    tx.vout[i].value -= raise;
+                    if tx.vout[i].value < dust_threshold(&recipients[i].0) {
+                        return Err(RpcError::new(code::WALLET_ERROR, "The transaction amount is too small to send after the fee has been deducted"));
+                    }
+                }
+                if value >= dust.max(DUST + 1) {
+                    tx.vout.push(TxOut {
+                        value,
+                        script_pubkey: s,
+                    });
+                }
             }
             let sizes: Vec<usize> = chosen.iter().map(|c| script_sig_size(&c.2)).collect();
             let mut want = tx

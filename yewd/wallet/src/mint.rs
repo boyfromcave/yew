@@ -52,6 +52,21 @@ pub struct PendingMint {
     pub facts: crate::armed::BundleFacts,
 }
 
+/// `CombineMint`'s source: the estimate's, or `"x"` when the estimate names none (unarmed:
+/// `yed_estimatecollateral` leaves it empty, a MINT's pMint is then xMint).
+fn mint_source(est: &Value) -> String {
+    match est["source"].as_str() {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => "x".to_string(),
+    }
+}
+
+/// MINT-10: `|fast − a| · 10⁴ > max(0, bps) · min(fast, a)`.
+pub fn mint10_diverged(fast: i64, a: i64, bps: i64) -> bool {
+    let diff = (fast as i128 - a as i128).unsigned_abs();
+    diff * yew_core::params::BPS as u128 > bps.max(0) as u128 * fast.min(a).max(0) as u128
+}
+
 /// ycashd's code for a build refusal (`ThrowBuildError`).
 pub fn build_error(msg: String) -> RpcError {
     const RULE: &[&str] = &[
@@ -292,6 +307,20 @@ impl Wallet {
             return estimate(None).await;
         }
         let x_mint = probe["xMint"].as_i64();
+        // MINT-10 (`CombineMint`, W17): the caller's bundle against the pools' fast median at R
+        if let (Some(x), Some(a)) = (x_mint, facts.a_mint) {
+            let px = node::call(node, "yed_getprice", serde_json::json!([r]))
+                .await
+                .map_err(node_build_error)?;
+            let fast = px["pFast"].as_i64().unwrap_or(x);
+            let info = node::call(node, "yed_getinfo", serde_json::json!([])).await?;
+            let bps = info["params"]["attest"]["divergeBpsAttest"]
+                .as_i64()
+                .unwrap_or(0);
+            if mint10_diverged(fast, a, bps) {
+                return Err(build_error(format!("mint10-diverged: the pools' fast median {fast} and the attestors' {a} micro-USD differ by more than {} bps, so minting is paused until they agree", bps.max(0))));
+            }
+        }
         let p_mint = crate::armed::mint_price(x_mint, &facts).ok_or_else(|| {
             build_error("mintpol-no-price: no price the network can mint at".into())
         })?;
@@ -417,13 +446,82 @@ impl Wallet {
                 .with("xMint", raw_or_null(&est["xMint"]))
                 .with("aMint", raw_or_null(&est["aMint"]))
                 .with("pMint", raw_or_null(&est["pMint"]))
-                .with("source", est["source"].as_str().unwrap_or("").to_string())
+                .with("source", mint_source(&est))
                 .with("bundleSeqs", raw_or_null(&est["bundleSeqs"]))
                 .with("attestFeeZat", 0i64)
                 .with("attestPayee", J::Null));
         }
-        self.wait_carrier(node, &carrier).await?;
-        self.complete_mint(node, &pending).await
+        self.wait_or_park(node, pending).await
+    }
+
+    /// `wait=true`: park the completion when the caller waits without the wallet
+    /// ([`Wallet::defer_wait`]), else wait here and complete.
+    pub(crate) async fn wait_or_park(
+        &mut self,
+        node: &dyn Node,
+        pm: PendingMint,
+    ) -> Result<J, RpcError> {
+        if self.defer_wait {
+            let k = op_str(&pm.carrier);
+            self.parked.insert(k.clone(), pm);
+            return Err(RpcError::new(code::CARRIER_PARKED, k));
+        }
+        self.wait_carrier(node, &pm.carrier).await?;
+        self.complete_one(node, &pm).await
+    }
+
+    /// A parked completion, once its carrier confirmed (`confirmed`), else its refusal.
+    pub async fn resume_parked(
+        &mut self,
+        node: &dyn Node,
+        carrier: &str,
+        confirmed: Result<(), RpcError>,
+    ) -> Result<J, RpcError> {
+        let pm = self.parked.remove(carrier).ok_or_else(|| {
+            RpcError::new(code::INTERNAL_ERROR, "yewd: the parked completion is gone")
+        })?;
+        confirmed?;
+        self.sync(node).await?;
+        self.complete_one(node, &pm).await
+    }
+
+    /// Whether a carrier confirmed (`Ok(true)`), is still unconfirmed (`Ok(false)`), or is not an
+    /// unspent output (the refusal `WaitForCarrier` gives).
+    pub async fn carrier_confirmed(node: &dyn Node, carrier: &str) -> Result<bool, RpcError> {
+        let op = crate::build::outpoint_param(&Value::String(carrier.to_string()), "carrier")?;
+        match node_coin(node, &op).await? {
+            Some(c) => Ok(c.height.is_some()),
+            None => Err(build_error(format!(
+                "carrier-unconfirmed: the carrier {carrier} is not an unspent output"
+            ))),
+        }
+    }
+
+    /// The completion of one pending transaction on its confirmed carrier.
+    async fn complete_one(&mut self, node: &dyn Node, pm: &PendingMint) -> Result<J, RpcError> {
+        if let Some(t) = &pm.notice {
+            return self.complete_notice(node, t, pm).await;
+        }
+        match (&pm.claim, &pm.equivocation) {
+            (Some(a), _) => self.complete_claim(node, a, pm).await,
+            (None, Some((a, b))) => {
+                let dec = |h: &str| {
+                    hex::decode(h)
+                        .ok()
+                        .and_then(|b| yew_core::bundle::Attestation::decode(&b))
+                };
+                match (dec(a), dec(b)) {
+                    (Some(a), Some(b)) => {
+                        self.complete_equivocation(node, &a, &b, &pm.carrier).await
+                    }
+                    _ => Err(RpcError::new(
+                        code::INTERNAL_ERROR,
+                        "a pending report's attestations",
+                    )),
+                }
+            }
+            (None, None) => self.complete_mint(node, pm).await,
+        }
     }
 
     /// Wait until the carrier confirms (`WaitForCarrier`), following the node meanwhile.
@@ -589,30 +687,7 @@ impl Wallet {
         for pm in std::mem::take(&mut self.pending) {
             match node_coin(node, &pm.carrier).await {
                 Ok(Some(c)) if c.height.is_some() => {
-                    let r = if let Some(t) = &pm.notice {
-                        self.complete_notice(node, t, &pm).await
-                    } else {
-                        match (&pm.claim, &pm.equivocation) {
-                            (Some(a), _) => self.complete_claim(node, a, &pm).await,
-                            (None, Some((a, b))) => {
-                                let dec = |h: &str| {
-                                    hex::decode(h)
-                                        .ok()
-                                        .and_then(|b| yew_core::bundle::Attestation::decode(&b))
-                                };
-                                match (dec(a), dec(b)) {
-                                    (Some(a), Some(b)) => {
-                                        self.complete_equivocation(node, &a, &b, &pm.carrier).await
-                                    }
-                                    _ => Err(RpcError::new(
-                                        code::INTERNAL_ERROR,
-                                        "a pending report's attestations",
-                                    )),
-                                }
-                            }
-                            (None, None) => self.complete_mint(node, &pm).await,
-                        }
-                    };
+                    let r = self.complete_one(node, &pm).await;
                     if let Err(e) = r {
                         eprintln!(
                             "yewd: the pending transaction on carrier {} failed: {e}",
@@ -915,7 +990,7 @@ impl Wallet {
                 "source",
                 match (pm.facts.armed, pm.facts.a_mint, est["xMint"].as_i64()) {
                     (true, Some(a), Some(x)) => (if a < x { "a" } else { "x" }).to_string(),
-                    _ => est["source"].as_str().unwrap_or("").to_string(),
+                    _ => mint_source(est),
                 },
             )
             .with("bundleSeqs", pm.facts.seqs_json())
@@ -966,6 +1041,7 @@ impl Wallet {
         tx.expiry_height = next.height + crate::build::TX_EXPIRY_DELTA;
         let mut prevs = Vec::new();
         let mut keys = Vec::new();
+        let mut sizes = Vec::new();
         for (op, rec) in &lapsed {
             tx.vin.push(TxIn::new(*op));
             let pk: [u8; 33] = hex::decode(&rec.pk)
@@ -975,6 +1051,12 @@ impl Wallet {
             let bundle = hex::decode(&rec.bundle).unwrap_or_default();
             let redeem = yew_core::script::carrier_script(&pk, &yew_core::keys::sha256(&bundle))
                 .map_err(|e| RpcError::new(code::WALLET_ERROR, e.to_string()))?;
+            // P-2: the scriptSig with its signature at the maximum DER size and hashtype
+            sizes.push(
+                yew_core::script::carrier_script_sig(&bundle, &[0u8; 73], &redeem)
+                    .map(|x| x.len())
+                    .unwrap_or(0),
+            );
             prevs.push(NodeCoin {
                 value: CARRIER_VALUE,
                 script: yew_core::script::p2sh_of(&redeem),
@@ -987,12 +1069,16 @@ impl Wallet {
             });
         }
         let total = lapsed.len() as i64 * CARRIER_VALUE;
-        let fee = flat.min(total - 1);
         let dest = self.new_change()?;
         tx.vout.push(TxOut {
-            value: total - fee,
+            value: 0,
             script_pubkey: dest,
         });
+        // NetworkFee: max(the flat fee, the ZIP-317 conventional fee of the shape)
+        let fee = flat
+            .max(tx.zip317_conventional_fee(&sizes).unwrap_or(flat))
+            .min(total - 1);
+        tx.vout[0].value = total - fee;
         let signed = self
             .sign_inputs(&tx, &prevs, &keys, &[], GatePath::Yed, fee + 1, next.branch)
             .await?;
@@ -1014,5 +1100,17 @@ fn raw_or_null(v: &Value) -> J {
         J::Null
     } else {
         J::Raw(v.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn mint10_divergence() {
+        // 500 bps: 0.50 vs 0.525 is exactly 500 bps of the lower, not diverged; one more is
+        assert!(!super::mint10_diverged(500_000, 525_000, 500));
+        assert!(super::mint10_diverged(500_000, 525_001, 500));
+        assert!(super::mint10_diverged(1_000_000, 2_000_000, 500));
+        assert!(!super::mint10_diverged(1_000_000, 1_000_000, 0));
     }
 }

@@ -72,6 +72,7 @@ pub const KNOWN: &[&str] = &[
     "rescan",
     "salvagewallet",
     "mnemonicfile",
+    "sendchangeback",
     "paramsdir",
     "backendexitgrace",
     "backendindexer",
@@ -372,11 +373,13 @@ impl Config {
             },
             debug: a.has("debug"),
             wallet_args: crate::wallet::WalletArgs {
+                rpc_threads: a.get("rpcthreads").and_then(|v| v.parse().ok()),
                 opts: yewd_wallet::admin::Opts {
                     export_dir: a.get("exportdir").map(PathBuf::from),
                     // ycashd needs -experimentalfeatures -developerencryptwallet; the harness hands
                     // those to the backend, so yewd allows encryption unless told 0 (F-S4-3)
                     encrypt_allowed: a.get("developerencryptwallet") != Some("0"),
+                    send_change_back: a.get("sendchangeback").is_some_and(|v| v != "0"),
                     paytxfee: match a.get("paytxfee") {
                         Some(v) => yewd_wallet::json::parse_amount(v).ok_or_else(|| {
                             ConfigError(format!("yewd: -paytxfee={v} is not an amount"))

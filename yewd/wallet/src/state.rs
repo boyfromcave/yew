@@ -100,6 +100,10 @@ pub struct State {
     /// `"expired": true` rows of `yed_listtransactions` once past their expiry height (§4.6).
     #[serde(default)]
     pub expired: BTreeMap<String, String>,
+    /// Own transactions that left the mempool unmined (an eviction, an expiry): ycashd keeps them
+    /// in `mapWallet`, so `gettransaction` still answers for them (txid → the record).
+    #[serde(default)]
+    pub evicted: BTreeMap<String, WalletTx>,
     /// Redeem scripts this wallet knows (`addmultisigaddress`): P2SH address → script hex.
     #[serde(default)]
     pub scripts: BTreeMap<String, String>,
@@ -139,6 +143,7 @@ impl State {
             recipients: BTreeMap::new(),
             carriers: BTreeMap::new(),
             expired: BTreeMap::new(),
+            evicted: BTreeMap::new(),
             scripts: BTreeMap::new(),
         }
     }

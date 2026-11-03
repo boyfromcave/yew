@@ -128,6 +128,9 @@ pub mod code {
     pub const IN_WARMUP: i64 = -28;
     pub const INTERNAL_ERROR: i64 = -32603;
     pub const METHOD_NOT_FOUND: i64 = -32601;
+    /// Internal (never on the wire): a `wait=true` call parked its completion on its carrier
+    /// (`Wallet::defer_wait`); the message is the carrier outpoint.
+    pub const CARRIER_PARKED: i64 = -90_001;
 }
 
 /// A transaction of the wallet, parsed once.
@@ -198,6 +201,10 @@ pub struct Wallet {
     /// Mints between their carrier and their MINT (`yed_mint … wait = false`), completed by the
     /// poll once the carrier confirms; in memory only, as ycashd's.
     pub pending: Vec<mint::PendingMint>,
+    /// Audit C-2: when set, a `wait=true` call parks its completion here (carrier outpoint →
+    /// pending) and returns [`code::CARRIER_PARKED`], so the caller waits without the wallet.
+    pub defer_wait: bool,
+    pub parked: BTreeMap<String, mint::PendingMint>,
     /// The wallet options (`-exportdir`, `-paytxfee`, encryption allowed; S4).
     pub opts: admin::Opts,
     /// The asynchronous operations (`z_sendmany`'s operation ids), in memory as ycashd's.
@@ -477,6 +484,8 @@ impl Wallet {
             notes: Vec::new(),
             chain: ChainFacts::default(),
             pending: Vec::new(),
+            defer_wait: false,
+            parked: BTreeMap::new(),
             opts: admin::Opts::default(),
             ops: zsend::Operations::default(),
         };
@@ -652,6 +661,7 @@ impl Wallet {
             .get(&txid)
             .map(|w| w.time_received)
             .unwrap_or_else(|| block.as_ref().map(|b| b.time).unwrap_or_else(now));
+        self.st.evicted.remove(&txid);
         self.st.wtx.insert(
             txid.clone(),
             WalletTx {
@@ -1051,7 +1061,9 @@ impl Wallet {
                     }
                 }
             }
-            self.st.wtx.remove(&t);
+            if let Some(w) = self.st.wtx.remove(&t) {
+                self.st.evicted.insert(t.clone(), w);
+            }
             self.parsed.remove(&t);
             changed = true;
         }

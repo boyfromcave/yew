@@ -115,6 +115,9 @@ pub struct Opts {
     pub paytxfee: i64,
     /// `-paramsdir`: the Sapling parameters (default ycashd's).
     pub params_dir: Option<PathBuf>,
+    /// `-sendchangeback` (default off): transparent change returns to the largest input's
+    /// address instead of a new change key.
+    pub send_change_back: bool,
 }
 
 impl Default for Opts {
@@ -124,6 +127,7 @@ impl Default for Opts {
             encrypt_allowed: true,
             paytxfee: 0,
             params_dir: None,
+            send_change_back: false,
         }
     }
 }
@@ -754,6 +758,17 @@ impl Wallet {
                 })?
                 .to_string(),
         };
+        // ImportPQKeySeed: a seed of a key this wallet already holds (its own chain, the
+        // lookahead included) keeps that key's index and adds nothing
+        let index = index.or_else(|| {
+            let mut seed = hex::decode(hexs).ok()?;
+            let key = yew_core::pq::PqKey::from_seed(scheme, &seed).ok();
+            yew_core::keys::wipe(&mut seed);
+            self.book
+                .pq_by_id(&key?.id())
+                .map(|k| k.index)
+                .filter(|i| *i < yewd_proto::IMPORTED_PQ_BASE)
+        });
         let q = match self.signer.request(Request::ImportPq(PqImportRequest {
             scheme,
             index,

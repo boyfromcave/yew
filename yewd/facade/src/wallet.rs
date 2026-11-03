@@ -22,7 +22,6 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use yew_core::params::Network as CoreNetwork;
 use yewd_proto::{PublicBundle, PublicRequest};
-use yewd_wallet::json::J;
 use yewd_wallet::node::{Node, NodeError, NodeFuture};
 use yewd_wallet::{code, RpcError, Signer, Wallet};
 
@@ -239,6 +238,8 @@ pub struct WalletService {
     pub wake: Arc<tokio::sync::Notify>,
     /// `-disablewallet`: never opened; the façade answers no wallet method.
     pub disabled: bool,
+    /// Audit C-2: the `wait=true` carrier calls waiting now.
+    waiters: std::sync::atomic::AtomicUsize,
 }
 
 /// The ycashd wallet arguments yewd gives meaning to (S4; the harness hands them over).
@@ -255,6 +256,9 @@ pub struct WalletArgs {
     /// `-mnemonicfile=<file>`: a new wallet takes its seed from the recovery phrase in the file
     /// (read by the signer), rescans from genesis and carries the sign-once restore marker.
     pub mnemonic_file: Option<PathBuf>,
+    /// `-rpcthreads` (ycashd's default 4): half of it, at least one, is the number of `wait=true`
+    /// carrier calls that may wait at once (audit C-2, `CarrierWaitSlot`).
+    pub rpc_threads: Option<usize>,
 }
 
 /// The wallet file a yewd wallet answers to (`<datadir>/<net>/wallet.dat`, ycashd's default):
@@ -334,6 +338,7 @@ impl WalletService {
             opts: std::sync::Mutex::new(WalletArgs::default()),
             wake: Arc::new(tokio::sync::Notify::new()),
             disabled: false,
+            waiters: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -568,12 +573,70 @@ impl WalletService {
 
     /// One served wallet method: open, barrier (sync to the node's tip), answer.
     pub async fn call(&self, method: &str, params: &[Value]) -> Result<String, RpcError> {
+        // audit C-2: a wait=true carrier call takes a slot before anything is built, and waits
+        // for its carrier without holding the wallet
+        let wait_at = match method {
+            "yed_mint" => Some(4),
+            "yed_claim" => Some(3),
+            "yed_claimnotice" => Some(2),
+            _ => None,
+        };
+        let waits = wait_at.is_some_and(|i| params.get(i).and_then(|v| v.as_bool()) != Some(false));
+        let _slot = if waits { Some(self.wait_slot()?) } else { None };
         let mut slot = self.wallet.lock().await;
         self.ensure_open(&mut slot).await?;
         let w = slot.as_mut().expect("opened");
         w.sync(&self.node).await?;
-        let r: J = w.call(&self.node, method, params).await?;
-        Ok(r.text())
+        w.defer_wait = waits;
+        let r = w.call(&self.node, method, params).await;
+        w.defer_wait = false;
+        let carrier = match r {
+            Ok(j) => return Ok(j.text()),
+            Err(e) if e.code == yewd_wallet::code::CARRIER_PARKED => e.message,
+            Err(e) => return Err(e),
+        };
+        drop(slot);
+        let confirmed = self.wait_carrier(&carrier).await;
+        let mut slot = self.wallet.lock().await;
+        let w = slot.as_mut().ok_or_else(|| {
+            RpcError::new(code::WALLET_ERROR, "yewd: the wallet closed while waiting")
+        })?;
+        Ok(w.resume_parked(&self.node, &carrier, confirmed)
+            .await?
+            .text())
+    }
+
+    /// `CarrierWaitSlot`: refused when half of `-rpcthreads` (at least one) calls already wait.
+    fn wait_slot(&self) -> Result<WaitSlot<'_>, RpcError> {
+        use std::sync::atomic::Ordering;
+        let threads = self
+            .opts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .rpc_threads
+            .unwrap_or(4);
+        let cap = (threads / 2).max(1);
+        let n = self.waiters.fetch_add(1, Ordering::SeqCst);
+        if n >= cap {
+            self.waiters.fetch_sub(1, Ordering::SeqCst);
+            return Err(RpcError::new(yewd_wallet::code::WALLET_ERROR, format!("carrier-wait-busy: {n} wait=true calls are already waiting for a carrier (the limit is half of -rpcthreads); retry, or pass wait=false")));
+        }
+        Ok(WaitSlot(&self.waiters))
+    }
+
+    /// `WaitForCarrier` without the wallet: until the carrier confirms, it is gone, or the wait
+    /// times out.
+    async fn wait_carrier(&self, carrier: &str) -> Result<(), RpcError> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        loop {
+            if Wallet::carrier_confirmed(&self.node, carrier).await? {
+                return Ok(());
+            }
+            if std::time::Instant::now() > deadline {
+                return Err(RpcError::new(yewd_wallet::code::WALLET_ERROR, "carrier-wait-timeout: the carrier did not confirm; call again (yed_sweepcarriers reclaims it once it lapses)"));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
     }
 
     /// `sendrawtransaction`'s H7 guard (`allowyedburn`): the type checks of `RPCTypeCheck`, then
@@ -615,6 +678,20 @@ impl WalletService {
             "z_validateaddress" => Ok(w.z_validateaddress(params)?.text()),
             _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
         }
+    }
+
+    /// A node error the wallet answers instead (`yed_gettxinfo`'s `tx-not-found` of an own
+    /// expired transaction with a payload); `None` leaves the node's error.
+    pub async fn answer_error(&self, method: &str, params: &[Value]) -> Option<String> {
+        if method != "yed_gettxinfo" {
+            return None;
+        }
+        let txid = params.first()?.as_str()?.to_string();
+        let mut slot = self.wallet.lock().await;
+        self.ensure_open(&mut slot).await.ok()?;
+        let w = slot.as_mut()?;
+        w.sync(&self.node).await.ok()?;
+        w.expired_txinfo(&txid)
     }
 
     /// Complete a forwarded node read (`result` is its JSON text).
@@ -660,6 +737,15 @@ impl WalletService {
                 }
             }
         });
+    }
+}
+
+/// A held `wait=true` slot (audit C-2), released on drop.
+struct WaitSlot<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl Drop for WaitSlot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
