@@ -333,8 +333,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     # Report-only until the stage's exit gate is seen green (kogany plan §3b, coordination handoff
-    # §7); the coordinator then sets the entry's `blocking: true`.
-    continue-on-error: ${{ !matrix.blocking }}
+    # §7); the coordinator then sets the entry's `blocking: true`. A report-only stage exits 0 and
+    # puts its result in the step summary (a continue-on-error job still shows a red check).
     permissions:
       contents: read
     strategy:
@@ -407,9 +407,14 @@ jobs:
           save-if: false
       - name: backend round trip (getblockchaininfo through the façade)
         if: matrix.stage == 's0-roundtrip'
+        id: s0
         env:
           YEWD_TEST_REQUIRE_BACKEND: '1'
-        run: YEWD_TEST_YCASHD="$RUNNER_TEMP/node/ycashd" cargo test --manifest-path yewd/Cargo.toml --locked -p yewd-facade --test regtest -- --nocapture
+          BLOCKING: ${{ matrix.blocking }}
+        run: |
+          rc=0
+          YEWD_TEST_YCASHD="$RUNNER_TEMP/node/ycashd" cargo test --manifest-path yewd/Cargo.toml --locked -p yewd-facade --test regtest -- --nocapture || rc=$?
+          scripts/report-only.sh "$rc" "$BLOCKING" "yewd gate s0-roundtrip"
       # ycash6's framework: Python 3.11 (asyncore; tomllib), its pinned test packages and the pyblake2
       # shim, as ycash6's yellowback-prereqs action installs them; a C compiler for the Falcon signer.
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -424,19 +429,34 @@ jobs:
           site=$(python3 -c 'import site; print(site.getusersitepackages())')
           mkdir -p "$site"
           printf '%s\n' 'from hashlib import blake2b, blake2s  # noqa: F401' > "$site/pyblake2.py"
+      # The Sapling and Sprout parameters (the signer proves; ycashd loads them), checked against the
+      # sums ycash6's zcutil/fetch-params.sh pins. Restore only: no cache is saved from this job.
+      - name: restore zcash params
+        if: matrix.script
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.zcash-params
+          key: zcash-params-8e48ffd2-2f0ebbcb-b685d700
+      - name: fetch and verify zcash params
+        if: matrix.script
+        run: scripts/fetch-zcash-params.sh
       - name: stage gate
+        id: gate
         if: matrix.script
         env:
           SCRIPT: ${{ matrix.script }}
           ARGS: ${{ matrix.args }}
           STAGE: ${{ matrix.stage }}
+          BLOCKING: ${{ matrix.blocking }}
         run: |
           export YCASH6_QA="$GITHUB_WORKSPACE/ycash6/qa/rpc-tests" ZCASHD="$RUNNER_TEMP/node/ycashd" YEWD_BIN="$RUNNER_TEMP/yewd/yewd"
           mkdir -p "$RUNNER_TEMP/gate"
           read -r -a args <<< "$ARGS"
-          python3 -u "$SCRIPT" "${args[@]}" --srcdir="$RUNNER_TEMP/node" --tmpdir="$RUNNER_TEMP/gate/$STAGE" --nocleanup
+          rc=0
+          python3 -u "$SCRIPT" "${args[@]}" --srcdir="$RUNNER_TEMP/node" --tmpdir="$RUNNER_TEMP/gate/$STAGE" --nocleanup || rc=$?
+          scripts/report-only.sh "$rc" "$BLOCKING" "yewd gate $STAGE"
       - name: Upload node and yewd logs on failure
-        if: failure()
+        if: failure() || steps.gate.outputs.failed == 'true' || steps.s0.outputs.failed == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: yewd-gate-logs-${{ matrix.stage }}
@@ -502,7 +522,7 @@ jobs:
           name: yew-web-BUNDLE-SHA256SUMS
           path: web/dist/BUNDLE-SHA256SUMS
 
-  # The kogany leg (report-only until the lead architect flips it: drop continue-on-error). YEW's
+  # The kogany leg (report-only until the lead architect flips it: report-only.sh's `false` to `true`). YEW's
   # own build restores rust-cache and saves nothing (zakurad, ycashd, lightwalletd-dd and
   # fetch-params.sh are other repositories' code).
   kogany:
@@ -510,7 +530,6 @@ jobs:
     name: kogany (report-only)
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    continue-on-error: true
     permissions:
       contents: read
       actions: read  # gh run list/download on kogany's and ycash6's runs
@@ -622,7 +641,10 @@ jobs:
       - name: scripts/kogany-leg.sh (report-only)
         env:
           KOGANY_RIG_DIR: ${{ runner.temp }}/kogany-rig
-        run: scripts/kogany-leg.sh
+        run: |
+          rc=0
+          scripts/kogany-leg.sh || rc=$?
+          scripts/report-only.sh "$rc" false "kogany leg"
       - name: upload the rig logs
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

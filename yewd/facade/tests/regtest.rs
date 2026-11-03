@@ -104,13 +104,14 @@ async fn getblockchaininfo_round_trips_through_ycashd() {
     );
     assert_eq!(via_facade["id"], "t");
 
-    // a wallet method answers from the table; the node (which has no wallet) never sees it
-    let (status, v, _) = call(&c, "getbalance", "[]").await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    // a ycashd wallet method outside the façade's scope answers from the table; the node (which
+    // has no wallet) never sees it (getbalance is served since S1, through the signer)
+    let (status, v, _) = call(&c, "dumpwallet", "[]").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{v}");
     assert!(v["error"]["message"]
         .as_str()
         .unwrap()
-        .starts_with("yewd: not yet implemented"));
+        .starts_with("yewd: not served"));
 
     // stop stops the pair
     let (_, v, _) = call(&c, "stop", "[]").await;

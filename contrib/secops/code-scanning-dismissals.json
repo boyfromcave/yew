@@ -70,6 +70,41 @@
       "path": "core/src/pq.rs",
       "reason": "used in tests",
       "comment": "771: NistDrbg { key: [0; 32] } is the NIST KAT AES-CTR DRBG's specified initial state, in #[cfg(test)] mod tests (from line 623), immediately updated from the KAT seed; it reproduces the node's Falcon-512 KATs."
+    },
+    {
+      "tool": "CodeQL",
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/ci.yml",
+      "reason": "false positive",
+      "comment": "The kogany leg runs kogany's package script and cargo build at the pinned KOGANY_REF, a commit of the Ycash developers' own repository, never PR code; it runs on push/dispatch of vaults/kogany-compat only and saves no cache (rust-cache save-if: false)."
+    },
+    {
+      "tool": "CodeQL",
+      "rule": "actions/cache-poisoning/poisonable-step",
+      "path": ".github/workflows/yewd-parity.yml",
+      "reason": "false positive",
+      "comment": "Schedule/dispatch only; the steps run kogany at the pinned KOGANY_REF and ycash6's fetch-params.sh at YCASH6_REF, both the Ycash developers' own repositories, never PR code; the job saves no cache."
+    },
+    {
+      "tool": "CodeQL",
+      "rule": "rust/hard-coded-cryptographic-value",
+      "path": "yewd/signer/src/seal.rs",
+      "reason": "used in tests",
+      "comment": "The flagged constants are in #[cfg(test)]: the RFC 7914 §11 PBKDF2 vector (\"passwd\"/\"salt\") and a seal/open round trip with a fixed test passphrase. Production passphrases come from the operator."
+    },
+    {
+      "tool": "CodeQL",
+      "rule": "rust/cleartext-logging",
+      "path": "yewd/signer/src/server.rs",
+      "reason": "false positive",
+      "comment": "yewd-signer logs a refused peer's numeric uid (SO_PEERCRED) to its own stderr; a uid is not a secret, and no key material reaches that line."
+    },
+    {
+      "tool": "CodeQL",
+      "rule": "rust/log-injection",
+      "path": "yewd/facade/tests/*.rs",
+      "reason": "used in tests",
+      "comment": "Integration tests print the façade's HTTP response in an assertion message on failure; test output only, nothing reaches a production log."
     }
   ]
 }
