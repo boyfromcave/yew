@@ -80,8 +80,9 @@ pub async fn start_with(cfg: &Config, signer: wallet::SignerSource) -> std::io::
         cfg.debug,
     );
     let lost = match (&cfg.backend_auth, cfg.backend_lost_exit) {
-        (config::BackendAuth::Cookie(c), n) if n > 0 => Some((c.clone(), n)),
-        _ => None,
+        (_, 0) => None,
+        (config::BackendAuth::Cookie(c), n) => Some((Some(c.clone()), n)),
+        (_, n) => Some((None, n)),
     };
     if cfg.stop_backend && (cfg.backend_exit_grace > 0 || lost.is_some()) {
         spawn_backend_watch(facade.clone(), cfg.backend, cfg.backend_exit_grace, lost);
@@ -95,16 +96,23 @@ pub async fn start_with(cfg: &Config, signer: wallet::SignerSource) -> std::io::
     })
 }
 
+/// A backend that is gone crashed unless this façade stopped it, or (cookie auth) it removed its
+/// cookie, as a node does on a clean shutdown.
+fn lost_is_crash(cookie: Option<&std::path::Path>, stopped_by_us: bool) -> bool {
+    !stopped_by_us && cookie.is_none_or(|c| c.exists())
+}
+
 /// H6, the pair is one node: with `-stopbackend` the façade exits once its backend has been gone
 /// (nothing listening) for `grace` seconds after it was up, as when the node stops itself (an
 /// `AbortNode`, a `stop` sent to it directly). A restart within `grace` is followed instead.
-/// `lost`: the backend's cookie and `-backendlostexit`: gone with its cookie still on disk (a
-/// crash, not a stop) that long, the façade logs it and SIGKILLs itself, as the node did.
+/// `lost`: `-backendlostexit` (and the backend's cookie, when it uses one): gone that long without
+/// this façade having stopped it (and, with a cookie, with the cookie still on disk) is a crash,
+/// not a stop, and the façade logs it and SIGKILLs itself, as the node did.
 fn spawn_backend_watch(
     facade: std::sync::Arc<server::Facade>,
     addr: SocketAddr,
     grace: u64,
-    lost: Option<(std::path::PathBuf, u64)>,
+    lost: Option<(Option<std::path::PathBuf>, u64)>,
 ) {
     tokio::spawn(async move {
         let mut seen_up = false;
@@ -119,6 +127,9 @@ fn spawn_backend_watch(
             .is_ok_and(|r| r.is_ok());
             // a node that aborted can linger (a crash report being written) with its listener
             // still accepting: with -backendlostexit an RPC must answer too
+            // a listener that accepted, or any answered call, means the backend was up, even when
+            // it died between two probes right after start (a fault on the first block)
+            seen_up |= up || facade.backend.answered();
             let up = up
                 && (lost.is_none()
                     || tokio::time::timeout(
@@ -142,8 +153,13 @@ fn spawn_backend_watch(
             }
             let since = *down_since.get_or_insert_with(std::time::Instant::now);
             if let Some((cookie, n)) = &lost {
-                if cookie.exists() && since.elapsed() >= std::time::Duration::from_secs(*n) {
-                    eprintln!("yewd: the backend was lost (gone {n} s, its cookie {} left behind: it crashed); ending as it did (-backendlostexit)", cookie.display());
+                let stopped = facade
+                    .backend_stop_sent
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                if lost_is_crash(cookie.as_deref(), stopped)
+                    && since.elapsed() >= std::time::Duration::from_secs(*n)
+                {
+                    eprintln!("yewd: the backend was lost (gone {n} s, not stopped by yewd: it crashed); ending as it did (-backendlostexit)");
                     // SAFETY: kill(2) on this process's own pid
                     unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
                 }
@@ -155,4 +171,26 @@ fn spawn_backend_watch(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod lost_tests {
+    use super::lost_is_crash;
+
+    #[test]
+    fn crash_detection_is_auth_independent() {
+        let dir = std::env::temp_dir().join(format!("yewd-lost-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let c = dir.join(".cookie");
+        // password auth: lost without a stop from yewd is a crash
+        assert!(lost_is_crash(None, false));
+        assert!(!lost_is_crash(None, true));
+        // cookie auth: the cookie left behind marks a crash, a removed one a clean stop
+        std::fs::write(&c, "x").unwrap();
+        assert!(lost_is_crash(Some(&c), false));
+        assert!(!lost_is_crash(Some(&c), true));
+        std::fs::remove_file(&c).unwrap();
+        assert!(!lost_is_crash(Some(&c), false));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

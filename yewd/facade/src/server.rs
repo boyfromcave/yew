@@ -49,6 +49,9 @@ pub struct Facade {
     pub wallet: Arc<WalletService>,
     pub stop_backend: bool,
     pub debug: bool,
+    /// Set once this façade has asked its backend to stop (`stop` with `-stopbackend`): a backend
+    /// gone after that is a clean stop, any other loss is a crash (`-backendlostexit`).
+    pub backend_stop_sent: std::sync::atomic::AtomicBool,
     shutdown: watch::Sender<bool>,
 }
 
@@ -135,6 +138,7 @@ impl Facade {
                 wallet,
                 stop_backend,
                 debug,
+                backend_stop_sent: std::sync::atomic::AtomicBool::new(false),
                 shutdown: tx,
             }),
             rx,
@@ -517,6 +521,8 @@ impl Facade {
     async fn begin_stop(&self, path: &str) -> bool {
         let mut stopped = false;
         if self.stop_backend {
+            self.backend_stop_sent
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             let stop =
                 Bytes::from_static(br#"{"jsonrpc":"1.0","id":"yewd","method":"stop","params":[]}"#);
             match self.backend.call(path, stop).await {

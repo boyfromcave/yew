@@ -54,6 +54,8 @@ pub struct Backend {
     auth: BackendAuth,
     header: Mutex<Option<String>>,
     idle: std::sync::Mutex<Vec<Sender>>,
+    /// Set once any call was answered: the backend has been up (the H6 watch's `seen_up`).
+    answered: std::sync::atomic::AtomicBool,
 }
 
 impl Backend {
@@ -63,6 +65,7 @@ impl Backend {
             auth,
             header: Mutex::new(None),
             idle: std::sync::Mutex::new(Vec::new()),
+            answered: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -96,6 +99,8 @@ impl Backend {
     pub async fn call(&self, path: &str, body: Bytes) -> Result<(StatusCode, Bytes), BackendError> {
         let first = self.auth_header(false).await?;
         let (status, out) = self.post(path, body.clone(), &first).await?;
+        self.answered
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         if status != StatusCode::UNAUTHORIZED {
             return Ok((status, out));
         }
@@ -105,6 +110,11 @@ impl Backend {
             return Err(BackendError::Unauthorized);
         }
         Ok((status, out))
+    }
+
+    /// Whether any call has been answered since start.
+    pub fn answered(&self) -> bool {
+        self.answered.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     async fn connect(&self) -> Result<Sender, BackendError> {
