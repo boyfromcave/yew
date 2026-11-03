@@ -15,7 +15,7 @@
 #
 # Inputs, each pinned (ci-design §3): zakurad from kogany's zakurad-bin at KOGANY_REF (else built
 # there, which needs boyfromcave/zakura-common-ycash on GitHub, K-2); ycashd from ycash6's node-bin
-# of YCASH6_BRANCH; ycash6's qa/ at YCASH6_REF (the YEWD_KOGANY harness); yewd built here.
+# at YCASH6_REF; ycash6's qa/ at YCASH6_REF (the YEWD_KOGANY harness); yewd built here.
 name: yewd-parity
 
 on:
@@ -39,9 +39,9 @@ env:
   # kogany vaults/kogany-compat: every yed_* read live (W7-b), the regtest Falcon height
   KOGANY_REF: eaac2b78d538b67d5862ef2b930809eb822b9b05
   YCASH6_REPO: boyfromcave/ycash6
-  YCASH6_BRANCH: vaults/kogany-compat
-  # ycash6 kc/yewd-s5 until merged: the YEWD_KOGANY harness and the pair rows; then the merge commit
-  YCASH6_REF: kc/yewd-s5
+  # ycash6 vaults/kogany-compat head; moves with the kogany-compat heads (the one ycash6 pin here:
+  # node-bin, qa/ and zcutil all come from this commit)
+  YCASH6_REF: 91763f656c8e857b41c06b7e632a33344f8a0d0d
 
 jobs:
   parity:
@@ -85,6 +85,8 @@ jobs:
             contrib/yellowback
             zcutil
           sparse-checkout-cone-mode: true
+      - name: ycash6 checkout is YCASH6_REF
+        run: '[ "$(git -C ycash6 rev-parse HEAD)" = "$YCASH6_REF" ] || { echo "::error::ycash6 checkout is not $YCASH6_REF"; exit 1; }'
       - name: fetch zcash params
         run: ycash6/zcutil/fetch-params.sh
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
@@ -131,13 +133,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          trusted='select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")'
-          runs=$(gh run list -R "$YCASH6_REPO" -w yellowback-tests.yml -b "$YCASH6_BRANCH" -L 20 --json databaseId,event -q ".[] | $trusted | .databaseId")
+          case "$YCASH6_REF" in *[!0-9a-f]*|'') echo "::error::YCASH6_REF is not a commit id"; exit 1 ;; esac
+          [ ${#YCASH6_REF} -eq 40 ] || { echo "::error::YCASH6_REF is not a full commit id"; exit 1; }
+          # a successful push run of yellowback-tests.yml at exactly YCASH6_REF (never a pull_request run)
+          runs=$(gh run list -R "$YCASH6_REPO" -c "$YCASH6_REF" -w yellowback-tests.yml -L 20 \
+            --json databaseId,conclusion,event,headSha \
+            -q ".[] | select(.headSha == \"$YCASH6_REF\" and .event == \"push\" and .conclusion == \"success\") | .databaseId")
+          got=
           for r in $runs; do
             if gh run download "$r" -R "$YCASH6_REPO" -n node-bin -D "$RUNNER_TEMP/dl" 2>/dev/null; then
-              echo "ycashd from $YCASH6_REPO run $r"; break
+              echo "ycashd from $YCASH6_REPO run $r at $YCASH6_REF"; got=$r; break
             fi
           done
+          [ -n "$got" ] || { echo "::error::no node-bin from a successful push run of $YCASH6_REPO at $YCASH6_REF: move YCASH6_REF"; exit 1; }
           mkdir -p "$RUNNER_TEMP/node"
           tar -xzf "$RUNNER_TEMP/dl/node-bin.tgz" -C "$RUNNER_TEMP/node" src/ycashd src/ycash-cli
           echo "ZCASHD=$RUNNER_TEMP/node/src/ycashd" >> "$GITHUB_ENV"
