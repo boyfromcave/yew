@@ -494,6 +494,11 @@ impl Wallet {
         }
         let asof = as_of(p, 3)?;
         let txid = txid.to_lowercase();
+        if !self.st.wtx.contains_key(&txid) {
+            if let Some(w) = self.st.evicted.get(&txid) {
+                return Ok(self.evicted_tx(&txid, w));
+            }
+        }
         let (Some(w), Some(px)) = (self.st.wtx.get(&txid), self.parsed(&txid)) else {
             return Err(RpcError::new(
                 code::INVALID_ADDRESS_OR_KEY,
@@ -604,6 +609,25 @@ impl Wallet {
     }
 
     /// The `status` of `gettransaction` (`mined`, `waiting`, `expiringsoon`, `expired`).
+    /// `gettransaction` of an own transaction the node no longer holds (evicted or expired from
+    /// the mempool, never mined): depth 0, its status by its expiry height, its bytes.
+    fn evicted_tx(&self, txid: &str, w: &crate::state::WalletTx) -> J {
+        let expiry = crate::build::parse_hex_tx(&w.hex)
+            .map(|t| t.expiry_height)
+            .unwrap_or(0);
+        J::obj()
+            .with("confirmations", 0i64)
+            .with("expiryheight", expiry as i64)
+            .with("status", self.status(expiry, 0))
+            .with("txid", txid.to_string())
+            .with("walletconflicts", J::Arr(vec![]))
+            .with("time", w.time_received)
+            .with("timereceived", w.time_received)
+            .with("vjoinsplit", J::Arr(vec![]))
+            .with("details", J::Arr(vec![]))
+            .with("hex", w.hex.clone())
+    }
+
     pub(crate) fn status(&self, expiry: u32, depth: i64) -> &'static str {
         if depth > 0 {
             return "mined";

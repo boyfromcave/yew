@@ -652,6 +652,7 @@ impl Wallet {
             .get(&txid)
             .map(|w| w.time_received)
             .unwrap_or_else(|| block.as_ref().map(|b| b.time).unwrap_or_else(now));
+        self.st.evicted.remove(&txid);
         self.st.wtx.insert(
             txid.clone(),
             WalletTx {
@@ -1051,7 +1052,9 @@ impl Wallet {
                     }
                 }
             }
-            self.st.wtx.remove(&t);
+            if let Some(w) = self.st.wtx.remove(&t) {
+                self.st.evicted.insert(t.clone(), w);
+            }
             self.parsed.remove(&t);
             changed = true;
         }
