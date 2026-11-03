@@ -585,6 +585,26 @@
       "reason": "contrib/secops/code-scanning-triage.py calls gh api with argv lists built from constants and the workflow-supplied repository name (no shell); it runs only in the code-scanning workflow with the job's own token.",
       "by": "secops triage",
       "date": "2026-10-24"
+    },
+    {
+      "rule": "generic.secrets.gitleaks.facebook-page-access-token",
+      "paths": [
+        "yewd/PIN",
+        ".github/workflows/*.yml"
+      ],
+      "reason": "The match is a 40-hex git commit id that happens to start with 'eaa' (the kogany pin in yewd/PIN and KOGANY_REF); commit ids are public, not tokens.",
+      "by": "kogany PR checks",
+      "date": "2026-11-03"
+    },
+    {
+      "rule": "python.lang.security.audit.dangerous-*",
+      "paths": [
+        "yewd/qa/*.py",
+        "scripts/kogany-rig.py"
+      ],
+      "reason": "Regtest gate and rig scripts: they start ycashd, yewd, zakurad and lightwalletd from paths the developer or the CI job sets (ZCASHD, YEWD_BIN, the rig dir) with argv lists, no shell except a fixed watchdog loop formatted with integer pids; test tooling, never shipped.",
+      "by": "kogany PR checks",
+      "date": "2026-11-03"
     }
   ]
 }

@@ -1,0 +1,63 @@
+# yewd: the YEW core as a daemon — a ycashd-compatible wallet-RPC façade in front of a
+# wallet-less node (kogany, or ycash6 started with -disablewallet). The third shell on yew-core
+# beside app/ (Flutter) and web/ (browser); plan docs/plans/yewd-plan.md and the workspace's
+# docs/plans/kogany/kogany-yellowback-plan.md §3b, §4.3 (K-20, K-22..K-25).
+#
+# Its own Cargo workspace (as web/core-wasm): the daemon's server dependencies (the HTTP/JSON-RPC
+# server, Unix sockets for the signer) never enter the root Cargo.lock or scripts/check-deps.sh's
+# yew-core allow-list. yew-core comes by path (`../core`), never by git rev (plan §4.3 rule 4).
+# yewd/Cargo.lock started as a copy of the root lock, so the shared graph resolves to the same
+# versions the core is tested with; the daemon adds only the crates its server needs.
+[workspace]
+resolver = "2"
+members = ["facade", "wallet", "signer", "proto"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/boyfromcave/yew"
+publish = false
+
+# Exact versions, the ones the root Cargo.lock already holds (one copy of each in the graph).
+[workspace.dependencies]
+yew-core = { path = "../core" }
+tokio = { version = "=1.53.3", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
+hyper = { version = "=1.11.1", features = ["http1", "server", "client"] }
+hyper-util = { version = "=0.1.21", features = ["tokio"] }
+http-body-util = "=0.1.5"
+bytes = "=1.12.1"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.151", features = ["raw_value"] }
+base64 = "=0.22.1"
+getrandom = "=0.2.17"
+hex = "=0.4.3"
+libc = "=0.2.189"
+yewd-proto = { path = "proto" }
+# The wallet's chain reading (S1): the block and transaction parser and the Sapling viewing side,
+# from the same sources and revisions yew-core already locks (one copy of each in the graph).
+secp256k1 = { version = "=0.33.1", features = ["std"] }
+hmac = "=0.13.0-pre.4"
+sha2 = "=0.11.0-pre.4"
+zcash_primitives = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false, features = ["std"] }
+zcash_protocol = { version = "=0.9.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false, features = ["std"] }
+zcash_keys = { version = "=0.14.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false, features = ["std", "sapling"] }
+sapling-crypto = { version = "=0.7.0", default-features = false, features = ["std"] }
+zip32 = { version = "=0.2.0", default-features = false }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+# As the root manifest: dependencies optimised in dev and test builds (Sapling proving and the
+# note store are unusable at opt-level 0); yewd's own crates stay at opt-level 0.
+[profile.dev.package."*"]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+# As in the root Cargo.toml (patches do not propagate through dependencies); keep the two in step.
+[patch.crates-io]
+schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee" }
+tonic-web-wasm-client = { git = "https://github.com/QuantumExplorer/tonic-web-wasm-client.git", rev = "cf9abc3952405cd61d7deacf906ff9e1dd8515ea" }

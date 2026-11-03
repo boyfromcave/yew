@@ -5,7 +5,8 @@
 #   zizmor           every workflow under .github/workflows and dependabot.yml; fails on any finding (default persona).
 #   gitleaks         a PR's own commits (fails on a new leak); the whole history nightly, on dispatch and
 #                    on a push to upgrade/vault. Accepted hits: .gitleaksignore (fingerprint + reason).
-#   osv-scanner      Cargo.lock (the Rust core) and app/pubspec.lock (the Flutter app); fails on a known
+#   osv-scanner      Cargo.lock (the Rust core), yewd/Cargo.lock (the wallet daemon, its own workspace) and
+#                    app/pubspec.lock (the Flutter app); fails on a known
 #                    vulnerability not in osv-scanner.toml (reason + ignoreUntil <= 90 days).
 #   semgrep-rules    the tests of YEW's own Semgrep rules (contrib/semgrep/rules/yew.rs).
 #
@@ -135,9 +136,9 @@ jobs:
           echo "${OSV_SCANNER_SHA256}  osv-scanner" | sha256sum -c -
           chmod +x osv-scanner
           ./osv-scanner --version
-      - name: osv-scanner (Cargo.lock, app/pubspec.lock)
+      - name: osv-scanner (Cargo.lock, yewd/Cargo.lock, app/pubspec.lock)
         run: |
-          lock=(--config osv-scanner.toml -L Cargo.lock -L app/pubspec.lock)
+          lock=(--config osv-scanner.toml -L Cargo.lock -L yewd/Cargo.lock -L app/pubspec.lock)
           rc=0
           "$RUNNER_TEMP/osv-scanner" scan source "${lock[@]}" --format sarif --output osv-scanner.sarif || rc=$?
           {

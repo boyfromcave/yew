@@ -3,7 +3,8 @@
 # Distributed under the MIT software license, see the accompanying
 # file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 #
-# Dependency audit (plan §7 W5, docs/release.md §2): `cargo audit` over Cargo.lock against the
+# Dependency audit (plan §7 W5, docs/release.md §2): `cargo audit` over each shipped lockfile
+# (Cargo.lock, the core and the app; yewd/Cargo.lock, the wallet daemon's own workspace) against the
 # RustSec database. Blocking when an advisory has a patched version we could move to;
 # non-blocking (printed, exit 0) when the advisory has no fix yet or is a warning
 # (unmaintained, yanked, unsound) — those go into docs/security-review.md by hand.
@@ -17,9 +18,12 @@ cd "$here"
 command -v cargo-audit >/dev/null 2>&1 || { echo "audit: cargo-audit missing (cargo install cargo-audit --locked)" >&2; exit 1; }
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
+rc=0
+for lock in Cargo.lock yewd/Cargo.lock; do
+echo "audit: $lock"
 # cargo-audit exits 1 on any vulnerability; the verdict is ours below.
-cargo audit --json > "$out" || true
-python3 - "$out" scripts/audit-exceptions.txt <<'PY'
+cargo audit --json --file "$lock" > "$out" || true
+python3 - "$out" scripts/audit-exceptions.txt <<'PY' || rc=1
 import json, sys
 d = json.load(open(sys.argv[1]))
 excepted = {}
@@ -51,3 +55,5 @@ n = d.get("lockfile", {}).get("dependency-count", "?")
 print(f"audit: {n} crates scanned, {len(vulns)} vulnerabilities, {sum(len(l) for l in warnings.values())} warnings, {blocking} blocking")
 sys.exit(1 if blocking else 0)
 PY
+done
+exit "$rc"

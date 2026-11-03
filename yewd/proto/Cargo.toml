@@ -1,0 +1,15 @@
+[package]
+name = "yewd-proto"
+description = "yewd: the sign request and response between the façade and the signer (K-24)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+yew-core.workspace = true
+hex.workspace = true
+secp256k1 = { workspace = true, features = ["recovery"] }
+serde.workspace = true
+serde_json.workspace = true

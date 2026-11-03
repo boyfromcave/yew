@@ -1,0 +1,29 @@
+[package]
+name = "yewd-wallet"
+description = "yewd: wallet state, sync and the read RPCs on yew-core (S1); builders (S2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+yew-core.workspace = true
+yewd-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+base64.workspace = true
+secp256k1.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+zcash_primitives.workspace = true
+zcash_protocol.workspace = true
+zcash_keys.workspace = true
+sapling-crypto.workspace = true
+zip32.workspace = true
+incrementalmerkletree = "=0.8.2"
+tokio.workspace = true
+
+[dev-dependencies]
+yewd-signer = { path = "../signer" }

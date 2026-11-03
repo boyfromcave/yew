@@ -16,6 +16,18 @@
 #                against the built dist served locally (the sums and the SRI attributes).
 #                librustzcash6 and x402-ycash come by git rev (their `up/web` branches), as
 #                in the root manifest.
+#   yewd-*       yew/yewd (the wallet-RPC façade, docs/plans/yewd-plan.md; workspace kogany plan §5,
+#                docs/plans/kogany/ci-design.md): yewd-check (check-yewd.sh: naming and attribution
+#                greps, fmt, clippy, cargo test; blocking), yewd-bin (the yewd-bin artifact),
+#                yewd-node (ycashd from a trusted ycash6 run at the commit yewd/PIN records) and
+#                yewd-gates (the S0 round trip and the S1-S3 stage gates, one job each, report-only
+#                until each stage's gate is seen green).
+#   kogany       (report-only; a push to or a dispatch on vaults/kogany-compat) scripts/kogany-leg.sh:
+#                the W1 devnet acceptance (core/tests/devnet.rs) through lightwalletd-dd in front of
+#                a regtest kogany node (the third node line, workspace kogany plan W9-c), its ycash6
+#                test rig standing in for the devnet tool. zakurad is kogany's zakurad-bin artifact
+#                at KOGANY_REF, else built at that commit; ycashd is ycash6's node-bin at
+#                YCASH6_REF; lightwalletd-dd is built at proto/PIN.
 # Not in this workflow: the devnet acceptance suites (scripts/devnet-*.sh). They need a workspace
 # devnet (an ARMED devnet from ycash-dd, the attest agent, lightwalletd-dd serving --yellowback,
 # the Python test framework), so they run nightly, non-gating, in devnet-nightly.yml: its `hosted`
@@ -31,7 +43,7 @@ on:
     # upgrade/vault-in-term (in-term claims, rpcversion 6), upgrade/quantum-vaults (post-quantum owners,
     # rpcversion 7; proto/PIN names lightwalletd-dd's upgrade/quantum-vaults commit, so lightwalletd-dd
     # is pushed first), main (the branch of record, AGENTS.md rule 2).
-    branches: &branches [main, harden/yellowback, upgrade/vault, upgrade/vault-in-term, upgrade/quantum-vaults]
+    branches: &branches [main, harden/yellowback, upgrade/vault, upgrade/vault-in-term, upgrade/quantum-vaults, vaults/kogany-compat]
   pull_request:
     branches: *branches
   workflow_dispatch:
@@ -189,6 +201,271 @@ jobs:
           scripts/gen-bridge.sh
           git diff --exit-code -- core/src/frb_generated.rs app/lib/src/rust
 
+  # yewd (yew/yewd, docs/plans/yewd-plan.md; workspace kogany plan §3b, §5 "yewd's CI"; the job map
+  # is the workspace's docs/plans/kogany/ci-design.md). Four jobs, each re-run on its own:
+  #   yewd-check  (blocking) check-yewd.sh: naming and attribution greps, fmt, clippy, cargo test
+  #   yewd-bin    the yewd-bin artifact: yewd and yewd-signer (dev profile) for this run's gates and
+  #               for ycash6's mixed tier, which takes it at a pinned yew commit (30 days)
+  #   yewd-node   ycashd and ycash-cli from ycash6's node-bin at the commit yewd/PIN records (a
+  #               push, schedule or dispatch run), re-uploaded as this run's yewd-node artifact so
+  #               a gate re-run never depends on ycash6's retention
+  #   yewd-gates  one job per stage gate (the S0 backend round trip, S1, S2, the S3 stages that need
+  #               no attestation agent), each on ycash6's functional framework at the PIN commit;
+  #               report-only until its stage's gate is seen green, then `blocking: true`
+  yewd-check:
+    name: yewd check (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # protoc: x402-ycash-light's build.rs (yew-core, which yewd-wallet links by path).
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler && protoc --version
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: yewd
+          save-if: ${{ github.event_name != 'pull_request' }}
+      # Its own Cargo workspace, so the root workspace's jobs are unchanged.
+      - run: yewd/scripts/check-yewd.sh
+
+  yewd-bin:
+    name: yewd bin (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler && protoc --version
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: yewd
+          key: bin
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - name: Build yewd and yewd-signer (dev profile) and pack yewd-bin
+        env:
+          COMMIT: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          cargo build --locked --manifest-path yewd/Cargo.toml --bins
+          mkdir -p "$RUNNER_TEMP/pack"
+          cp yewd/target/debug/yewd yewd/target/debug/yewd-signer "$RUNNER_TEMP/pack/"
+          python3 - "$RUNNER_TEMP/pack/yewd-bin.json" "$REPO" "$COMMIT" "$(rustc --version)" <<'PY'
+          import json, sys
+          path, repo, commit, rustc = sys.argv[1:]
+          json.dump({'repository': repo, 'commit': commit, 'binaries': ['yewd', 'yewd-signer'], 'profile': 'dev',
+                     'runner': 'ubuntu-24.04', 'rustc': rustc, 'producer': 'yew ci.yml yewd-bin'},
+                    open(path, 'w'), indent=1)
+          PY
+          tar czf "$RUNNER_TEMP/yewd-bin.tgz" -C "$RUNNER_TEMP/pack" yewd yewd-signer yewd-bin.json
+          "$RUNNER_TEMP/pack/yewd" -version || "$RUNNER_TEMP/pack/yewd" --help | head -n 3 || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        # 30 days outside pull requests (the artifact contract ycash6's mixed tier consumes at a
+        # pinned yew commit); a pull request run's copy is never trusted across repositories.
+        with:
+          name: yewd-bin
+          path: ${{ runner.temp }}/yewd-bin.tgz
+          retention-days: ${{ github.event_name == 'pull_request' && 3 || 30 }}
+          if-no-files-found: error
+
+  yewd-node:
+    name: yewd node (ycash6 at yewd/PIN)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read  # gh run list/download on ycash6's runs
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: yewd/PIN
+          sparse-checkout-cone-mode: false
+      # ycash6 keeps node-bin 30 days outside pull requests, and refreshes a branch tip's nightly
+      # (yellowback-tests.yml `bin-refresh`); a pin older than that is bumped (yewd/PIN).
+      - name: download ycashd at the yewd/PIN commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha=$(awk '$1 == "ycash6" {print $2}' yewd/PIN)
+          case "$sha" in *[!0-9a-f]*|'') echo "::error::bad ycash6 pin"; exit 1 ;; esac
+          [ ${#sha} -eq 40 ] || { echo "::error::bad ycash6 pin"; exit 1; }
+          trusted='select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")'
+          runs=$(gh run list -R boyfromcave/ycash6 -w yellowback-tests.yml -c "$sha" -L 20 --json databaseId,event,headSha \
+            -q ".[] | select(.headSha == \"$sha\") | $trusted | .databaseId")
+          got=
+          for r in $runs; do
+            if gh run download "$r" -R boyfromcave/ycash6 -n node-bin -D "$RUNNER_TEMP/node" 2>/dev/null; then got=$r; break; fi
+          done
+          if [ -z "$got" ] || [ ! -f "$RUNNER_TEMP/node/node-bin.tgz" ]; then
+            echo "::error::no node-bin for ycash6 $sha (expired, or no push/schedule/dispatch run there): bump yewd/PIN to a commit that has one, or dispatch tier bin on its ycash6 branch"
+            exit 1
+          fi
+          exp=$(gh api "repos/boyfromcave/ycash6/actions/runs/$got/artifacts?name=node-bin" -q '.artifacts[0].expires_at' || true)
+          if [ -n "$exp" ] && [ "$(date -d "$exp" +%s)" -lt "$(( $(date +%s) + 7 * 86400 ))" ]; then
+            echo "::warning::ycash6 node-bin of run $got (yewd/PIN $sha) expires $exp: bump yewd/PIN"
+          fi
+          tar -xzf "$RUNNER_TEMP/node/node-bin.tgz" -C "$RUNNER_TEMP/node" src/ycashd src/ycash-cli
+          tar czf "$RUNNER_TEMP/yewd-node.tgz" -C "$RUNNER_TEMP/node/src" ycashd ycash-cli
+          echo "- yewd backend: ycash6 run $got at \`$sha\` (node-bin expires ${exp:-?})" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: yewd-node
+          path: ${{ runner.temp }}/yewd-node.tgz
+          retention-days: ${{ github.event_name == 'pull_request' && 3 || 30 }}
+          if-no-files-found: error
+
+  yewd-gates:
+    name: yewd gate ${{ matrix.stage }}${{ !matrix.blocking && ' (report-only)' || '' }}
+    needs: [yewd-bin, yewd-node]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # Report-only until the stage's exit gate is seen green (kogany plan §3b, coordination handoff
+    # §7); the coordinator then sets the entry's `blocking: true`. A report-only stage exits 0 and
+    # puts its result in the step summary (a continue-on-error job still shows a red check).
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # S0: the backend round trip (facade/tests/regtest.rs), ycashd -regtest -disablewallet behind the façade.
+          - {stage: s0-roundtrip, blocking: false}
+          - {stage: s1, blocking: false, script: yewd/qa/s1_wallet_reads.py}
+          - {stage: s2, blocking: false, script: yewd/qa/s2_wallet_builders.py}
+          # S3's attest_agent and cancel_agent stages need YELLOWBACK_ATTEST_BIN (ycash6's agent);
+          # they join when this job builds it.
+          - {stage: s3-roles, blocking: false, script: yewd/qa/s3_roles.py, args: --stage=roles}
+          - {stage: s3-attest_wallet, blocking: false, script: yewd/qa/s3_roles.py, args: --stage=attest_wallet}
+          - {stage: s3-attest_bond, blocking: false, script: yewd/qa/s3_roles.py, args: --stage=attest_bond}
+          # S4: the two contract suites with every node a pair (backend ycash6 -disablewallet) and the
+          # façade leg against a plain ycashd wallet node. Column 3 (kogany behind yewd, S5) is the
+          # yewd-parity workflow's nightly.
+          - {stage: s4-contract-vault, blocking: false, script: yewd/qa/s4_contract.py, args: --suite=vault}
+          - {stage: s4-contract-yellowback, blocking: false, script: yewd/qa/s4_contract.py, args: --suite=yellowback}
+          - {stage: s4-facade, blocking: false, script: yewd/qa/s4_facade.py}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: the ycash6 commit yewd/PIN records
+        id: pin
+        run: |
+          sha=$(awk '$1 == "ycash6" {print $2}' yewd/PIN)
+          case "$sha" in *[!0-9a-f]*|'') echo "::error::bad ycash6 pin"; exit 1 ;; esac
+          echo "ycash6=$sha" >> "$GITHUB_OUTPUT"
+      # ycash6's functional framework (qa/rpc-tests, the YEWD_BIN harness) and the contract files
+      # (doc/) at the same commit as the ycashd under test.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: matrix.script
+        with:
+          repository: boyfromcave/ycash6
+          ref: ${{ steps.pin.outputs.ycash6 }}
+          path: ycash6
+          persist-credentials: false
+          sparse-checkout: |
+            qa
+            doc
+            contrib/yellowback
+          sparse-checkout-cone-mode: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: yewd-node
+          path: ${{ runner.temp }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: matrix.script
+        with:
+          name: yewd-bin
+          path: ${{ runner.temp }}
+      - name: Unpack
+        run: |
+          mkdir -p "$RUNNER_TEMP/node" && tar xzf "$RUNNER_TEMP/yewd-node.tgz" -C "$RUNNER_TEMP/node"
+          if [ -f "$RUNNER_TEMP/yewd-bin.tgz" ]; then
+            mkdir -p "$RUNNER_TEMP/yewd" && tar xzf "$RUNNER_TEMP/yewd-bin.tgz" -C "$RUNNER_TEMP/yewd"
+            cat "$RUNNER_TEMP/yewd/yewd-bin.json"
+          fi
+      # The round trip builds the façade's test (rust-cache keyed as yewd-check's).
+      - name: Install protoc
+        if: matrix.stage == 's0-roundtrip'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: matrix.stage == 's0-roundtrip'
+        with:
+          workspaces: yewd
+          save-if: false
+      - name: backend round trip (getblockchaininfo through the façade)
+        if: matrix.stage == 's0-roundtrip'
+        id: s0
+        env:
+          YEWD_TEST_REQUIRE_BACKEND: '1'
+          BLOCKING: ${{ matrix.blocking }}
+        run: |
+          rc=0
+          YEWD_TEST_YCASHD="$RUNNER_TEMP/node/ycashd" cargo test --manifest-path yewd/Cargo.toml --locked -p yewd-facade --test regtest -- --nocapture || rc=$?
+          scripts/report-only.sh "$rc" "$BLOCKING" "yewd gate s0-roundtrip"
+      # ycash6's framework: Python 3.11 (asyncore; tomllib), its pinned test packages and the pyblake2
+      # shim, as ycash6's yellowback-prereqs action installs them; a C compiler for the Falcon signer.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        if: matrix.script
+        with:
+          python-version: '3.11'
+      - name: ycash6 framework packages
+        if: matrix.script
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q gcc libc6-dev
+          python3 -m pip install --user -r ycash6/qa/yellowback-ci-requirements.txt
+          site=$(python3 -c 'import site; print(site.getusersitepackages())')
+          mkdir -p "$site"
+          printf '%s\n' 'from hashlib import blake2b, blake2s  # noqa: F401' > "$site/pyblake2.py"
+      # The Sapling and Sprout parameters (the signer proves; ycashd loads them), checked against the
+      # sums ycash6's zcutil/fetch-params.sh pins. Restore only: no cache is saved from this job.
+      - name: restore zcash params
+        if: matrix.script
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.zcash-params
+          key: zcash-params-8e48ffd2-2f0ebbcb-b685d700
+      - name: fetch and verify zcash params
+        if: matrix.script
+        run: scripts/fetch-zcash-params.sh
+      - name: stage gate
+        id: gate
+        if: matrix.script
+        env:
+          SCRIPT: ${{ matrix.script }}
+          ARGS: ${{ matrix.args }}
+          STAGE: ${{ matrix.stage }}
+          BLOCKING: ${{ matrix.blocking }}
+        run: |
+          export YCASH6_QA="$GITHUB_WORKSPACE/ycash6/qa/rpc-tests" ZCASHD="$RUNNER_TEMP/node/ycashd" YEWD_BIN="$RUNNER_TEMP/yewd/yewd"
+          mkdir -p "$RUNNER_TEMP/gate"
+          read -r -a args <<< "$ARGS"
+          rc=0
+          python3 -u "$SCRIPT" "${args[@]}" --srcdir="$RUNNER_TEMP/node" --tmpdir="$RUNNER_TEMP/gate/$STAGE" --nocleanup || rc=$?
+          scripts/report-only.sh "$rc" "$BLOCKING" "yewd gate $STAGE"
+      - name: Upload node and yewd logs on failure
+        if: failure() || steps.gate.outputs.failed == 'true' || steps.s0.outputs.failed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: yewd-gate-logs-${{ matrix.stage }}
+          path: |
+            ${{ runner.temp }}/gate/**/node*/regtest/debug.log
+            ${{ runner.temp }}/gate/**/node*/yewd.log
+          retention-days: 14
+          if-no-files-found: warn
+
   web:
     name: web (ubuntu)
     runs-on: ubuntu-latest
@@ -244,3 +521,140 @@ jobs:
         with:
           name: yew-web-BUNDLE-SHA256SUMS
           path: web/dist/BUNDLE-SHA256SUMS
+
+  # The kogany leg (report-only until the lead architect flips it: report-only.sh's `false` to `true`). YEW's
+  # own build restores rust-cache and saves nothing (zakurad, ycashd, lightwalletd-dd and
+  # fetch-params.sh are other repositories' code).
+  kogany:
+    if: github.ref_name == 'vaults/kogany-compat' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    name: kogany (report-only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read  # gh run list/download on kogany's and ycash6's runs
+    env:
+      # kogany vaults/kogany-compat at W5-f (the YED module registered: the real index answers)
+      KOGANY_REF: 1eca93d3f462fb5a10815b4267acb9157843b253
+      YCASH6_REPO: boyfromcave/ycash6
+      # ycash6 vaults/kogany-compat head; moves with the kogany-compat heads (the one ycash6 pin here:
+      # node-bin, qa/ and zcutil all come from this commit)
+      YCASH6_REF: 91763f656c8e857b41c06b7e632a33344f8a0d0d
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # zakurad-bin.tgz: zakurad (dev profile, --features ycash, ubuntu-24.04, the runner's librocksdb)
+      # and zakurad-bin.json, from a push, schedule or dispatch run of kogany at KOGANY_REF only (the
+      # contract of the workspace's docs/plans/kogany/ci-design.md), never a pull_request run.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: boyfromcave/kogany
+          ref: ${{ env.KOGANY_REF }}
+          path: kogany
+          persist-credentials: false
+      # kogany's setup-zakura-build as its script (librocksdb for zakurad). The fallback build fails at
+      # dependency resolution until boyfromcave/zakura-common-ycash exists on GitHub (kogany plan K-2).
+      - name: kogany build packages
+        env:
+          INSTALL_LIBCLANG: "false"
+          INSTALL_PROTOC: "false"
+        run: bash kogany/.github/actions/setup-zakura-build/install-ubuntu-packages.sh
+      - name: kogany's zakurad-bin at KOGANY_REF (else built here)
+        id: zakurad
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$KOGANY_REF" in *[!0-9a-f]*|'') echo "::error::KOGANY_REF is not a commit id"; exit 1 ;; esac
+          trusted='select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")'
+          runs=$(gh run list -R boyfromcave/kogany -c "$KOGANY_REF" -L 50 --json databaseId,event,headSha \
+            -q ".[] | select(.headSha == \"$KOGANY_REF\") | $trusted | .databaseId" 2>/dev/null || true)
+          for r in $runs; do
+            if gh run download "$r" -R boyfromcave/kogany -n zakurad-bin -D "$RUNNER_TEMP/zk-dl" 2>/dev/null \
+               && [ -f "$RUNNER_TEMP/zk-dl/zakurad-bin.tgz" ]; then
+              mkdir -p "$RUNNER_TEMP/zk" && tar xzf "$RUNNER_TEMP/zk-dl/zakurad-bin.tgz" -C "$RUNNER_TEMP/zk"
+              cat "$RUNNER_TEMP/zk/zakurad-bin.json"
+              echo "ZAKURAD=$RUNNER_TEMP/zk/zakurad" >> "$GITHUB_ENV"
+              echo "got=true" >> "$GITHUB_OUTPUT"
+              echo "zakurad from boyfromcave/kogany run $r"; exit 0
+            fi
+          done
+          echo "got=false" >> "$GITHUB_OUTPUT"
+          (cd kogany && CARGO_INCREMENTAL=0 cargo build --locked -p zakura --features ycash --bin zakurad)
+          echo "ZAKURAD=$GITHUB_WORKSPACE/kogany/target/debug/zakurad" >> "$GITHUB_ENV"
+          echo "no zakurad-bin of boyfromcave/kogany at $KOGANY_REF: building it here"
+      - name: zakurad runs here
+        run: |
+          if ldd "$ZAKURAD" | grep 'not found'; then echo "::error::zakurad needs a library this runner lacks"; exit 1; fi
+          "$ZAKURAD" --version
+      - name: ycashd from ycash6's node-bin at YCASH6_REF
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$YCASH6_REF" in *[!0-9a-f]*|'') echo "::error::YCASH6_REF is not a commit id"; exit 1 ;; esac
+          [ ${#YCASH6_REF} -eq 40 ] || { echo "::error::YCASH6_REF is not a full commit id"; exit 1; }
+          # a successful push run of yellowback-tests.yml at exactly YCASH6_REF (never a pull_request run)
+          runs=$(gh run list -R "$YCASH6_REPO" -c "$YCASH6_REF" -w yellowback-tests.yml -L 20 \
+            --json databaseId,conclusion,event,headSha \
+            -q ".[] | select(.headSha == \"$YCASH6_REF\" and .event == \"push\" and .conclusion == \"success\") | .databaseId")
+          got=
+          for r in $runs; do
+            if gh run download "$r" -R "$YCASH6_REPO" -n node-bin -D "$RUNNER_TEMP/dl" 2>/dev/null; then
+              echo "ycashd from $YCASH6_REPO run $r at $YCASH6_REF"; got=$r; break
+            fi
+          done
+          [ -n "$got" ] || { echo "::error::no node-bin from a successful push run of $YCASH6_REPO at $YCASH6_REF: move YCASH6_REF"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/node"
+          tar -xzf "$RUNNER_TEMP/dl/node-bin.tgz" -C "$RUNNER_TEMP/node" src/ycashd src/ycash-cli
+          test -x "$RUNNER_TEMP/node/src/ycashd"
+          echo "YCASHD=$RUNNER_TEMP/node/src/ycashd" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ env.YCASH6_REPO }}
+          ref: ${{ env.YCASH6_REF }}
+          path: ycash6
+          persist-credentials: false
+          sparse-checkout: zcutil
+      - name: ycash6 checkout is YCASH6_REF
+        run: '[ "$(git -C ycash6 rev-parse HEAD)" = "$YCASH6_REF" ] || { echo "::error::ycash6 checkout is not $YCASH6_REF"; exit 1; }'
+      - name: fetch zcash params
+        run: ycash6/zcutil/fetch-params.sh
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.26.10'
+          cache: false
+      - name: lightwalletd-dd at proto/PIN
+        run: |
+          set -euo pipefail
+          rev=$(awk '{print $2}' proto/PIN)
+          case "$rev" in *[!0-9a-f]*|'') echo "::error::bad proto/PIN"; exit 1 ;; esac
+          git init -q "$RUNNER_TEMP/lwd"
+          git -C "$RUNNER_TEMP/lwd" fetch -q --depth 1 https://github.com/boyfromcave/lightwalletd.git "$rev"
+          git -C "$RUNNER_TEMP/lwd" checkout -q FETCH_HEAD
+          (cd "$RUNNER_TEMP/lwd" && CGO_ENABLED=0 go build -mod=vendor -o "$RUNNER_TEMP/lightwalletd" .)
+          echo "LWD_BIN=$RUNNER_TEMP/lightwalletd" >> "$GITHUB_ENV"
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler && protoc --version
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+      - name: scripts/kogany-leg.sh (report-only)
+        env:
+          KOGANY_RIG_DIR: ${{ runner.temp }}/kogany-rig
+        run: |
+          rc=0
+          scripts/kogany-leg.sh || rc=$?
+          scripts/report-only.sh "$rc" false "kogany leg"
+      - name: upload the rig logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: yew-kogany-logs
+          path: |
+            ${{ runner.temp }}/kogany-rig/*.log
+            ${{ runner.temp }}/kogany-rig/*.json
+          retention-days: 14
+          if-no-files-found: ignore
