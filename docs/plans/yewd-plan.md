@@ -614,6 +614,13 @@ and the runner knows it.
   fix (the peer gets kogany's regtest schedule, Blossom/Heartwood/Canopy at the Sapling height, and the solved
   generate adds the founders/YDF output): `vault_pq_wallet` passes in 3m; kogany's template paying it stays a
   node item.*
+- **F-S5-20** (kogany, known gap): `yellowback_mining`'s `stale_invalid_mint_never_templated` needs a mint
+  left invalid in the mempool by `invalidateblock`; ycashd keeps it (nothing re-checks a mint on
+  `DisconnectTip`), a kogany pair re-verifies its whole mempool at a tip reset and drops it. The step is
+  column-gated for a pair (ycash6 `qa/kogany-mixed-shards.txt` header). kogany now accepts
+  `-yellowbacktestfault=template` (`yellowback.test_fault = "template"`: the template filter keeps one
+  refused candidate and `getblocktemplate` refuses with `TestNewBlockAtTipValidity failed:
+  bad-yellowback-<verdict>`), so the script no longer stops the node at init.
 - kogany read/shape gaps met on the way (each a W7/W8 parity item): `getblocktemplate` carries
   `maxtime`, `yed_getstats.supplyCapCents` is null and its armed fields differ (`mint_armed`,
   `cancel_limit`), `yed_gettxinfo` lacks register rows (`yellowback_attest`), `z_validateaddress`
