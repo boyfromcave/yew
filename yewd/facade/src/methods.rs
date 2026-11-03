@@ -344,6 +344,7 @@ mod tests {
         for m in [
             "getblockchaininfo",
             "getblockcount",
+            "verifychain",
             "generate",
             "sendrawtransaction",
             "vault_getinfo",
