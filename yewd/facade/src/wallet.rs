@@ -617,6 +617,20 @@ impl WalletService {
         }
     }
 
+    /// A node error the wallet answers instead (`yed_gettxinfo`'s `tx-not-found` of an own
+    /// expired transaction with a payload); `None` leaves the node's error.
+    pub async fn answer_error(&self, method: &str, params: &[Value]) -> Option<String> {
+        if method != "yed_gettxinfo" {
+            return None;
+        }
+        let txid = params.first()?.as_str()?.to_string();
+        let mut slot = self.wallet.lock().await;
+        self.ensure_open(&mut slot).await.ok()?;
+        let w = slot.as_mut()?;
+        w.sync(&self.node).await.ok()?;
+        w.expired_txinfo(&txid)
+    }
+
     /// Complete a forwarded node read (`result` is its JSON text).
     pub async fn augment(
         &self,

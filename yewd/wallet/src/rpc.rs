@@ -628,6 +628,75 @@ impl Wallet {
             .with("hex", w.hex.clone())
     }
 
+    /// `yed_gettxinfo` of an own transaction with a payload the node has no trace of (§4.6 / N39):
+    /// ycashd's `TxLogToJSON(..., expired=true)` once it is past its expiry height, else `None`.
+    pub fn expired_txinfo(&self, txid: &str) -> Option<String> {
+        let txid = txid.to_lowercase();
+        if self.st.wtx.contains_key(&txid) {
+            return None;
+        }
+        let hex = self
+            .st
+            .expired
+            .get(&txid)
+            .cloned()
+            .or_else(|| self.st.evicted.get(&txid).map(|w| w.hex.clone()))?;
+        let t = crate::build::parse_hex_tx(&hex)?;
+        if t.expiry_height == 0 || t.expiry_height as i64 > self.tip_height() as i64 {
+            return None;
+        }
+        let fp = yew_core::payload::find_payload(&t)?;
+        let typ = fp.payload.payload_type();
+        let redeem = typ == yew_core::payload::PayloadType::Redeem;
+        let carrier_vin = t
+            .vin
+            .iter()
+            .enumerate()
+            .find(|(i, v)| {
+                !(redeem && *i == 0)
+                    && yew_core::script::parse_carrier_script_sig(&v.script_sig).is_some()
+            })
+            .map(|(i, _)| i as i64);
+        let o = J::obj()
+            .with("txid", txid)
+            .with("height", -1i64)
+            .with("type", typ.name())
+            .with("path", "")
+            .with("verdict", "expired")
+            .with("yedIn", 0i64)
+            .with("yedOut", 0i64)
+            .with("burned", 0i64)
+            .with("feeZat", 0i64)
+            .with("payee", J::Null)
+            .with("assigned", J::Arr(vec![]))
+            .with("spentTokens", J::Arr(vec![]))
+            .with("closedVaults", J::Arr(vec![]))
+            .with("reopenedVaults", J::Arr(vec![]))
+            .with("expired", true)
+            .with("xMint", J::Null)
+            .with("xClaim", J::Null)
+            .with("aMint", J::Null)
+            .with("aClaim", J::Null)
+            .with("pMint", J::Null)
+            .with("pClaim", J::Null)
+            .with("bundleSeqs", J::Arr(vec![]))
+            .with("attestFeeZat", 0i64)
+            .with("attestPayee", J::Null)
+            .with("residualZat", 0i64)
+            .with("claimPath", "")
+            .with("notice", false)
+            .with("carrierVin", carrier_vin.unwrap_or(-1))
+            .with(
+                "bundleSource",
+                if carrier_vin.is_some() {
+                    "scriptsig"
+                } else {
+                    ""
+                },
+            );
+        Some(o.text())
+    }
+
     pub(crate) fn status(&self, expiry: u32, depth: i64) -> &'static str {
         if depth > 0 {
             return "mined";

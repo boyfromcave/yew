@@ -397,6 +397,12 @@ impl Facade {
             body
         };
         let (status, out) = self.forward(path, body, id).await;
+        // an own expired transaction the node has no trace of (whatever HTTP status the error has)
+        if method == "yed_gettxinfo" && String::from_utf8_lossy(&out).contains("tx-not-found") {
+            if let Some(text) = self.wallet.answer_error(method, &params).await {
+                return raw_result_reply(&text, id);
+            }
+        }
         if status != StatusCode::OK {
             return (status, out);
         }
