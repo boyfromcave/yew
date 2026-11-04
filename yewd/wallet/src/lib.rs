@@ -1002,11 +1002,12 @@ impl Wallet {
             own.sort();
             for (_, txid, hex) in own {
                 // the node judges it again; a refusal leaves it to the drop below
-                if node::call(node, "sendrawtransaction", serde_json::json!([hex, true]))
-                    .await
-                    .is_ok()
-                {
-                    ids.insert(txid);
+                match node::call(node, "sendrawtransaction", serde_json::json!([hex, true])).await {
+                    Ok(_) => {
+                        ids.insert(txid);
+                    }
+                    // ycashd logs the refusal at reaccept the same way (wallet.cpp)
+                    Err(e) => eprintln!("yewd: reaccept {txid} refused: {e:?}"),
                 }
             }
         }
