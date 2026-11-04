@@ -36,12 +36,12 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # kogany vaults/kogany-compat: every yed_* read live (W7-b), the regtest Falcon height
-  KOGANY_REF: eaac2b78d538b67d5862ef2b930809eb822b9b05
+  # kogany upgrade/vault head (the wave gate and its follow-ups merged)
+  KOGANY_REF: f12e130befa04a44699ec13b1edcda212526a3a5
   YCASH6_REPO: boyfromcave/ycash6
-  # ycash6 vaults/kogany-compat head; moves with the kogany-compat heads (the one ycash6 pin here:
+  # ycash6 upgrade/vault head; moves with the kogany upgrade/vault head (the one ycash6 pin here:
   # node-bin, qa/ and zcutil all come from this commit)
-  YCASH6_REF: 91763f656c8e857b41c06b7e632a33344f8a0d0d
+  YCASH6_REF: 7976c9e97ac38ad194f6b6b3fbd257776fd748c2
 
 jobs:
   parity:
