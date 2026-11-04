@@ -621,6 +621,12 @@ and the runner knows it.
   `-yellowbacktestfault=template` (`yellowback.test_fault = "template"`: the template filter keeps one
   refused candidate and `getblocktemplate` refuses with `TestNewBlockAtTipValidity failed:
   bad-yellowback-<verdict>`), so the script no longer stops the node at init.
+- **F-S5-21** (kogany, fixed 2026-11-04): a transaction the node refused stayed in the RPC re-offer queue and
+  was offered again at every tip (`vault_bridge`'s real gap; `vault_dos`'s fee-coin failure was a test flake).
+  *Status: fixed, kogany `bf63df88d` (s5-k16).*
+- **F-S5-22** (kogany, fixed 2026-11-04): the syncer re-requested a block it had already verified invalid;
+  ycashd marks it `BLOCK_FAILED_VALID` and never asks again. *Status: fixed, kogany `9210a87fd` (s5-k17): the
+  syncer keeps the verdict, as ycashd's counterpart does.*
 - kogany read/shape gaps met on the way (each a W7/W8 parity item): `getblocktemplate` carries
   `maxtime`, `yed_getstats.supplyCapCents` is null and its armed fields differ (`mint_armed`,
   `cancel_limit`), `yed_gettxinfo` lacks register rows (`yellowback_attest`), `z_validateaddress`
@@ -705,6 +711,26 @@ r14 (2026-11-03): kogany `b127ae9c4` (`koganyd --features ycash`, release), yewd
 | yellowback_attest_bond | pass | pass | pass | — | pass |
 | yellowback_chainviz | pass | FAIL | pass | FAIL: chain-viz mempool feed timing | pass |
 | **pass** | 50/50 | 36/50 | 48/49 (+1 excluded) | 10/11 | 46/49 (+1 excluded) |
+
+**Rounds 15–18.** r15 (2026-11-03, kogany `ed807c60d`): column 3 48/49, 46/49; 3m 44/49, 47/49. The repeat
+failure is `yellowback_mining` at :657, F-S5-20 (the template test fault; the step is a documented gap); the
+others trace to load and port collisions. r16 and r17 (2026-11-03/04) ran concurrently and port-collided
+(`401 Unauthorized` is another run's node answering): their results are void, and the rule is **one parity run
+per machine**. Fixed between r15 and r18: F-S5-19 `depends` (kogany `ed807c60d`); F-S5-20 (kogany `1289f6d14`
+and the harness skip); s5-k15, harness: a crashed pair's backend was never reaped and squatted a port (ycash6
+`882971a1d`); s5-k16: `vault_dos`'s fee-coin flake (test) and F-S5-21 (kogany `bf63df88d`); s5-k17: F-S5-22
+(kogany `9210a87fd`); s5-k18: the `yellowback_fees_reaccept` failure does not reproduce (8/8; a collision), and
+yewd now logs reaccept refusals (yew `007cd1c`); s5-k19: the F-S5-20 skip precedes the step's restart and mine
+(ycash6 `6d1db1873`).
+
+r18 (2026-11-04, kogany `9210a87fd`, yewd of the `007cd1c` era, harness ycash6 `3412ee752`, i.e. before
+s5-k19; run alone): column 3 47/49, 47/49 (`yellowback_mining`: the pre-s5-k19 harness; `yellowback_hardening`:
+a stale regtest node from an old run answered on its port, `401`); 3m **49/49**, 48/49 (`yellowback_mining`,
+the same harness cause).
+
+**Standing.** The mixed column has reached a clean round. The two column-3 rows are explained by a harness
+fix merged after the run began (s5-k19) and by machine hygiene (a stale node), not by koganyd. A confirming
+r19 on the merged harness is planned once the stale nodes are gone.
 
 
 **State hashes.** The harness asserts `vault_getinfo.statehash` and `yed_getstatehash` equal across the
