@@ -534,12 +534,12 @@ jobs:
       contents: read
       actions: read  # gh run list/download on kogany's and ycash6's runs
     env:
-      # kogany vaults/kogany-compat at W5-f (the YED module registered: the real index answers)
-      KOGANY_REF: 1eca93d3f462fb5a10815b4267acb9157843b253
+      # kogany upgrade/vault head (the wave gate and its follow-ups merged)
+      KOGANY_REF: f12e130befa04a44699ec13b1edcda212526a3a5
       YCASH6_REPO: boyfromcave/ycash6
-      # ycash6 vaults/kogany-compat head; moves with the kogany-compat heads (the one ycash6 pin here:
+      # ycash6 upgrade/vault head; moves with the kogany upgrade/vault head (the one ycash6 pin here:
       # node-bin, qa/ and zcutil all come from this commit)
-      YCASH6_REF: 91763f656c8e857b41c06b7e632a33344f8a0d0d
+      YCASH6_REF: ce10b3f884716294a46c4c4ce6e43f76a02ed068
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
