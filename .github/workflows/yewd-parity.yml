@@ -41,7 +41,7 @@ env:
   YCASH6_REPO: boyfromcave/ycash6
   # ycash6 upgrade/vault head; moves with the kogany upgrade/vault head (the one ycash6 pin here:
   # node-bin, qa/ and zcutil all come from this commit)
-  YCASH6_REF: 7976c9e97ac38ad194f6b6b3fbd257776fd748c2
+  YCASH6_REF: ce10b3f884716294a46c4c4ce6e43f76a02ed068
 
 jobs:
   parity:
