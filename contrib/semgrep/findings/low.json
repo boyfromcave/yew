@@ -1,0 +1,182 @@
+{
+ "bucket": "low",
+ "sla_days": 180,
+ "findings": [
+  {
+   "fingerprint": "b82a9aca63d74d2b",
+   "rule": "python.lang.security.audit.dynamic-urllib-use-detected",
+   "path": "scripts/kogany-rig.py",
+   "line": 76,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "cf5001df36dd2444",
+   "rule": "rust.lang.security.temp-dir",
+   "path": "yewd/facade/src/auth.rs",
+   "line": 124,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "47475337afab197b",
+   "rule": "rust.lang.security.unsafe-usage",
+   "path": "yewd/facade/src/lib.rs",
+   "line": 164,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "4230a26431e1c33a",
+   "rule": "rust.lang.security.temp-dir",
+   "path": "yewd/facade/src/lib.rs",
+   "line": 182,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "6adb22594edcb593",
+   "rule": "rust.lang.security.args",
+   "path": "yewd/facade/src/main.rs",
+   "line": 39,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "672bc8d2a4599c13",
+   "rule": "rust.lang.security.unsafe-usage",
+   "path": "yewd/facade/src/wallet.rs",
+   "line": 176,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "170ceb4194c5900a",
+   "rule": "rust.lang.security.current-exe",
+   "path": "yewd/facade/src/wallet.rs",
+   "line": 181,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "f858280d4cf96571",
+   "rule": "rust.lang.security.temp-dir",
+   "path": "yewd/facade/src/wallet.rs",
+   "line": 768,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "46090ef192295656",
+   "rule": "rust.lang.security.temp-dir",
+   "path": "yewd/facade/tests/common.rs",
+   "line": 34,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "2b71fb71dc4bfb9b",
+   "rule": "python.lang.security.audit.non-literal-import",
+   "path": "yewd/qa/s3_roles.py",
+   "line": 165,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "9f3aa603e714a3ac",
+   "rule": "python.lang.security.audit.non-literal-import",
+   "path": "yewd/qa/s4_contract.py",
+   "line": 100,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "4c40016139278a59",
+   "rule": "python.lang.security.audit.non-literal-import",
+   "path": "yewd/qa/s4_contract.py",
+   "line": 108,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "14ec0087c99f3695",
+   "rule": "rust.lang.security.temp-dir",
+   "path": "yewd/signer/src/attest.rs",
+   "line": 153,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "b28e76635f6ede0f",
+   "rule": "rust.lang.security.temp-dir",
+   "path": "yewd/signer/src/lib.rs",
+   "line": 518,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "0917f9516ebca2a9",
+   "rule": "rust.lang.security.temp-dir",
+   "path": "yewd/signer/src/lib.rs",
+   "line": 546,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "bfb01d5bb17dc138",
+   "rule": "rust.lang.security.args",
+   "path": "yewd/signer/src/main.rs",
+   "line": 56,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "d24d530ef9634ffd",
+   "rule": "rust.lang.security.unsafe-usage",
+   "path": "yewd/signer/src/server.rs",
+   "line": 37,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "ff73c77ef5eb33ef",
+   "rule": "rust.lang.security.unsafe-usage",
+   "path": "yewd/signer/src/server.rs",
+   "line": 55,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "cf95c7f2a77d44dc",
+   "rule": "rust.lang.security.unsafe-usage",
+   "path": "yewd/signer/src/server.rs",
+   "line": 73,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "ca7578e9678878b9",
+   "rule": "rust.lang.security.temp-dir",
+   "path": "yewd/signer/tests/attest.rs",
+   "line": 31,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "c7035b50daf62048",
+   "rule": "rust.lang.security.temp-dir",
+   "path": "yewd/signer/tests/policy.rs",
+   "line": 30,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  },
+  {
+   "fingerprint": "169f99fa7a0e1584",
+   "rule": "rust.lang.security.temp-dir",
+   "path": "yewd/wallet/tests/sync.rs",
+   "line": 212,
+   "first_seen": "2026-11-03",
+   "due": "2027-05-02"
+  }
+ ]
+}
