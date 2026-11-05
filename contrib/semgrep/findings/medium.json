@@ -1,0 +1,302 @@
+{
+ "bucket": "medium",
+ "sla_days": 90,
+ "findings": [
+  {
+   "fingerprint": "7dd119f0fc74909c",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/facade/src/wallet.rs",
+   "line": 596,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "7dd119f0fc74909c-1",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/facade/src/wallet.rs",
+   "line": 675,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "7dd119f0fc74909c-2",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/facade/src/wallet.rs",
+   "line": 684,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "7dd119f0fc74909c-3",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/facade/src/wallet.rs",
+   "line": 714,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "9648f45b98256b19",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/proto/src/act.rs",
+   "line": 469,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "49bb4a4241d20941",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/proto/src/client.rs",
+   "line": 77,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "a96a01bb30cff4dd",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/signer/src/lib.rs",
+   "line": 210,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "aba793adef169c68",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/signer/src/lib.rs",
+   "line": 448,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "98048d617d2a9b2b",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/signer/src/sapling.rs",
+   "line": 399,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "63c009cfed975c74",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/signer/src/sapling.rs",
+   "line": 409,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "5119b355b1a56dec",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/signer/src/sign.rs",
+   "line": 409,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "5fc0a8d341ccbe81",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/signer/src/sign.rs",
+   "line": 477,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "6ceee7347ae778e7",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/signer/src/walletio.rs",
+   "line": 84,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "aaead3fe043b68f3",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/attest.rs",
+   "line": 678,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "e78a2e7c5677b126",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/attest.rs",
+   "line": 1417,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "e7161bdf18dabc44",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/build.rs",
+   "line": 306,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "7b00aae1ad81334e",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/build.rs",
+   "line": 320,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "22cc83fe40b355e2",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/keys.rs",
+   "line": 56,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "5442a654f796900d",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/keys.rs",
+   "line": 60,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "c41bb7b0d82ca700",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/lib.rs",
+   "line": 288,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "1f9809817d79d0ba",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/lib.rs",
+   "line": 329,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "5acc73f997f37779",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/lib.rs",
+   "line": 338,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "40dcef753cd441d2",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/lib.rs",
+   "line": 347,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "6d826bc943a4d305",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/rpc.rs",
+   "line": 907,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "b5d09888da778c72",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/rpc.rs",
+   "line": 942,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "0f41ed94c3c81987",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/rpc.rs",
+   "line": 1218,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "c0471a8df3bf090d",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/rpc.rs",
+   "line": 1231,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "bfafa9de15e961cb",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/rpc.rs",
+   "line": 1429,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "8ffcbaf216400a9b",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/rpc.rs",
+   "line": 1601,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "f22134bf3d6378f6",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/rpc.rs",
+   "line": 2027,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "d182e8a040aa2a26",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/vaultrpc.rs",
+   "line": 133,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "e01bba085d28c511",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/vaultrpc.rs",
+   "line": 695,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "34beb926cf75b9af",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/vaultrpc.rs",
+   "line": 1355,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "34beb926cf75b9af-1",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/vaultrpc.rs",
+   "line": 1355,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "6839c0b3b5f5982c",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/vaultrpc.rs",
+   "line": 1798,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "7276201a52e84d4f",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/vaultrpc.rs",
+   "line": 1812,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "d1f13774e7c33183",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/vaultrpc.rs",
+   "line": 2338,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  }
+ ]
+}
