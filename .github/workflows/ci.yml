@@ -526,7 +526,7 @@ jobs:
   # own build restores rust-cache and saves nothing (zakurad, ycashd, lightwalletd-dd and
   # fetch-params.sh are other repositories' code).
   kogany:
-    if: github.ref_name == 'vaults/kogany-compat' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: github.ref_name == 'upgrade/vault' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     name: kogany (report-only)
     runs-on: ubuntu-24.04
     timeout-minutes: 120
