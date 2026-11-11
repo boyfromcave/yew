@@ -167,7 +167,10 @@ abstract class WalletApi {
 
   Future<List<MintStatus>> mints();
 
-  Future<MintStatus> mintFinish({required int mintId});
+  /// The MINT or CLAIM over a confirmed carrier. A main fee above what the start accepted is
+  /// refused (`unusual-fee: …`, with a new acknowledgement in the message); [acceptUnusualFee]
+  /// passes that acknowledgement back (review YEW-REVIEW-5 M2).
+  Future<MintStatus> mintFinish({required int mintId, String? acceptUnusualFee});
 
   Future<MintStatus> mintSweep({required int mintId});
 

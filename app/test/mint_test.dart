@@ -86,6 +86,34 @@ void main() {
     expect(find.byKey(const Key('done')), findsOneWidget);
   });
 
+  testWidgets('a finish fee above what the start accepted needs its own confirmation (review YEW-REVIEW-5 M2)', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.mintsAnswer = [h.api.mintRow(id: 4, state: 'CARRIER_CONFIRMED')];
+    h.api.mintFinishError = 'unusual-fee: the fee changed after you confirmed, so nothing was sent. It is now 0.5 YEC for 900 bytes. You accepted 0.1 YEC for 900 bytes at the start (0.1 YEC at this size). To pay it, confirm again with the acknowledgement accept-unusual-fee:50000000:row:4; otherwise the carrier lapses at the end of its window and can then be swept back.';
+    await h.pump(tester);
+    await tester.tap(find.byKey(const Key('tab-yellowback')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('mint-4')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('unusual-fee-dialog')), findsOneWidget);
+    expect(find.textContaining('You accepted 0.1 YEC'), findsOneWidget);
+    expect(find.textContaining('accept-unusual-fee:'), findsNothing);
+    // declined: nothing more is sent, the refusal stays
+    await tester.tap(find.byKey(const Key('unusual-fee-cancel')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls.where((c) => c.startsWith('mintFinish 4 ')), isEmpty);
+    expect(find.text('CARRIER_CONFIRMED'), findsOneWidget);
+    // a later attempt, accepted: the acknowledgement goes back with the finish
+    h.api.mintsAnswer = [h.api.mintRow(id: 4, state: 'CARRIER_CONFIRMED', tip: 485)];
+    await tester.tap(find.byKey(const Key('sync')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('unusual-fee-dialog')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('unusual-fee-accept')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('mintFinish 4 accept-unusual-fee:50000000:row:4'));
+    expect(find.text('MAIN_SENT'), findsOneWidget);
+  });
+
   testWidgets('a lapsed row shows "window closed, sweeping carrier" and the sweep action', (tester) async {
     final h = Harness(withWallet: true);
     h.api.mintsAnswer = [h.api.mintRow(id: 5, state: 'LAPSED', tip: 530)];

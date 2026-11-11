@@ -1642,6 +1642,7 @@ pub async fn confirm(
                                 id,
                                 r.tip,
                                 r.branch_id,
+                                accept_unusual_fee.as_deref(),
                             )
                             .await
                             .map_err(wallet_err)?;

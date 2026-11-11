@@ -1068,7 +1068,7 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     );
     // Finishing before the carrier confirmed is refused by state.
     assert!(matches!(
-        a.mint_finish(&mut c, &mut v, id1, r.tip, r.branch_id)
+        a.mint_finish(&mut c, &mut v, id1, r.tip, r.branch_id, None)
             .await
             .unwrap_err(),
         yew_core::wallet::WalletError::Mint(mint::MintError::WrongState { .. })
@@ -1092,7 +1092,7 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
         (CARRIER_VALUE, carrier1.clone())
     );
     let f1 = a
-        .mint_finish(&mut c, &mut v, id1, r.tip, r.branch_id)
+        .mint_finish(&mut c, &mut v, id1, r.tip, r.branch_id, None)
         .await
         .unwrap();
     assert_eq!(
@@ -1174,7 +1174,7 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     assert_eq!(mint_state(&a, id2), MintState::CarrierConfirmed);
     let f2 = a
-        .mint_finish(&mut c, &mut v, id2, r.tip, r.branch_id)
+        .mint_finish(&mut c, &mut v, id2, r.tip, r.branch_id, None)
         .await
         .unwrap();
     assert_eq!(f2.validation.verdict, "ok");
@@ -1272,7 +1272,7 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
         a.store.mint(id3)
     );
     assert!(matches!(
-        a.mint_finish(&mut c, &mut v, id3, r.tip, r.branch_id)
+        a.mint_finish(&mut c, &mut v, id3, r.tip, r.branch_id, None)
             .await
             .unwrap_err(),
         yew_core::wallet::WalletError::Mint(mint::MintError::WrongState { .. })
@@ -1567,7 +1567,7 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     assert_eq!(mint_state(&a, idc), MintState::CarrierConfirmed);
     let (yed_before, yec_before) = (r.yed.0, r.yec.0 + r.yec.1);
     let fc = a
-        .mint_finish(&mut c, &mut v, idc, r.tip, r.branch_id)
+        .mint_finish(&mut c, &mut v, idc, r.tip, r.branch_id, None)
         .await
         .unwrap();
     assert_eq!(
@@ -1907,7 +1907,7 @@ async fn w4_claim_cancelled_by_the_attestor_set() {
     confirm(&dn, &mut c, &txid_hex(&mc.carrier_txid)).await;
     let r = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
     let fc = b
-        .mint_finish(&mut c, &mut v, id, r.tip, r.branch_id)
+        .mint_finish(&mut c, &mut v, id, r.tip, r.branch_id, None)
         .await
         .unwrap();
     assert_eq!(fc.validation.verdict, "ok");
@@ -2143,7 +2143,10 @@ async fn it_early_redeem_and_in_term_claim() {
         confirm(dn, c, &txid_hex(&m.carrier_txid)).await;
         let r = sync(a, c, v.client_mut()).await.unwrap();
         assert!(window_open(r.tip, m.expiry_height));
-        let f = a.mint_finish(c, v, id, r.tip, r.branch_id).await.unwrap();
+        let f = a
+            .mint_finish(c, v, id, r.tip, r.branch_id, None)
+            .await
+            .unwrap();
         assert_eq!(f.validation.verdict, "ok");
         confirm(dn, c, &f.txid).await;
         sync(a, c, v.client_mut()).await.unwrap();
@@ -2360,7 +2363,7 @@ async fn it_early_redeem_and_in_term_claim() {
     confirm(&dn, &mut c, &txid_hex(&mc.carrier_txid)).await;
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     let fc = a
-        .mint_finish(&mut c, &mut v, idc, r.tip, r.branch_id)
+        .mint_finish(&mut c, &mut v, idc, r.tip, r.branch_id, None)
         .await
         .unwrap();
     assert_eq!(
@@ -3133,7 +3136,7 @@ async fn s4_move_to_private_and_public_then_mint() {
     confirm(&dn, &mut c, &carrier).await;
     let r = sync(&mut w, &mut c, v.client_mut()).await.unwrap();
     let f = w
-        .mint_finish(&mut c, &mut v, id, r.tip, r.branch_id)
+        .mint_finish(&mut c, &mut v, id, r.tip, r.branch_id, None)
         .await
         .unwrap();
     assert_eq!(f.validation.verdict, "ok");
@@ -4180,7 +4183,7 @@ async fn q_falcon_holders_receive_send_mint_and_restore() {
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     assert!(window_open(r.tip, m.expiry_height));
     let f = a
-        .mint_finish(&mut c, &mut v, id, r.tip, r.branch_id)
+        .mint_finish(&mut c, &mut v, id, r.tip, r.branch_id, None)
         .await
         .unwrap();
     assert_eq!(f.validation.verdict, "ok", "{:?}", f.validation);

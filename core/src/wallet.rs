@@ -664,6 +664,14 @@ impl Wallet {
         *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner()) = t;
     }
 
+    /// Set the fee guard's reference price directly (unit tests of the builders).
+    #[cfg(test)]
+    pub(crate) fn set_fee_reference_for_test(&self, price_micro_usd: i64) {
+        self.store
+            .set_meta("fee_price_high_water", &price_micro_usd.to_string())
+            .unwrap();
+    }
+
     /// TOK-PQ is in force for the next block as far as this wallet knows (the last synced tip
     /// and the server's terms): its YED receive address is then its Falcon holder address.
     pub fn falcon_now(&self) -> bool {
@@ -914,7 +922,9 @@ impl Wallet {
     }
 
     /// `mint_finish(mintId)`: the MINT (or, for a claim row, the CLAIM) over the confirmed
-    /// carrier. The row must be `CarrierConfirmed` (the sync loop advances it).
+    /// carrier. The row must be `CarrierConfirmed` (the sync loop advances it). A main fee above
+    /// what the start accepted is refused with a new acknowledgement, which `accept_unusual_fee`
+    /// passes back (review YEW-REVIEW-5 M2).
     pub async fn mint_finish(
         &self,
         client: &mut CompactClient,
@@ -922,8 +932,18 @@ impl Wallet {
         mint_id: i64,
         tip: u64,
         branch_id: u32,
+        accept_unusual_fee: Option<&str>,
     ) -> Result<Finished, WalletError> {
-        mint::finish(self, client, validator, mint_id, tip, branch_id).await
+        mint::finish(
+            self,
+            client,
+            validator,
+            mint_id,
+            tip,
+            branch_id,
+            accept_unusual_fee,
+        )
+        .await
     }
 
     /// `mint_sweep(mintId)`: reclaim the carrier of a lapsed row (`CARRIER_VALUE − fee`).

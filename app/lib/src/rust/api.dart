@@ -293,9 +293,17 @@ Future<List<MintStatus>> mints() => RustLib.instance.api.crateApiMints();
 
 /// Send the MINT (or, for a claim row, the CLAIM) over the confirmed carrier (after a sync;
 /// both gate layers). The row must be `CARRIER_CONFIRMED` with the window open; a lapsed
-/// row is refused with `carrier-lapsed`. Returns the row (`MAIN_SENT`).
-Future<MintStatus> mintFinish({required PlatformInt64 mintId}) =>
-    RustLib.instance.api.crateApiMintFinish(mintId: mintId);
+/// row is refused with `carrier-lapsed`. Returns the row (`MAIN_SENT`). A main fee above what the
+/// start accepted is refused (`unusual-fee: …`) with a new acknowledgement in the message
+/// (`accept-unusual-fee:<fee>:row:<id>`); calling again with it in `accept_unusual_fee` pays that
+/// fee (review YEW-REVIEW-5 M2).
+Future<MintStatus> mintFinish({
+  required PlatformInt64 mintId,
+  String? acceptUnusualFee,
+}) => RustLib.instance.api.crateApiMintFinish(
+  mintId: mintId,
+  acceptUnusualFee: acceptUnusualFee,
+);
 
 /// Sweep the carrier of a `LAPSED` row (`CARRIER_VALUE − fee` back to the wallet; after a
 /// sync; both gate layers). Returns the row (`SWEEP_SENT`).

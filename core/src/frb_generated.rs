@@ -733,10 +733,11 @@ fn wire__crate__api__mint_finish_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_mint_id = <i64>::sse_decode(&mut deserializer);
+            let api_accept_unusual_fee = <Option<String>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
-                    let output_ok = crate::api::mint_finish(api_mint_id)?;
+                    let output_ok = crate::api::mint_finish(api_mint_id, api_accept_unusual_fee)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }

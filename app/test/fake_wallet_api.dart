@@ -284,9 +284,9 @@ class FakeWalletApi implements WalletApi {
   Future<List<MintStatus>> mints() async => List.of(mintsAnswer);
 
   @override
-  Future<MintStatus> mintFinish({required int mintId}) async {
-    calls.add('mintFinish $mintId');
-    if (mintFinishError != null) throw mintFinishError!;
+  Future<MintStatus> mintFinish({required int mintId, String? acceptUnusualFee}) async {
+    calls.add(acceptUnusualFee == null ? 'mintFinish $mintId' : 'mintFinish $mintId $acceptUnusualFee');
+    if (mintFinishError != null && acceptUnusualFee == null) throw mintFinishError!;
     final old = mintsAnswer.firstWhere((m) => m.mintId == mintId);
     final m = mintRow(id: mintId, state: 'MAIN_SENT', kind: old.kind, cents: old.cents, tip: old.tip, refHeight: old.refHeight, vaultTxid: old.vaultTxid);
     _set(m);

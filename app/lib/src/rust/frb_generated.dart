@@ -142,7 +142,10 @@ abstract class RustLibApi extends BaseApi {
     required int lockBlocks,
   });
 
-  Future<MintStatus> crateApiMintFinish({required PlatformInt64 mintId});
+  Future<MintStatus> crateApiMintFinish({
+    required PlatformInt64 mintId,
+    String? acceptUnusualFee,
+  });
 
   Future<MintStatus> crateApiMintStart({
     required PlatformInt64 cents,
@@ -852,12 +855,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
-  Future<MintStatus> crateApiMintFinish({required PlatformInt64 mintId}) {
+  Future<MintStatus> crateApiMintFinish({
+    required PlatformInt64 mintId,
+    String? acceptUnusualFee,
+  }) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_i_64(mintId, serializer);
+          sse_encode_opt_String(acceptUnusualFee, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -870,14 +877,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_yew_error,
         ),
         constMeta: kCrateApiMintFinishConstMeta,
-        argValues: [mintId],
+        argValues: [mintId, acceptUnusualFee],
         apiImpl: this,
       ),
     );
   }
 
-  TaskConstMeta get kCrateApiMintFinishConstMeta =>
-      const TaskConstMeta(debugName: "mint_finish", argNames: ["mintId"]);
+  TaskConstMeta get kCrateApiMintFinishConstMeta => const TaskConstMeta(
+    debugName: "mint_finish",
+    argNames: ["mintId", "acceptUnusualFee"],
+  );
 
   @override
   Future<MintStatus> crateApiMintStart({

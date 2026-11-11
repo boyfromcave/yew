@@ -175,7 +175,8 @@ class RustWalletApi implements WalletApi {
   Future<List<MintStatus>> mints() => rust.mints();
 
   @override
-  Future<MintStatus> mintFinish({required int mintId}) => rust.mintFinish(mintId: mintId);
+  Future<MintStatus> mintFinish({required int mintId, String? acceptUnusualFee}) =>
+      rust.mintFinish(mintId: mintId, acceptUnusualFee: acceptUnusualFee);
 
   @override
   Future<MintStatus> mintSweep({required int mintId}) => rust.mintSweep(mintId: mintId);

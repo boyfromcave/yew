@@ -767,6 +767,7 @@ pub async fn finish(
     validator: &mut Validator,
     m: &MintRow,
     branch_id: u32,
+    accept_unusual_fee: Option<&str>,
 ) -> Result<Finished, WalletError> {
     let owner = m.owner.filter(|o| o.is_known()).ok_or_else(|| {
         WalletError::Other("the claim row's vault owner is not post-quantum".into())
@@ -926,7 +927,7 @@ pub async fn finish(
         break (plan, tx, funding);
     };
     let priced: Vec<Utxo> = yed_inputs.iter().chain(funding.iter()).cloned().collect();
-    mint::check_main_fee(wallet, m.id, network_fee, &priced)?;
+    mint::check_main_fee(wallet, m.id, network_fee, &priced, accept_unusual_fee)?;
     let raw = tx.serialize()?;
     let txid = tx.txid()?;
     let (_, validation) = gate::confirm_burning(

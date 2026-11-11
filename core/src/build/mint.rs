@@ -463,31 +463,97 @@ pub fn main_fee_guard(wallet: &Wallet, label: &str) -> Result<terms::FeeGuard, W
     wallet.guard_fee(terms::FeeKind::Yed, fee, size, 0, label)
 }
 
-/// The meta key that records that the start of row `id` acknowledged an unusual fee.
-fn fee_ack_key(id: i64) -> String {
-    format!("fee_ack:{id}")
+/// The meta key under which the start of row `id` recorded the main fee it accepted
+/// ([`note_fee_ack`]): `"<fee> <size> <flagged>"`.
+fn fee_quote_key(id: i64) -> String {
+    format!("fee_quote:{id}")
 }
 
-/// Record the start's acknowledgement on row `id` when its guard was flagged.
+/// The main fee the start of a two-step row accepted (review YEW-REVIEW-5 M2): the fee, the size
+/// it was quoted for, and whether it was flagged unusual (and acknowledged).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FeeQuote {
+    /// The accepted main fee, zat.
+    pub fee: i64,
+    /// The size it was quoted for, bytes.
+    pub size: usize,
+    /// It was unusual and the user acknowledged it.
+    pub flagged: bool,
+}
+
+impl FeeQuote {
+    /// The quote scaled to `size` bytes (rounded up): what the accepted terms give at the real
+    /// size.
+    pub fn at(&self, size: usize) -> i64 {
+        let q = self.size.max(1) as i128;
+        ((self.fee as i128 * size as i128 + q - 1) / q) as i64
+    }
+}
+
+fn read_fee_quote(wallet: &Wallet, id: i64) -> Result<Option<FeeQuote>, WalletError> {
+    let Some(v) = wallet.store.meta(&fee_quote_key(id))? else {
+        return Ok(None);
+    };
+    let f: Vec<&str> = v.split(' ').collect();
+    match f.as_slice() {
+        [fee, size, flagged] => match (fee.parse(), size.parse(), *flagged) {
+            (Ok(fee), Ok(size), "0" | "1") => Ok(Some(FeeQuote {
+                fee,
+                size,
+                flagged: *flagged == "1",
+            })),
+            _ => Err(WalletError::Other(format!("fee quote of row {id}: {v:?}"))),
+        },
+        _ => Err(WalletError::Other(format!("fee quote of row {id}: {v:?}"))),
+    }
+}
+
+fn write_fee_quote(wallet: &Wallet, id: i64, q: &FeeQuote) -> Result<(), WalletError> {
+    wallet.store.set_meta(
+        &fee_quote_key(id),
+        &format!("{} {} {}", q.fee, q.size, u8::from(q.flagged)),
+    )?;
+    Ok(())
+}
+
+/// Record on row `id` the main fee its start accepted (review YEW-REVIEW-5 M2): the fee and size
+/// [`main_fee_guard`] priced, and whether `g` (that guard, required at the start) was flagged. A
+/// restart keeps it (the store's meta).
 pub(crate) fn note_fee_ack(
     wallet: &Wallet,
     id: i64,
     g: &terms::FeeGuard,
 ) -> Result<(), WalletError> {
-    if g.ack.is_some() {
-        wallet.store.set_meta(&fee_ack_key(id), "1")?;
-    }
-    Ok(())
+    let size = crate::params::yed_estimated_size(1, &[]);
+    let fee = wallet.pq_terms().yed_fee(size);
+    write_fee_quote(
+        wallet,
+        id,
+        &FeeQuote {
+            fee,
+            size,
+            flagged: g.ack.is_some(),
+        },
+    )
 }
 
-/// The main transaction's fee at `finish` (review YEW-REVIEW-4 M2): above this build's limit,
-/// refused; unusual, refused unless the row's start acknowledged an unusual fee (the user then
-/// accepted the server's terms as unusual; the limit still holds).
+/// The main transaction's fee at `finish` (review YEW-REVIEW-4 M2, YEW-REVIEW-5 M2):
+/// - above this build's limit: refused;
+/// - the start accepted a flagged fee: at most that fee scaled to the real size;
+/// - the start accepted an unflagged fee: not flagged now, and at most twice that fee scaled to
+///   the real size (the flag threshold);
+/// - a row started by an older build (no quote; its `fee_ack:<id>` is ignored): not flagged now.
+///
+/// Anything else is refused with a new acknowledgement (`accept-unusual-fee:<fee>:row:<id>`); the
+/// same call with `accept` equal to it pays the fee (still within the limit) and records it as the
+/// row's new quote, so the server cannot raise its terms between the carrier and the MINT or
+/// CLAIM without asking again.
 pub(crate) fn check_main_fee(
     wallet: &Wallet,
     id: i64,
     fee: i64,
     inputs: &[Utxo],
+    accept: Option<&str>,
 ) -> Result<(), WalletError> {
     let (size, conventional) = terms::yed_priced_size(inputs.iter().map(|u| u.script.as_slice()));
     let g = wallet.guard_fee(
@@ -497,13 +563,41 @@ pub(crate) fn check_main_fee(
         conventional,
         &format!("row:{id}"),
     )?;
-    if g.ack.is_some() && wallet.store.meta(&fee_ack_key(id))?.is_none() {
-        return Err(WalletError::Other(format!(
-            "unusual-fee: the fee became unusual after you confirmed, so nothing was sent. {} The carrier lapses at the end of its window and can then be swept back.",
-            g.note.unwrap_or_default()
-        )));
+    let quote = read_fee_quote(wallet, id)?;
+    let within = match quote {
+        Some(q) if q.flagged => fee <= q.at(size),
+        Some(q) => g.ack.is_none() && fee <= q.at(size).saturating_mul(2),
+        None => g.ack.is_none(),
+    };
+    if within {
+        return Ok(());
     }
-    Ok(())
+    let ack = format!("accept-unusual-fee:{fee}:row:{id}");
+    if accept == Some(ack.as_str()) {
+        return write_fee_quote(
+            wallet,
+            id,
+            &FeeQuote {
+                fee,
+                size,
+                flagged: true,
+            },
+        );
+    }
+    let was = match quote {
+        Some(q) => format!(
+            "You accepted {} YEC for {} bytes at the start ({} YEC at this size).",
+            crate::build::any_to_any::format_money(q.fee),
+            q.size,
+            crate::build::any_to_any::format_money(q.at(size))
+        ),
+        None => "You accepted no unusual fee at the start.".to_string(),
+    };
+    Err(WalletError::Other(format!(
+        "unusual-fee: the fee changed after you confirmed, so nothing was sent. It is now {} YEC for {size} bytes. {was} {}To pay it, confirm again with the acknowledgement {ack}; otherwise the carrier lapses at the end of its window and can then be swept back.",
+        crate::build::any_to_any::format_money(fee),
+        g.note.map(|n| format!("{n} ")).unwrap_or_default()
+    )))
 }
 
 /// The mint gate now: `GetYellowbackInfo` (its parameter set checked against the network's,
@@ -1194,6 +1288,7 @@ pub async fn finish(
     id: i64,
     tip: u64,
     branch_id: u32,
+    accept_unusual_fee: Option<&str>,
 ) -> Result<Finished, WalletError> {
     let m = wallet.store.mint(id)?.ok_or(MintError::NoSuchMint(id))?;
     if m.state != MintState::CarrierConfirmed {
@@ -1221,7 +1316,8 @@ pub async fn finish(
         .into());
     }
     if m.kind == MintKind::Claim {
-        return super::claim::finish(wallet, client, validator, &m, branch_id).await;
+        return super::claim::finish(wallet, client, validator, &m, branch_id, accept_unusual_fee)
+            .await;
     }
     let owner = m
         .owner
@@ -1257,7 +1353,7 @@ pub async fn finish(
         }
         fee = next;
     };
-    check_main_fee(wallet, m.id, fee, &inputs)?;
+    check_main_fee(wallet, m.id, fee, &inputs, accept_unusual_fee)?;
     let needed = outputs + fee - CARRIER_VALUE;
     let selected: i64 = inputs.iter().map(|u| u.value).sum();
     let mut change = selected - needed;
@@ -1882,6 +1978,166 @@ mod tests {
                 .unwrap();
             restore_step(&w, &m).unwrap();
             assert_eq!(w.store.mint(id).unwrap().unwrap(), m);
+        }
+    }
+
+    // ---- review YEW-REVIEW-5 M2: the finish is bound to the main fee its start accepted
+
+    mod fee_quote {
+        use super::super::*;
+        use crate::params::{self, Network};
+        use crate::store::Store;
+
+        const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        /// The reference YEC price ($1) and the terms at a reported `price`, with the Yellowback
+        /// rate the node's default target gives at `rate_price`.
+        const REF: i64 = 1_000_000;
+
+        fn terms(price: i64, rate_price: i64) -> terms::PqTerms {
+            terms::PqTerms {
+                yed_rate_zat_per_kb: params::attested_rate_zat_per_kb(
+                    params::DEFAULT_YED_FEE_USD_PER_KB_MICRO,
+                    rate_price,
+                    params::ATTESTED_FEE_FLOOR_ZAT_PER_KB,
+                ),
+                price_micro_usd: price,
+                ..terms::PqTerms::default()
+            }
+        }
+
+        fn open(store: Store) -> Wallet {
+            let seed = keys::seed_from_mnemonic(PHRASE, "").unwrap();
+            Wallet::from_parts(store, Network::Regtest, &seed, None).unwrap()
+        }
+
+        /// A wallet that has seen the reference price, on `t`.
+        fn wallet_on(store: Store, t: terms::PqTerms) -> Wallet {
+            let w = open(store);
+            w.set_fee_reference_for_test(REF);
+            w.set_pq_terms_for_test(t);
+            w
+        }
+
+        fn inputs(n: usize) -> Vec<Utxo> {
+            (0..n)
+                .map(|i| Utxo {
+                    outpoint: OutPoint {
+                        txid: [0x21; 32],
+                        n: i as u32,
+                    },
+                    address: String::new(),
+                    script: crate::script::p2pkh_script(&[3; 20]),
+                    value: 1_000_000,
+                    height: 1,
+                    class: UtxoClass::Yec,
+                    cents: 0,
+                })
+                .collect()
+        }
+
+        fn ack_in(e: WalletError) -> String {
+            let m = e.to_string();
+            assert!(
+                m.starts_with("unusual-fee: the fee changed after you confirmed"),
+                "{m}"
+            );
+            let i = m.find("accept-unusual-fee:").expect("an acknowledgement");
+            m[i..].split(';').next().unwrap().to_string()
+        }
+
+        /// An unflagged start: the finish pays up to twice the accepted fee at its real size
+        /// without asking, also after a restart; above it (the server raised its terms between
+        /// the carrier and the MINT) it is refused with a new acknowledgement, which then pays it
+        /// and becomes the row's quote.
+        #[test]
+        fn unflagged_start_bounds_the_finish_across_a_restart() {
+            let w = wallet_on(Store::open_in_memory().unwrap(), terms(REF, REF));
+            let g = main_fee_guard(&w, "mint").unwrap();
+            assert!(g.ack.is_none());
+            note_fee_ack(&w, 7, &g).unwrap();
+            // restart between the start and the finish
+            let w = open(w.store);
+            w.set_pq_terms_for_test(terms(REF, REF));
+            let ins = inputs(2);
+            let (size, _) = terms::yed_priced_size(ins.iter().map(|u| u.script.as_slice()));
+            let q = read_fee_quote(&w, 7).unwrap().unwrap();
+            assert!(!q.flagged);
+            assert!(check_main_fee(&w, 7, q.at(size), &ins, None).is_ok());
+            assert!(check_main_fee(&w, 7, q.at(size) * 2, &ins, None).is_ok());
+            // the server tripled its rate (its price fell): refused, then acknowledged
+            w.set_pq_terms_for_test(terms(REF, REF / 3));
+            let fee = q.at(size) * 2 + 1;
+            let ack = ack_in(check_main_fee(&w, 7, fee, &ins, None).unwrap_err());
+            assert_eq!(ack, format!("accept-unusual-fee:{fee}:row:7"));
+            assert!(check_main_fee(&w, 7, fee, &ins, Some("accept-unusual-fee:1:row:7")).is_err());
+            assert!(check_main_fee(&w, 7, fee, &ins, Some(&ack)).is_ok());
+            let q2 = read_fee_quote(&w, 7).unwrap().unwrap();
+            assert_eq!((q2.fee, q2.size, q2.flagged), (fee, size, true));
+            assert!(check_main_fee(&w, 7, fee, &ins, None).is_ok());
+            assert!(check_main_fee(&w, 7, fee + 1, &ins, None).is_err());
+        }
+
+        /// A flagged, acknowledged start: the finish pays at most that fee scaled to its real
+        /// size, also after a restart; one zat more is refused with a new acknowledgement (no
+        /// longer "anything up to the limit").
+        #[test]
+        fn flagged_start_pays_at_most_what_was_acknowledged() {
+            // the server reports a price below half the reference: flagged
+            let w = wallet_on(Store::open_in_memory().unwrap(), terms(REF / 3, REF / 3));
+            let g = main_fee_guard(&w, "claim").unwrap();
+            assert!(g.ack.is_some());
+            note_fee_ack(&w, 9, &g).unwrap();
+            let w = open(w.store);
+            w.set_pq_terms_for_test(terms(REF / 3, REF / 3));
+            let ins = inputs(1);
+            let (size, _) = terms::yed_priced_size(ins.iter().map(|u| u.script.as_slice()));
+            let q = read_fee_quote(&w, 9).unwrap().unwrap();
+            assert!(q.flagged);
+            assert!(check_main_fee(&w, 9, q.at(size), &ins, None).is_ok());
+            let more = q.at(size) + 1;
+            let ack = ack_in(check_main_fee(&w, 9, more, &ins, None).unwrap_err());
+            assert!(check_main_fee(&w, 9, more, &ins, Some(&ack)).is_ok());
+            // the limit still holds whatever was acknowledged
+            let limit = params::yed_fee_limit(size, 0);
+            assert!(check_main_fee(
+                &w,
+                9,
+                limit + 1,
+                &ins,
+                Some(&format!("accept-unusual-fee:{}:row:9", limit + 1))
+            )
+            .is_err());
+        }
+
+        /// A row started by an older build (no quote): only an unflagged fee goes without asking.
+        #[test]
+        fn a_row_without_a_quote_takes_only_an_unflagged_fee() {
+            let w = wallet_on(Store::open_in_memory().unwrap(), terms(REF, REF));
+            w.store.set_meta("fee_ack:3", "1").unwrap();
+            let ins = inputs(1);
+            let (size, conv) = terms::yed_priced_size(ins.iter().map(|u| u.script.as_slice()));
+            let usual = w
+                .guard_fee(terms::FeeKind::Yed, 0, size, conv, "x")
+                .unwrap()
+                .usual_zat
+                .unwrap();
+            assert!(check_main_fee(&w, 3, usual, &ins, None).is_ok());
+            assert!(check_main_fee(&w, 3, usual * 2 + 1, &ins, None).is_err());
+        }
+
+        /// Scaling rounds up and never divides by zero.
+        #[test]
+        fn quote_scales_with_size() {
+            let q = FeeQuote {
+                fee: 1_000,
+                size: 300,
+                flagged: false,
+            };
+            assert_eq!(q.at(300), 1_000);
+            assert_eq!(q.at(600), 2_000);
+            assert_eq!(q.at(301), 1_004);
+            let z = FeeQuote { size: 0, ..q };
+            assert_eq!(z.at(2), 2_000);
         }
     }
 }

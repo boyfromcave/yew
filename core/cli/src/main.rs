@@ -868,7 +868,10 @@ async fn main() {
         "mint-finish" => {
             let id = parse_id(o.rest.get(1));
             let (w, mut c, mut v, r) = synced(&o).await;
-            let f = fail(w.mint_finish(&mut c, &mut v, id, r.tip, r.branch_id).await);
+            let f = fail(
+                w.mint_finish(&mut c, &mut v, id, r.tip, r.branch_id, None)
+                    .await,
+            );
             println!(
                 "mint {id}: sent {} (node dry run: verdict {} valid {} type {} path {:?} yedIn {} yedOut {} fee {})",
                 f.txid, f.validation.verdict, f.validation.valid, f.validation.tx_type, f.validation.path,

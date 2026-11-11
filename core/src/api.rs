@@ -3335,8 +3335,14 @@ pub fn mints() -> Result<Vec<MintStatus>, YewError> {
 
 /// Send the MINT (or, for a claim row, the CLAIM) over the confirmed carrier (after a sync;
 /// both gate layers). The row must be `CARRIER_CONFIRMED` with the window open; a lapsed
-/// row is refused with `carrier-lapsed`. Returns the row (`MAIN_SENT`).
-pub fn mint_finish(mint_id: i64) -> Result<MintStatus, YewError> {
+/// row is refused with `carrier-lapsed`. Returns the row (`MAIN_SENT`). A main fee above what the
+/// start accepted is refused (`unusual-fee: …`) with a new acknowledgement in the message
+/// (`accept-unusual-fee:<fee>:row:<id>`); calling again with it in `accept_unusual_fee` pays that
+/// fee (review YEW-REVIEW-5 M2).
+pub fn mint_finish(
+    mint_id: i64,
+    accept_unusual_fee: Option<String>,
+) -> Result<MintStatus, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
             let r = o.sync().await?;
@@ -3350,6 +3356,7 @@ pub fn mint_finish(mint_id: i64) -> Result<MintStatus, YewError> {
                         mint_id,
                         r.tip,
                         r.branch_id,
+                        accept_unusual_fee.as_deref(),
                     )
                     .await?;
             }
