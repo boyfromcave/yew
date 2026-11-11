@@ -56,7 +56,14 @@ impl SignerCore {
         tx: &yew_core::tx::Transaction,
         branch_id: u32,
     ) -> Result<Hybrid, Refused> {
-        sapling_prepare(self.sapling_extsk()?, self.network, part, tx, branch_id)
+        sapling_prepare(
+            self.sapling_extsk()?,
+            self.network,
+            part,
+            tx,
+            branch_id,
+            OsRng,
+        )
     }
 }
 

@@ -19,7 +19,7 @@ use crate as yew_core;
 use crate::params::Network;
 use crate::refuse::{self, no, Refused};
 use crate::sapling_part::SaplingOut;
-use rand_core::OsRng;
+use rand_core::{CryptoRng, RngCore};
 use sapling_crypto::value::NoteValue;
 use sapling_crypto::zip32::ExtendedSpendingKey;
 use sapling_crypto::{Anchor, MerklePath, Node, Note, PaymentAddress, Rseed};
@@ -150,8 +150,14 @@ impl Hybrid {
     }
 
     /// The finished transaction: `signed` (the transparent part with its scriptSigs) and the
-    /// Sapling part authorized over the shielded digest.
-    pub fn finish(self, signed: &yew_core::tx::Transaction) -> Result<Vec<u8>, Refused> {
+    /// Sapling part authorized over the shielded digest. `rng` is the randomness of the spend
+    /// authorizations and the binding signature (review YEW-REVIEW-6: injectable for the vector
+    /// test; every production caller passes `OsRng`).
+    pub fn finish(
+        self,
+        signed: &yew_core::tx::Transaction,
+        rng: impl RngCore + CryptoRng,
+    ) -> Result<Vec<u8>, Refused> {
         let shielded = zcash_primitives::transaction::sighash_v4::v4_signature_hash(
             &self.data,
             &zcash_primitives::transaction::sighash::SignableInput::Shielded,
@@ -163,7 +169,7 @@ impl Hybrid {
             .cloned()
             .ok_or_else(|| (refuse::FAILED, "no Sapling part".to_string()))?;
         let authorized = sapling
-            .apply_signatures(OsRng, sighash, &self.asks)
+            .apply_signatures(rng, sighash, &self.asks)
             .map_err(|e| (refuse::FAILED, format!("the Sapling signatures: {e:?}")))?;
         // the transparent part with its scriptSigs, read through librustzcash's parser
         let raw = signed
@@ -196,13 +202,17 @@ impl Hybrid {
 }
 
 /// Build and prove `part` for the transparent transaction `tx` (scriptSigs empty) (review
-/// YEW-PORT-5 R2: a free function; the spending key and the network are parameters).
+/// YEW-PORT-5 R2: a free function; the spending key and the network are parameters). `rng` is
+/// the randomness of the bundle (its order, its dummies, the note commitments' trapdoors) and of
+/// the proofs (review YEW-REVIEW-6: injectable for the vector test; every production caller
+/// passes `OsRng`).
 pub fn sapling_prepare(
     extsk: ExtendedSpendingKey,
     network: Network,
     part: &crate::sapling_part::SaplingPart,
     tx: &yew_core::tx::Transaction,
     branch_id: u32,
+    mut rng: impl RngCore + CryptoRng,
 ) -> Result<Hybrid, Refused> {
     let dfvk = extsk.to_diversifiable_full_viewing_key();
     let internal = extsk.derive_internal();
@@ -279,11 +289,11 @@ pub fn sapling_prepare(
     let (unproven, _) = b
             .build::<zcash_proofs::prover::LocalTxProver, zcash_proofs::prover::LocalTxProver, _, zcash_protocol::value::ZatBalance>(
                 &[extsk.clone(), internal.clone()],
-                OsRng,
+                &mut rng,
             )
             .map_err(|e| (refuse::FAILED, format!("the Sapling bundle: {e:?}")))?
             .ok_or_else(|| (refuse::MALFORMED, "an empty Sapling part".to_string()))?;
-    let proven: ProvenBundle = unproven.create_proofs(&prover, &prover, OsRng, ());
+    let proven: ProvenBundle = unproven.create_proofs(&prover, &prover, &mut rng, ());
     let raw = tx
         .serialize()
         .map_err(|e| (refuse::FAILED, e.to_string()))?;

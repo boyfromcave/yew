@@ -713,7 +713,7 @@ impl SignerCore {
             sighashes[i] = Some(hex::encode(digest));
         }
         let out = match hybrid {
-            Some(h) => h.finish(&tx)?,
+            Some(h) => h.finish(&tx, rand_core::OsRng)?,
             None => tx
                 .serialize()
                 .map_err(|e| (refuse::FAILED, e.to_string()))?,
