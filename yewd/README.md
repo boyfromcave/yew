@@ -289,7 +289,9 @@ transaction (ZIP-243 with `hashShieldedSpends`/`hashShieldedOutputs`), signs the
 and coin inputs as without one, then authorizes the spends and the binding signature. A `z_sendmany`
 with a post-quantum party (beta2 D-2, D-4, D-5: a PQ from address, whose change returns to it, or a PQ
 recipient, which librustzcash's builder cannot pay) takes that `sign` path on the YEC gate, its PQ inputs
-signed with the PQ keys over the same digests; every other shape keeps `sapling_build`.
+signed with the PQ keys over the same digests; every other shape keeps `sapling_build`. `vault_lock`
+takes a funding address, `"from"` (beta2 D-3, `wallet/src/lockfrom.rs`): an ECC or post-quantum
+address's own coins (change back to it) or a Sapling address's notes (the same `sign` path).
 
 **The attestation equivocation guard** (`signer/src/attest.rs`, ycash6 S16 / EQV-1 self-protection):
 `<signer dir>/attest-signed.jsonl`, one record `(seq, key, citedHeight, blockHash, price, sig)` per

@@ -31,6 +31,7 @@ pub mod claim;
 pub mod json;
 pub mod keys;
 pub mod legacy;
+pub mod lockfrom;
 pub mod mint;
 pub mod node;
 pub mod raw;

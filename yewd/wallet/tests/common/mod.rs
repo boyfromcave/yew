@@ -75,6 +75,8 @@ pub struct Chain {
     pub vault_height: Option<u64>,
     /// The Sapling outputs of each block, by height.
     pub sapling: Vec<usize>,
+    /// Each block's transactions, by height.
+    pub txs: Vec<Vec<Vec<u8>>>,
     /// Every transaction `sendrawtransaction` was handed, accepted or not (hex).
     pub sent: Vec<String>,
     /// When set, `sendrawtransaction` refuses with this message (`-26`).
@@ -131,6 +133,7 @@ impl MockNode {
             .map(|t| Transaction::parse(t).unwrap().0.shielded.outputs)
             .sum();
         c.sapling.push(outs);
+        c.txs.push(txs.clone());
         let mined: Vec<String> = txs
             .iter()
             .map(|t| Transaction::parse(t).unwrap().1)
@@ -147,6 +150,7 @@ impl MockNode {
             let (_, raw) = c.blocks.pop().unwrap();
             let _ = raw;
             c.sapling.pop();
+            c.txs.pop();
         }
     }
 
@@ -228,6 +232,62 @@ impl Node for MockNode {
                     return Ok(json!(id));
                 }
                 "z_gettreestate" => json!({"sapling": {}}),
+                "vault_getinfo" => {
+                    json!({"active": c.vault_height.is_some_and(|h| tip as u64 + 1 >= h)})
+                }
+                // every set exists (the vault_lock tests name one)
+                "set_getinfo" => json!({"unlockthreshold": 1, "memberlist": []}),
+                "getblockheader" => {
+                    let want = p[0].as_str().unwrap();
+                    let h = c
+                        .blocks
+                        .iter()
+                        .position(|(b, _)| b == want)
+                        .ok_or(NodeError::Rpc {
+                            code: -5,
+                            message: "Block not found".into(),
+                        })?;
+                    json!({"height": h})
+                }
+                "gettxout" => {
+                    // an unspent output of the chain (or, with the mempool flag, of the mempool)
+                    let want = p[0].as_str().unwrap();
+                    let n = p[1].as_u64().unwrap() as usize;
+                    let mut all: Vec<(Option<usize>, Vec<u8>)> = Vec::new();
+                    for (h, txs) in c.txs.iter().enumerate() {
+                        for t in txs {
+                            all.push((Some(h), t.clone()));
+                        }
+                    }
+                    for (_, t) in &c.mempool {
+                        all.push((None, t.clone()));
+                    }
+                    let parsed: Vec<(Option<usize>, Transaction, String)> = all
+                        .into_iter()
+                        .map(|(h, t)| {
+                            let (tx, id) = Transaction::parse(&t).unwrap();
+                            (h, tx, rev_hex(&id))
+                        })
+                        .collect();
+                    let spent = parsed.iter().any(|(_, tx, _)| {
+                        tx.vin
+                            .iter()
+                            .any(|i| rev_hex(&i.prevout.txid) == want && i.prevout.n as usize == n)
+                    });
+                    match parsed.iter().find(|(_, _, id)| id == want) {
+                        Some((h, tx, _)) if !spent && n < tx.vout.len() => {
+                            let o = &tx.vout[n];
+                            json!({
+                                "bestblock": c.blocks[tip].0,
+                                "confirmations": h.map_or(0, |h| tip - h + 1),
+                                "value": o.value as f64 / 1e8,
+                                "scriptPubKey": {"hex": hex::encode(&o.script_pubkey)},
+                                "coinbase": tx.vin.first().is_some_and(|i| i.prevout.n == u32::MAX),
+                            })
+                        }
+                        _ => Value::Null,
+                    }
+                }
                 "yed_getinfo" => match &c.yed_info {
                     Some(v) => v.clone(),
                     None => {

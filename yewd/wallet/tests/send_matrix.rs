@@ -656,3 +656,168 @@ async fn more_than_100_pq_inputs_are_refused() {
     assert_eq!(e, (-4, "This send needs 102 post-quantum inputs, more than the 100 one transaction may carry; combine the address's coins first with z_mergetoaddress".into()));
     assert!(f.node.0.lock().unwrap().sent.is_empty());
 }
+
+// ------------------------------------------------------------------ vault_lock "from" (D-3)
+
+impl Fix {
+    async fn lock(&mut self, from: Option<Value>) -> Result<Value, (i64, String)> {
+        let mut p = json!({
+            "tag": "TEST",
+            "setid": "11".repeat(32),
+            "delay": 1,
+            "ownerheight": 1000,
+            "amount": 1.0,
+        });
+        if let Some(f) = from {
+            p["from"] = f;
+        }
+        match self.w.call(&self.node, "vault_lock", &[p]).await {
+            Ok(v) => Ok(serde_json::from_str(&v.text()).unwrap()),
+            Err(e) => Err((e.code, e.message)),
+        }
+    }
+}
+
+/// vault_lock funded from each address type: the V first, the inputs only the from address's
+/// coins (or its notes), the change back to it, the fee per its rule, the PQ signatures valid.
+#[tokio::test]
+async fn vault_lock_from_every_address_type() {
+    let mut f = fixture("lockfrom").await;
+    let zaddr = f.zaddr.clone();
+    let ecc = f.ecc.clone();
+    f.send(&ecc, &[(&zaddr, 2 * COIN)], None, None)
+        .await
+        .unwrap();
+    f.mine_sync().await;
+    for (kind, from) in [
+        ("ecc", f.ecc.clone()),
+        ("slh", f.slh.clone()),
+        ("fn", f.fn_.clone()),
+        ("sapling", zaddr.clone()),
+    ] {
+        let z_before = f.zbalance(&zaddr).await;
+        let r = f
+            .lock(Some(json!(from)))
+            .await
+            .unwrap_or_else(|e| panic!("{kind}: {e:?}"));
+        let (tx, raw) = f.last_sent();
+        assert_eq!(
+            r["txid"].as_str().unwrap(),
+            yew_core::tx::txid_hex(&Transaction::parse(&raw).unwrap().1)
+        );
+        assert_eq!(tx.vout[0].value, COIN, "{kind}: the V first");
+        assert!(yew_core::vault::parse_vault(&tx.vout[0].script_pubkey).is_some());
+        if kind == "sapling" {
+            assert!(tx.vin.is_empty() && tx.shielded.spends >= 1, "{kind}");
+            assert_eq!(tx.vout.len(), 1, "{kind}: the change is a note");
+            f.mine_sync().await;
+            let fee = z_before - COIN - f.zbalance(&zaddr).await;
+            assert_eq!(fee, 10_000, "{kind}: max(10,000, conventional)");
+            continue;
+        }
+        let only = addr_script(&from);
+        let mut in_value = 0;
+        for vin in &tx.vin {
+            let (s, v) = f.prevout(&vin.prevout.txid, vin.prevout.n);
+            assert_eq!(s, only, "{kind}: spends only its from address");
+            in_value += v;
+        }
+        assert_eq!(tx.vout.len(), 2, "{kind}: the V and the change");
+        assert_eq!(
+            tx.vout[1].script_pubkey, only,
+            "{kind}: change back to from (D-4)"
+        );
+        let fee = in_value - tx.output_total();
+        let want = match kind {
+            "slh" => 27_000, // 54 ZIP-317 actions of one SLH-DSA input
+            _ => 10_000,     // VAULT_RPC_FEE (an FN-DSA input: 11 actions, 5,500)
+        };
+        assert_eq!(fee, want, "{kind}: fee");
+        if kind != "ecc" {
+            check_pq_signatures(&f, &tx);
+        }
+        f.mine_sync().await;
+    }
+    // "" and no from: the default funding, the wallet's transparent P2PKH coins
+    f.lock(Some(json!(""))).await.unwrap();
+    let (tx, _) = f.last_sent();
+    for vin in &tx.vin {
+        let (s, _) = f.prevout(&vin.prevout.txid, vin.prevout.n);
+        assert!(yew_core::script::p2pkh_hash(&s).is_some());
+    }
+}
+
+/// vault_lock "from" refusals (ycash-dd 97338f107 / ycash6 554f07fc1 strings), and a PQ from
+/// never spends an output YED holds.
+#[tokio::test]
+async fn vault_lock_from_refusals_and_tokens() {
+    let mut f = fixture("lockfromno").await;
+    let e = f.lock(Some(json!(7))).await.unwrap_err();
+    assert_eq!(e, (-8, "from must be an address string".into()));
+    let p2sh = yew_core::keys::encode_p2sh(Network::Regtest, &[0x22; 20]);
+    for bad in [p2sh.as_str(), "nonsense"] {
+        let e = f.lock(Some(json!(bad))).await.unwrap_err();
+        assert_eq!(e, (-5, "bad-address: from: not a transparent P2PKH, post-quantum or Sapling address of this network".into()), "{bad}");
+    }
+    let foreign_pq = yew_core::keys::encode_pq_yec(
+        Network::Regtest,
+        &PqKeyId {
+            scheme: 1,
+            hash: [0x66; 32],
+        },
+    )
+    .unwrap();
+    let foreign_ecc = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x33; 20]);
+    for a in [foreign_pq, foreign_ecc] {
+        let e = f.lock(Some(json!(a))).await.unwrap_err();
+        assert_eq!(e, (-4, "from: not an address of this wallet".into()), "{a}");
+    }
+    // an address of this wallet with no coins, and an empty Sapling address
+    let empty = yew_core::keys::encode_pq_yec(Network::Regtest, &f.w.book.pq_key(1, 1).unwrap().id)
+        .unwrap();
+    let e = f.lock(Some(json!(empty))).await.unwrap_err();
+    assert_eq!(
+        e,
+        (
+            -6,
+            format!("insufficient confirmed funds at {empty}: need 1.0001 more")
+        )
+    );
+    let e = f.lock(Some(json!(f.zaddr.clone()))).await.unwrap_err();
+    assert_eq!(
+        e,
+        (
+            -6,
+            format!(
+                "insufficient-yec: need 1.0001, have 0.00 in confirmed Sapling notes at {}",
+                f.zaddr
+            )
+        )
+    );
+    // a token is never spent as plain YEC: the FN-DSA address's only coin
+    let fn_ = f.fn_.clone();
+    let coin =
+        f.w.coins
+            .iter()
+            .find(|c| c.script == addr_script(&fn_))
+            .unwrap()
+            .clone();
+    f.node.0.lock().unwrap().tokens = vec![json!({"txid": coin.txid, "vout": coin.vout})];
+    let e = f.lock(Some(json!(fn_))).await.unwrap_err();
+    assert_eq!(
+        e,
+        (
+            -6,
+            format!("insufficient confirmed funds at {fn_}: need 1.0001 more")
+        )
+    );
+    // the index cannot answer: nothing is spent from a transparent or PQ from
+    f.node.0.lock().unwrap().tokens_error = Some((
+        -26,
+        "yellowback-unhealthy: a test reason; restart with -reindex-yellowback".into(),
+    ));
+    let slh = f.slh.clone();
+    let e = f.lock(Some(json!(slh))).await.unwrap_err();
+    assert_eq!(e, (-4, "from: refusing to spend as plain YEC while the Yellowback index is unhealthy (a test reason): the wallet's YED coin locks cannot be trusted; restart with -reindex-yellowback".into()));
+    assert!(f.node.0.lock().unwrap().sent.is_empty());
+}
