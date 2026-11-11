@@ -683,10 +683,10 @@ mod tests {
         assert_eq!(p.scheme, crate::pq::SCHEME_FN_DSA_512);
     }
 
-    /// The Sapling proving parameters (`YEW_SAPLING_PARAMS_DIR`, else yewd's default directory,
+    /// The Sapling proving parameters (`YEW_SAPLING_PARAMS`, else yewd's default directory,
     /// as `core/tests/hybrid_cases`).
     fn test_params_dir() -> std::path::PathBuf {
-        if let Ok(d) = std::env::var("YEW_SAPLING_PARAMS_DIR") {
+        if let Ok(d) = std::env::var("YEW_SAPLING_PARAMS") {
             return d.into();
         }
         let home = std::env::var("HOME").unwrap_or_default();

@@ -84,10 +84,10 @@ pub struct Signed {
     pub raw: Vec<u8>,
 }
 
-/// The Sapling proving parameters: `YEW_SAPLING_PARAMS_DIR`, else where yewd looks (its
+/// The Sapling proving parameters: `YEW_SAPLING_PARAMS`, else where yewd looks (its
 /// `params_dir()` default, the directory `send_matrix.rs` proves with).
 pub fn params_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("YEW_SAPLING_PARAMS_DIR") {
+    if let Ok(d) = std::env::var("YEW_SAPLING_PARAMS") {
         return PathBuf::from(d);
     }
     let home = std::env::var("HOME").unwrap_or_default();

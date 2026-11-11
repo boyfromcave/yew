@@ -458,7 +458,7 @@ mod tests {
     const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
     fn params_dir() -> std::path::PathBuf {
-        if let Ok(d) = std::env::var("YEW_SAPLING_PARAMS_DIR") {
+        if let Ok(d) = std::env::var("YEW_SAPLING_PARAMS") {
             return d.into();
         }
         let home = std::env::var("HOME").unwrap_or_default();

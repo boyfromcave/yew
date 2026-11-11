@@ -97,8 +97,19 @@ jobs:
       - run: scripts/check-node-vectors.sh
       - run: scripts/check-deps.sh
       - run: scripts/check-licenses.sh
+      # The Sapling parameters the core's hybrid tests prove with (hybrid_vectors*, build::pq_send,
+      # build::sapling_pq), fetched and checked against the sums ycash6's zcutil/fetch-params.sh
+      # pins (the app-devnet job's steps). No skip path: a missing or mismatched file fails the job,
+      # and the tests read YEW_SAPLING_PARAMS and fail loudly without the files.
+      - name: cache zcash params
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.zcash-params
+          key: zcash-params-8e48ffd2-2f0ebbcb-b685d700
+      - name: fetch and verify zcash params
+        run: scripts/fetch-zcash-params.sh
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      - run: YEW_SAPLING_PARAMS="$HOME/.zcash-params" cargo test --workspace --locked
 
   audit:
     runs-on: ubuntu-latest
@@ -141,8 +152,19 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.event_name != 'pull_request' }}
+      # The Sapling parameters the core's hybrid tests prove with (hybrid_vectors*, build::pq_send,
+      # build::sapling_pq), fetched and checked against the sums ycash6's zcutil/fetch-params.sh
+      # pins (the app-devnet job's steps). No skip path: a missing or mismatched file fails the job,
+      # and the tests read YEW_SAPLING_PARAMS and fail loudly without the files.
+      - name: cache zcash params
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.zcash-params
+          key: zcash-params-8e48ffd2-2f0ebbcb-b685d700
+      - name: fetch and verify zcash params
+        run: scripts/fetch-zcash-params.sh
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      - run: YEW_SAPLING_PARAMS="$HOME/.zcash-params" cargo test --workspace --locked
       - name: iOS core build (unsigned, no xcframework signing)
         run: scripts/build-core-ios.sh
 

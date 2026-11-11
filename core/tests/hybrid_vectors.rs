@@ -7,7 +7,7 @@
 //! statement for statement over `Hybrid::digest`, then `Hybrid::finish`), against the pinned
 //! bytes in `vectors/hybrid_vectors.json` (review YEW-REVIEW-6 item 3: the regression guard
 //! before that loop moves into the core). What is pinned and what is verified:
-//! `hybrid_cases/mod.rs`. Needs the Sapling proving parameters (`YEW_SAPLING_PARAMS_DIR`, else
+//! `hybrid_cases/mod.rs`. Needs the Sapling proving parameters (`YEW_SAPLING_PARAMS`, else
 //! yewd's default directory).
 
 mod hybrid_cases;
