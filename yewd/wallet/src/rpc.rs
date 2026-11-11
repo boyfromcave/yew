@@ -1834,6 +1834,7 @@ impl Wallet {
                 yew_core::payload::PayloadType::Equivocation => "equivocation",
                 yew_core::payload::PayloadType::AttestorRegister => "register",
                 yew_core::payload::PayloadType::AttestorRevive => "revive",
+                yew_core::payload::PayloadType::CancelCosign => "cancelcosign",
                 yew_core::payload::PayloadType::Transfer => "send",
             };
             let o = J::obj()

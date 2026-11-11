@@ -548,7 +548,9 @@ pub async fn confirm_burning(
 /// `checked` selects (the plain-YEC classes) must have its creating transaction in `created`
 /// (raw bytes as the server returned them, by txid), whose txid recomputed from the bytes is
 /// the input's, which has the output, and whose Yellowback payload (if any) assigns it no YED:
-/// not `vout[1]` of a MINT, not an assignment of a TRANSFER or REDEEM.
+/// not `vout[1]` of a MINT, not an assignment of a TRANSFER or REDEEM, not an output at
+/// index 1 or above of a claim cancel (CANCEL_COSIGN, CAN-1); and whose payload is not of a type or version
+/// this build does not know ([`payload::unknown_yellowback`], fail closed).
 pub fn check_provenance(
     tx: &Transaction,
     created: &std::collections::HashMap<[u8; 32], Vec<u8>>,
@@ -577,9 +579,21 @@ pub fn check_provenance(
         if op.n as usize >= parent.vout.len() {
             return Err(bad("its creating transaction has no such output"));
         }
+        if payload::unknown_yellowback(&parent) {
+            return Err(bad(
+                "its creating transaction carries a Yellowback payload of a type or version this app does not know",
+            ));
+        }
         if let Some(found) = payload::find_payload(&parent) {
+            // every way an output comes to hold YED (ycash-dd state.cpp, the four TokenRecord
+            // writes): a MINT's vout[1] (ApplyMint), a TRANSFER's assignments (ApplyTransfer), a
+            // REDEEM's assignments on a vault spend (ApplyVaultSpend), and CAN-1's refund on a
+            // claim cancel, which carries CANCEL_COSIGN (ApplyIntentSpend: the lowest output at
+            // index >= 1 paying the claimant's refund script, at any non-zero value, from vault
+            // state; over-approximated here as every output at index >= 1)
             let assigned = match &found.payload {
                 Payload::Mint { .. } => op.n == 1,
+                Payload::CancelCosign => op.n >= 1,
                 p => p.assignments().iter().any(|a| a.vout as u32 == op.n),
             };
             if assigned {
@@ -1946,7 +1960,62 @@ mod tests {
         }
     }
 
-    /// Property: over random parents (plain, TRANSFER with random assignments, MINT, REDEEM) and
+    /// Review YEW-REVIEW-4 M1. A claim cancel (CANCEL_COSIGN) re-issues the burn to the
+    /// claimant's refund output at any non-zero value, without an assignment: every output at
+    /// index >= 1 of such a parent is refused as plain YEC (vout[0] is the re-created vault). A
+    /// parent whose payload has a type or version this build does not know is refused (fail
+    /// closed); a known type with a malformed body is non-Yellowback and passes.
+    #[test]
+    fn provenance_cancel_refund_and_unknown_payloads() {
+        let cancel = parent(&[5_000_000, 12_345, 800_000], Some(Payload::CancelCosign));
+        let all = |_: &OutPoint| true;
+        let at = |id: [u8; 32], n: u32| spend(&[OutPoint { txid: id, n }]);
+        assert_eq!(
+            check_provenance(&at(cancel.1, 0), &served(&[&cancel]), all),
+            Ok(())
+        );
+        for n in [1, 2] {
+            assert_eq!(
+                check_provenance(&at(cancel.1, n), &served(&[&cancel]), all),
+                Err(GateError::InputCarriesYed {
+                    outpoint: format!("{}:{n}", crate::tx::txid_hex(&cancel.1)),
+                    payload: "cancelcosign",
+                }),
+            );
+        }
+        let with_data = |data: Vec<u8>| {
+            let mut t = Transaction::new_v4();
+            t.vin.push(TxIn::new(OutPoint {
+                txid: [0xee; 32],
+                n: 0,
+            }));
+            t.vout.push(TxOut {
+                value: 70_000,
+                script_pubkey: crate::script::p2pkh_script(&[0x11; 20]),
+            });
+            t.vout.push(TxOut {
+                value: 0,
+                script_pubkey: payload::payload_script(&data),
+            });
+            let raw = t.serialize().unwrap();
+            let (_, id) = Transaction::parse(&raw).unwrap();
+            (raw, id)
+        };
+        for data in [
+            vec![0x59, 0x42, 0x03, 0x0a], // a type this build does not know
+            vec![0x59, 0x42, 0x05, 0x02, 0, 0, 0, 0], // a version it does not know
+        ] {
+            let p = with_data(data);
+            let e = check_provenance(&at(p.1, 0), &served(&[&p]), all).unwrap_err();
+            assert!(e.to_string().contains("does not know"), "{e}");
+        }
+        // a TRANSFER with a malformed body: non-Yellowback (the node assigns nothing)
+        let p = with_data(vec![0x59, 0x42, 0x03, 0x02, 1, 0, 1, 0, 0, 0, 9]);
+        assert_eq!(check_provenance(&at(p.1, 0), &served(&[&p]), all), Ok(()));
+    }
+
+    /// Property: over random parents (plain, TRANSFER with random assignments, MINT, REDEEM,
+    /// CANCEL_COSIGN) and
     /// every output, an input is refused exactly when the node's `FindPayload` reading assigns it
     /// YED; nothing assigned is ever let through.
     #[test]
@@ -1957,7 +2026,7 @@ mod tests {
             let outs: Vec<i64> = (0..n_out)
                 .map(|_| 1 + rng.below(5_000_000) as i64)
                 .collect();
-            let kind = rng.below(4);
+            let kind = rng.below(5);
             let p = match kind {
                 0 => None,
                 1 | 3 => {
@@ -1984,6 +2053,7 @@ mod tests {
                         }
                     })
                 }
+                4 => Some(Payload::CancelCosign),
                 _ if n_out >= 2 => Some(Payload::Mint {
                     term_class: 0,
                     cents: 100,
@@ -2002,6 +2072,7 @@ mod tests {
             for n in 0..n_out as u32 {
                 let want_yed = match &p {
                     Some(Payload::Mint { .. }) => n == 1,
+                    Some(Payload::CancelCosign) => n >= 1,
                     Some(q) => q.assignments().iter().any(|a| a.vout as u32 == n),
                     None => false,
                 };

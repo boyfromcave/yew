@@ -30,6 +30,7 @@
 //! | `0x06` CLAIM_NOTICE | `vaultTxid 32, vaultVout u8, refHeight u32` | 41 |
 //! | `0x07` EQUIVOCATION | (empty) | 4 |
 //! | `0x08` ATTESTOR_REVIVE | `seq u16, priceMicroUsd u32, citedHeight u32, sig 64` | 78 |
+//! | `0x09` CANCEL_COSIGN | (empty: the marker of a claim cancel, CAN-2; the cosignatures ride the bundle carrier) | 4 |
 
 use std::collections::HashSet;
 
@@ -90,6 +91,11 @@ pub enum PayloadType {
     Equivocation = 0x07,
     /// `0x08`.
     AttestorRevive = 0x08,
+    /// `0x09` (CAN-2 + C4b, ycash-dd `payload.h` `CANCEL_COSIGN`): the marker a claim intent's
+    /// cancel carries. The cancel re-issues the claim's burn as a YED token to the claimant's
+    /// refund output (CAN-1, `state.cpp` `ApplyIntentSpend`): YED from vault state, not from an
+    /// assignment.
+    CancelCosign = 0x09,
 }
 
 impl PayloadType {
@@ -103,6 +109,7 @@ impl PayloadType {
             PayloadType::ClaimNotice => "notice",
             PayloadType::Equivocation => "equivocation",
             PayloadType::AttestorRevive => "revive",
+            PayloadType::CancelCosign => "cancelcosign",
         }
     }
 
@@ -115,7 +122,8 @@ impl PayloadType {
             0x06 => PayloadType::ClaimNotice,
             0x07 => PayloadType::Equivocation,
             0x08 => PayloadType::AttestorRevive,
-            _ => return None, // 0x04, 0x09-0xFF: reserved, non-Yellowback
+            0x09 => PayloadType::CancelCosign,
+            _ => return None, // 0x04, 0x0A-0xFF: reserved, non-Yellowback
         })
     }
 }
@@ -200,6 +208,8 @@ pub enum Payload {
         /// The compact signature.
         sig: [u8; 64],
     },
+    /// CANCEL_COSIGN (`payload.cpp` `Payload::CancelCosign`): empty body.
+    CancelCosign,
 }
 
 impl Payload {
@@ -213,6 +223,7 @@ impl Payload {
             Payload::ClaimNotice { .. } => PayloadType::ClaimNotice,
             Payload::Equivocation => PayloadType::Equivocation,
             Payload::AttestorRevive { .. } => PayloadType::AttestorRevive,
+            Payload::CancelCosign => PayloadType::CancelCosign,
         }
     }
 
@@ -361,7 +372,7 @@ pub fn encode(payload: &Payload) -> Option<Vec<u8>> {
             out.push(*vault_vout);
             out.extend_from_slice(&ref_height.to_le_bytes());
         }
-        Payload::Equivocation => {}
+        Payload::Equivocation | Payload::CancelCosign => {}
         Payload::AttestorRevive {
             seq,
             price_micro_usd,
@@ -456,6 +467,12 @@ fn decode_body_v3(r: &mut Reader<'_>, t: PayloadType, size: usize) -> Option<Pay
             }
             Payload::Equivocation
         }
+        PayloadType::CancelCosign => {
+            if size != 4 {
+                return None;
+            }
+            Payload::CancelCosign
+        }
         PayloadType::AttestorRevive => {
             if size != 4 + REVIVE_BODY_SIZE {
                 return None;
@@ -541,6 +558,27 @@ pub fn find_op_return(tx: &Transaction) -> Option<usize> {
         }
     }
     found
+}
+
+/// True when `tx`'s only `OP_RETURN` carries the Yellowback magic, in the size range, with a
+/// type byte this build does not know or a version other than that type's (the node, if it is
+/// newer, may give it a meaning, YED-creating or not; this build cannot tell). Layer 3 of the
+/// gate refuses to spend an output of such a transaction as plain YEC (review YEW-REVIEW-4 M1).
+/// A known type at its version with a malformed body is non-Yellowback to every node version
+/// (`DecodePayload` fails), so it is not counted here.
+pub fn unknown_yellowback(tx: &Transaction) -> bool {
+    let Some(data) =
+        find_op_return(tx).and_then(|i| extract_op_return_data(&tx.vout[i].script_pubkey))
+    else {
+        return false;
+    };
+    if data[0] != MAGIC[0] || data[1] != MAGIC[1] {
+        return false;
+    }
+    match PayloadType::from_byte(data[3]) {
+        None => true,
+        Some(t) => data[2] != version_of(t),
+    }
 }
 
 /// What [`find_payload`] returns (`FoundPayload`, `payload.h:167`).
@@ -799,5 +837,80 @@ mod tests {
         assert!(decode(&t4).is_none(), "a v4 TRANSFER would burn its YED");
         assert_eq!(version_of(PayloadType::Mint), 0x04);
         assert_eq!(version_of(PayloadType::Redeem), 0x03);
+    }
+
+    /// CANCEL_COSIGN (0x09, ycash-dd `payload.cpp` `DecodeBodyV3`): version 3, empty body, exactly
+    /// four bytes; anything after the header is malformed (review YEW-REVIEW-4 M1).
+    #[test]
+    fn cancel_cosign_decodes() {
+        let b = encode(&Payload::CancelCosign).unwrap();
+        assert_eq!(b, vec![0x59, 0x42, 0x03, 0x09]);
+        assert_eq!(decode(&b), Some(Payload::CancelCosign));
+        assert_eq!(PayloadType::CancelCosign.name(), "cancelcosign");
+        let mut long = b.clone();
+        long.push(0);
+        assert_eq!(decode(&long), None);
+        let mut v4 = b.clone();
+        v4[2] = MINT_VERSION;
+        assert_eq!(decode(&v4), None);
+    }
+
+    /// `unknown_yellowback`: the magic with an unknown type or a wrong version counts; a known
+    /// type at its version (well formed or not), another magic, or no single `OP_RETURN` do not.
+    #[test]
+    fn unknown_yellowback_payloads() {
+        let tx_with = |datas: &[Vec<u8>]| {
+            let mut t = Transaction::new_v4();
+            t.vout.push(crate::tx::TxOut {
+                value: 5,
+                script_pubkey: crate::script::p2pkh_script(&[1; 20]),
+            });
+            for d in datas {
+                t.vout.push(crate::tx::TxOut {
+                    value: 0,
+                    script_pubkey: payload_script(d),
+                });
+            }
+            t
+        };
+        let transfer = encode(&transfer(&[(0, 5)])).unwrap();
+        assert!(!unknown_yellowback(&tx_with(std::slice::from_ref(
+            &transfer
+        ))));
+        assert!(!unknown_yellowback(&tx_with(&[vec![
+            0x59, 0x42, 0x03, 0x09
+        ]])));
+        for t in [0x00u8, 0x04, 0x0a, 0x7f, 0xff] {
+            assert!(
+                unknown_yellowback(&tx_with(&[vec![0x59, 0x42, 0x03, t]])),
+                "type {t:#x}"
+            );
+        }
+        let mut v5 = transfer.clone();
+        v5[2] = 0x05;
+        assert!(unknown_yellowback(&tx_with(&[v5])));
+        let mut mint_v3 = encode(&Payload::Mint {
+            term_class: 0,
+            cents: 1,
+            lock_height: 1,
+            ref_height: 1,
+            owner: PqKeyId {
+                scheme: 1,
+                hash: [0; 32],
+            },
+            fee_vout: FEE_VOUT_NONE,
+            attest_fee_vout: FEE_VOUT_NONE,
+        })
+        .unwrap();
+        mint_v3[2] = 0x03;
+        assert!(unknown_yellowback(&tx_with(&[mint_v3])));
+        // a known type at its version, malformed: non-Yellowback to every node version
+        let mut bad = transfer.clone();
+        bad.push(0);
+        assert!(!unknown_yellowback(&tx_with(&[bad])));
+        assert!(!unknown_yellowback(&tx_with(&[b"XY\x03\x0a".to_vec()])));
+        assert!(!unknown_yellowback(&tx_with(&[])));
+        let unk = vec![0x59, 0x42, 0x03, 0x0a];
+        assert!(!unknown_yellowback(&tx_with(&[unk.clone(), unk])));
     }
 }
