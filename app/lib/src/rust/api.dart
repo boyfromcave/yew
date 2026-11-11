@@ -1741,8 +1741,13 @@ class PqSendPreviewInfo {
   /// The signed transaction's size, bytes.
   final int sizeBytes;
 
-  /// Milliseconds the signatures took on this device.
-  final BigInt signMillis;
+  /// Milliseconds the signatures took on this device; `None` where the platform cannot
+  /// measure it (the browser).
+  final BigInt? signMillis;
+
+  /// Set when the fee is unusually high: why (the price it rests on is the server's, which the
+  /// app cannot verify). Show it next to the fee.
+  final String? feeNote;
 
   /// `nExpiryHeight`.
   final int expiryHeight;
@@ -1761,7 +1766,8 @@ class PqSendPreviewInfo {
     required this.changeZat,
     required this.inputs,
     required this.sizeBytes,
-    required this.signMillis,
+    this.signMillis,
+    this.feeNote,
     required this.expiryHeight,
     required this.txid,
   });
@@ -1779,6 +1785,7 @@ class PqSendPreviewInfo {
       inputs.hashCode ^
       sizeBytes.hashCode ^
       signMillis.hashCode ^
+      feeNote.hashCode ^
       expiryHeight.hashCode ^
       txid.hashCode;
 
@@ -1798,6 +1805,7 @@ class PqSendPreviewInfo {
           inputs == other.inputs &&
           sizeBytes == other.sizeBytes &&
           signMillis == other.signMillis &&
+          feeNote == other.feeNote &&
           expiryHeight == other.expiryHeight &&
           txid == other.txid;
 }

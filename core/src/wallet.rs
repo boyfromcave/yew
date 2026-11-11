@@ -126,6 +126,10 @@ pub struct Wallet {
     /// The server's post-quantum terms as last read (`params.pq`, rpcversion 7): the size fee
     /// rate and the Falcon activation ([`Wallet::pq_terms`]).
     pq_terms: std::sync::Mutex<crate::build::terms::PqTerms>,
+    /// Why the last server's terms were refused ([`Wallet::note_server_params`]), `None` once a
+    /// server's terms were accepted: a post-quantum send refuses with it rather than price itself
+    /// on older terms (review YEW-REVIEW-3 M1).
+    terms_refused: std::sync::Mutex<Option<String>>,
     /// The Sapling side (`None` for a wallet over an in-memory store, as the unit tests use).
     pub shielded: Option<Shielded>,
 }
@@ -297,6 +301,7 @@ impl Wallet {
             pq_ids: std::sync::Mutex::new(HashMap::new()),
             falcon_ids: std::sync::Mutex::new(HashMap::new()),
             pq_terms: std::sync::Mutex::new(stored_terms),
+            terms_refused: std::sync::Mutex::new(None),
             shielded: None,
         };
         w.ensure_gap()?;
@@ -637,6 +642,14 @@ impl Wallet {
         *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Why the last server's post-quantum terms were refused, if they were.
+    pub fn terms_refused(&self) -> Option<String> {
+        self.terms_refused
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     /// Set the post-quantum terms directly (unit tests of the builders).
     #[cfg(test)]
     pub(crate) fn set_pq_terms_for_test(&self, t: crate::build::terms::PqTerms) {
@@ -657,12 +670,14 @@ impl Wallet {
         &self,
         p: Option<&crate::net::rpc::YellowbackParams>,
     ) -> Result<crate::build::terms::PqTerms, crate::build::mint::MintError> {
-        let t = crate::build::terms::pq_terms(
-            p.ok_or_else(|| crate::build::mint::MintError::Inconsistent {
+        let read = p
+            .ok_or_else(|| crate::build::mint::MintError::Inconsistent {
                 what: "GetYellowbackInfo carries no params".into(),
-            })?,
-            self.network,
-        )?;
+            })
+            .and_then(|p| crate::build::terms::pq_terms(p, self.network));
+        *self.terms_refused.lock().unwrap_or_else(|e| e.into_inner()) =
+            read.as_ref().err().map(|e| e.to_string());
+        let t = read?;
         *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner()) = t;
         // Remembered for an offline open (the receive address, the CLI): a failed write only
         // costs the default until the next server answer.
@@ -718,8 +733,11 @@ impl Wallet {
             next(d.flat_zat).clamp(crate::params::FEE_ZAT, crate::params::MAX_YED_TX_FEE_ZAT);
         let cap = next(d.max_fee_zat).clamp(flat, crate::params::MAX_YED_TX_FEE_ZAT);
         Some(crate::build::terms::PqTerms {
-            fee_rate_zat_per_kb: rate.max(floor),
-            yed_rate_zat_per_kb: yed,
+            // review YEW-REVIEW-3 M1: a stored rate is held to the same limits as a server's
+            fee_rate_zat_per_kb: rate
+                .max(floor)
+                .min(crate::params::MAX_PLAIN_FEE_RATE_ZAT_PER_KB),
+            yed_rate_zat_per_kb: yed.min(crate::params::MAX_YED_FEE_RATE_ZAT_PER_KB),
             floor_rate_zat_per_kb: floor_rate,
             flat_zat: flat,
             max_fee_zat: cap,

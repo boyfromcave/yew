@@ -557,6 +557,10 @@ class FakeWalletApi implements WalletApi {
   List<PqSource> pqSourcesAnswer = const [];
   Object? pqPreviewError;
   Object? pqConfirmError;
+  /// The core's unusual-fee note on the next PQ preview (review YEW-REVIEW-3 M1).
+  String? pqFeeNote;
+  /// The browser: no signing time measured (review YEW-REVIEW-3 L5).
+  bool pqSignUnmeasured = false;
   AddressPair pqFalconAddress = const AddressPair(ye: '', s: fakeS, path: "m/44'/347'/0'/0/0 (FN-DSA-512)", coveredBySeed: true, address: fakePqFalcon, kind: ReceiveKind.pqFalcon);
   AddressPair pqSlhAddress = const AddressPair(ye: '', s: fakeS, path: "m/44'/347'/0'/0/0 (SLH-DSA-SHA2-128s)", coveredBySeed: true, address: fakePqSlh, kind: ReceiveKind.pqSlh);
 
@@ -579,7 +583,8 @@ class FakeWalletApi implements WalletApi {
       changeZat: 50000,
       inputs: 1,
       sizeBytes: slh ? 8120 : 1800,
-      signMillis: BigInt.from(slh ? 900 : 12),
+      signMillis: pqSignUnmeasured ? null : BigInt.from(slh ? 900 : 12),
+      feeNote: pqFeeNote,
       expiryHeight: 524,
       txid: 'qq' * 32,
     );

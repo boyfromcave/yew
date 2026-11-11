@@ -225,6 +225,24 @@ void main() {
     expect(find.text('Sent'), findsNothing);
   });
 
+  testWidgets('an unusually high post-quantum fee is marked with the core\'s reason; no clock reads "not measured"', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.pqSourcesAnswer = const [slhSource];
+    const note = 'Unusually high fee: 0.50 YEC, above 0.10 YEC for a 8120-byte post-quantum send. It is priced at 6000000 zat/KB from the YEC price the server reports, which this app cannot verify; check the YEC price before you send.';
+    h.api.pqFeeNote = note;
+    h.api.pqSignUnmeasured = true;
+    await openSend(tester, h);
+    await choosePqSource(tester);
+    await tester.enterText(find.byKey(const Key('address')), fakeS);
+    await tester.enterText(find.byKey(const Key('amount')), '0.5');
+    await tester.tap(find.byKey(const Key('preview')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('pq-fee-note')), findsOneWidget);
+    expect(find.text(note), findsOneWidget);
+    expect(find.text('not measured on this device'), findsOneWidget);
+    expect(find.textContaining('0.00 s'), findsNothing);
+  });
+
   testWidgets('without post-quantum coins there is no source chooser', (tester) async {
     final h = Harness(withWallet: true);
     await openSend(tester, h);

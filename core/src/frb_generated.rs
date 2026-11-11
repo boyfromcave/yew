@@ -2378,6 +2378,17 @@ impl SseDecode for Option<i64> {
     }
 }
 
+impl SseDecode for Option<u64> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<u64>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for crate::api::ParamsProgress {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2425,7 +2436,8 @@ impl SseDecode for crate::api::PqSendPreviewInfo {
         let mut var_changeZat = <i64>::sse_decode(deserializer);
         let mut var_inputs = <u32>::sse_decode(deserializer);
         let mut var_sizeBytes = <u32>::sse_decode(deserializer);
-        let mut var_signMillis = <u64>::sse_decode(deserializer);
+        let mut var_signMillis = <Option<u64>>::sse_decode(deserializer);
+        let mut var_feeNote = <Option<String>>::sse_decode(deserializer);
         let mut var_expiryHeight = <u32>::sse_decode(deserializer);
         let mut var_txid = <String>::sse_decode(deserializer);
         return crate::api::PqSendPreviewInfo {
@@ -2440,6 +2452,7 @@ impl SseDecode for crate::api::PqSendPreviewInfo {
             inputs: var_inputs,
             size_bytes: var_sizeBytes,
             sign_millis: var_signMillis,
+            fee_note: var_feeNote,
             expiry_height: var_expiryHeight,
             txid: var_txid,
         };
@@ -3544,6 +3557,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::PqSendPreviewInfo {
             self.inputs.into_into_dart().into_dart(),
             self.size_bytes.into_into_dart().into_dart(),
             self.sign_millis.into_into_dart().into_dart(),
+            self.fee_note.into_into_dart().into_dart(),
             self.expiry_height.into_into_dart().into_dart(),
             self.txid.into_into_dart().into_dart(),
         ]
@@ -4512,6 +4526,16 @@ impl SseEncode for Option<i64> {
     }
 }
 
+impl SseEncode for Option<u64> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <u64>::sse_encode(value, serializer);
+        }
+    }
+}
+
 impl SseEncode for crate::api::ParamsProgress {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -4546,7 +4570,8 @@ impl SseEncode for crate::api::PqSendPreviewInfo {
         <i64>::sse_encode(self.change_zat, serializer);
         <u32>::sse_encode(self.inputs, serializer);
         <u32>::sse_encode(self.size_bytes, serializer);
-        <u64>::sse_encode(self.sign_millis, serializer);
+        <Option<u64>>::sse_encode(self.sign_millis, serializer);
+        <Option<String>>::sse_encode(self.fee_note, serializer);
         <u32>::sse_encode(self.expiry_height, serializer);
         <String>::sse_encode(self.txid, serializer);
     }

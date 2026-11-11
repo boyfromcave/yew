@@ -27,7 +27,7 @@ use crate::coins::{Utxo, UtxoClass};
 use crate::gate::{self, Validator};
 use crate::keys::{self, YecDestination};
 use crate::net::{CompactClient, Validation};
-use crate::params::{TOKEN_VALUE, TX_EXPIRY_DELTA, VAULT_BRANCH_ID};
+use crate::params::{self, TOKEN_VALUE, TX_EXPIRY_DELTA, VAULT_BRANCH_ID};
 use crate::store::HistoryRow;
 use crate::tx::{txid_hex, Transaction, TxIn, TxOut};
 use crate::wallet::{Wallet, WalletError};
@@ -65,8 +65,12 @@ pub struct PqSendPreview {
     pub raw: Vec<u8>,
     /// Its txid (internal order).
     pub txid: [u8; 32],
-    /// Milliseconds spent signing (an SLH-DSA signature takes noticeably longer than ECDSA).
-    pub sign_millis: u64,
+    /// Milliseconds spent signing (an SLH-DSA signature takes noticeably longer than ECDSA);
+    /// `None` where the platform has no clock to measure it (the browser).
+    pub sign_millis: Option<u64>,
+    /// Set when the fee is unusually high (above [`params::pq_fee_unusual_threshold`]): why, for
+    /// the preview to show next to the fee (review YEW-REVIEW-3 M1).
+    pub fee_note: Option<String>,
 }
 
 fn other(m: impl Into<String>) -> WalletError {
@@ -96,6 +100,12 @@ pub fn build_pq_send(
         return Err(other(
             "post-quantum addresses can be spent from only once the vault upgrade is active at the next block",
         ));
+    }
+    // review YEW-REVIEW-3 M1: never price a send on older terms when the server's were refused
+    if let Some(why) = wallet.terms_refused() {
+        return Err(other(format!(
+            "The server's fee terms were refused, so nothing is sent: {why}"
+        )));
     }
     let terms = wallet.pq_terms();
     let falcon_next = terms.falcon_at(tip + 1);
@@ -189,9 +199,9 @@ pub fn build_pq_send(
         }
     }
     #[cfg(not(target_arch = "wasm32"))]
-    let sign_millis = started.elapsed().as_millis() as u64;
+    let sign_millis = Some(started.elapsed().as_millis() as u64);
     #[cfg(target_arch = "wasm32")]
-    let sign_millis = 0u64;
+    let sign_millis = None;
     tx.check_script_sig_sizes()?;
     let raw = tx.serialize()?;
     // the signed transaction re-priced: the estimate must cover it
@@ -199,6 +209,23 @@ pub fn build_pq_send(
     let conventional = tx.zip317_conventional_fee(&sizes)?;
     plan::check_signed_fee(p.fee, raw.len(), conventional, rate, cap)
         .map_err(|e| other(e.to_string()))?;
+    // review YEW-REVIEW-3 M1: the fee is bounded by this build, whatever the server's terms say
+    let limit = params::pq_send_fee_limit(raw.len(), conventional);
+    if p.fee > limit {
+        return Err(other(fee_limit_refusal(p.fee, limit, rate, raw.len())));
+    }
+    // review YEW-REVIEW-3 L6: the signed bytes are what the preview shows
+    check_signed_locally(&tx, &p.selected, p.fee)?;
+    let unusual = params::pq_fee_unusual_threshold(raw.len(), conventional);
+    let fee_note = (p.fee > unusual).then(|| {
+        format!(
+            "Unusually high fee: {} YEC, above {} YEC for a {}-byte post-quantum send. It is priced at {} zat/KB from the YEC price the server reports, which this app cannot verify; check the YEC price before you send.",
+            plan::format_money(p.fee),
+            plan::format_money(unusual),
+            raw.len(),
+            rate
+        )
+    });
     let txid = tx.txid()?;
     gate::check(gate::Path::PqSpend, &raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
@@ -216,7 +243,66 @@ pub fn build_pq_send(
         raw,
         txid,
         sign_millis,
+        fee_note,
     })
+}
+
+/// The refusal of a fee above [`params::pq_send_fee_limit`], naming the quoted rate and the limit.
+fn fee_limit_refusal(fee: i64, limit: i64, rate: i64, size: usize) -> String {
+    format!(
+        "Fee {} YEC is above this app's limit of {} YEC for a {size}-byte post-quantum send (at most {} zat/KB, $0.02/KB at $0.01 per YEC); the server quotes {rate} zat/KB from a YEC price it reports and this app cannot verify. Nothing was sent; try another server.",
+        plan::format_money(fee),
+        plan::format_money(limit),
+        params::MAX_PLAIN_FEE_RATE_ZAT_PER_KB
+    )
+}
+
+/// Review YEW-REVIEW-3 L6, before a signed send leaves the builder: the inputs are exactly the
+/// selected coins, in order, and their total less the outputs is the fee the preview shows; each
+/// input's public key hashes to its coin's `TX_PQPKH` key hash. The node's dry run checks both
+/// again; this does not rest on it.
+fn check_signed_locally(
+    tx: &Transaction,
+    selected: &[PqCoin<Utxo>],
+    fee: i64,
+) -> Result<(), WalletError> {
+    if tx.vin.len() != selected.len() {
+        return Err(other(
+            "the signed transaction's inputs are not the selected coins",
+        ));
+    }
+    let mut total_in: i64 = 0;
+    for (i, c) in selected.iter().enumerate() {
+        if tx.vin[i].prevout != c.outpoint {
+            return Err(other(
+                "the signed transaction's inputs are not the selected coins",
+            ));
+        }
+        let id = crate::pq::pqpkh_of(&c.script)
+            .ok_or_else(|| other("a selected coin is not a post-quantum (TX_PQPKH) output"))?;
+        let (_, pk) = crate::pq::parse_pqpkh_script_sig(&tx.vin[i].script_sig)
+            .ok_or_else(|| other("a post-quantum input carries no signature"))?;
+        if crate::pq::PqKeyId::of(id.scheme, &pk) != id {
+            return Err(other(
+                "a post-quantum input's public key does not hash to its coin's key hash",
+            ));
+        }
+        total_in = total_in
+            .checked_add(c.value)
+            .ok_or_else(|| other("input total out of range"))?;
+    }
+    let total_out = tx
+        .vout
+        .iter()
+        .try_fold(0i64, |a, o| a.checked_add(o.value))
+        .ok_or_else(|| other("output total out of range"))?;
+    if total_in - total_out != fee {
+        return Err(other(format!(
+            "the signed transaction pays a fee of {} zat, not the {fee} zat the preview shows",
+            total_in - total_out
+        )));
+    }
+    Ok(())
 }
 
 /// Both gate layers on the preview ([`gate::Path::PqSpend`]: the node must say `ok, burned 0`;
@@ -236,6 +322,14 @@ pub async fn broadcast(
     })
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
+    // review YEW-REVIEW-3 L6: the dry run's `feeZat` is the Yellowback enforcement fee, which a
+    // plain YEC send never pays (its network fee is not in the answer: the local check covers it)
+    if validation.fee_zat != 0 {
+        return Err(other(format!(
+            "the node's dry run reports a Yellowback fee of {} zat on a plain YEC send; nothing was sent",
+            validation.fee_zat
+        )));
+    }
     let txid = txid_hex(&p.txid);
     let spent: i64 = p.inputs.iter().map(|u| u.value).sum();
     let persist = || -> Result<(), WalletError> {
@@ -395,5 +489,92 @@ mod tests {
                 .starts_with("Insufficient transparent funds, have 0.03, need"),
             "{e}"
         );
+    }
+
+    /// Review YEW-REVIEW-3 M1: terms that would make the fee exceed this build's limit (as a
+    /// server reporting a tiny price would, had its terms got through) are refused, naming the
+    /// quoted rate and the limit; at exactly the limit rate the send passes with the unusual-fee
+    /// note; honest terms keep their fee and carry no note.
+    #[test]
+    fn fee_limit_and_unusual_note() {
+        let (w, from, _) = wallet_with(&[(30 * params::COIN, UtxoClass::PqOwned)]);
+        // honest default terms: the fee is unchanged by the limit, no note
+        let honest = build_pq_send(&w, &from, &ecc_to(), 1_000_000, 100, VAULT_BRANCH_ID).unwrap();
+        assert!(honest.fee_note.is_none());
+        assert!(honest.fee < params::DEFAULT_TRANSACTION_MAXFEE_ZAT);
+        let mut t = w.pq_terms();
+        // hostile: 10 YEC/KB with the 10 YEC cap
+        t.fee_rate_zat_per_kb = 10 * params::COIN;
+        t.max_fee_zat = params::MAX_YED_TX_FEE_ZAT;
+        w.set_pq_terms_for_test(t);
+        let e = build_pq_send(&w, &from, &ecc_to(), 1_000_000, 100, VAULT_BRANCH_ID).unwrap_err();
+        let e = e.to_string();
+        assert!(
+            e.starts_with("Fee 10.00 YEC is above this app's limit of")
+                && e.contains("the server quotes 1000000000 zat/KB"),
+            "{e}"
+        );
+        // the boundary: exactly the limit rate passes, marked unusual
+        t.fee_rate_zat_per_kb = params::MAX_PLAIN_FEE_RATE_ZAT_PER_KB;
+        w.set_pq_terms_for_test(t);
+        let p = build_pq_send(&w, &from, &ecc_to(), 1_000_000, 100, VAULT_BRANCH_ID).unwrap();
+        let conventional = {
+            let (tx, _) = Transaction::parse(&p.raw).unwrap();
+            let sizes: Vec<usize> = tx.vin.iter().map(|i| i.script_sig.len()).collect();
+            tx.zip317_conventional_fee(&sizes).unwrap()
+        };
+        assert_eq!(p.fee, params::pq_send_fee_limit(p.raw.len(), conventional));
+        let note = p.fee_note.expect("an unusual fee is marked");
+        assert!(
+            note.starts_with("Unusually high fee:") && note.contains("cannot verify"),
+            "{note}"
+        );
+    }
+
+    /// Review YEW-REVIEW-3 M1: when the server's terms were refused, the send refuses with the
+    /// reason instead of pricing itself on older terms.
+    #[test]
+    fn refused_terms_refuse_the_send() {
+        let (w, from, _) = wallet_with(&[(3_000_000, UtxoClass::PqOwned)]);
+        assert!(w.note_server_params(None).is_err());
+        let e = build_pq_send(&w, &from, &ecc_to(), 1_000_000, 100, VAULT_BRANCH_ID).unwrap_err();
+        assert!(
+            e.to_string()
+                .starts_with("The server's fee terms were refused"),
+            "{e}"
+        );
+    }
+
+    /// Review YEW-REVIEW-3 L6: the local checks of the signed bytes refuse a fee other than the
+    /// preview's, an input other than the selected coin, and a key that is not the coin's.
+    #[test]
+    fn signed_bytes_are_checked_locally() {
+        let (w, from, _) = wallet_with(&[(3_000_000, UtxoClass::PqOwned)]);
+        let p = build_pq_send(&w, &from, &ecc_to(), 1_000_000, 100, VAULT_BRANCH_ID).unwrap();
+        let (tx, _) = Transaction::parse(&p.raw).unwrap();
+        let sel: Vec<PqCoin<Utxo>> = p
+            .inputs
+            .iter()
+            .map(|u| PqCoin {
+                outpoint: u.outpoint,
+                value: u.value,
+                script: u.script.clone(),
+                key: u.clone(),
+            })
+            .collect();
+        check_signed_locally(&tx, &sel, p.fee).unwrap();
+        let e = check_signed_locally(&tx, &sel, p.fee + 1).unwrap_err();
+        assert!(e.to_string().contains("not the"), "{e}");
+        let mut moved = sel.clone();
+        moved[0].outpoint.n = 7;
+        assert!(check_signed_locally(&tx, &moved, p.fee).is_err());
+        let mut foreign = sel.clone();
+        foreign[0].script = crate::pq::pqpkh_script(&crate::pq::PqKeyId {
+            scheme: crate::pq::SCHEME_FN_DSA_512,
+            hash: [3; 32],
+        })
+        .unwrap();
+        let e = check_signed_locally(&tx, &foreign, p.fee).unwrap_err();
+        assert!(e.to_string().contains("does not hash"), "{e}");
     }
 }

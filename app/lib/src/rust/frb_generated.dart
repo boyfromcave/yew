@@ -1834,6 +1834,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BigInt dco_decode_box_autoadd_u_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_u_64(raw);
+  }
+
+  @protected
   ClaimIntent dco_decode_claim_intent(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -2200,6 +2206,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_u_64(raw);
+  }
+
+  @protected
   ParamsProgress dco_decode_params_progress(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -2232,8 +2244,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   PqSendPreviewInfo dco_decode_pq_send_preview_info(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 13)
-      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
     return PqSendPreviewInfo(
       previewId: dco_decode_String(arr[0]),
       from: dco_decode_String(arr[1]),
@@ -2245,9 +2257,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       changeZat: dco_decode_i_64(arr[7]),
       inputs: dco_decode_u_32(arr[8]),
       sizeBytes: dco_decode_u_32(arr[9]),
-      signMillis: dco_decode_u_64(arr[10]),
-      expiryHeight: dco_decode_u_32(arr[11]),
-      txid: dco_decode_String(arr[12]),
+      signMillis: dco_decode_opt_box_autoadd_u_64(arr[10]),
+      feeNote: dco_decode_opt_String(arr[11]),
+      expiryHeight: dco_decode_u_32(arr[12]),
+      txid: dco_decode_String(arr[13]),
     );
   }
 
@@ -2751,6 +2764,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MintTerms sse_decode_box_autoadd_mint_terms(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_mint_terms(deserializer));
+  }
+
+  @protected
+  BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_u_64(deserializer));
   }
 
   @protected
@@ -3287,6 +3306,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_u_64(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   ParamsProgress sse_decode_params_progress(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_file = sse_decode_String(deserializer);
@@ -3333,7 +3363,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_changeZat = sse_decode_i_64(deserializer);
     var var_inputs = sse_decode_u_32(deserializer);
     var var_sizeBytes = sse_decode_u_32(deserializer);
-    var var_signMillis = sse_decode_u_64(deserializer);
+    var var_signMillis = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_feeNote = sse_decode_opt_String(deserializer);
     var var_expiryHeight = sse_decode_u_32(deserializer);
     var var_txid = sse_decode_String(deserializer);
     return PqSendPreviewInfo(
@@ -3348,6 +3379,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       inputs: var_inputs,
       sizeBytes: var_sizeBytes,
       signMillis: var_signMillis,
+      feeNote: var_feeNote,
       expiryHeight: var_expiryHeight,
       txid: var_txid,
     );
@@ -3964,6 +3996,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self, serializer);
+  }
+
+  @protected
   void sse_encode_claim_intent(ClaimIntent self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.intent, serializer);
@@ -4352,6 +4390,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_u_64(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_params_progress(
     ParamsProgress self,
     SseSerializer serializer,
@@ -4389,7 +4437,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_64(self.changeZat, serializer);
     sse_encode_u_32(self.inputs, serializer);
     sse_encode_u_32(self.sizeBytes, serializer);
-    sse_encode_u_64(self.signMillis, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.signMillis, serializer);
+    sse_encode_opt_String(self.feeNote, serializer);
     sse_encode_u_32(self.expiryHeight, serializer);
     sse_encode_String(self.txid, serializer);
   }

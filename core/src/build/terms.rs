@@ -673,7 +673,10 @@ impl PqTerms {
 /// floor above [`params::MAX_FEE_FLOOR_ZAT_PER_KB`], a fallback rate outside
 /// `0..=`[`params::MAX_PQ_FEE_RATE_ZAT_PER_KB`], a price outside `PRICE_MAX`, a flat fee below
 /// `FEE_ZAT`; **a rate that is not its own inputs' `AttestedRateZatPerKB`** — so a server can
-/// report a high price target only in the open, never a padded zat figure; and on mainnet and
+/// report a high price target only in the open, never a padded zat figure; **a priced rate above
+/// [`params::MAX_PLAIN_FEE_RATE_ZAT_PER_KB`] / [`params::MAX_YED_FEE_RATE_ZAT_PER_KB`]** (the
+/// node's default dollar targets at [`params::FEE_PRICE_FLOOR_MICRO_USD`]: the price is the
+/// server's word, review YEW-REVIEW-3 M1); and on mainnet and
 /// testnet **a Falcon activation other than this build's** ([`check_falcon_activation`]).
 pub fn pq_terms(p: &rpc::YellowbackParams, network: Network) -> Result<PqTerms, MintError> {
     let pq =
@@ -736,7 +739,14 @@ pub fn pq_terms(p: &rpc::YellowbackParams, network: Network) -> Result<PqTerms, 
     let floor_eff = n.floor_zat_per_kb.max(n.fallback_zat_per_kb);
     // AttestedRateZatPerKB, or the -pqfeerate fallback without a price or a target (policy.cpp
     // PlainPQFeeRate / YedFeeRate)
-    let rate_of = |what: &str, r: Option<&rpc::YellowbackNetworkRate>| -> Result<i64, MintError> {
+    // review YEW-REVIEW-3 M1: the price is the server's word, so the rate it yields is bounded on
+    // every path (not only the fallback): the node's default dollar target at the lowest YEC
+    // price this build believes (params::FEE_PRICE_FLOOR_MICRO_USD)
+    let rate_of = |what: &str,
+                   r: Option<&rpc::YellowbackNetworkRate>,
+                   limit: i64,
+                   target: i64|
+     -> Result<i64, MintError> {
         let r = r.ok_or_else(|| inconsistent(format!("params.fees.network.{what} missing")))?;
         if r.usd_per_kb_micro < 0 || r.usd_per_kb_micro > params::MAX_USD_PER_KB_MICRO {
             return Err(inconsistent(format!(
@@ -759,10 +769,30 @@ pub fn pq_terms(p: &rpc::YellowbackParams, network: Network) -> Result<PqTerms, 
                 n.price_micro_usd
             )));
         }
+        if want > limit {
+            return Err(inconsistent(format!(
+                "params.fees.network.{what}.zatPerKB {want} at the reported YEC price of {} µUSD is above this app's limit of {limit} zat/KB (${}.{:06}/KB at ${}.{:02} per YEC); the price is the server's and cannot be verified here",
+                n.price_micro_usd,
+                target / 1_000_000,
+                target % 1_000_000,
+                params::FEE_PRICE_FLOOR_MICRO_USD / 1_000_000,
+                (params::FEE_PRICE_FLOOR_MICRO_USD % 1_000_000) / 10_000
+            )));
+        }
         Ok(want.max(params::RELAY_FLOOR_ZAT_PER_KB))
     };
-    let plain = rate_of("plain", n.plain.as_ref())?;
-    let yed = rate_of("yellowback", n.yellowback.as_ref())?;
+    let plain = rate_of(
+        "plain",
+        n.plain.as_ref(),
+        params::MAX_PLAIN_FEE_RATE_ZAT_PER_KB,
+        params::DEFAULT_PQ_FEE_USD_PER_KB_MICRO,
+    )?;
+    let yed = rate_of(
+        "yellowback",
+        n.yellowback.as_ref(),
+        params::MAX_YED_FEE_RATE_ZAT_PER_KB,
+        params::DEFAULT_YED_FEE_USD_PER_KB_MICRO,
+    )?;
     // rpcversion 8: pq.feeRateZatPerKB is the plain rate, so rpcversion-7 readers keep working
     if pq.fee_rate_zat_per_kb.max(params::RELAY_FLOOR_ZAT_PER_KB) != plain {
         return Err(inconsistent(format!(
@@ -1799,6 +1829,52 @@ mod tests {
             pq_terms(&big, Network::Regtest).unwrap().max_fee_zat,
             params::MAX_YED_TX_FEE_ZAT
         );
+    }
+
+    /// Review YEW-REVIEW-3 M1: a server that reports a tiny YEC price gets a consistent but huge
+    /// rate; it is refused on every path, naming the quoted rate and the limit. The C++ defaults
+    /// pass at any price from the floor ($0.01) up, and the boundary is exact.
+    #[test]
+    fn hostile_price_rates_are_refused() {
+        let at = |price: i64| {
+            let mut p = server_params(Network::Regtest);
+            let mut n = priced_network();
+            n.price_micro_usd = price;
+            let floor = n.floor_zat_per_kb.max(n.fallback_zat_per_kb);
+            let plain = params::attested_rate_zat_per_kb(20_000, price, floor);
+            n.plain.as_mut().unwrap().zat_per_kb = plain;
+            n.yellowback.as_mut().unwrap().zat_per_kb =
+                params::attested_rate_zat_per_kb(50_000, price, floor);
+            p.fees.as_mut().unwrap().network = Some(n);
+            p.pq.as_mut().unwrap().fee_rate_zat_per_kb = plain;
+            pq_terms(&p, Network::Regtest)
+        };
+        // hostile: 1 µUSD per YEC
+        let e = at(1).unwrap_err().to_string();
+        assert!(
+            e.contains("plain.zatPerKB 2000000000000 at the reported YEC price of 1 µUSD")
+                && e.contains("above this app's limit of 200000000 zat/KB"),
+            "{e}"
+        );
+        // honest, at the floor price and above: unchanged
+        let t = at(params::FEE_PRICE_FLOOR_MICRO_USD).unwrap();
+        assert_eq!(t.fee_rate_zat_per_kb, params::MAX_PLAIN_FEE_RATE_ZAT_PER_KB);
+        assert_eq!(t.yed_rate_zat_per_kb, params::MAX_YED_FEE_RATE_ZAT_PER_KB);
+        assert_eq!(at(400_000).unwrap().fee_rate_zat_per_kb, 5_000_000);
+        // one µUSD below the floor: the plain rate rounds up past the limit
+        assert!(at(params::FEE_PRICE_FLOOR_MICRO_USD - 1).is_err());
+        // the Yellowback path on its own: a padded dollar target at the floor price
+        let mut p = server_params(Network::Regtest);
+        let mut n = priced_network();
+        n.price_micro_usd = params::FEE_PRICE_FLOOR_MICRO_USD;
+        n.plain.as_mut().unwrap().zat_per_kb = params::MAX_PLAIN_FEE_RATE_ZAT_PER_KB;
+        let y = n.yellowback.as_mut().unwrap();
+        y.usd_per_kb_micro = 60_000;
+        y.zat_per_kb = 600_000_000;
+        p.fees.as_mut().unwrap().network = Some(n);
+        p.pq.as_mut().unwrap().fee_rate_zat_per_kb = params::MAX_PLAIN_FEE_RATE_ZAT_PER_KB;
+        let e = pq_terms(&p, Network::Regtest).unwrap_err().to_string();
+        assert!(e.contains("yellowback.zatPerKB 600000000"), "{e}");
     }
 
     /// rpcversion 7: `params.pq` is read and bounded; Falcon by height.

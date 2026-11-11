@@ -745,11 +745,69 @@ pub fn zat_to_usd_cents(zat: i64, price_micro_usd: i64) -> i64 {
 /// the same on ycash6): the lowest size rate YEW ever charges, whatever a server reports.
 pub const RELAY_FLOOR_ZAT_PER_KB: i64 = 100;
 
-/// The highest `params.pq.feeRateZatPerKB` YEW accepts from a server: 100× the relay floor
-/// (an 8 KB SLH-DSA owner spend would then cost 80,000 zat). A server reporting more is refused
-/// as inconsistent rather than allowed to drain fees (the quantum plan's Q8 release multiplier
-/// is expected to be a small single digit).
+/// The highest **fallback** rate YEW accepts from a server (`params.fees.network.fallbackZatPerKB`,
+/// the node's `-pqfeerate`, used only while no attested price is in force): 100× the relay floor.
+/// It bounds only that price-free rate. The dollar-priced rates a server derives from the YEC
+/// price it reports are bounded by [`MAX_PLAIN_FEE_RATE_ZAT_PER_KB`] and
+/// [`MAX_YED_FEE_RATE_ZAT_PER_KB`], and the fee of a post-quantum send by
+/// [`pq_send_fee_limit`] (review YEW-REVIEW-3 M1).
 pub const MAX_PQ_FEE_RATE_ZAT_PER_KB: i64 = 100 * RELAY_FLOOR_ZAT_PER_KB;
+
+/// `DEFAULT_PQ_FEE_USD_PER_KB_MICRO` (`ycash-dd/src/policy/policy.h`, `-pqfeeusdperkb`): the
+/// plain post-quantum dollar target, $0.02 per KB.
+pub const DEFAULT_PQ_FEE_USD_PER_KB_MICRO: i64 = 20_000;
+
+/// `DEFAULT_YED_FEE_USD_PER_KB_MICRO` (`-yellowbackfeeusdperkb`): the vault / Yellowback dollar
+/// target, $0.05 per KB.
+pub const DEFAULT_YED_FEE_USD_PER_KB_MICRO: i64 = 50_000;
+
+/// `DEFAULT_TRANSACTION_MAXFEE` (`ycash-dd/src/main.h`, `-maxtxfee`): 0.1 YEC. The price-free
+/// part of the node's post-quantum cap (`PQMaxTxFee` = min(max(-maxtxfee, $2 at the attested
+/// price), -yellowbackmaxtxfee)): above it a fee is justified only by the attested price.
+pub const DEFAULT_TRANSACTION_MAXFEE_ZAT: i64 = COIN / 10;
+
+/// The lowest YEC price, µUSD per YEC, YEW believes when it bounds a fee rate: $0.01.
+///
+/// YEW cannot verify the attested price a server reports (`fees.network.priceMicroUsd`): the
+/// node prices fees at the highest of its index's window medians, which a light client cannot
+/// recompute, and the attestor keys come from the same server (`ListAttestors`). A server that
+/// reports a tiny price inflates every dollar-priced rate. So the rates a server may quote are
+/// bounded by the node's default dollar targets at this price: an honest server running the C++
+/// defaults passes at any YEC price of $0.01 or more, and a hostile one can charge at most what
+/// an honest one would at $0.01 (and never above [`MAX_YED_TX_FEE_ZAT`] per transaction).
+pub const FEE_PRICE_FLOOR_MICRO_USD: i64 = 10_000;
+
+/// The highest plain post-quantum rate (zat/KB) YEW pays, whatever a server reports:
+/// `AttestedRateZatPerKB($0.02/KB, $0.01)` = 200,000,000 zat/KB (2 YEC/KB).
+pub const MAX_PLAIN_FEE_RATE_ZAT_PER_KB: i64 =
+    DEFAULT_PQ_FEE_USD_PER_KB_MICRO * COIN / FEE_PRICE_FLOOR_MICRO_USD;
+
+/// The highest vault / Yellowback rate (zat/KB) YEW pays, whatever a server reports:
+/// `AttestedRateZatPerKB($0.05/KB, $0.01)` = 500,000,000 zat/KB (5 YEC/KB).
+pub const MAX_YED_FEE_RATE_ZAT_PER_KB: i64 =
+    DEFAULT_YED_FEE_USD_PER_KB_MICRO * COIN / FEE_PRICE_FLOOR_MICRO_USD;
+
+/// The most YEW pays for a plain post-quantum send of `size` signed bytes whose ZIP-317
+/// conventional fee is `conventional`, whatever a server reports (review YEW-REVIEW-3 M1):
+/// the node's `PQBuilderFee` at [`MAX_PLAIN_FEE_RATE_ZAT_PER_KB`],
+/// `max(1000, rate × size / 1000, conventional)`, never above [`MAX_YED_TX_FEE_ZAT`] (the
+/// node's `-yellowbackmaxtxfee` ceiling) unless the conventional fee alone is higher.
+pub fn pq_send_fee_limit(size: usize, conventional: i64) -> i64 {
+    let size_fee = FEE_ZAT.max(MAX_PLAIN_FEE_RATE_ZAT_PER_KB.saturating_mul(size as i64) / 1000);
+    size_fee.min(MAX_YED_TX_FEE_ZAT).max(conventional)
+}
+
+/// The fee above which YEW marks a post-quantum send's fee as unusual in the preview: the larger
+/// of the node's price-free cap [`DEFAULT_TRANSACTION_MAXFEE_ZAT`] (0.1 YEC) and three times the
+/// fee at the attested floor rate [`ATTESTED_FEE_FLOOR_ZAT_PER_KB`] (the cheapest any priced
+/// server quotes, `max(1000, floor × size / 1000, conventional)`). A fee above it rests on the
+/// YEC price the server reports, which YEW cannot verify.
+pub fn pq_fee_unusual_threshold(size: usize, conventional: i64) -> i64 {
+    let floor_fee = FEE_ZAT
+        .max(ATTESTED_FEE_FLOOR_ZAT_PER_KB.saturating_mul(size as i64) / 1000)
+        .max(conventional);
+    DEFAULT_TRANSACTION_MAXFEE_ZAT.max(floor_fee.saturating_mul(3))
+}
 
 /// The network fee of a transaction of `size` bytes that spends a post-quantum input (quantum
 /// plan §4.5, client survey C-5): `max(floor, rate × size)`, with `CFeeRate::GetFee`'s rounding

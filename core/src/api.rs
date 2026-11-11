@@ -2282,8 +2282,12 @@ pub struct PqSendPreviewInfo {
     pub inputs: u32,
     /// The signed transaction's size, bytes.
     pub size_bytes: u32,
-    /// Milliseconds the signatures took on this device.
-    pub sign_millis: u64,
+    /// Milliseconds the signatures took on this device; `None` where the platform cannot
+    /// measure it (the browser).
+    pub sign_millis: Option<u64>,
+    /// Set when the fee is unusually high: why (the price it rests on is the server's, which the
+    /// app cannot verify). Show it next to the fee.
+    pub fee_note: Option<String>,
     /// `nExpiryHeight`.
     pub expiry_height: u32,
     /// The txid the transaction will have.
@@ -2320,6 +2324,7 @@ pub fn pq_send_preview(from: String, to: String, zat: i64) -> Result<PqSendPrevi
                 inputs: p.inputs.len() as u32,
                 size_bytes: p.raw.len() as u32,
                 sign_millis: p.sign_millis,
+                fee_note: p.fee_note.clone(),
                 expiry_height: p.expiry_height,
                 txid,
             };

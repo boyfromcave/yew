@@ -155,7 +155,11 @@ class PqSendPreviewCard extends StatelessWidget {
     final c = yewColors(context);
     final t = Theme.of(context).textTheme;
     final slh = p.schemeName.startsWith('SLH');
-    final secs = p.signMillis.toInt() / 1000;
+    // no clock in the browser: the core reports no time rather than 0 (review YEW-REVIEW-3 L5)
+    final ms = p.signMillis;
+    final signing = ms == null
+        ? 'not measured on this device'
+        : '${(ms.toInt() / 1000).toStringAsFixed(ms.toInt() < 1000 ? 2 : 1)} s on this device';
     return Card(
       key: const Key('pq-preview'),
       child: Padding(
@@ -166,9 +170,15 @@ class PqSendPreviewCard extends StatelessWidget {
             PreviewRow('Amount', '${formatYec(p.amountZat)} YEC', emphasis: true, color: c.yec),
             if (p.amountBumped) const PreviewRow('', 'Raised by 1 zat: exactly 0.0001 YEC would look like a YED token'),
             PreviewRow('From', 'post-quantum ${p.schemeName} · ${shorten(p.from, head: 6, tail: 4)}'),
-            PreviewRow('Fee', '${formatYec(p.feeZat)} YEC'),
+            PreviewRow('Fee', '${formatYec(p.feeZat)} YEC', key: const Key('pq-fee'), color: p.feeNote != null ? c.danger : null, emphasis: p.feeNote != null),
+            // review YEW-REVIEW-3 M1: a fee above the unusual threshold rests on the server's price
+            if (p.feeNote != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(p.feeNote!, key: const Key('pq-fee-note'), style: t.bodySmall?.copyWith(color: c.danger)),
+              ),
             PreviewRow('Size', '${p.sizeBytes} bytes · ${p.inputs} input${p.inputs == 1 ? '' : 's'}'),
-            PreviewRow('Signing', '${secs.toStringAsFixed(secs < 1 ? 2 : 1)} s on this device'),
+            PreviewRow('Signing', signing, key: const Key('pq-signing')),
             if (p.changeZat > 0) PreviewRow('Change', '${formatYec(p.changeZat)} YEC back to the same address'),
             PreviewRow('Expires', 'height ${p.expiryHeight}'),
             Padding(
