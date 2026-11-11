@@ -767,9 +767,13 @@ pub async fn broadcast(
     // layer 3: a redeem spends the own VAULT and TOKENs and a release the VAULT alone, so no input
     // is spent as plain YEC today and nothing is fetched; run so that a fee input added later is
     // checked as on every other path
-    gate::confirm_provenance(client, path, &p.raw, |op| {
-        wallet.store.utxo_class(op).ok().flatten()
-    })
+    gate::confirm_provenance(
+        client,
+        path,
+        &p.raw,
+        |op| wallet.store.utxo_class(op).ok().flatten(),
+        |op| wallet.store.utxo_txout(op).ok().flatten(),
+    )
     .await?;
     let vault_txid = crate::tx::txid_from_hex(&p.vault_txid).map_err(WalletError::Other)?;
     let mut locked = p.yed_inputs.clone();

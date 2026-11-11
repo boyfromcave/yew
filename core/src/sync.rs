@@ -42,7 +42,7 @@ use crate::net::{CompactClient, NetError, YellowbackClient};
 use crate::params::{self, CARRIER_VALUE, GAP_LIMIT, TOKEN_VALUE};
 use crate::script;
 use crate::store::{HistoryRow, IntentRow, IntentState, MintState, VaultCancel, VaultRow};
-use crate::tx::{txid_from_hex, txid_hex, OutPoint, Transaction};
+use crate::tx::{txid_from_hex, txid_hex, OutPoint, Transaction, TxOut};
 use crate::wallet::{dollars, Wallet, WalletError};
 
 /// Blocks of history read again on every sync, so a reorg that drops or moves a transaction
@@ -680,7 +680,7 @@ async fn hold_unproven(
             });
         }
         let raw = fetched.get(&id).and_then(|r| r.as_deref());
-        let verdict = gate::output_provenance(&u.outpoint, raw);
+        let verdict = gate::output_provenance(&u.outpoint, raw, None);
         let is_final = raw
             .and_then(|r| Transaction::parse(r).ok())
             .is_some_and(|(_, txid)| txid == id);
@@ -692,6 +692,15 @@ async fn hold_unproven(
                 .unwrap_or_default();
             wallet.store.set_provenance(&u.outpoint, &why)?;
         }
+        // review YEW-REVIEW-4 L2: the listed value and script must be the creating transaction's
+        // (a listing that differs holds the coin for this sync, not finally: the parent's own
+        // verdict above is what is stored)
+        let listed = TxOut {
+            value: u.value,
+            script_pubkey: u.script.clone(),
+        };
+        let verdict =
+            verdict.and_then(|()| gate::output_provenance(&u.outpoint, raw, Some(&listed)));
         verdicts.insert(u.outpoint, verdict.is_ok());
     }
     Ok(hold_by_provenance(rows, |op| {
@@ -1709,7 +1718,7 @@ mod tests {
                 });
             }
             let proven = |op: &OutPoint| {
-                gate::output_provenance(op, served.get(&op.txid).map(Vec::as_slice)).is_ok()
+                gate::output_provenance(op, served.get(&op.txid).map(Vec::as_slice), None).is_ok()
             };
             let before = rows.clone();
             let held = hold_by_provenance(&mut rows, proven);

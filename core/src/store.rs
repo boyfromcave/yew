@@ -958,6 +958,24 @@ impl Store {
         Ok(out)
     }
 
+    /// The value and script the wallet recorded for one outpoint, if known (layer 3 compares
+    /// them with the creating transaction, review YEW-REVIEW-4 L2).
+    pub fn utxo_txout(&self, op: &OutPoint) -> Result<Option<crate::tx::TxOut>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT value, script FROM utxos WHERE txid = ?1 AND n = ?2",
+                params![op.txid.as_slice(), op.n],
+                |r| {
+                    Ok(crate::tx::TxOut {
+                        value: r.get(0)?,
+                        script_pubkey: r.get(1)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
     /// The class of one outpoint, if known.
     pub fn utxo_class(&self, op: &OutPoint) -> Result<Option<UtxoClass>, StoreError> {
         let c: Option<String> = self

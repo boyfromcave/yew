@@ -329,9 +329,13 @@ pub async fn broadcast(
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
     // layer 3: no input carries YED by its creating transaction (review YEW-REVIEW-3)
-    gate::confirm_provenance(client, gate::Path::PqSpend, &p.raw, |op| {
-        wallet.store.utxo_class(op).ok().flatten()
-    })
+    gate::confirm_provenance(
+        client,
+        gate::Path::PqSpend,
+        &p.raw,
+        |op| wallet.store.utxo_class(op).ok().flatten(),
+        |op| wallet.store.utxo_txout(op).ok().flatten(),
+    )
     .await?;
     // review YEW-REVIEW-3 L6: the dry run's `feeZat` is the Yellowback enforcement fee, which a
     // plain YEC send never pays (its network fee is not in the answer: the local check covers it)

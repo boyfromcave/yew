@@ -473,10 +473,25 @@ async fn broadcast_pq_sweep(
     })
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
-    // layer 3 on the named coin, moved as plain YEC
-    gate::confirm_provenance(client, gate::Path::PqSweep(coin), &p.raw, |op| {
-        wallet.store.utxo_class(op).ok().flatten()
-    })
+    // layer 3 on the named coin, moved as plain YEC; its value and script are the intent row's
+    // (what build_pq_sweep signed over), compared with the release that created it
+    let named = TxOut {
+        value: row.value,
+        script_pubkey: row.recipient_script.clone(),
+    };
+    gate::confirm_provenance(
+        client,
+        gate::Path::PqSweep(coin),
+        &p.raw,
+        |op| wallet.store.utxo_class(op).ok().flatten(),
+        |op| {
+            if *op == coin {
+                Some(named.clone())
+            } else {
+                wallet.store.utxo_txout(op).ok().flatten()
+            }
+        },
+    )
     .await?;
     let original = row.clone();
     let persist = || -> Result<(), WalletError> {
@@ -557,9 +572,13 @@ async fn broadcast_pq_coin_move(
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
     // layer 3 on the named coin, moved as plain YEC
-    gate::confirm_provenance(client, gate::Path::PqSweep(coin), &p.raw, |op| {
-        wallet.store.utxo_class(op).ok().flatten()
-    })
+    gate::confirm_provenance(
+        client,
+        gate::Path::PqSweep(coin),
+        &p.raw,
+        |op| wallet.store.utxo_class(op).ok().flatten(),
+        |op| wallet.store.utxo_txout(op).ok().flatten(),
+    )
     .await?;
     let persist = || -> Result<(), WalletError> {
         if let Some(h) = tx
@@ -639,9 +658,13 @@ pub async fn broadcast(
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
     // layer 3 on the YEC fee inputs (not the named intent at vin[0]): no input spent as plain YEC carries YED by its creating transaction
-    gate::confirm_provenance(client, gate::Path::IntentRelease(p.intent), &p.raw, |op| {
-        wallet.store.utxo_class(op).ok().flatten()
-    })
+    gate::confirm_provenance(
+        client,
+        gate::Path::IntentRelease(p.intent),
+        &p.raw,
+        |op| wallet.store.utxo_class(op).ok().flatten(),
+        |op| wallet.store.utxo_txout(op).ok().flatten(),
+    )
     .await?;
     let original = row.clone();
     let persist = || -> Result<(), WalletError> {

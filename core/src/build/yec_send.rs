@@ -156,9 +156,13 @@ pub async fn broadcast(
     })
     .await?;
     // layer 3: no input carries YED by its creating transaction (review YEW-REVIEW-3)
-    gate::confirm_provenance(client, gate::Path::Yec, &preview.raw, |op| {
-        wallet.store.utxo_class(op).ok().flatten()
-    })
+    gate::confirm_provenance(
+        client,
+        gate::Path::Yec,
+        &preview.raw,
+        |op| wallet.store.utxo_class(op).ok().flatten(),
+        |op| wallet.store.utxo_txout(op).ok().flatten(),
+    )
     .await?;
     let reply = client.send_transaction(preview.raw.clone()).await?;
     let txid_str = txid_hex(&preview.txid);
