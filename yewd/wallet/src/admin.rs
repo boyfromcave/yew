@@ -118,6 +118,9 @@ pub struct Opts {
     /// `-sendchangeback` (default off): transparent change returns to the largest input's
     /// address instead of a new change key.
     pub send_change_back: bool,
+    /// `-yellowback=0`: a wallet that has held YED may spend as plain YEC while the node reports
+    /// Yellowback not live (its YED outputs are then not locked; each such send logs a warning).
+    pub yellowback_ack: bool,
 }
 
 impl Default for Opts {
@@ -128,6 +131,7 @@ impl Default for Opts {
             paytxfee: 0,
             params_dir: None,
             send_change_back: false,
+            yellowback_ack: false,
         }
     }
 }

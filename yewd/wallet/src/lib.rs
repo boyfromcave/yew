@@ -794,7 +794,22 @@ impl Wallet {
 
     /// Bring the wallet to the node's best block and mempool (the barrier, H1/H2). Returns
     /// whether anything changed.
+    /// Sync with the node; while the wallet has not held YED, a sync that saw something new also
+    /// asks the node's index whether any of the wallet's outputs is a YED token (the write-once
+    /// "has held YED" marker, beta2; a failing or absent index answer leaves it unset).
     pub async fn sync(&mut self, node: &dyn Node) -> Result<bool, RpcError> {
+        let changed = self.sync_chain(node).await?;
+        if changed && !self.st.yed_held {
+            if let Ok(t) = self.tokens(node).await {
+                if !t.is_empty() {
+                    self.mark_yed_held();
+                }
+            }
+        }
+        Ok(changed)
+    }
+
+    async fn sync_chain(&mut self, node: &dyn Node) -> Result<bool, RpcError> {
         let mut changed = false;
         if !self.chain_read {
             self.refresh_chain(node).await?;

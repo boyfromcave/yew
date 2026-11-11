@@ -145,6 +145,7 @@ ycashd's wallet arguments (`-keypool`, `-exportdir`, …) and a ycashd-format `y
 | `-salvagewallet` | off | a restored backup carries the sign-once restore marker (07/NEW-1) |
 | `-mnemonicfile=<file>` | — | ycashd's seed-only restore: a **new** wallet takes its seed from the recovery phrase in `<file>` (the phrase on one line, or a `z_exportwallet` file's `recovery_phrase=` line), read by the signer itself; birthday 0 (a scan from genesis) and the sign-once restore marker set; ignored for a wallet with this seed, refused for one with another (F-S5-17) |
 | `-paramsdir=<dir>` | ycashd's (`~/Library/Application Support/ZcashParams`, `~/.zcash-params`) | the Sapling parameters the signer proves with |
+| `-yellowback=0` | off | ycashd's acknowledgement: a wallet that has held YED (`getwalletinfo.yed_held`) may spend as plain YEC while the node reports Yellowback not live; logged at start and on each such send (below) |
 | `-backendexitgrace=<s>` | 20 | with `-stopbackend`: exit once the backend has been gone this long after it was up (H6: the node stopped itself); 0 = never |
 | `-backendlostexit=<s>` | 10 on regtest, else 0 | with `-stopbackend` and a cookie: once the backend has been gone this long with its cookie left (a crash), log it and end with SIGKILL, as the node did; 0 = never |
 | `-debug` | off | log each method called |
@@ -177,6 +178,25 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
   `getrawmempool` + `getrawtransaction`), so a script's `generate` then wallet RPC never sees stale
   data (H1). A reorg deeper than the window rescans from the birthday (H2). While the backend
   cannot be reached a wallet RPC answers `-28` (H5).
+- **YED outputs are never spent as plain YEC (beta2).** Every path that selects transparent or
+  post-quantum coins for a plain YEC spend takes the YED outpoint set from the node's index, and
+  only when the node can answer for it: `yed_getinfo` must say `healthy: true` and
+  `yed_listtokens` must answer, else the spend is refused with the C++ lines' string
+  ("refusing to spend as plain YEC while the Yellowback index is unhealthy (…)…") and the node's
+  error is logged. "Yellowback not live" is the node's `-32601` on `yed_getinfo` (the yed_*
+  commands exist exactly where the vault upgrade and a YED attestor set are configured); then no
+  token can exist and sends proceed, **unless the wallet has held YED**: the write-once
+  `yed_held` marker in `wallet.json` (set when the wallet first sees a YED token of its own,
+  commits a transaction whose payload assigns it YED, or issues a holder key with
+  `yed_getnewaddress` p2pkh/pq) makes every such spend refuse ("This wallet has held YED, but
+  Yellowback is not live on the connected node, …") unless yewd runs with `-yellowback=0`. The
+  C++ lines refuse to start in that case; yewd refuses at send time instead, because it can be
+  pointed at another node without a restart.
+- **A submission's answer lost (review M1).** A transaction the node accepted always returns its
+  txid (a failing sync after it is a warning). When `sendrawtransaction`'s answer is lost, the
+  wallet asks the node for the txid of the bytes; not found, the call answers "…status unknown,
+  txid <txid>: check before sending again", the inputs stay locked, and the next submission is
+  refused once, nothing sent, with the outcome. Nothing is submitted again automatically.
 - **Coinbase (H8).** A new wallet's first external address is its coinbase address. ycash6
   `-disablewallet` mines only with `-mineraddress=<it> -minetolocalwallet=0`; kogany takes it as its
   `miner_address`.

@@ -73,6 +73,7 @@ pub const KNOWN: &[&str] = &[
     "salvagewallet",
     "mnemonicfile",
     "sendchangeback",
+    "yellowback",
     "paramsdir",
     "backendexitgrace",
     "backendlostexit",
@@ -386,6 +387,9 @@ impl Config {
                     // those to the backend, so yewd allows encryption unless told 0 (F-S4-3)
                     encrypt_allowed: a.get("developerencryptwallet") != Some("0"),
                     send_change_back: a.get("sendchangeback").is_some_and(|v| v != "0"),
+                    // ycashd's -yellowback=0 (H6): acknowledge a has-held-YED wallet's YED outputs
+                    // as spendable while Yellowback is not live
+                    yellowback_ack: a.get("yellowback") == Some("0"),
                     paytxfee: match a.get("paytxfee") {
                         Some(v) => yewd_wallet::json::parse_amount(v).ok_or_else(|| {
                             ConfigError(format!("yewd: -paytxfee={v} is not an amount"))

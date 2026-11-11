@@ -258,6 +258,14 @@ pub fn signer_error(e: Result<Response, String>) -> RpcError {
     }
 }
 
+/// The refusal of a plain YEC spend by a wallet that has held YED while the node reports
+/// Yellowback not live (the C++ lines refuse to start; yewd refuses at send time, since it can be
+/// pointed at another node without a restart).
+pub const HELD_YED_REFUSAL: &str = "This wallet has held YED, but Yellowback is not live on the connected node, so its YED outputs cannot be told apart from plain YEC. Connect to a node with the network's attestor set, or start yewd with -yellowback=0 to acknowledge that they are spendable as plain YEC.";
+
+/// What `-yellowback=0` logs at start and on each such send.
+pub const HELD_YED_ACK_WARNING: &str = "This wallet has held YED and Yellowback is not live (-yellowback=0): its YED outputs are not locked, and any send that spends one destroys the YED it carries.";
+
 impl Wallet {
     /// The vault/Yellowback fee cap (`YedMaxTxFee`), from `yed_getinfo` when the node has the
     /// Yellowback index, else `-maxtxfee`'s default.
@@ -410,7 +418,16 @@ impl Wallet {
             )
         };
         let live = match node::call(node, "yed_getinfo", serde_json::json!([])).await {
-            Err(NodeError::Rpc { code: c, .. }) if c == code::METHOD_NOT_FOUND => false,
+            Err(NodeError::Rpc { code: c, .. }) if c == code::METHOD_NOT_FOUND => {
+                // a wallet that has held YED cannot tell its YED outputs from plain YEC here
+                if self.st.yed_held {
+                    if !self.opts.yellowback_ack {
+                        return Err(RpcError::new(code::WALLET_ERROR, HELD_YED_REFUSAL));
+                    }
+                    eprintln!("yewd: {HELD_YED_ACK_WARNING}");
+                }
+                false
+            }
             Err(e) => return Err(refuse(e.to_string(), format!("yed_getinfo: {e}"))),
             Ok(v) => {
                 if v["healthy"].as_bool() != Some(true) {
@@ -874,6 +891,7 @@ impl Wallet {
         let Some(fp) = yew_core::payload::find_payload(tx) else {
             return;
         };
+        let mut held = false;
         let mut vouts: Vec<u32> = fp
             .payload
             .assignments()
@@ -887,7 +905,24 @@ impl Wallet {
             if let Some(o) = tx.vout.get(n as usize) {
                 if self.book.owns_script(&o.script_pubkey).is_some() {
                     self.st.locks.insert(format!("{txid}:{n}"));
+                    held = true;
                 }
+            }
+        }
+        if held {
+            self.mark_yed_held();
+        }
+    }
+
+    /// Set the write-once "has held YED" marker and write it out.
+    pub(crate) fn mark_yed_held(&mut self) {
+        if !self.st.yed_held {
+            self.st.yed_held = true;
+            if let Err(e) = self.persist_state() {
+                eprintln!(
+                    "yewd: could not save the has-held-YED marker ({}); it is kept in memory",
+                    e.message
+                );
             }
         }
     }

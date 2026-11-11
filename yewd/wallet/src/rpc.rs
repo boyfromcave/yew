@@ -819,6 +819,8 @@ impl Wallet {
         }
         o.push("paytxfee", J::Amount(self.opts.paytxfee));
         o.push("mnemonic_seedfp", J::Str(self.st.public.seed_fp.clone()));
+        // beta2: the C++ lines' "has held YED" marker
+        o.push("yed_held", J::Bool(self.st.yed_held));
         if !self.st.public.imported.is_empty()
             || self
                 .st
@@ -1327,6 +1329,8 @@ impl Wallet {
                         purpose: "yed".into(),
                     },
                 );
+                // a holder key: the wallet has held YED from here on (not a pqowner key)
+                self.st.yed_held = true;
             } else {
                 self.st.owners.insert(pqkeyid_hex(&id));
             }
@@ -1346,6 +1350,7 @@ impl Wallet {
                 purpose: "yed".into(),
             },
         );
+        self.st.yed_held = true;
         self.persist()?;
         Ok(J::Str(ykeys::encode_yellowback(self.network, &h)))
     }

@@ -390,7 +390,12 @@ async fn pq_source_never_spends_a_yellowback_output() {
             .find(|c| c.script == addr_script(&fn_))
             .unwrap()
             .clone();
-    f.node.0.lock().unwrap().tokens = vec![json!({"txid": coin.txid, "vout": coin.vout})];
+    {
+        // Yellowback live and healthy, the index listing the token
+        let mut c = f.node.0.lock().unwrap();
+        c.yed_info = Some(json!({"healthy": true, "unhealthyReason": ""}));
+        c.tokens = vec![json!({"txid": coin.txid, "vout": coin.vout})];
+    }
     let e = f.send(&fn_, &[(&to, COIN)], None, None).await.unwrap_err();
     assert_eq!(
         e,
@@ -483,8 +488,17 @@ async fn pq_source_never_spends_a_yellowback_output() {
         )
     );
     assert_eq!(f.node.0.lock().unwrap().sent.len(), sent_before);
-    // Yellowback not live (-32601): no token can exist, the send goes ahead
-    f.node.0.lock().unwrap().tokens_error = Some((-32601, "Method not found".into()));
+    // Yellowback not live (-32601): this wallet has held YED (the sync saw its token), so it
+    // cannot tell its YED outputs from plain YEC there; -yellowback=0 acknowledges it
+    {
+        let mut c = f.node.0.lock().unwrap();
+        c.yed_info = None;
+        c.tokens_error = Some((-32601, "Method not found".into()));
+    }
+    assert!(f.w.st.yed_held);
+    let e = f.send(&slh, &[(&to, COIN)], None, None).await.unwrap_err();
+    assert_eq!(e, (-4, yewd_wallet::build::HELD_YED_REFUSAL.into()));
+    f.w.opts.yellowback_ack = true;
     f.send(&slh, &[(&to, COIN)], None, None).await.unwrap();
 }
 

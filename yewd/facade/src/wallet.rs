@@ -568,6 +568,9 @@ impl WalletService {
                 .map_err(|e| RpcError::new(code::WALLET_ERROR, format!("yewd: {e}")))?;
         }
         w.opts = args.opts;
+        if w.st.yed_held && w.opts.yellowback_ack {
+            eprintln!("yewd: {}", yewd_wallet::build::HELD_YED_ACK_WARNING);
+        }
         if !exists && args.mnemonic_file.is_some() {
             w.restore_first_sapling()
                 .map_err(|e| RpcError::new(code::WALLET_ERROR, format!("yewd: {e}")))?;

@@ -666,7 +666,12 @@ async fn z_gettotalbalance_and_listaddresses_over_the_mock_chain() {
         0,
     );
     node.to_mempool(payment(foreign(4), fn_.clone(), 20_000_000));
-    node.0.lock().unwrap().tokens = vec![json!({"txid": token_id, "vout": 0})];
+    {
+        // the index lists the token: Yellowback is live on this node
+        let mut c = node.0.lock().unwrap();
+        c.yed_info = Some(json!({"healthy": true, "unhealthyReason": ""}));
+        c.tokens = vec![json!({"txid": token_id, "vout": 0})];
+    }
     w.sync(&node).await.unwrap();
 
     let tb = call_json(&mut w, &node, "z_gettotalbalance", &[]).await;

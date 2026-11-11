@@ -112,6 +112,12 @@ pub struct State {
     /// has it, its inputs stay locked and the next submission is refused once with the outcome.
     #[serde(default)]
     pub unknown: Option<UnknownSubmit>,
+    /// "Has held YED" (beta2, the C++ lines' wallet.dat `yedheld` record): set once, never
+    /// cleared, when the wallet first sees a YED token output of its own, commits a transaction
+    /// whose payload assigns it YED, or issues a holder key (`yed_getnewaddress` p2pkh or pq, not
+    /// pqowner). Absent in older wallet files: false.
+    #[serde(default)]
+    pub yed_held: bool,
 }
 
 /// A transaction handed to `sendrawtransaction` whose answer never came (a transport error or a
@@ -161,6 +167,7 @@ impl State {
             evicted: BTreeMap::new(),
             scripts: BTreeMap::new(),
             unknown: None,
+            yed_held: false,
         }
     }
 
