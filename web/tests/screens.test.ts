@@ -77,6 +77,13 @@ describe("send", () => {
     await vm.preview(); expect(vm.state.yed?.verdict).toContain("ok"); expect(core.broadcasts).toHaveLength(0);
     await vm.confirm(); expect(vm.state.txid).toHaveLength(64); expect(core.broadcasts).toHaveLength(1);
   });
+  it("YED: an unusual fee shows its note and needs its own step before confirm passes the ack (review YEW-REVIEW-5 L4)", async () => {
+    const core = await openWallet(); core.unusualYedFee = "Unusual fee: 2 YEC, 5.0× the usual."; const vm = new SendVm(core, "yed");
+    await vm.setTo("ye1Recipient000000000000000000000000"); vm.state.amount = "25.00";
+    await vm.preview(); expect(vm.feeNote).toContain("Unusual fee"); expect(vm.state.feeAccepted).toBe(false);
+    await vm.confirm(); expect(vm.state.error).toContain("Pay this fee"); expect(core.broadcasts).toHaveLength(0);
+    vm.acceptFee(); await vm.confirm(); expect(vm.state.error).toBe(""); expect(core.broadcasts).toHaveLength(1);
+  });
   it("YED to a private address is refused before the core is asked", async () => {
     const vm = new SendVm(await openWallet(), "yed");
     await vm.setTo("ys1qprivaterecipient00000000000000000000"); vm.state.amount = "1";
@@ -138,6 +145,15 @@ describe("yellowback", () => {
     expect(vm.state.step?.mintId).toBe(vm.state.mintId); expect(vm.state.mintStatus?.inProgress).toBe(true); // the MINT is staged, not sent
     await vm.mintStepConfirm(); expect(core.broadcasts).toHaveLength(2); expect(vm.state.mintStatus?.state).toBe("DONE"); expect(vm.state.mintStatus?.inProgress).toBe(false);
     await vm.load(); expect(vm.state.vaults).toHaveLength(2);
+  });
+  it("mint finish: a fee above what the start accepted is asked for, then confirmed with the new ack (review YEW-REVIEW-5 M2, L4)", async () => {
+    const core = await openWallet(); const vm = new YellowbackVm(core);
+    await vm.estimate("100", 100); await vm.mintStart(); await vm.mintConfirm();
+    core.finishFeeAck = `accept-unusual-fee:50000000:row:${vm.state.mintId}`;
+    await vm.mintStepConfirm(); expect(core.broadcasts).toHaveLength(1); expect(vm.state.error).toBe("");
+    expect(vm.state.finishFee?.ack).toBe(core.finishFeeAck); expect(vm.state.finishFee?.note).toContain("You accepted 0.1 YEC");
+    await vm.acceptFinishFee(); expect(vm.state.error).toContain("Pay this fee"); expect(core.broadcasts).toHaveLength(1);
+    vm.acceptFee(); await vm.acceptFinishFee(); expect(core.broadcasts).toHaveLength(2); expect(vm.state.mintStatus?.state).toBe("DONE");
   });
   it("redeem: preview shows the burn and the collateral returned; confirm closes the vault", async () => {
     const core = await openWallet(); const vm = new YellowbackVm(core); await vm.load();

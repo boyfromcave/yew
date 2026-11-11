@@ -16,6 +16,16 @@ export function previewCard(title: string, rows: [string, string][], warning?: s
   return h("div", { class: "card preview" }, h("h3", null, title), rows.map(([k, v]) => row(k, v)), warning ? h("p", { class: "warn" }, warning) : null);
 }
 
+/** Review YEW-REVIEW-4 M2 / YEW-REVIEW-5 L4: an unusual fee's note and its own confirmation step. The
+ *  slider stays disabled until the user presses "Pay this fee"; only then does the view-model pass the
+ *  core's acknowledgement back with confirm. */
+export function unusualFeeCard(note: string | null | undefined, accepted: boolean, onAccept: () => void): HTMLElement | null {
+  if (!note) return null;
+  return h("div", { class: "card error", role: "alert" }, h("h3", null, "Unusual fee"), h("p", null, note),
+    accepted ? h("p", { class: "small" }, "You accepted this fee. Slide to confirm.")
+      : h("div", { class: "actions" }, h("button", { on: { click: onAccept } }, "Pay this fee")));
+}
+
 /** Slide to confirm: a range input dragged to the end fires `onConfirm` once, else snaps back. */
 export function slideToConfirm(label: string, onConfirm: () => void, disabled = false): HTMLElement {
   const input = h("input", { type: "range", min: 0, max: 100, value: 0, class: "slide", disabled, "aria-label": label });

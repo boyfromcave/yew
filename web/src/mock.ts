@@ -119,6 +119,10 @@ export class MockCore implements Core {
         fromPrivate ? "shielded" : "transparent", fromPrivate && check.kind !== "sapling", memo ?? null, this.tip);
     });
   }
+  /** Review YEW-REVIEW-5 L4: when set, a YED send's fee is flagged with this note, and confirm needs the ack. */
+  unusualYedFee: string | null = null;
+  /** Review YEW-REVIEW-5 M2: when set, a finish's confirm without this ack is refused as the core refuses it. */
+  finishFeeAck: string | null = null;
   send_yed_preview(to: string, cents: string) {
     return this.step(() => {
       this.need();
@@ -126,7 +130,8 @@ export class MockCore implements Core {
       if (!check.valid || check.kind === "sapling") throw new Error("invalid: YED can only be sent to a public address (ye… or s…)");
       if (BigInt(cents) <= 0n || BigInt(cents) > BigInt(this.bal.yedCents)) throw new Error("build: insufficient YED");
       const verdict = "ok: valid, burns nothing, would be accepted";
-      return { previewId: this.preview("yed", { cents }), to, cents, stage: "ready", inputs: 1, changeCents: (BigInt(this.bal.yedCents) - BigInt(cents)).toString(), yecInputs: 1, feeZat: FEE, yecChangeZat: "0", expiryHeight: this.tip + 40, txid: "", verdict,
+      const ack = this.unusualYedFee ? `accept-unusual-fee:${FEE}:mock` : null;
+      return { feeNote: this.unusualYedFee, unusualFeeAck: ack, feePriceMicroUsd: null, previewId: this.preview("yed", { cents, ack }), to, cents, stage: "ready", inputs: 1, changeCents: (BigInt(this.bal.yedCents) - BigInt(cents)).toString(), yecInputs: 1, feeZat: FEE, yecChangeZat: "0", expiryHeight: this.tip + 40, txid: "", verdict,
         dryRun: { valid: true, verdict, burnedCents: "0", wouldBeRejected: false, yedInCents: this.bal.yedCents, yedOutCents: this.bal.yedCents, accepted: true } } as YedPreview;
     });
   }
@@ -193,10 +198,15 @@ export class MockCore implements Core {
       return { previewId: this.preview("claim", { vaultTxid }), item: { ...c }, maxBurnCents: c.cents, minOutZat: c.claimantZat } as ClaimPreview;
     });
   }
-  confirm(previewId: string) {
+  confirm(previewId: string, acceptUnusualFee?: string) {
     return this.step(() => {
-      const p = this.previews.get(previewId) as { kind: string; mintId?: number; vaultTxid?: string; cents?: string; lockBlocks?: number } | undefined;
+      const p = this.previews.get(previewId) as { kind: string; mintId?: number; vaultTxid?: string; cents?: string; lockBlocks?: number; ack?: string | null } | undefined;
       if (!p) throw new Error("gate: unknown or expired preview");
+      if (p.ack && acceptUnusualFee !== p.ack) throw new Error("unusual-fee: this fee needs its own confirmation.");
+      if (p.kind === "finish" && this.finishFeeAck && acceptUnusualFee !== this.finishFeeAck) {
+        this.previews.delete(previewId);
+        throw new Error(`unusual-fee: the fee changed after you confirmed, so nothing was sent. It is now 0.5 YEC for 900 bytes. You accepted 0.1 YEC for 900 bytes at the start (0.1 YEC at this size). To pay it, confirm again with the acknowledgement ${this.finishFeeAck}; otherwise the carrier lapses at the end of its window and can then be swept back.`);
+      }
       this.previews.delete(previewId);
       const txid = `${(this.seq++).toString(16).padStart(2, "0")}`.repeat(32);
       this.broadcasts.push(previewId);

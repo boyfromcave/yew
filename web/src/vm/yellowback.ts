@@ -14,17 +14,38 @@ export interface YellowbackState {
   /** After the carrier's confirm: the mint's id, then its row from mint_finish / mint_sweep. */
   mintId: number | null; mintStatus: MintStatus | null; step: MintStep | null;
   redeem: RedeemPreview | null; claim: ClaimPreview | null; txid: string;
+  /** Review YEW-REVIEW-5 L4: the user pressed "Pay this fee" for the estimate's or the claim's unusual fee. */
+  feeAccepted: boolean;
+  /** Review YEW-REVIEW-5 M2: the finish's main fee rose above what the start accepted; the core's text and
+   *  the new acknowledgement it needs back. */
+  finishFee: { note: string; ack: string } | null;
+}
+
+/** The acknowledgement in a finish refusal (`unusual-fee: … accept-unusual-fee:<fee>:row:<id> …`). */
+export function finishAck(message: string): { note: string; ack: string } | null {
+  if (!message.startsWith("unusual-fee:")) return null;
+  const m = /accept-unusual-fee:\d+:row:\d+/.exec(message); if (!m) return null;
+  const cut = message.indexOf(" To pay it,");
+  return { note: (cut < 0 ? message : message.slice(0, cut)).replace(/^unusual-fee: /, ""), ack: m[0] };
 }
 
 export class YellowbackVm extends Vm<YellowbackState> {
   constructor(private core: Core) {
-    super({ vaults: [], claimable: [], busy: false, error: "", errorKind: "", availability: null, estimate: null, mint: null, mintId: null, mintStatus: null, step: null, redeem: null, claim: null, txid: "" });
+    super({ vaults: [], claimable: [], busy: false, error: "", errorKind: "", availability: null, estimate: null, mint: null, mintId: null, mintStatus: null, step: null, redeem: null, claim: null, txid: "", feeAccepted: false, finishFee: null });
   }
   private async run(f: () => Promise<void>) {
     this.set({ busy: true, error: "", errorKind: "" });
     try { await f(); } catch (e) { this.set({ error: messageOf(e), errorKind: kindOf(e) }); } finally { this.set({ busy: false }); }
   }
-  reset() { this.set({ estimate: null, mint: null, mintId: null, mintStatus: null, step: null, redeem: null, claim: null, txid: "", error: "", errorKind: "" }); }
+  reset() { this.set({ estimate: null, mint: null, mintId: null, mintStatus: null, step: null, redeem: null, claim: null, txid: "", error: "", errorKind: "", feeAccepted: false, finishFee: null }); }
+  /** The user's own confirmation of the shown unusual fee (estimate, claim, or the finish's new fee). */
+  acceptFee() { this.set({ feeAccepted: true }); }
+  /** The acknowledgement confirm passes back: only after acceptFee(); an unaccepted flagged fee refuses here. */
+  private ackFor(ack: string | null | undefined): string | undefined {
+    if (!ack) return undefined;
+    if (!this.state.feeAccepted) throw new Error("invalid: this fee is unusual; press \"Pay this fee\" first");
+    return ack;
+  }
   load() { return this.run(async () => this.set({ vaults: await this.core.vaults() })); }
   /** The node's mint gate (H-1/H-5): shown on the Mint screen; a halted mint is not estimated. */
   loadAvailability() { return this.run(async () => this.set({ availability: await this.core.mint_availability() })); }
@@ -34,7 +55,7 @@ export class YellowbackVm extends Vm<YellowbackState> {
     return this.run(async () => {
       const cents = parseYedCents(amount); if (cents === null || cents <= 0n) throw new Error("invalid: enter an amount in dollars, like 25.00");
       if (!Number.isInteger(lockBlocks) || lockBlocks <= 0) throw new Error("invalid: the lock is a number of blocks");
-      this.set({ estimate: await this.core.mint_estimate(cents.toString(), lockBlocks), mint: null, mintId: null, mintStatus: null, step: null, txid: "" });
+      this.set({ estimate: await this.core.mint_estimate(cents.toString(), lockBlocks), mint: null, mintId: null, mintStatus: null, step: null, txid: "", feeAccepted: false, finishFee: null });
     });
   }
   /** Start: the carrier preview for the estimate the user saw. */
@@ -48,7 +69,7 @@ export class YellowbackVm extends Vm<YellowbackState> {
   mintConfirm() {
     return this.run(async () => {
       const m = this.state.mint; if (!m) throw new Error("invalid: nothing to confirm");
-      const r = await this.core.confirm(m.previewId);
+      const r = await this.core.confirm(m.previewId, this.ackFor(this.state.estimate?.unusualFeeAck));
       if (r.mintId === null) throw new Error("build: the core did not record the mint");
       this.set({ txid: r.txid, mintId: r.mintId });
       await this.stageFinish();
@@ -89,21 +110,41 @@ export class YellowbackVm extends Vm<YellowbackState> {
   mintStepConfirm() {
     return this.run(async () => {
       const st = this.state.step; if (!st) throw new Error("invalid: nothing to confirm");
-      const r = await this.core.confirm(st.previewId);
+      let r;
+      try { r = await this.core.confirm(st.previewId); }
+      catch (e) {
+        // the finish's fee rose above what the start accepted: nothing was sent; show the note and
+        // ask (acceptFinishFee) instead of failing with the raw refusal
+        const f = finishAck(messageOf(e));
+        if (!f) throw e;
+        this.set({ step: null, finishFee: f, feeAccepted: false });
+        return;
+      }
       const rows = await this.core.mints();
-      this.set({ txid: r.txid, step: null, mintStatus: rows.find((m) => m.mintId === st.mintId) ?? st.row });
+      this.set({ txid: r.txid, step: null, finishFee: null, mintStatus: rows.find((m) => m.mintId === st.mintId) ?? st.row });
+    });
+  }
+  /** After acceptFee() on a finish refusal: stage the finish again and confirm it with the new acknowledgement. */
+  acceptFinishFee() {
+    return this.run(async () => {
+      const f = this.state.finishFee, id = this.state.mintId; if (!f || id === null) throw new Error("invalid: nothing to confirm");
+      const ack = this.ackFor(f.ack)!;
+      const step = await this.core.mint_finish(id);
+      const r = await this.core.confirm(step.previewId, ack);
+      const rows = await this.core.mints();
+      this.set({ txid: r.txid, step: null, finishFee: null, feeAccepted: false, mintStatus: rows.find((m) => m.mintId === id) ?? step.row });
     });
   }
   mintSweep() { return this.run(async () => { const id = this.state.mintId; if (id === null) return; const step = await this.core.mint_sweep(id); this.set({ step, mintStatus: step.row }); }); }
 
   redeemPreview(vaultTxid: string) { return this.run(async () => this.set({ redeem: await this.core.redeem_preview(vaultTxid), claim: null, txid: "" })); }
-  claimPreview(vaultTxid: string) { return this.run(async () => this.set({ claim: await this.core.claim_preview(vaultTxid), redeem: null, txid: "" })); }
+  claimPreview(vaultTxid: string) { return this.run(async () => this.set({ claim: await this.core.claim_preview(vaultTxid), redeem: null, txid: "", feeAccepted: false })); }
   get previewId() { return this.state.redeem?.previewId ?? this.state.claim?.previewId ?? ""; }
   confirm() {
     return this.run(async () => {
       const id = this.previewId; if (!id) throw new Error("invalid: nothing to confirm");
-      const r = await this.core.confirm(id);
-      this.set({ txid: r.txid, redeem: null, claim: null });
+      const r = await this.core.confirm(id, this.ackFor(this.state.claim?.unusualFeeAck));
+      this.set({ txid: r.txid, redeem: null, claim: null, feeAccepted: false });
       this.set({ vaults: await this.core.vaults() });
     });
   }

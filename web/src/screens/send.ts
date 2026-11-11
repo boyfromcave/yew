@@ -2,7 +2,7 @@ import { mount } from "../dom";
 import { clear, go, h } from "../dom";
 import { formatYec, formatYed } from "../format";
 import { SendVm } from "../vm/send";
-import { errorCard, feeLine, previewCard, resultCard, slideToConfirm } from "../widgets";
+import { errorCard, feeLine, previewCard, resultCard, slideToConfirm, unusualFeeCard } from "../widgets";
 
 export function renderSend(root: HTMLElement, vm: SendVm) {
   const draw = () => {
@@ -20,7 +20,8 @@ export function renderSend(root: HTMLElement, vm: SendVm) {
       errorCard(s.error, s.errorKind),
       !previewing ? h("div", { class: "actions" }, h("button", { disabled: s.busy, on: { click: () => vm.preview() } }, s.busy ? "Asking the node…" : "Preview")) : null,
       s.yed ? [previewCard(`Send ${formatYed(BigInt(Math.round(Number(s.amount.replace(/[$,]/g, "")) * 100)))}`, [["To", s.to], ["Fee", feeLine(s.yed.feeZat)], ["YED inputs", String(s.yed.inputs)], ["Node verdict", s.yed.verdict]]),
-        slideToConfirm("Slide to send", () => vm.confirm(), s.busy), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Change")] : null,
+        unusualFeeCard(s.yed.feeNote, s.feeAccepted, () => vm.acceptFee()),
+        slideToConfirm("Slide to send", () => vm.confirm(), s.busy || (!!s.yed.unusualFeeAck && !s.feeAccepted)), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Change")] : null,
       s.yec ? [previewCard(`Send ${s.amount} YEC`, [["To", s.to], ["Fee", feeLine(s.yec.fee)], ["Change", `${formatYec(s.yec.change)} YEC`], ["Paid from", s.yec.funding === "shielded" ? "your private balance" : "your public balance"]],
           s.yec.revealsShielded ? "This payment leaves your private balance for a public address: its amount will be visible on the chain." : undefined),
         s.yec.paramsNeeded ? h("p", { class: "small" }, "Proved in this browser at confirm (private spends take a while).") : null,

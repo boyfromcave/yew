@@ -10,17 +10,19 @@ export type Asset = "yed" | "yec";
 export interface SendState {
   asset: Asset; to: string; amount: string; memo: string; toKind: string; busy: boolean; error: string; errorKind: string;
   yec: YecPreview | null; yed: YedPreview | null; move: YecPreview | null; txid: string;
+  /** The user pressed "Pay this fee" for the current preview's unusual fee (review YEW-REVIEW-5 L4). */
+  feeAccepted: boolean;
 }
 
 export class SendVm extends Vm<SendState> {
   constructor(private core: Core, asset: Asset = "yed") {
-    super({ asset, to: "", amount: "", memo: "", toKind: "", busy: false, error: "", errorKind: "", yec: null, yed: null, move: null, txid: "" });
+    super({ asset, to: "", amount: "", memo: "", toKind: "", busy: false, error: "", errorKind: "", yec: null, yed: null, move: null, txid: "", feeAccepted: false });
   }
   private async run(f: () => Promise<void>) {
     this.set({ busy: true, error: "", errorKind: "" });
     try { await f(); } catch (e) { this.set({ error: messageOf(e), errorKind: kindOf(e) }); } finally { this.set({ busy: false }); }
   }
-  reset() { this.set({ yec: null, yed: null, move: null, error: "", errorKind: "", txid: "" }); }
+  reset() { this.set({ yec: null, yed: null, move: null, error: "", errorKind: "", txid: "", feeAccepted: false }); }
   setAsset(asset: Asset) { this.set({ asset }); this.reset(); }
   /** Records the recipient; re-renders only when its kind changes (a memo field appears for ys1…). */
   async setTo(to: string) {
@@ -38,7 +40,7 @@ export class SendVm extends Vm<SendState> {
       if (s.asset === "yed") {
         if (this.toPrivate) throw new Error("invalid: YED can only be sent to a public address (ye… or s…).");
         const cents = parseYedCents(s.amount); if (cents === null || cents <= 0n) throw new Error("invalid: enter an amount in dollars, like 25.00");
-        this.set({ yed: await this.core.send_yed_preview(to, cents.toString()), yec: null });
+        this.set({ yed: await this.core.send_yed_preview(to, cents.toString()), yec: null, feeAccepted: false });
       } else {
         const zat = parseYecZat(s.amount); if (zat === null || zat <= 0n) throw new Error("invalid: enter an amount in YEC, like 0.5");
         if (s.memo && !this.toPrivate) throw new Error("invalid: a message needs a private (ys1…) recipient");
@@ -55,12 +57,19 @@ export class SendVm extends Vm<SendState> {
     });
   }
   get previewId(): string { const s = this.state; return s.yed?.previewId ?? s.yec?.previewId ?? s.move?.previewId ?? ""; }
-  /** The one path that signs and broadcasts. */
+  /** The flagged fee's note (null when the fee is usual). */
+  get feeNote(): string | null { return this.state.yed?.feeNote ?? null; }
+  /** The user's own confirmation of an unusual fee (the separate step; the slider stays off until then). */
+  acceptFee() { this.set({ feeAccepted: true }); }
+  /** The one path that signs and broadcasts. An unusual fee's acknowledgement goes back only after
+   *  acceptFee(); without it the core refuses and nothing is sent. */
   confirm() {
     return this.run(async () => {
       const id = this.previewId; if (!id) throw new Error("invalid: nothing to confirm");
-      const r = await this.core.confirm(id);
-      this.set({ txid: r.txid, yec: null, yed: null, move: null });
+      const ack = this.state.yed?.unusualFeeAck ?? null;
+      if (ack && !this.state.feeAccepted) throw new Error("invalid: this fee is unusual; press \"Pay this fee\" first");
+      const r = await this.core.confirm(id, ack ?? undefined);
+      this.set({ txid: r.txid, yec: null, yed: null, move: null, feeAccepted: false });
     });
   }
 }
