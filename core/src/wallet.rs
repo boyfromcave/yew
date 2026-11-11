@@ -953,9 +953,10 @@ impl Wallet {
         cents: u64,
         lock_blocks: u32,
         tip: u64,
+        source: mint::MintSource,
     ) -> Result<MintEstimate, WalletError> {
         let yb = validator.client_mut().ok_or(GateError::YellowbackAbsent)?;
-        mint::estimate(self, yb, cents, lock_blocks, tip).await
+        mint::estimate(self, yb, cents, lock_blocks, tip, source).await
     }
 
     /// `mint_start(...)`: bundle, carrier funding transaction, the `mints` row. With
@@ -971,6 +972,7 @@ impl Wallet {
         confirmed: Option<&ConfirmedTerms>,
         tip: u64,
         branch_id: u32,
+        source: mint::MintSource,
     ) -> Result<i64, WalletError> {
         mint::start(
             self,
@@ -981,6 +983,7 @@ impl Wallet {
             confirmed,
             tip,
             branch_id,
+            source,
         )
         .await
     }

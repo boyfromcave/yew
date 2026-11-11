@@ -7,7 +7,7 @@ import 'frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `claim_intent_of`, `connect`, `download_params_inner`, `download_params_to`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `height_time`, `hex_or_empty`, `history_item`, `locked`, `merge_shielded`, `mint_status_of`, `new`, `now_secs`, `open_wallet`, `params_dir_of`, `params_status_of`, `parse_outpoint`, `parse_server`, `parse_txid`, `price_opt`, `renew_lock_blocks`, `row_status`, `runtime`, `shielded_pair`, `store_err`, `sync_shielded`, `sync_with`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `with_pending_spend`, `yec_preview_of`, `yellowback_refusal`, `yellowback_status`, `yellowback_usable`
+// These functions are ignored because they are not marked as `pub`: `claim_intent_of`, `connect`, `download_params_inner`, `download_params_to`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `height_time`, `hex_or_empty`, `history_item`, `locked`, `merge_shielded`, `mint_source_of`, `mint_status_of`, `new`, `now_secs`, `open_wallet`, `params_dir_of`, `params_status_of`, `parse_outpoint`, `parse_server`, `parse_txid`, `price_opt`, `renew_lock_blocks`, `row_status`, `runtime`, `shielded_pair`, `store_err`, `sync_shielded`, `sync_with`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `with_pending_spend`, `yec_preview_of`, `yellowback_refusal`, `yellowback_status`, `yellowback_usable`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Conn`, `Open`, `Preview`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
 
@@ -282,9 +282,11 @@ Future<MintAvailability> mintAvailability() =>
 Future<MintEstimate> mintEstimate({
   required PlatformInt64 cents,
   required int lockBlocks,
+  required String from,
 }) => RustLib.instance.api.crateApiMintEstimate(
   cents: cents,
   lockBlocks: lockBlocks,
+  from: from,
 );
 
 /// Start a mint (after a sync): verify the bundle, fund the carrier through the gate, record
@@ -1376,6 +1378,22 @@ class MintEstimate {
   /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported).
   final PlatformInt64? feePriceMicroUsd;
 
+  /// Where the YEC comes from (beta2 D-3): empty = the public (ECC) balance, else the own
+  /// post-quantum address the mint is funded from.
+  final String from;
+
+  /// The carrier funding transaction's fee, zat (in `network_fee_zat`): the flat fee from the
+  /// public balance; from a post-quantum address the size fee of its signatures.
+  final PlatformInt64 carrierFeeZat;
+
+  /// Set when the post-quantum carrier fee is unusual: show it beside that fee and confirm it
+  /// separately.
+  final String? carrierFeeNote;
+
+  /// Set exactly when `carrier_fee_note` is: pass it back as
+  /// [`MintTerms::accept_unusual_carrier_fee`] after the separate confirmation.
+  final String? unusualCarrierFeeAck;
+
   const MintEstimate({
     required this.cents,
     required this.lockBlocks,
@@ -1403,6 +1421,10 @@ class MintEstimate {
     this.feeNote,
     this.unusualFeeAck,
     this.feePriceMicroUsd,
+    required this.from,
+    required this.carrierFeeZat,
+    this.carrierFeeNote,
+    this.unusualCarrierFeeAck,
   });
 
   @override
@@ -1432,7 +1454,11 @@ class MintEstimate {
       bundleSeqs.hashCode ^
       feeNote.hashCode ^
       unusualFeeAck.hashCode ^
-      feePriceMicroUsd.hashCode;
+      feePriceMicroUsd.hashCode ^
+      from.hashCode ^
+      carrierFeeZat.hashCode ^
+      carrierFeeNote.hashCode ^
+      unusualCarrierFeeAck.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1464,7 +1490,11 @@ class MintEstimate {
           bundleSeqs == other.bundleSeqs &&
           feeNote == other.feeNote &&
           unusualFeeAck == other.unusualFeeAck &&
-          feePriceMicroUsd == other.feePriceMicroUsd;
+          feePriceMicroUsd == other.feePriceMicroUsd &&
+          from == other.from &&
+          carrierFeeZat == other.carrierFeeZat &&
+          carrierFeeNote == other.carrierFeeNote &&
+          unusualCarrierFeeAck == other.unusualCarrierFeeAck;
 }
 
 /// One `mints` row (plan §5.3, README "the two-step state machine is a table"): a mint or a
@@ -1677,12 +1707,24 @@ class MintTerms {
   /// `MintEstimate::unusual_fee_ack` when the user confirmed the unusual fee separately.
   final String? acceptUnusualFee;
 
+  /// `MintEstimate::from` (beta2 D-3): empty = the public balance.
+  final String from;
+
+  /// `MintEstimate::carrier_fee_zat`: the carrier funding may not pay more.
+  final PlatformInt64 carrierFeeZat;
+
+  /// `MintEstimate::unusual_carrier_fee_ack` when the user confirmed it separately.
+  final String? acceptUnusualCarrierFee;
+
   const MintTerms({
     required this.collateralZat,
     required this.feeZat,
     required this.payee,
     required this.termClass,
     this.acceptUnusualFee,
+    required this.from,
+    required this.carrierFeeZat,
+    this.acceptUnusualCarrierFee,
   });
 
   @override
@@ -1691,7 +1733,10 @@ class MintTerms {
       feeZat.hashCode ^
       payee.hashCode ^
       termClass.hashCode ^
-      acceptUnusualFee.hashCode;
+      acceptUnusualFee.hashCode ^
+      from.hashCode ^
+      carrierFeeZat.hashCode ^
+      acceptUnusualCarrierFee.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1702,7 +1747,10 @@ class MintTerms {
           feeZat == other.feeZat &&
           payee == other.payee &&
           termClass == other.termClass &&
-          acceptUnusualFee == other.acceptUnusualFee;
+          acceptUnusualFee == other.acceptUnusualFee &&
+          from == other.from &&
+          carrierFeeZat == other.carrierFeeZat &&
+          acceptUnusualCarrierFee == other.acceptUnusualCarrierFee;
 }
 
 /// The direction of [`move_preview`].

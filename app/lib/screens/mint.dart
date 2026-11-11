@@ -168,7 +168,15 @@ class _MintScreenState extends State<MintScreen> {
       final row = await app.api.mintStart(
         cents: e.cents,
         lockBlocks: e.lockBlocks,
-        confirmed: MintTerms(collateralZat: e.collateralZat, feeZat: e.feeZat, payee: e.payee, termClass: e.termClass, acceptUnusualFee: ack),
+        confirmed: MintTerms(
+          collateralZat: e.collateralZat,
+          feeZat: e.feeZat,
+          payee: e.payee,
+          termClass: e.termClass,
+          acceptUnusualFee: ack,
+          from: e.from,
+          carrierFeeZat: e.carrierFeeZat,
+        ),
       );
       await app.refresh();
       if (!mounted) return;

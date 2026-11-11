@@ -233,8 +233,8 @@ class FakeWalletApi implements WalletApi {
   }
 
   @override
-  Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks}) async {
-    calls.add('mintEstimate $cents $lockBlocks');
+  Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks, String from = ''}) async {
+    calls.add(from.isEmpty ? 'mintEstimate $cents $lockBlocks' : 'mintEstimate $cents $lockBlocks from $from');
     if (mintEstimateError != null) throw mintEstimateError!;
     final klass = lockBlocks <= 96 ? 'A' : (lockBlocks <= 144 ? 'B' : 'C');
     final collateral = cents * 19000 * 2 ~/ 1; // 1 YED = $1, $0.52/YEC, 200 %
@@ -264,6 +264,8 @@ class FakeWalletApi implements WalletApi {
       pMintMicroUsd: 520000,
       armed: armed,
       bundleSeqs: Uint32List.fromList([0, 1, 2]),
+      from: from,
+      carrierFeeZat: from.isEmpty ? 1000 : 18000,
     );
   }
 
@@ -592,6 +594,7 @@ class FakeWalletApi implements WalletApi {
       unusualFeeAck: pqFeeAck,
       expiryHeight: 524,
       txid: 'qq' * 32,
+      fromPrivate: false,
     );
   }
 

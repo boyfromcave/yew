@@ -140,6 +140,7 @@ abstract class RustLibApi extends BaseApi {
   Future<MintEstimate> crateApiMintEstimate({
     required PlatformInt64 cents,
     required int lockBlocks,
+    required String from,
   });
 
   Future<MintStatus> crateApiMintFinish({
@@ -831,6 +832,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<MintEstimate> crateApiMintEstimate({
     required PlatformInt64 cents,
     required int lockBlocks,
+    required String from,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -838,6 +840,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_i_64(cents, serializer);
           sse_encode_u_32(lockBlocks, serializer);
+          sse_encode_String(from, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -850,7 +853,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_yew_error,
         ),
         constMeta: kCrateApiMintEstimateConstMeta,
-        argValues: [cents, lockBlocks],
+        argValues: [cents, lockBlocks, from],
         apiImpl: this,
       ),
     );
@@ -858,7 +861,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiMintEstimateConstMeta => const TaskConstMeta(
     debugName: "mint_estimate",
-    argNames: ["cents", "lockBlocks"],
+    argNames: ["cents", "lockBlocks", "from"],
   );
 
   @override
@@ -2202,8 +2205,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MintEstimate dco_decode_mint_estimate(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 26)
-      throw Exception('unexpected arr length: expect 26 but see ${arr.length}');
+    if (arr.length != 30)
+      throw Exception('unexpected arr length: expect 30 but see ${arr.length}');
     return MintEstimate(
       cents: dco_decode_i_64(arr[0]),
       lockBlocks: dco_decode_u_32(arr[1]),
@@ -2231,6 +2234,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       feeNote: dco_decode_opt_String(arr[23]),
       unusualFeeAck: dco_decode_opt_String(arr[24]),
       feePriceMicroUsd: dco_decode_opt_box_autoadd_i_64(arr[25]),
+      from: dco_decode_String(arr[26]),
+      carrierFeeZat: dco_decode_i_64(arr[27]),
+      carrierFeeNote: dco_decode_opt_String(arr[28]),
+      unusualCarrierFeeAck: dco_decode_opt_String(arr[29]),
     );
   }
 
@@ -2277,14 +2284,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MintTerms dco_decode_mint_terms(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return MintTerms(
       collateralZat: dco_decode_i_64(arr[0]),
       feeZat: dco_decode_i_64(arr[1]),
       payee: dco_decode_String(arr[2]),
       termClass: dco_decode_String(arr[3]),
       acceptUnusualFee: dco_decode_opt_String(arr[4]),
+      from: dco_decode_String(arr[5]),
+      carrierFeeZat: dco_decode_i_64(arr[6]),
+      acceptUnusualCarrierFee: dco_decode_opt_String(arr[7]),
     );
   }
 
@@ -3292,6 +3302,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_feeNote = sse_decode_opt_String(deserializer);
     var var_unusualFeeAck = sse_decode_opt_String(deserializer);
     var var_feePriceMicroUsd = sse_decode_opt_box_autoadd_i_64(deserializer);
+    var var_from = sse_decode_String(deserializer);
+    var var_carrierFeeZat = sse_decode_i_64(deserializer);
+    var var_carrierFeeNote = sse_decode_opt_String(deserializer);
+    var var_unusualCarrierFeeAck = sse_decode_opt_String(deserializer);
     return MintEstimate(
       cents: var_cents,
       lockBlocks: var_lockBlocks,
@@ -3319,6 +3333,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       feeNote: var_feeNote,
       unusualFeeAck: var_unusualFeeAck,
       feePriceMicroUsd: var_feePriceMicroUsd,
+      from: var_from,
+      carrierFeeZat: var_carrierFeeZat,
+      carrierFeeNote: var_carrierFeeNote,
+      unusualCarrierFeeAck: var_unusualCarrierFeeAck,
     );
   }
 
@@ -3395,12 +3413,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_payee = sse_decode_String(deserializer);
     var var_termClass = sse_decode_String(deserializer);
     var var_acceptUnusualFee = sse_decode_opt_String(deserializer);
+    var var_from = sse_decode_String(deserializer);
+    var var_carrierFeeZat = sse_decode_i_64(deserializer);
+    var var_acceptUnusualCarrierFee = sse_decode_opt_String(deserializer);
     return MintTerms(
       collateralZat: var_collateralZat,
       feeZat: var_feeZat,
       payee: var_payee,
       termClass: var_termClass,
       acceptUnusualFee: var_acceptUnusualFee,
+      from: var_from,
+      carrierFeeZat: var_carrierFeeZat,
+      acceptUnusualCarrierFee: var_acceptUnusualCarrierFee,
     );
   }
 
@@ -4469,6 +4493,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.feeNote, serializer);
     sse_encode_opt_String(self.unusualFeeAck, serializer);
     sse_encode_opt_box_autoadd_i_64(self.feePriceMicroUsd, serializer);
+    sse_encode_String(self.from, serializer);
+    sse_encode_i_64(self.carrierFeeZat, serializer);
+    sse_encode_opt_String(self.carrierFeeNote, serializer);
+    sse_encode_opt_String(self.unusualCarrierFeeAck, serializer);
   }
 
   @protected
@@ -4513,6 +4541,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.payee, serializer);
     sse_encode_String(self.termClass, serializer);
     sse_encode_opt_String(self.acceptUnusualFee, serializer);
+    sse_encode_String(self.from, serializer);
+    sse_encode_i_64(self.carrierFeeZat, serializer);
+    sse_encode_opt_String(self.acceptUnusualCarrierFee, serializer);
   }
 
   @protected

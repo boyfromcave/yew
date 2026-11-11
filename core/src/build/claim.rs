@@ -454,6 +454,7 @@ pub async fn start(
         r,
         tip,
         branch_id,
+        mint::CarrierFunding::Ecc,
         persist_row,
     )
     .await?;

@@ -1197,7 +1197,13 @@ pub async fn mint_estimate(cents: JsValue, lock_blocks: u32) -> Result<JsValue, 
             let Session { wallet, conn, .. } = s;
             let conn = conn.as_mut().expect("connected");
             let e = wallet
-                .mint_estimate(&mut conn.validator, cents, lock_blocks, r.tip)
+                .mint_estimate(
+                    &mut conn.validator,
+                    cents,
+                    lock_blocks,
+                    r.tip,
+                    yew_core::build::mint::MintSource::Ecc,
+                )
                 .await
                 .map_err(wallet_err)?;
             to_js(&dto::mint_estimate(&e))
@@ -1242,6 +1248,9 @@ pub fn mint_start(cents: JsValue, lock_blocks: u32, terms: JsValue) -> Result<Js
             payee: t.payee,
             term_class: t.term_class,
             accept_unusual_fee: t.accept_unusual_fee,
+            // the browser funds a mint from the public balance only (beta2 D-3 is the app's)
+            carrier_fee_zat: None,
+            accept_unusual_carrier_fee: None,
         })
     };
     with_session_sync(|s| {
@@ -1619,6 +1628,7 @@ pub async fn confirm(
                                 terms.as_ref(),
                                 r.tip,
                                 r.branch_id,
+                                yew_core::build::mint::MintSource::Ecc,
                             )
                             .await
                             .map_err(wallet_err)?

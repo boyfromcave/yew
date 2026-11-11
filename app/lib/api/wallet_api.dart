@@ -157,7 +157,9 @@ abstract class WalletApi {
   /// term class mintable). Connects; no sync.
   Future<MintAvailability> mintAvailability();
 
-  Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks});
+  /// [from]: where the YEC comes from (beta2 D-3): empty = the public balance, else one of the
+  /// wallet's post-quantum addresses holding YEC ([pqSources]).
+  Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks, String from = ''});
 
   /// [confirmed] is the estimate the user saw: the core refuses a server answer whose
   /// collateral, fee, payee or class differs from it (audit G-2).

@@ -740,6 +740,18 @@ pub struct MintEstimate {
     pub unusual_fee_ack: Option<String>,
     /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported).
     pub fee_price_micro_usd: Option<i64>,
+    /// Where the YEC comes from (beta2 D-3): empty = the public (ECC) balance, else the own
+    /// post-quantum address the mint is funded from.
+    pub from: String,
+    /// The carrier funding transaction's fee, zat (in `network_fee_zat`): the flat fee from the
+    /// public balance; from a post-quantum address the size fee of its signatures.
+    pub carrier_fee_zat: i64,
+    /// Set when the post-quantum carrier fee is unusual: show it beside that fee and confirm it
+    /// separately.
+    pub carrier_fee_note: Option<String>,
+    /// Set exactly when `carrier_fee_note` is: pass it back as
+    /// [`MintTerms::accept_unusual_carrier_fee`] after the separate confirmation.
+    pub unusual_carrier_fee_ack: Option<String>,
 }
 
 /// One `mints` row (plan §5.3, README "the two-step state machine is a table"): a mint or a
@@ -1148,6 +1160,32 @@ pub struct MintTerms {
     pub term_class: String,
     /// `MintEstimate::unusual_fee_ack` when the user confirmed the unusual fee separately.
     pub accept_unusual_fee: Option<String>,
+    /// `MintEstimate::from` (beta2 D-3): empty = the public balance.
+    pub from: String,
+    /// `MintEstimate::carrier_fee_zat`: the carrier funding may not pay more.
+    pub carrier_fee_zat: i64,
+    /// `MintEstimate::unusual_carrier_fee_ack` when the user confirmed it separately.
+    pub accept_unusual_carrier_fee: Option<String>,
+}
+
+/// The mint source an estimate or a start names: empty = the public (ECC) balance, else one
+/// of the wallet's post-quantum addresses holding plain YEC.
+fn mint_source_of(
+    network: params::Network,
+    from: &str,
+) -> Result<crate::build::mint::MintSource, YewError> {
+    let from = from.trim();
+    if from.is_empty() {
+        return Ok(crate::build::mint::MintSource::Ecc);
+    }
+    keys::parse_pq_yec_address(network, from)
+        .map(crate::build::mint::MintSource::Pq)
+        .map_err(|_| {
+            YewError::new(
+                ErrorKind::Input,
+                "Fund the mint from your public balance or from one of your post-quantum (sqf…/sqs…) addresses.",
+            )
+        })
 }
 
 /// [`redeem_preview`]: the signed REDEEM (or VOID release) waiting for [`redeem_confirm`]
@@ -3378,7 +3416,7 @@ pub fn mint_availability() -> Result<MintAvailability, YewError> {
 /// The mint estimate (after a sync): collateral, fees, payee, heights, term class, attestor
 /// seqs, each checked against the network's rules (audit G-1, G-2). Nothing is signed. An
 /// amount outside `[MIN_MINT, MAX_MINT]` is [`ErrorKind::Input`] (audit G-9).
-pub fn mint_estimate(cents: i64, lock_blocks: u32) -> Result<MintEstimate, YewError> {
+pub fn mint_estimate(cents: i64, lock_blocks: u32, from: String) -> Result<MintEstimate, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
             if cents <= 0 || cents > u32::MAX as i64 {
@@ -3388,10 +3426,17 @@ pub fn mint_estimate(cents: i64, lock_blocks: u32) -> Result<MintEstimate, YewEr
                 ));
             }
             let r = o.sync().await?;
+            let source = mint_source_of(o.wallet.network, &from)?;
             let Open { wallet, conn, .. } = o;
             let conn = conn.as_mut().expect("connected");
             let e = wallet
-                .mint_estimate(&mut conn.validator, cents as u64, lock_blocks, r.tip)
+                .mint_estimate(
+                    &mut conn.validator,
+                    cents as u64,
+                    lock_blocks,
+                    r.tip,
+                    source,
+                )
                 .await?;
             Ok(MintEstimate {
                 cents: e.cents as i64,
@@ -3420,6 +3465,10 @@ pub fn mint_estimate(cents: i64, lock_blocks: u32) -> Result<MintEstimate, YewEr
                 fee_note: e.fee_guard.note.clone(),
                 unusual_fee_ack: e.fee_guard.ack.clone(),
                 fee_price_micro_usd: price_opt(e.fee_guard.reported_price_micro_usd),
+                from: from.trim().to_string(),
+                carrier_fee_zat: e.carrier_fee_zat,
+                carrier_fee_note: e.carrier_fee_guard.as_ref().and_then(|g| g.note.clone()),
+                unusual_carrier_fee_ack: e.carrier_fee_guard.as_ref().and_then(|g| g.ack.clone()),
             })
         })
     })
@@ -3443,12 +3492,15 @@ pub fn mint_start(
                 ));
             }
             let r = o.sync().await?;
+            let source = mint_source_of(o.wallet.network, &confirmed.from)?;
             let terms = crate::build::mint::ConfirmedTerms {
                 collateral_zat: confirmed.collateral_zat,
                 fee_zat: confirmed.fee_zat,
                 payee: confirmed.payee,
                 term_class: confirmed.term_class,
                 accept_unusual_fee: confirmed.accept_unusual_fee,
+                carrier_fee_zat: Some(confirmed.carrier_fee_zat),
+                accept_unusual_carrier_fee: confirmed.accept_unusual_carrier_fee,
             };
             let id = {
                 let Open { wallet, conn, .. } = &mut *o;
@@ -3462,6 +3514,7 @@ pub fn mint_start(
                         Some(&terms),
                         r.tip,
                         r.branch_id,
+                        source,
                     )
                     .await?
             };
@@ -3866,7 +3919,10 @@ mod tests {
         assert_eq!(new_shielded_address().unwrap_err().kind, ErrorKind::Locked);
         assert_eq!(params_status().unwrap_err().kind, ErrorKind::Locked);
         assert_eq!(history(0, 10).unwrap_err().kind, ErrorKind::Locked);
-        assert_eq!(mint_estimate(100, 10).unwrap_err().kind, ErrorKind::Locked);
+        assert_eq!(
+            mint_estimate(100, 10, String::new()).unwrap_err().kind,
+            ErrorKind::Locked
+        );
         assert_eq!(vaults().unwrap_err().kind, ErrorKind::Locked);
         assert_eq!(mints().unwrap_err().kind, ErrorKind::Locked);
         // A malformed vault txid is refused before the wallet is looked at.
@@ -4072,10 +4128,15 @@ mod tests {
         assert!(mints().unwrap().is_empty());
         assert!(vaults().unwrap().is_empty());
         assert_eq!(mint_status(7).unwrap_err().kind, ErrorKind::Input);
-        assert_eq!(mint_estimate(0, 10).unwrap_err().kind, ErrorKind::Input);
+        assert_eq!(
+            mint_estimate(0, 10, String::new()).unwrap_err().kind,
+            ErrorKind::Input
+        );
         // Above u32 (audit G-9): refused before any network call.
         assert_eq!(
-            mint_estimate(u32::MAX as i64 + 1, 48).unwrap_err().kind,
+            mint_estimate(u32::MAX as i64 + 1, 48, String::new())
+                .unwrap_err()
+                .kind,
             ErrorKind::Input
         );
         assert_eq!(

@@ -179,6 +179,29 @@ pub struct ConfirmedTerms {
     /// The estimate's [`MintEstimate::fee_guard`] acknowledgement, when its fee was flagged
     /// (review YEW-REVIEW-4 M2): required then, refused otherwise.
     pub accept_unusual_fee: Option<String>,
+    /// The carrier funding fee the user confirmed ([`MintEstimate::carrier_fee_zat`]; beta2 D-3:
+    /// a post-quantum source prices it on the size). `start` refuses a carrier funding that pays
+    /// more (the stored quote is what the user acknowledged, review YEW-REVIEW-6 M1). `None`: the
+    /// estimate's at `start`.
+    pub carrier_fee_zat: Option<i64>,
+    /// The estimate's [`MintEstimate::carrier_fee_guard`] acknowledgement, when that fee was
+    /// flagged: required then.
+    pub accept_unusual_carrier_fee: Option<String>,
+}
+
+/// Where a mint's YEC comes from (beta2 D-3 in the app: "MINT funded from a chosen source"; the
+/// app has no generic vault-lock builder). The MINT transaction is the same for every source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MintSource {
+    /// The wallet's transparent ECC coins (`FEE_RESERVE`, then `YEC`): the carrier funding and
+    /// the MINT's own inputs, as before.
+    Ecc,
+    /// One own post-quantum address (`sqf…`/`sqs…`): the carrier funding transaction spends only
+    /// that address's `PQ_OWNED` coins ([`gate::Path::CarrierFromPq`]) and pays, beside the
+    /// carrier, the MINT's YEC need to a fresh own P2PKH key (the staged funding), the change
+    /// back to the source (D-4). The MINT then spends the staged output first, as a plain `YEC`
+    /// input, with the carrier.
+    Pq(crate::pq::PqKeyId),
 }
 
 /// What the Mint screen shows before anything is signed (plan §5.3).
@@ -230,6 +253,15 @@ pub struct MintEstimate {
     /// The guard on the MINT's network fee (review YEW-REVIEW-4 M2): a flagged fee needs its
     /// acknowledgement in [`ConfirmedTerms::accept_unusual_fee`] at `start`.
     pub fee_guard: terms::FeeGuard,
+    /// The source of the YEC (beta2 D-3).
+    pub source: MintSource,
+    /// The carrier funding transaction's fee: the flat Yellowback fee from ECC; from a
+    /// post-quantum address the size fee of its signatures (at least the flat fee). Included in
+    /// `network_fee_zat`.
+    pub carrier_fee_zat: i64,
+    /// The guard on a post-quantum source's carrier fee (it rests on the server's terms): a
+    /// flagged fee needs [`ConfirmedTerms::accept_unusual_carrier_fee`]. `None` from ECC.
+    pub carrier_fee_guard: Option<terms::FeeGuard>,
 }
 
 impl MintEstimate {
@@ -382,6 +414,7 @@ pub async fn estimate(
     cents: u64,
     lock_blocks: u32,
     tip: u64,
+    source: MintSource,
 ) -> Result<MintEstimate, WalletError> {
     terms::check_cents(wallet.network, cents)?;
     terms::class_for(wallet.network, lock_blocks)?;
@@ -423,13 +456,36 @@ pub async fn estimate(
     let attest_fee_zat = terms::attest_fee(wallet.network, fee_zat, &bundle_seqs);
     // The carrier pays the flat fee (`BuildCarrier`); the MINT the Yellowback size fee, here at one
     // P2PKH funding input (more inputs raise it at `finish`, from the reserve).
-    let network_fee_zat = wallet.pq_terms().flat_zat
-        + wallet
-            .pq_terms()
-            .yed_fee(crate::params::yed_estimated_size(1, &[]));
+    let mint_fee = wallet
+        .pq_terms()
+        .yed_fee(crate::params::yed_estimated_size(1, &[]));
+    let (avail, reserved) = coins::yec_balances(&wallet.spendable_utxos()?);
+    let (carrier_fee_zat, carrier_fee_guard, available_zat) = match source {
+        MintSource::Ecc => (wallet.pq_terms().flat_zat, None, avail + reserved),
+        MintSource::Pq(id) => {
+            let staged = staged_value(
+                wallet,
+                collateral_zat,
+                if payee.is_empty() { 0 } else { fee_zat },
+                attest_fee_zat,
+            );
+            // the carrier's script does not change the size: any P2SH of the carrier's length
+            let carrier_spk = script::p2sh_script(&[0; 20]);
+            let stage_spk = script::p2pkh_script(&[0; 20]);
+            let f = plan_pq_funding(wallet, &id, &carrier_spk, staged, &stage_spk, tip)?;
+            let guard = wallet.guard_fee(
+                terms::FeeKind::Plain,
+                f.plan.fee,
+                f.plan.estimated_bytes,
+                f.conventional,
+                "mint carrier",
+            )?;
+            (f.plan.fee, Some(guard), f.available)
+        }
+    };
+    let network_fee_zat = carrier_fee_zat + mint_fee;
     let total_zat =
         collateral_zat + TOKEN_VALUE + fee_zat + attest_fee_zat + CARRIER_VALUE + network_fee_zat;
-    let (avail, reserved) = coins::yec_balances(&wallet.spendable_utxos()?);
     Ok(MintEstimate {
         cents,
         lock_blocks,
@@ -449,8 +505,114 @@ pub async fn estimate(
         armed: e.armed,
         bundle_seqs,
         total_zat,
-        available_zat: avail + reserved,
+        available_zat,
         fee_guard: main_fee_guard(wallet, "mint")?,
+        source,
+        carrier_fee_zat,
+        carrier_fee_guard,
+    })
+}
+
+/// The MINT's YEC need at one P2PKH funding input (`BuildMint`: outputs + fee − `CARRIER_VALUE`):
+/// what a carrier funded from another source stages for it.
+pub fn staged_value(wallet: &Wallet, collateral: i64, protocol_fee: i64, attest_fee: i64) -> i64 {
+    collateral + TOKEN_VALUE + protocol_fee + attest_fee + wallet.pq_terms().yed_network_fee(1, &[])
+}
+
+/// A planned carrier funding from a post-quantum source.
+pub struct PqFunding {
+    /// The planner's settlement (coins, outputs in `vout` order, change, fee, size).
+    pub plan: super::any_to_any::PqSourcePlan<Utxo>,
+    /// The shape's ZIP-317 conventional fee at the estimated size.
+    pub conventional: i64,
+    /// The source's spendable post-quantum YEC, zat.
+    pub available: i64,
+}
+
+/// Plan the carrier funding from the own post-quantum address `id` (beta2 D-3): the carrier
+/// (`carrier_spk`, `CARRIER_VALUE`) and the staged MINT funding (`stage_spk`, `staged`) paid from
+/// that address's confirmed `PQ_OWNED` coins by the planner `pq_send` and yewd's `z_sendmany`
+/// use (size fee at the server's bounded rate, at least the flat Yellowback fee; the change back
+/// to the source, D-4; never a change of exactly `TOKEN_VALUE`).
+pub fn plan_pq_funding(
+    wallet: &Wallet,
+    id: &crate::pq::PqKeyId,
+    carrier_spk: &[u8],
+    staged: i64,
+    stage_spk: &[u8],
+    tip: u64,
+) -> Result<PqFunding, WalletError> {
+    use super::any_to_any::{self as plan, PlanRecipient, PqCoin};
+    let other = |m: &str| WalletError::Other(m.to_string());
+    if let Some(why) = wallet.terms_refused() {
+        return Err(WalletError::Other(format!(
+            "The server's fee terms were refused, so nothing is sent: {why}"
+        )));
+    }
+    let terms = wallet.pq_terms();
+    if id.scheme == crate::pq::SCHEME_FN_DSA_512 && !terms.falcon_at(tip + 1) {
+        return Err(other(
+            "an FN-DSA-512 (scheme 2) post-quantum address can be spent from only once Falcon is active at the next block",
+        ));
+    }
+    let source = crate::pq::pqpkh_script(id)
+        .ok_or_else(|| other("the address's scheme is not registered"))?;
+    let spendable = wallet.spendable_utxos()?;
+    let coins: Vec<PqCoin<Utxo>> = spendable
+        .iter()
+        .filter(|u| u.class == UtxoClass::PqOwned && u.script == source && u.height > 0)
+        .map(|u| PqCoin {
+            outpoint: u.outpoint,
+            value: u.value,
+            script: u.script.clone(),
+            key: u.clone(),
+        })
+        .collect();
+    let available = coins.iter().map(|c| c.value).sum();
+    let recipients = [
+        PlanRecipient {
+            script: Some(carrier_spk.to_vec()),
+            amount: CARRIER_VALUE,
+        },
+        PlanRecipient {
+            script: Some(stage_spk.to_vec()),
+            amount: staged,
+        },
+    ];
+    let (rate, cap) = (terms.fee_rate_zat_per_kb, terms.max_fee_zat);
+    let policy = super::pq_send::APP_POLICY;
+    let mut p = plan::plan_pq_source(&coins, &source, &recipients, None, policy, rate, cap)
+        .map_err(|e| WalletError::Other(e.to_string()))?;
+    if p.fee < terms.flat_zat {
+        // `BuildCarrier`'s flat Yellowback fee is the floor of a carrier funding
+        p = plan::plan_pq_source(
+            &coins,
+            &source,
+            &recipients,
+            Some(terms.flat_zat),
+            policy,
+            rate,
+            cap,
+        )
+        .map_err(|e| WalletError::Other(e.to_string()))?;
+    }
+    if p.change == TOKEN_VALUE {
+        p.change -= 1;
+        p.fee += 1;
+        if let Some(o) = p.transparent_outputs.last_mut() {
+            o.1 -= 1;
+        }
+    }
+    let (_, conventional) = plan::shape_size(
+        p.selected.iter().map(|c| c.script.as_slice()),
+        &p.transparent_outputs,
+        0,
+        0,
+    );
+    Ok(PqFunding {
+        plan: p,
+        conventional,
+        available,
     })
 }
 
@@ -704,6 +866,7 @@ pub async fn carrier_step<R>(
     ref_height: u32,
     tip: u64,
     branch_id: u32,
+    funding: CarrierFunding,
     persist_row: R,
 ) -> Result<(CarrierStep, i64), WalletError>
 where
@@ -724,6 +887,23 @@ where
         .ok_or_else(|| WalletError::Other("carrier key".into()))?;
     let redeem = script::carrier_script(&carrier_key.pubkey, &bundle::bundle_hash(bundle))
         .map_err(MintError::Script)?;
+    if let CarrierFunding::Pq {
+        id,
+        staged,
+        max_fee,
+    } = funding
+    {
+        return carrier_step_pq(
+            wallet,
+            client,
+            validator,
+            (&carrier_row, &redeem),
+            (id, staged, max_fee),
+            (expiry_height, tip, branch_id),
+            persist_row,
+        )
+        .await;
+    }
     // `BuildCarrier`: the flat Yellowback fee (`g_yellowbackFee`, `fees.network.flatZat`)
     let needed = CARRIER_VALUE + wallet.pq_terms().flat_zat;
     let spendable = wallet.spendable_utxos()?;
@@ -819,6 +999,200 @@ where
     Ok((step, id))
 }
 
+/// How [`carrier_step`] funds the carrier (beta2 D-3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CarrierFunding {
+    /// The wallet's transparent ECC coins, as before ([`gate::Path::Carrier`]).
+    Ecc,
+    /// The own post-quantum address `id` ([`gate::Path::CarrierFromPq`]): the carrier and the
+    /// staged MINT funding (`staged` zat to a fresh own P2PKH key), at most `max_fee` (the fee
+    /// the user confirmed on the estimate).
+    Pq {
+        id: crate::pq::PqKeyId,
+        staged: i64,
+        max_fee: i64,
+    },
+}
+
+/// The meta key under which a mint row records its staged funding output (`txid:n`, beta2 D-3).
+pub(crate) fn stage_key(id: i64) -> String {
+    format!("mint_stage:{id}")
+}
+
+/// [`carrier_step`] from a post-quantum source: [`plan_pq_funding`], each input signed with
+/// the source's key through the existing `Transaction::sign_pqpkh_input` and checked against
+/// its digest, the signed size re-priced, the fee bounded by this build's limit and by the
+/// confirmed quote, both gate layers on [`gate::Path::CarrierFromPq`] (the stored scripts too),
+/// layer 3 on every input, then recorded and sent as the ECC carrier is.
+async fn carrier_step_pq<R>(
+    wallet: &Wallet,
+    client: &mut CompactClient,
+    validator: &mut Validator,
+    (carrier_row, redeem): (&AddressRow, &[u8]),
+    (id, staged, max_fee): (crate::pq::PqKeyId, i64, i64),
+    (expiry_height, tip, branch_id): (u32, u64, u32),
+    persist_row: R,
+) -> Result<(CarrierStep, i64), WalletError>
+where
+    R: FnOnce(&CarrierStep) -> Result<i64, WalletError>,
+{
+    use super::any_to_any as plan;
+    let other = |m: String| WalletError::Other(m);
+    if branch_id != crate::params::VAULT_BRANCH_ID {
+        return Err(other(
+            "post-quantum addresses can be spent from only once the vault upgrade is active at the next block".into(),
+        ));
+    }
+    let key = super::release::own_pq_key(wallet, &id)?.ok_or_else(|| {
+        other("From address does not belong to this node, post-quantum key not found.".into())
+    })?;
+    let stage_row = fresh_change(wallet)?;
+    let stage_spk = script::p2pkh_script(&stage_row.hash160);
+    let carrier_spk = script::p2sh_of(redeem);
+    let f = plan_pq_funding(wallet, &id, &carrier_spk, staged, &stage_spk, tip)?;
+    let p = f.plan;
+    if p.transparent_outputs.first().map(|o| o.0.as_slice()) != Some(carrier_spk.as_slice())
+        || p.transparent_outputs.get(1).map(|o| o.0.as_slice()) != Some(stage_spk.as_slice())
+    {
+        return Err(other(
+            "the planned carrier funding is not in the carrier's order".into(),
+        ));
+    }
+    // review YEW-REVIEW-6 M1: never more than the fee the user confirmed on the estimate
+    if p.fee > max_fee {
+        return Err(other(format!(
+            "fee-terms-changed: the server's fee terms changed while the mint was starting: the carrier funding would now pay {} YEC, above the {} YEC you confirmed. Nothing was sent; review the new fee and start again.",
+            plan::format_money(p.fee),
+            plan::format_money(max_fee)
+        )));
+    }
+    let mut tx = Transaction::new_v4();
+    tx.expiry_height = expiry_height;
+    for c in &p.selected {
+        tx.vin.push(TxIn::new(c.outpoint));
+    }
+    for (spk, value) in &p.transparent_outputs {
+        tx.vout.push(TxOut {
+            value: *value,
+            script_pubkey: spk.clone(),
+        });
+    }
+    for (i, c) in p.selected.iter().enumerate() {
+        let digest = tx.sign_pqpkh_input(i, &key, &c.script, c.value, branch_id)?;
+        let ok =
+            crate::pq::parse_pqpkh_script_sig(&tx.vin[i].script_sig).is_some_and(|(sig, pk)| {
+                crate::pq::verify(id.scheme, &pk, &sig[..sig.len() - 1], &digest)
+            });
+        if !ok {
+            return Err(other("the post-quantum signature does not verify".into()));
+        }
+    }
+    tx.check_script_sig_sizes()?;
+    let raw = tx.serialize()?;
+    let txid = tx.txid()?;
+    let terms = wallet.pq_terms();
+    let sizes: Vec<usize> = tx.vin.iter().map(|i| i.script_sig.len()).collect();
+    let conventional = tx.zip317_conventional_fee(&sizes)?;
+    plan::check_signed_fee(
+        p.fee,
+        raw.len(),
+        conventional,
+        terms.fee_rate_zat_per_kb,
+        terms.max_fee_zat,
+    )
+    .map_err(|e| other(e.to_string()))?;
+    let limit = crate::params::pq_send_fee_limit(raw.len(), conventional)
+        .max(terms.flat_zat.min(crate::params::MAX_FLAT_ZAT));
+    if p.fee > limit {
+        return Err(other(format!(
+            "Fee {} YEC is above this app's limit of {} YEC for a {}-byte post-quantum carrier funding. Nothing was sent; try another server.",
+            plan::format_money(p.fee),
+            plan::format_money(limit),
+            raw.len()
+        )));
+    }
+    let scripts = |op: &OutPoint| {
+        wallet
+            .store
+            .utxo_txout(op)
+            .ok()
+            .flatten()
+            .map(|o| o.script_pubkey)
+    };
+    let path = gate::Path::CarrierFromPq(id);
+    let (_, validation) = gate::confirm_with_scripts(
+        validator,
+        path,
+        &raw,
+        |op| wallet.store.utxo_class(op).ok().flatten(),
+        scripts,
+    )
+    .await?;
+    let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
+    // layer 3 on every post-quantum input
+    gate::confirm_provenance(
+        client,
+        path,
+        &raw,
+        |op| wallet.store.utxo_class(op).ok().flatten(),
+        |op| wallet.store.utxo_txout(op).ok().flatten(),
+    )
+    .await?;
+    let step = CarrierStep {
+        txid,
+        carrier_hash160: carrier_row.hash160,
+        expiry_height,
+        validation,
+    };
+    let inputs: Vec<Utxo> = p.selected.iter().map(|c| c.key.clone()).collect();
+    let selected: i64 = inputs.iter().map(|u| u.value).sum();
+    let row_id = std::cell::Cell::new(None);
+    send_recorded(
+        wallet,
+        &txid,
+        &raw,
+        expiry_height,
+        &inputs,
+        || {
+            wallet.store.upsert_history(&HistoryRow {
+                txid,
+                height: 0,
+                yec_delta: p.change + staged - selected,
+                has_payload: false,
+                pending: true,
+                shielded: false,
+                yed_delta: 0,
+                kind: "carrier".into(),
+                verdict: String::new(),
+                label: "funding carrier from your post-quantum address".into(),
+                labelled: true,
+            })?;
+            wallet
+                .store
+                .insert_own_output(&OutPoint { txid, n: 1 }, staged, &stage_row.hash160)?;
+            let id = persist_row(&step)?;
+            wallet
+                .store
+                .set_meta(&stage_key(id), &format!("{}:1", txid_hex(&txid)))?;
+            row_id.set(Some(id));
+            Ok(())
+        },
+        || match row_id.get() {
+            Some(id) => {
+                wallet.store.set_meta(&stage_key(id), "")?;
+                Ok(wallet.store.delete_mint(id)?)
+            }
+            None => Ok(()),
+        },
+        send(client, &raw, &txid),
+    )
+    .await?;
+    let id = row_id
+        .get()
+        .ok_or_else(|| WalletError::Other("carrier row not recorded".into()))?;
+    Ok((step, id))
+}
+
 /// `mint_start` (plan §3.4): estimate (checked), bundle (verified, and `pMint` checked against
 /// its prices), carrier step, and the `mints` row in state `CarrierSent`. With `confirmed`,
 /// the collateral, fee, payee and class must equal what the user confirmed on the estimate
@@ -833,11 +1207,12 @@ pub async fn start(
     confirmed: Option<&ConfirmedTerms>,
     tip: u64,
     branch_id: u32,
+    source: MintSource,
 ) -> Result<i64, WalletError> {
     let yb = validator
         .client_mut()
         .ok_or(gate::GateError::YellowbackAbsent)?;
-    let est = estimate(wallet, yb, cents, lock_blocks, tip).await?;
+    let est = estimate(wallet, yb, cents, lock_blocks, tip, source).await?;
     if let Some(c) = confirmed {
         check_confirmed(c, &est)?;
     }
@@ -846,6 +1221,16 @@ pub async fn start(
         &est.fee_guard,
         confirmed.and_then(|c| c.accept_unusual_fee.as_deref()),
     )?;
+    // beta2 D-3: a post-quantum source's carrier fee rests on the server's terms
+    if let Some(g) = &est.carrier_fee_guard {
+        terms::require_ack(
+            g,
+            confirmed.and_then(|c| c.accept_unusual_carrier_fee.as_deref()),
+        )?;
+    }
+    let carrier_quote = confirmed
+        .and_then(|c| c.carrier_fee_zat)
+        .unwrap_or(est.carrier_fee_zat);
     if !est.affordable() {
         return Err(MintError::Unaffordable {
             need: est.total_zat,
@@ -925,6 +1310,19 @@ pub async fn start(
         };
         Ok(wallet.store.insert_mint(&row)?)
     };
+    let funding = match source {
+        MintSource::Ecc => CarrierFunding::Ecc,
+        MintSource::Pq(id) => CarrierFunding::Pq {
+            id,
+            staged: staged_value(
+                wallet,
+                est.collateral_zat,
+                if est.payee.is_empty() { 0 } else { fee_zat },
+                attest_fee_zat,
+            ),
+            max_fee: carrier_quote,
+        },
+    };
     let (_, id) = carrier_step(
         wallet,
         client,
@@ -933,6 +1331,7 @@ pub async fn start(
         r,
         tip,
         branch_id,
+        funding,
         persist_row,
     )
     .await?;
@@ -1366,9 +1765,26 @@ pub async fn finish(
     // needed = outputs + fee − CARRIER_VALUE: the carrier input pays CARRIER_VALUE (:1136). The fee
     // is the Yellowback size fee (rpcversion 8), raised as the selection grows (`PQFeeFollower`).
     let spendable = wallet.spendable_utxos()?;
+    // beta2 D-3: a carrier funded from another source staged the MINT's YEC in its vout[1]; the
+    // MINT spends that output first (a plain YEC input), and more YEC only if the fee rose
+    let staged = staged_input(wallet, m.id, &spendable)?;
+    let rest: Vec<Utxo> = spendable
+        .iter()
+        .filter(|u| Some(u.outpoint) != staged.as_ref().map(|s| s.outpoint))
+        .cloned()
+        .collect();
     let mut fee = mint_network_fee(wallet, &[]);
     let inputs = loop {
-        let sel = coins::select_yec(&spendable, outputs + fee - CARRIER_VALUE, true)?;
+        let need = outputs + fee - CARRIER_VALUE;
+        let sel = match &staged {
+            Some(st) if st.value >= need => vec![st.clone()],
+            Some(st) => {
+                let mut v = vec![st.clone()];
+                v.extend(coins::select_yec(&rest, need - st.value, true)?);
+                v
+            }
+            None => coins::select_yec(&spendable, need, true)?,
+        };
         let next = mint_network_fee(wallet, &sel);
         if next <= fee {
             break sel;
@@ -1495,6 +1911,29 @@ pub async fn finish(
     })
 }
 
+/// The staged funding output a mint row's carrier paid (beta2 D-3), when there is one: it must be
+/// spendable plain `YEC` now (the carrier confirmed, so it did too), else the finish waits.
+fn staged_input(wallet: &Wallet, id: i64, spendable: &[Utxo]) -> Result<Option<Utxo>, WalletError> {
+    let Some(v) = wallet.store.meta(&stage_key(id))?.filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    let (t, n) = v
+        .split_once(':')
+        .ok_or_else(|| WalletError::Other(format!("staged funding {v}")))?;
+    let op = OutPoint {
+        txid: crate::tx::txid_from_hex(t).map_err(|e| WalletError::Other(e.to_string()))?,
+        n: n.parse()
+            .map_err(|_| WalletError::Other(format!("staged funding {v}")))?,
+    };
+    match spendable.iter().find(|u| u.outpoint == op) {
+        Some(u) if u.class == UtxoClass::Yec => Ok(Some(u.clone())),
+        _ => Err(WalletError::Other(format!(
+            "the mint's staged funding {}:{} is not spendable YEC yet; sync and try again",
+            t, op.n
+        ))),
+    }
+}
+
 /// `mint_sweep` (plan §4 rule 5, `BuildSweepCarriers`): spend the lapsed row's carrier to a
 /// fresh change key, `CARRIER_VALUE − FEE_ZAT`, `nExpiryHeight = tip + TX_EXPIRY_DELTA`.
 pub async fn sweep(
@@ -1606,6 +2045,166 @@ mod tests {
         assert!(!window_open(517, 520));
     }
 
+    /// Beta2 D-3: the carrier funding from a post-quantum address. Only that address's
+    /// confirmed PQ_OWNED coins are candidates (never its HELD or TOKEN rows, another
+    /// post-quantum address's coin or a P2PKH coin); `vout` is the carrier, the staged MINT
+    /// funding, the change to the source (D-4); the fee is at least the flat Yellowback fee;
+    /// the gate's CarrierFromPq path admits the shape for the source only, with the stored
+    /// scripts; too little at the source is the planner's refusal.
+    #[test]
+    fn pq_funding_plan_and_gate() {
+        use crate::params::Network;
+        use crate::store::Store;
+        let seed = keys::seed_from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "",
+        )
+        .unwrap();
+        let mut w = Wallet::from_parts(
+            Store::open_in_memory().unwrap(),
+            Network::Regtest,
+            &seed,
+            None,
+        )
+        .unwrap();
+        let mut t = w.pq_terms();
+        t.falcon_active = true;
+        w.set_pq_terms_for_test(t);
+        let holders = w.own_falcon_holders().unwrap();
+        let mut ids = holders.keys().copied();
+        let id = ids.next().expect("a Falcon holder");
+        let src = crate::pq::pqpkh_script(&id).unwrap();
+        let other = crate::pq::pqpkh_script(&crate::pq::PqKeyId {
+            scheme: id.scheme,
+            hash: [0x31; 32],
+        })
+        .unwrap();
+        let row = |i: u8, v: i64, script: &[u8], class: UtxoClass| Utxo {
+            outpoint: OutPoint {
+                txid: [i; 32],
+                n: 0,
+            },
+            address: String::new(),
+            script: script.to_vec(),
+            value: v,
+            height: 10,
+            class,
+            cents: 0,
+        };
+        let p2pkh = script::p2pkh_script(&[5; 20]);
+        w.store
+            .replace_utxos(&[
+                row(1, 300_000_000, &src, UtxoClass::PqOwned),
+                row(2, 900_000_000, &src, UtxoClass::Held),
+                row(3, 800_000_000, &src, UtxoClass::Token),
+                row(4, 700_000_000, &other, UtxoClass::PqOwned),
+                row(5, 600_000_000, &p2pkh, UtxoClass::Yec),
+            ])
+            .unwrap();
+        let carrier = script::p2sh_script(&[7; 20]);
+        let stage = script::p2pkh_script(&[8; 20]);
+        let f = plan_pq_funding(&w, &id, &carrier, 200_000_000, &stage, 100).unwrap();
+        assert_eq!(f.available, 300_000_000);
+        let p = &f.plan;
+        assert_eq!(p.selected.len(), 1);
+        assert_eq!(p.selected[0].outpoint.txid, [1; 32]);
+        assert!(p.fee >= w.pq_terms().flat_zat);
+        assert_eq!(p.transparent_outputs[0], (carrier.clone(), CARRIER_VALUE));
+        assert_eq!(p.transparent_outputs[1], (stage.clone(), 200_000_000));
+        assert_eq!(p.transparent_outputs.len(), 3);
+        assert_eq!(p.transparent_outputs[2], (src.clone(), p.change));
+        assert_eq!(300_000_000 - CARRIER_VALUE - 200_000_000 - p.fee, p.change);
+        // the shape through the gate (signatures are not the local layer's business)
+        let mut tx = Transaction::new_v4();
+        tx.vin.push(TxIn::new(p.selected[0].outpoint));
+        for (spk, v) in &p.transparent_outputs {
+            tx.vout.push(TxOut {
+                value: *v,
+                script_pubkey: spk.clone(),
+            });
+        }
+        let raw = tx.serialize().unwrap();
+        let class = |op: &OutPoint| w.store.utxo_class(op).ok().flatten();
+        let scripts = |op: &OutPoint| {
+            w.store
+                .utxo_txout(op)
+                .ok()
+                .flatten()
+                .map(|o| o.script_pubkey)
+        };
+        let r = gate::check_with_scripts(gate::Path::CarrierFromPq(id), &raw, class, scripts);
+        assert!(r.is_ok(), "{r:?}");
+        let not_src = crate::pq::PqKeyId {
+            scheme: id.scheme,
+            hash: [0x31; 32],
+        };
+        assert!(
+            gate::check_with_scripts(gate::Path::CarrierFromPq(not_src), &raw, class, scripts)
+                .is_err()
+        );
+        assert!(gate::check(gate::Path::Carrier, &raw, class).is_err());
+        // too little at the source
+        let e = plan_pq_funding(&w, &id, &carrier, 400_000_000, &stage, 100)
+            .err()
+            .unwrap();
+        assert!(
+            e.to_string().starts_with("Insufficient transparent funds"),
+            "{e}"
+        );
+        // the staged value is the MINT's need at one P2PKH input
+        assert_eq!(
+            staged_value(&w, 1_000, 20, 30),
+            1_000 + TOKEN_VALUE + 50 + w.pq_terms().yed_network_fee(1, &[])
+        );
+    }
+
+    /// Beta2 D-3: the MINT spends a row's staged funding output first; none recorded: the old
+    /// selection; recorded but not spendable YEC (not synced yet): the finish waits.
+    #[test]
+    fn staged_input_is_the_rows_output() {
+        use crate::params::Network;
+        use crate::store::Store;
+        let seed = keys::seed_from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "",
+        )
+        .unwrap();
+        let w = Wallet::from_parts(
+            Store::open_in_memory().unwrap(),
+            Network::Regtest,
+            &seed,
+            None,
+        )
+        .unwrap();
+        let u = Utxo {
+            outpoint: OutPoint {
+                txid: [6; 32],
+                n: 1,
+            },
+            address: String::new(),
+            script: script::p2pkh_script(&[6; 20]),
+            value: 5_000_000,
+            height: 20,
+            class: UtxoClass::Yec,
+            cents: 0,
+        };
+        assert_eq!(staged_input(&w, 7, std::slice::from_ref(&u)).unwrap(), None);
+        w.store
+            .set_meta(&stage_key(7), &format!("{}:1", txid_hex(&[6; 32])))
+            .unwrap();
+        assert_eq!(
+            staged_input(&w, 7, std::slice::from_ref(&u)).unwrap(),
+            Some(u.clone())
+        );
+        let e = staged_input(&w, 7, &[]).unwrap_err();
+        assert!(e.to_string().contains("not spendable YEC yet"), "{e}");
+        let held = Utxo {
+            class: UtxoClass::Held,
+            ..u
+        };
+        assert!(staged_input(&w, 7, &[held]).is_err());
+    }
+
     /// The second answer at `mint_start` may not differ from the confirmed estimate (audit G-2).
     #[test]
     fn changed_terms_are_refused() {
@@ -1630,6 +2229,9 @@ mod tests {
             total_zat: 0,
             available_zat: 0,
             fee_guard: Default::default(),
+            source: MintSource::Ecc,
+            carrier_fee_zat: 1_000,
+            carrier_fee_guard: None,
         };
         let confirmed = ConfirmedTerms {
             collateral_zat: est.collateral_zat,
@@ -1637,6 +2239,8 @@ mod tests {
             payee: est.payee.clone(),
             term_class: est.term_class.clone(),
             accept_unusual_fee: None,
+            carrier_fee_zat: None,
+            accept_unusual_carrier_fee: None,
         };
         assert!(check_confirmed(&confirmed, &est).is_ok());
         for bent in [

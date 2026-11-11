@@ -700,10 +700,12 @@ fn wire__crate__api__mint_estimate_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_cents = <i64>::sse_decode(&mut deserializer);
             let api_lock_blocks = <u32>::sse_decode(&mut deserializer);
+            let api_from = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
-                    let output_ok = crate::api::mint_estimate(api_cents, api_lock_blocks)?;
+                    let output_ok =
+                        crate::api::mint_estimate(api_cents, api_lock_blocks, api_from)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -2305,6 +2307,10 @@ impl SseDecode for crate::api::MintEstimate {
         let mut var_feeNote = <Option<String>>::sse_decode(deserializer);
         let mut var_unusualFeeAck = <Option<String>>::sse_decode(deserializer);
         let mut var_feePriceMicroUsd = <Option<i64>>::sse_decode(deserializer);
+        let mut var_from = <String>::sse_decode(deserializer);
+        let mut var_carrierFeeZat = <i64>::sse_decode(deserializer);
+        let mut var_carrierFeeNote = <Option<String>>::sse_decode(deserializer);
+        let mut var_unusualCarrierFeeAck = <Option<String>>::sse_decode(deserializer);
         return crate::api::MintEstimate {
             cents: var_cents,
             lock_blocks: var_lockBlocks,
@@ -2332,6 +2338,10 @@ impl SseDecode for crate::api::MintEstimate {
             fee_note: var_feeNote,
             unusual_fee_ack: var_unusualFeeAck,
             fee_price_micro_usd: var_feePriceMicroUsd,
+            from: var_from,
+            carrier_fee_zat: var_carrierFeeZat,
+            carrier_fee_note: var_carrierFeeNote,
+            unusual_carrier_fee_ack: var_unusualCarrierFeeAck,
         };
     }
 }
@@ -2410,12 +2420,18 @@ impl SseDecode for crate::api::MintTerms {
         let mut var_payee = <String>::sse_decode(deserializer);
         let mut var_termClass = <String>::sse_decode(deserializer);
         let mut var_acceptUnusualFee = <Option<String>>::sse_decode(deserializer);
+        let mut var_from = <String>::sse_decode(deserializer);
+        let mut var_carrierFeeZat = <i64>::sse_decode(deserializer);
+        let mut var_acceptUnusualCarrierFee = <Option<String>>::sse_decode(deserializer);
         return crate::api::MintTerms {
             collateral_zat: var_collateralZat,
             fee_zat: var_feeZat,
             payee: var_payee,
             term_class: var_termClass,
             accept_unusual_fee: var_acceptUnusualFee,
+            from: var_from,
+            carrier_fee_zat: var_carrierFeeZat,
+            accept_unusual_carrier_fee: var_acceptUnusualCarrierFee,
         };
     }
 }
@@ -3517,6 +3533,10 @@ impl flutter_rust_bridge::IntoDart for crate::api::MintEstimate {
             self.fee_note.into_into_dart().into_dart(),
             self.unusual_fee_ack.into_into_dart().into_dart(),
             self.fee_price_micro_usd.into_into_dart().into_dart(),
+            self.from.into_into_dart().into_dart(),
+            self.carrier_fee_zat.into_into_dart().into_dart(),
+            self.carrier_fee_note.into_into_dart().into_dart(),
+            self.unusual_carrier_fee_ack.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -3579,6 +3599,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::MintTerms {
             self.payee.into_into_dart().into_dart(),
             self.term_class.into_into_dart().into_dart(),
             self.accept_unusual_fee.into_into_dart().into_dart(),
+            self.from.into_into_dart().into_dart(),
+            self.carrier_fee_zat.into_into_dart().into_dart(),
+            self.accept_unusual_carrier_fee.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4558,6 +4581,10 @@ impl SseEncode for crate::api::MintEstimate {
         <Option<String>>::sse_encode(self.fee_note, serializer);
         <Option<String>>::sse_encode(self.unusual_fee_ack, serializer);
         <Option<i64>>::sse_encode(self.fee_price_micro_usd, serializer);
+        <String>::sse_encode(self.from, serializer);
+        <i64>::sse_encode(self.carrier_fee_zat, serializer);
+        <Option<String>>::sse_encode(self.carrier_fee_note, serializer);
+        <Option<String>>::sse_encode(self.unusual_carrier_fee_ack, serializer);
     }
 }
 
@@ -4604,6 +4631,9 @@ impl SseEncode for crate::api::MintTerms {
         <String>::sse_encode(self.payee, serializer);
         <String>::sse_encode(self.term_class, serializer);
         <Option<String>>::sse_encode(self.accept_unusual_fee, serializer);
+        <String>::sse_encode(self.from, serializer);
+        <i64>::sse_encode(self.carrier_fee_zat, serializer);
+        <Option<String>>::sse_encode(self.accept_unusual_carrier_fee, serializer);
     }
 }
 

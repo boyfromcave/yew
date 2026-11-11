@@ -1040,12 +1040,30 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     assert_eq!(r.yec.0 + r.yec.1, 40 * 100_000_000, "{r:?}");
 
     // 1. The full two-step mint of $100.00 for 48 blocks.
-    let est = a.mint_estimate(&mut v, 10_000, 48, r.tip).await.unwrap();
+    let est = a
+        .mint_estimate(
+            &mut v,
+            10_000,
+            48,
+            r.tip,
+            yew_core::build::mint::MintSource::Ecc,
+        )
+        .await
+        .unwrap();
     println!("estimate: {est:?}");
     assert!(est.affordable() && est.armed && !est.bundle_seqs.is_empty());
     assert_eq!(est.claim_height, est.lock_height + grace);
     let id1 = a
-        .mint_start(&mut c, &mut v, 10_000, 48, None, r.tip, r.branch_id)
+        .mint_start(
+            &mut c,
+            &mut v,
+            10_000,
+            48,
+            None,
+            r.tip,
+            r.branch_id,
+            yew_core::build::mint::MintSource::Ecc,
+        )
         .await
         .unwrap();
     let m1 = a.store.mint(id1).unwrap().unwrap();
@@ -1159,7 +1177,16 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     // 2. Kill-and-resume: start a second mint, drop the wallet, reopen the file, sync, finish.
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     let id2 = a
-        .mint_start(&mut c, &mut v, 10_000, 48, None, r.tip, r.branch_id)
+        .mint_start(
+            &mut c,
+            &mut v,
+            10_000,
+            48,
+            None,
+            r.tip,
+            r.branch_id,
+            yew_core::build::mint::MintSource::Ecc,
+        )
         .await
         .unwrap();
     let carrier2 = txid_hex(&a.store.mint(id2).unwrap().unwrap().carrier_txid);
@@ -1238,7 +1265,16 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     //    swept. Meanwhile a bundle with one mutated signature is refused by bundle.rs.
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     let id3 = a
-        .mint_start(&mut c, &mut v, 10_000, 48, None, r.tip, r.branch_id)
+        .mint_start(
+            &mut c,
+            &mut v,
+            10_000,
+            48,
+            None,
+            r.tip,
+            r.branch_id,
+            yew_core::build::mint::MintSource::Ecc,
+        )
         .await
         .unwrap();
     let m3 = a.store.mint(id3).unwrap().unwrap();
@@ -2136,7 +2172,16 @@ async fn it_early_redeem_and_in_term_claim() {
     ) -> yew_core::store::VaultRow {
         let r = sync(a, c, v.client_mut()).await.unwrap();
         let id = a
-            .mint_start(c, v, 10_000, lock_blocks, None, r.tip, r.branch_id)
+            .mint_start(
+                c,
+                v,
+                10_000,
+                lock_blocks,
+                None,
+                r.tip,
+                r.branch_id,
+                yew_core::build::mint::MintSource::Ecc,
+            )
             .await
             .unwrap();
         let m = a.store.mint(id).unwrap().unwrap();
@@ -3107,13 +3152,31 @@ async fn s4_move_to_private_and_public_then_mint() {
         w.shielded().unwrap().balance().unwrap().total_zat as i64,
         private
     );
-    let est = w.mint_estimate(&mut v, 10_000, 48, r.tip).await.unwrap();
+    let est = w
+        .mint_estimate(
+            &mut v,
+            10_000,
+            48,
+            r.tip,
+            yew_core::build::mint::MintSource::Ecc,
+        )
+        .await
+        .unwrap();
     assert!(!est.affordable(), "{est:?}");
     let shortfall = est.total_zat - est.available_zat;
     assert!(matches!(
-        w.mint_start(&mut c, &mut v, 10_000, 48, None, r.tip, r.branch_id)
-            .await
-            .unwrap_err(),
+        w.mint_start(
+            &mut c,
+            &mut v,
+            10_000,
+            48,
+            None,
+            r.tip,
+            r.branch_id,
+            yew_core::build::mint::MintSource::Ecc
+        )
+        .await
+        .unwrap_err(),
         yew_core::wallet::WalletError::Mint(MintError::Unaffordable { .. })
     ));
     let plan = plan_move(&mut w, Direction::ToPublic, Some(shortfall), r.tip).unwrap();
@@ -3126,10 +3189,28 @@ async fn s4_move_to_private_and_public_then_mint() {
     wait_for_height(&mut c, h).await;
     let (r, _) = sync_both(&mut w, &server, &mut c, &mut v).await;
     assert_eq!(r.yec, (shortfall, RESERVE), "{r:?}");
-    let est = w.mint_estimate(&mut v, 10_000, 48, r.tip).await.unwrap();
+    let est = w
+        .mint_estimate(
+            &mut v,
+            10_000,
+            48,
+            r.tip,
+            yew_core::build::mint::MintSource::Ecc,
+        )
+        .await
+        .unwrap();
     assert!(est.affordable(), "{est:?}");
     let id = w
-        .mint_start(&mut c, &mut v, 10_000, 48, None, r.tip, r.branch_id)
+        .mint_start(
+            &mut c,
+            &mut v,
+            10_000,
+            48,
+            None,
+            r.tip,
+            r.branch_id,
+            yew_core::build::mint::MintSource::Ecc,
+        )
         .await
         .expect("mint after the unshield");
     let carrier = txid_hex(&w.store.mint(id).unwrap().unwrap().carrier_txid);
@@ -4175,7 +4256,16 @@ async fn q_falcon_holders_receive_send_mint_and_restore() {
 
     // 4. A mint after Falcon: the token goes to the holder key's Falcon pair.
     let id = a
-        .mint_start(&mut c, &mut v, 10_000, 96, None, r.tip, r.branch_id)
+        .mint_start(
+            &mut c,
+            &mut v,
+            10_000,
+            96,
+            None,
+            r.tip,
+            r.branch_id,
+            yew_core::build::mint::MintSource::Ecc,
+        )
         .await
         .unwrap();
     let m = a.store.mint(id).unwrap().unwrap();

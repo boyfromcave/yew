@@ -161,8 +161,8 @@ class RustWalletApi implements WalletApi {
   Future<MintAvailability> mintAvailability() => rust.mintAvailability();
 
   @override
-  Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks}) =>
-      rust.mintEstimate(cents: cents, lockBlocks: lockBlocks);
+  Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks, String from = ''}) =>
+      rust.mintEstimate(cents: cents, lockBlocks: lockBlocks, from: from);
 
   @override
   Future<MintStatus> mintStart({required int cents, required int lockBlocks, required MintTerms confirmed}) =>
