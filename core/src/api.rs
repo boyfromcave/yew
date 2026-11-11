@@ -2367,21 +2367,43 @@ pub struct PqSendPreviewInfo {
     pub txid: String,
 }
 
-/// Plan and sign a send of `zat` from the own post-quantum address `from` to the transparent
-/// address `to` (ECC `s…` or post-quantum), after a sync (`build::pq_send`, the planner yewd's
-/// `z_sendmany` uses). Nothing is broadcast. Refusals carry the node's text.
+/// Plan and sign a send of `zat` from the own post-quantum address `from` to `to` (ECC `s…`,
+/// post-quantum, or a private `ys1…` address, beta2 item 5: proven here, so it needs the Sapling
+/// parameters, [`ErrorKind::ParamsMissing`] otherwise), after a sync (`build::pq_send`, the
+/// planner yewd's `z_sendmany` uses). Nothing is broadcast. Refusals carry the node's text.
 pub fn pq_send_preview(from: String, to: String, zat: i64) -> Result<PqSendPreviewInfo, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
             let r = o.sync().await?;
-            let p = crate::build::pq_send::build_pq_send(
-                &o.wallet,
-                &from,
-                &to,
-                zat,
-                r.tip,
-                r.branch_id,
-            )?;
+            // beta2 item 5: a private (Sapling) recipient is proven here, so the parameters
+            // must be present (download, then preview again)
+            let p = if crate::shielded_keys::is_sapling_address(o.wallet.network, to.trim()) {
+                if !sapling_params::status(&o.params_dir).present() {
+                    return Err(YewError::new(
+                        ErrorKind::ParamsMissing,
+                        "Private sending needs a one-time download of 52 MB (the Sapling proving parameters).",
+                    ));
+                }
+                let side = crate::build::pq_send::SaplingSide::of(&o.wallet, &o.params_dir)?;
+                crate::build::pq_send::build_pq_to_sapling(
+                    &o.wallet,
+                    &side,
+                    &from,
+                    &to,
+                    zat,
+                    r.tip,
+                    r.branch_id,
+                )?
+            } else {
+                crate::build::pq_send::build_pq_send(
+                    &o.wallet,
+                    &from,
+                    &to,
+                    zat,
+                    r.tip,
+                    r.branch_id,
+                )?
+            };
             let txid = txid_hex(&p.txid);
             let out = PqSendPreviewInfo {
                 preview_id: format!("q{txid}"),

@@ -439,6 +439,13 @@ fn percent_of(s: &WalletSummary<AccountUuid>) -> u8 {
 }
 
 impl Shielded {
+    /// The account's extended spending key, a transient copy (beta2 item 5: the output viewing
+    /// key of a post-quantum -> Sapling send's output, `build::pq_send`). Never stored.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn extended_spending_key(&self) -> sapling_crypto::zip32::ExtendedSpendingKey {
+        self.account.extended_spending_key()
+    }
+
     /// Open (creating if needed) the store under `dir` for `account` on `network`. Offline:
     /// the light client connects at the first [`Shielded::sync`]. A store holding another
     /// seed's account is refused.

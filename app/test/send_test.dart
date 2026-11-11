@@ -206,7 +206,7 @@ void main() {
     h.api.pqSourcesAnswer = const [slhSource];
     await openSend(tester, h);
     await choosePqSource(tester);
-    expect(find.text('s…, sqf… or sqs… address'), findsOneWidget);
+    expect(find.text('ys1…, s…, sqf… or sqs… address'), findsOneWidget);
     expect(find.byKey(const Key('everything')), findsNothing);
     await tester.enterText(find.byKey(const Key('address')), fakeS);
     await tester.enterText(find.byKey(const Key('amount')), '0.5');
@@ -224,6 +224,23 @@ void main() {
     await tester.pumpAndSettle();
     expect(h.api.calls, contains('pqConfirm q1'));
     expect(find.text('qq' * 32), findsOneWidget);
+  });
+
+  testWidgets('YEC from a post-quantum address to a private ys1… address goes to the core\'s post-quantum preview (beta2 item 5)', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.pqSourcesAnswer = const [slhSource];
+    await openSend(tester, h);
+    await choosePqSource(tester);
+    await tester.enterText(find.byKey(const Key('address')), fakeZ);
+    await tester.enterText(find.byKey(const Key('amount')), '0.5');
+    await tester.tap(find.byKey(const Key('preview')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('pqPreview $fakePqSlh $fakeZ 50000000'));
+    expect(h.api.calls.where((c) => c.startsWith('yecPreview')), isEmpty);
+    expect(find.byKey(const Key('pq-preview')), findsOneWidget);
+    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('pqConfirm q1'));
   });
 
   testWidgets('a post-quantum send shows the core\'s refusal and its status-unknown answer verbatim', (tester) async {
@@ -319,7 +336,8 @@ void main() {
     h.api.pqSourcesAnswer = const [slhSource, falconSource];
     await openSend(tester, h);
     await choosePqSource(tester);
-    expect(find.text('s…, sqf… or sqs… address'), findsOneWidget);
+    // beta2 item 5: a private recipient is accepted from a post-quantum source too
+    expect(find.text('ys1…, s…, sqf… or sqs… address'), findsOneWidget);
     // the SLH-DSA address is spent elsewhere: the next refresh no longer lists it
     h.api.pqSourcesAnswer = const [falconSource];
     await h.state.refresh();

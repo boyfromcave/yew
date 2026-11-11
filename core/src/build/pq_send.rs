@@ -17,10 +17,14 @@
 //! remote layer (the node's `ValidateRawTransaction`, `ok, burned 0`) is mandatory, so a server
 //! without Yellowback refuses the send outright.
 //!
-//! Not here (reported to the lead, beta2 D-8): a Sapling recipient from a post-quantum source,
-//! and a post-quantum recipient paid from Sapling notes. Both need the hybrid builder (Sapling
-//! bundle plus transparent post-quantum part, `v4_signature_hash`) that lives in yewd's signer,
-//! not in this crate; moving it is a change to signing code.
+//! A Sapling recipient (beta2 item 5, native only, [`build_pq_to_sapling`]): the same plan with
+//! the recipient in the Sapling part, the hybrid builder (`build::hybrid`: the Sapling output
+//! proven, each post-quantum input signed over the ZIP-243 digest that covers it, then the
+//! binding signature) and the gate's [`gate::Path::PqToSapling`] (PQ_OWNED inputs only, the
+//! change only to the source, D-4). The browser build refuses it (no prover there).
+//!
+//! Not here: a post-quantum recipient paid from Sapling notes (needs the notes' witnesses from
+//! the light client's store; the gate's [`gate::Path::SaplingToPq`] is ready for it).
 
 use crate::build::any_to_any::{self as plan, PlanRecipient, PqCoin};
 use crate::coins::{Utxo, UtxoClass};
@@ -74,6 +78,32 @@ pub struct PqSendPreview {
     pub fee_note: Option<String>,
     /// The fee guard: [`broadcast`] refuses a flagged fee without its acknowledgement.
     pub fee_guard: terms::FeeGuard,
+    /// The gate path both layers check: [`gate::Path::PqSpend`], or
+    /// [`gate::Path::PqToSapling`] for a Sapling recipient.
+    pub path: gate::Path,
+}
+
+/// The Sapling side of a post-quantum -> Sapling send (beta2 item 5): the account's spending key
+/// (the output's viewing key) and the proving parameters' directory. The browser build has no
+/// prover and never reads it.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub struct SaplingSide {
+    pub(crate) extsk: sapling_crypto::zip32::ExtendedSpendingKey,
+    pub(crate) params_dir: std::path::PathBuf,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SaplingSide {
+    /// The wallet's Sapling account and the parameters under `params_dir`.
+    pub(crate) fn of(
+        wallet: &Wallet,
+        params_dir: &std::path::Path,
+    ) -> Result<SaplingSide, WalletError> {
+        Ok(SaplingSide {
+            extsk: wallet.shielded()?.extended_spending_key(),
+            params_dir: params_dir.to_path_buf(),
+        })
+    }
 }
 
 fn other(m: impl Into<String>) -> WalletError {
@@ -84,6 +114,38 @@ fn other(m: impl Into<String>) -> WalletError {
 /// transparent address `to`, at `tip` under the next block's `branch_id`. Nothing is broadcast.
 pub fn build_pq_send(
     wallet: &Wallet,
+    from: &str,
+    to: &str,
+    amount: i64,
+    tip: u64,
+    branch_id: u32,
+) -> Result<PqSendPreview, WalletError> {
+    build(wallet, None, from, to, amount, tip, branch_id)
+}
+
+/// [`build_pq_send`] to a Sapling address `to` of this network (beta2 item 5): the plan's
+/// recipient in the Sapling part, signed by the hybrid builder, gate path
+/// [`gate::Path::PqToSapling`]. Native only.
+pub fn build_pq_to_sapling(
+    wallet: &Wallet,
+    side: &SaplingSide,
+    from: &str,
+    to: &str,
+    amount: i64,
+    tip: u64,
+    branch_id: u32,
+) -> Result<PqSendPreview, WalletError> {
+    build(wallet, Some(side), from, to, amount, tip, branch_id)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn refused(r: crate::refuse::Refused) -> WalletError {
+    other(format!("{}: {}", r.0, r.1))
+}
+
+fn build(
+    wallet: &Wallet,
+    sapling: Option<&SaplingSide>,
     from: &str,
     to: &str,
     amount: i64,
@@ -120,21 +182,30 @@ pub fn build_pq_send(
     let key = own_pq_key(wallet, &id)?.ok_or_else(|| {
         other("From address does not belong to this node, post-quantum key not found.")
     })?;
-    if crate::shielded_keys::is_sapling_address(wallet.network, to) {
-        return Err(other(
-            "Sending from a post-quantum address to a private (ys1…) address is not available in this app yet.",
-        ));
-    }
-    let dest = keys::parse_yec_destination(wallet.network, to)?;
-    // ycash6 EnsurePQRecipientPayable
-    if let YecDestination::Pq(r) = &dest {
-        if r.scheme == crate::pq::SCHEME_FN_DSA_512 && !falcon_next {
+    let to_sapling = crate::shielded_keys::is_sapling_address(wallet.network, to);
+    let side = match (to_sapling, sapling) {
+        (true, Some(side)) if cfg!(not(target_arch = "wasm32")) => Some(side),
+        (true, _) => {
             return Err(other(
-                "an FN-DSA-512 (scheme 2) post-quantum address can be paid only once Falcon is active at the next block",
-            ));
+                "Sending from a post-quantum address to a private (ys1…) address is not available in this app yet.",
+            ))
         }
-    }
-    let dest_script = dest.script();
+        (false, _) => None,
+    };
+    let dest_script = if to_sapling {
+        None
+    } else {
+        let dest = keys::parse_yec_destination(wallet.network, to)?;
+        // ycash6 EnsurePQRecipientPayable
+        if let YecDestination::Pq(r) = &dest {
+            if r.scheme == crate::pq::SCHEME_FN_DSA_512 && !falcon_next {
+                return Err(other(
+                    "an FN-DSA-512 (scheme 2) post-quantum address can be paid only once Falcon is active at the next block",
+                ));
+            }
+        }
+        Some(dest.script())
+    };
     // never a YEC output that looks like a token (as `yec_send`)
     let (amount, amount_bumped) = if amount == TOKEN_VALUE {
         (amount + 1, true)
@@ -157,7 +228,7 @@ pub fn build_pq_send(
         })
         .collect();
     let recipients = [PlanRecipient {
-        script: Some(dest_script),
+        script: dest_script,
         amount,
     }];
     let (rate, cap) = (terms.fee_rate_zat_per_kb, terms.max_fee_zat);
@@ -190,6 +261,22 @@ pub fn build_pq_send(
     // no monotonic clock on wasm32-unknown-unknown (`Instant::now` panics there): 0 in the browser
     #[cfg(not(target_arch = "wasm32"))]
     let started = std::time::Instant::now();
+    #[cfg(target_arch = "wasm32")]
+    let started = ();
+    if let Some(side) = side {
+        return finish_to_sapling(
+            wallet,
+            side,
+            &id,
+            &key,
+            p,
+            tx,
+            (from, to),
+            (amount, amount_bumped),
+            (tip, branch_id),
+            started,
+        );
+    }
     for (i, c) in p.selected.iter().enumerate() {
         let digest = tx.sign_pqpkh_input(i, &key, &c.script, c.value, branch_id)?;
         // the signature is checked before it leaves (as `release::pq_move`)
@@ -218,7 +305,7 @@ pub fn build_pq_send(
         return Err(other(fee_limit_refusal(p.fee, limit, rate, raw.len())));
     }
     // review YEW-REVIEW-3 L6: the signed bytes are what the preview shows
-    check_signed_locally(&tx, &p.selected, p.fee)?;
+    check_signed_locally(&tx, &p.selected, p.fee, 0)?;
     let txid = tx.txid()?;
     // review YEW-REVIEW-4 M2: unusual relative to the highest price this wallet has seen
     let fee_guard = wallet.guard_fee(
@@ -247,7 +334,142 @@ pub fn build_pq_send(
         sign_millis,
         fee_note,
         fee_guard,
+        path: gate::Path::PqSpend,
     })
+}
+
+/// The Sapling half of [`build`] (beta2 item 5): `tx` holds the selected inputs and the
+/// transparent outputs (the change to the source, if any); the recipient is the Sapling part's
+/// one output. Proven and signed by `build::hybrid` (`sapling_prepare`, `sign_hybrid`), each
+/// post-quantum signature checked against the digest it signed, the same fee and size checks as
+/// the transparent send, the Sapling value checked against the parsed `valueBalance`, both gate
+/// layers' local rule on the final bytes.
+#[allow(clippy::too_many_arguments)]
+#[cfg(not(target_arch = "wasm32"))]
+fn finish_to_sapling(
+    wallet: &Wallet,
+    side: &SaplingSide,
+    id: &crate::pq::PqKeyId,
+    key: &crate::pq::PqKey,
+    p: plan::PqSourcePlan<Utxo>,
+    tx: Transaction,
+    (from, to): (&str, &str),
+    (amount, amount_bumped): (i64, bool),
+    (tip, branch_id): (u64, u32),
+    started: std::time::Instant,
+) -> Result<PqSendPreview, WalletError> {
+    use crate::build::hybrid;
+    use crate::sapling_part::{SaplingOut, SaplingPart};
+    let terms = wallet.pq_terms();
+    let (rate, cap) = (terms.fee_rate_zat_per_kb, terms.max_fee_zat);
+    let part = SaplingPart {
+        target_height: (tip as u32).saturating_add(1),
+        vault_height: None,
+        spends: Vec::new(),
+        outputs: vec![SaplingOut::Shielded {
+            address: to.to_string(),
+            value: amount,
+            memo: String::new(),
+            own: false,
+        }],
+        anchor: String::new(),
+        params_dir: side.params_dir.display().to_string(),
+    };
+    let h = hybrid::sapling_prepare(
+        side.extsk.clone(),
+        wallet.network,
+        &part,
+        &tx,
+        branch_id,
+        rand_core::OsRng,
+    )
+    .map_err(refused)?;
+    let inputs: Vec<hybrid::HybridInput<'_>> = p
+        .selected
+        .iter()
+        .map(|c| hybrid::HybridInput {
+            script: &c.script,
+            amount: c.value,
+            key: hybrid::HybridKey::Pq(key),
+        })
+        .collect();
+    let (digests, raw) =
+        hybrid::sign_hybrid(h, tx, &inputs, branch_id, rand_core::OsRng).map_err(refused)?;
+    let sign_millis = Some(started.elapsed().as_millis() as u64);
+    // the final bytes, parsed: every signature checked against the digest it signed (as the
+    // transparent send and `release::pq_move`)
+    let (signed, txid) = Transaction::parse(&raw)?;
+    for (i, d) in digests.iter().enumerate() {
+        let ok = crate::pq::parse_pqpkh_script_sig(&signed.vin[i].script_sig)
+            .is_some_and(|(sig, pk)| crate::pq::verify(id.scheme, &pk, &sig[..sig.len() - 1], d));
+        if !ok {
+            return Err(other("the post-quantum signature does not verify"));
+        }
+    }
+    signed.check_script_sig_sizes()?;
+    let sizes: Vec<usize> = signed.vin.iter().map(|i| i.script_sig.len()).collect();
+    let conventional = signed.zip317_conventional_fee(&sizes)?;
+    plan::check_signed_fee(p.fee, raw.len(), conventional, rate, cap)
+        .map_err(|e| other(e.to_string()))?;
+    let limit = params::pq_send_fee_limit(raw.len(), conventional);
+    if p.fee > limit {
+        return Err(other(fee_limit_refusal(p.fee, limit, rate, raw.len())));
+    }
+    // the Sapling part pays exactly the recipient's amount out of the transparent side
+    if signed.shielded.spends != 0 || signed.shielded.value_balance != -amount {
+        return Err(other(format!(
+            "the signed transaction moves {} zat into Sapling, not the {amount} zat the preview shows",
+            -signed.shielded.value_balance
+        )));
+    }
+    check_signed_locally(&signed, &p.selected, p.fee, amount)?;
+    let fee_guard = wallet.guard_fee(
+        terms::FeeKind::Plain,
+        p.fee,
+        raw.len(),
+        conventional,
+        &txid_hex(&txid),
+    )?;
+    let fee_note = fee_guard.note.clone();
+    let path = gate::Path::PqToSapling(*id);
+    gate::check(path, &raw, |op| wallet.store.utxo_class(op).ok().flatten())?;
+    Ok(PqSendPreview {
+        from: from.to_string(),
+        scheme: id.scheme,
+        to: to.to_string(),
+        amount,
+        amount_bumped,
+        fee: p.fee,
+        change: p.change,
+        inputs: p.selected.into_iter().map(|c| c.key).collect(),
+        expiry_height: signed.expiry_height,
+        raw,
+        txid,
+        sign_millis,
+        fee_note,
+        fee_guard,
+        path,
+    })
+}
+
+/// The browser has no prover: [`build`] refuses a Sapling recipient before this.
+#[allow(clippy::too_many_arguments)]
+#[cfg(target_arch = "wasm32")]
+fn finish_to_sapling(
+    _: &Wallet,
+    _: &SaplingSide,
+    _: &crate::pq::PqKeyId,
+    _: &crate::pq::PqKey,
+    _: plan::PqSourcePlan<Utxo>,
+    _: Transaction,
+    _: (&str, &str),
+    _: (i64, bool),
+    _: (u64, u32),
+    _: (),
+) -> Result<PqSendPreview, WalletError> {
+    Err(other(
+        "Sending from a post-quantum address to a private (ys1…) address is not available in this app yet.",
+    ))
 }
 
 /// The refusal of a fee above [`params::pq_send_fee_limit`], naming the quoted rate and the limit.
@@ -268,6 +490,7 @@ fn check_signed_locally(
     tx: &Transaction,
     selected: &[PqCoin<Utxo>],
     fee: i64,
+    to_sapling: i64,
 ) -> Result<(), WalletError> {
     if tx.vin.len() != selected.len() {
         return Err(other(
@@ -299,10 +522,11 @@ fn check_signed_locally(
         .iter()
         .try_fold(0i64, |a, o| a.checked_add(o.value))
         .ok_or_else(|| other("output total out of range"))?;
-    if total_in - total_out != fee {
+    // `to_sapling`: what the Sapling part takes out of the transparent side (0 without one)
+    if total_in - total_out - to_sapling != fee {
         return Err(other(format!(
             "the signed transaction pays a fee of {} zat, not the {fee} zat the preview shows",
-            total_in - total_out
+            total_in - total_out - to_sapling
         )));
     }
     Ok(())
@@ -323,7 +547,7 @@ pub async fn broadcast(
 ) -> Result<(String, Validation), WalletError> {
     // YEW-PORT-6 item 2: a flagged fee is never confirmed by the normal button
     terms::require_ack(&p.fee_guard, accept_unusual_fee)?;
-    let (_, validation) = gate::confirm(validator, gate::Path::PqSpend, &p.raw, |op| {
+    let (_, validation) = gate::confirm(validator, p.path, &p.raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
     })
     .await?;
@@ -331,7 +555,7 @@ pub async fn broadcast(
     // layer 3: no input carries YED by its creating transaction (review YEW-REVIEW-3)
     gate::confirm_provenance(
         client,
-        gate::Path::PqSpend,
+        p.path,
         &p.raw,
         |op| wallet.store.utxo_class(op).ok().flatten(),
         |op| wallet.store.utxo_txout(op).ok().flatten(),
@@ -458,6 +682,136 @@ mod tests {
         assert_eq!(p.amount + p.fee + p.change, 3_000_000);
         assert!(p.fee >= 1000);
         assert_eq!(p.scheme, crate::pq::SCHEME_FN_DSA_512);
+    }
+
+    /// The Sapling proving parameters (`YEW_SAPLING_PARAMS_DIR`, else yewd's default directory,
+    /// as `core/tests/hybrid_cases`).
+    fn test_params_dir() -> std::path::PathBuf {
+        if let Ok(d) = std::env::var("YEW_SAPLING_PARAMS_DIR") {
+            return d.into();
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        if cfg!(target_os = "macos") {
+            format!("{home}/Library/Application Support/ZcashParams").into()
+        } else {
+            format!("{home}/.zcash-params").into()
+        }
+    }
+
+    /// Beta2 item 5: PQ source -> Sapling recipient. Only PQ_OWNED coins of the address; the
+    /// recipient in the Sapling part (decrypts to the recipient's address and amount with its
+    /// incoming viewing key), no Sapling spend, `valueBalance` = -amount; the change back to the
+    /// source (D-4); the final bytes parse under the Vault branch, the post-quantum signature
+    /// verifies over the sighash recomputed from them, the Sapling bundle verifies (proof,
+    /// binding signature); the gate's PqToSapling path admits it and PqSpend refuses it; the
+    /// transparent builder still refuses a Sapling recipient.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn pq_to_sapling_change_to_source_and_verifies() {
+        use zcash_primitives::transaction::sighash::SignableInput;
+        use zcash_primitives::transaction::sighash_v4::v4_signature_hash;
+        let (w, from, script) = wallet_with(&[
+            (3_000_000, UtxoClass::PqOwned),
+            (90_000_000, UtxoClass::Held),
+            (80_000_000, UtxoClass::Token),
+        ]);
+        let id = keys::parse_pq_yec_address(Network::Regtest, &from).unwrap();
+        let acct =
+            crate::shielded_keys::SaplingAccount::from_mnemonic(PHRASE, "", Network::Regtest)
+                .unwrap();
+        let (_, to) = acct.default_address();
+        let e = build_pq_send(&w, &from, &to, 1_000_000, 100, VAULT_BRANCH_ID).unwrap_err();
+        assert!(
+            e.to_string().contains("not available in this app yet"),
+            "{e}"
+        );
+        let side = SaplingSide {
+            extsk: acct.extended_spending_key(),
+            params_dir: test_params_dir(),
+        };
+        let p =
+            build_pq_to_sapling(&w, &side, &from, &to, 1_000_000, 100, VAULT_BRANCH_ID).unwrap();
+        assert_eq!(p.path, gate::Path::PqToSapling(id));
+        assert_eq!(p.inputs.len(), 1);
+        assert_eq!(p.inputs[0].class, UtxoClass::PqOwned);
+        assert_eq!(p.amount + p.fee + p.change, 3_000_000);
+        let (tx, txid) = Transaction::parse(&p.raw).unwrap();
+        assert_eq!(txid, p.txid);
+        assert_eq!(tx.shielded.spends, 0);
+        assert!(tx.shielded.outputs >= 1);
+        assert_eq!(tx.shielded.value_balance, -1_000_000);
+        assert_eq!(tx.vout.len(), 1);
+        assert_eq!(
+            tx.vout[0].script_pubkey, script,
+            "D-4: change to the source"
+        );
+        assert_eq!(tx.vout[0].value, p.change);
+        // the verifying path
+        let branch = zcash_protocol::consensus::BranchId::try_from(VAULT_BRANCH_ID).unwrap();
+        let ztx = zcash_primitives::transaction::Transaction::read(&p.raw[..], branch).unwrap();
+        let bundle = ztx.transparent_bundle().unwrap();
+        let code = crate::build::hybrid::script_of(&script).unwrap();
+        let input = zcash_transparent::sighash::SignableInput::from_parts(
+            bundle,
+            zcash_transparent::sighash::SighashType::ALL,
+            0,
+            &code,
+            &code,
+            zcash_protocol::value::Zatoshis::from_u64(3_000_000).unwrap(),
+        )
+        .unwrap();
+        let h: [u8; 32] = v4_signature_hash(&ztx, &SignableInput::Transparent(input))
+            .as_ref()
+            .try_into()
+            .unwrap();
+        let (sig, pk) = crate::pq::parse_pqpkh_script_sig(&tx.vin[0].script_sig).unwrap();
+        assert!(crate::pq::verify(id.scheme, &pk, &sig[..sig.len() - 1], &h));
+        let shielded: [u8; 32] = v4_signature_hash(&ztx, &SignableInput::Shielded)
+            .as_ref()
+            .try_into()
+            .unwrap();
+        let sb = ztx.sapling_bundle().cloned().unwrap();
+        let ivk = sapling_crypto::note_encryption::PreparedIncomingViewingKey::new(
+            &acct
+                .extended_spending_key()
+                .to_diversifiable_full_viewing_key()
+                .to_ivk(zip32::Scope::External),
+        );
+        let paid: Vec<_> = sb
+            .shielded_outputs()
+            .iter()
+            .filter_map(|o| {
+                sapling_crypto::note_encryption::try_sapling_note_decryption(
+                    &ivk,
+                    o,
+                    sapling_crypto::note_encryption::Zip212Enforcement::On,
+                )
+            })
+            .collect();
+        assert_eq!(paid.len(), 1, "one output to the recipient");
+        assert_eq!(paid[0].0.value().inner(), 1_000_000);
+        let dir = test_params_dir();
+        let params = zcash_proofs::load_parameters(
+            &dir.join(crate::sapling_params::SPEND.name),
+            &dir.join(crate::sapling_params::OUTPUT.name),
+            None,
+        );
+        let mut bv = sapling_crypto::BatchValidator::new();
+        assert!(bv.check_bundle(sb, shielded));
+        assert!(bv.validate(
+            &params.spend_params.verifying_key(),
+            &params.output_params.verifying_key(),
+            rand_core::OsRng
+        ));
+        // both gate layers' local rule
+        let class = |op: &OutPoint| w.store.utxo_class(op).ok().flatten();
+        assert!(gate::check(gate::Path::PqToSapling(id), &p.raw, class).is_ok());
+        assert!(gate::check(gate::Path::PqSpend, &p.raw, class).is_err());
+        let other = crate::pq::PqKeyId {
+            scheme: id.scheme,
+            hash: [0x77; 32],
+        };
+        assert!(gate::check(gate::Path::PqToSapling(other), &p.raw, class).is_err());
     }
 
     /// The HELD and TOKEN rows of the same address are never selected: with only those, the
@@ -604,19 +958,19 @@ mod tests {
                 key: u.clone(),
             })
             .collect();
-        check_signed_locally(&tx, &sel, p.fee).unwrap();
-        let e = check_signed_locally(&tx, &sel, p.fee + 1).unwrap_err();
+        check_signed_locally(&tx, &sel, p.fee, 0).unwrap();
+        let e = check_signed_locally(&tx, &sel, p.fee + 1, 0).unwrap_err();
         assert!(e.to_string().contains("not the"), "{e}");
         let mut moved = sel.clone();
         moved[0].outpoint.n = 7;
-        assert!(check_signed_locally(&tx, &moved, p.fee).is_err());
+        assert!(check_signed_locally(&tx, &moved, p.fee, 0).is_err());
         let mut foreign = sel.clone();
         foreign[0].script = crate::pq::pqpkh_script(&crate::pq::PqKeyId {
             scheme: crate::pq::SCHEME_FN_DSA_512,
             hash: [3; 32],
         })
         .unwrap();
-        let e = check_signed_locally(&tx, &foreign, p.fee).unwrap_err();
+        let e = check_signed_locally(&tx, &foreign, p.fee, 0).unwrap_err();
         assert!(e.to_string().contains("does not hash"), "{e}");
     }
 }

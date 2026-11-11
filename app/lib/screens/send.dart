@@ -133,11 +133,20 @@ class _SendScreenState extends State<SendScreen> {
         setState(() => _yed = p);
       } else {
         if (_from != null) {
-          // from a post-quantum address: the core's refusals (a private recipient, the policy,
-          // the fee cap, insufficient funds) are shown verbatim
+          // from a post-quantum address: the core's refusals (the policy, the fee cap,
+          // insufficient funds) are shown verbatim. A private (ys1…) recipient is proven at the
+          // preview (beta2 item 5): the first time, the one-time proving-files sheet, then the
+          // preview again.
           final zat = parseYecZat(_amount.text);
           if (zat == null || zat <= 0) throw const YewError(kind: ErrorKind.input, message: 'Enter an amount in YEC, up to eight decimals');
-          final p = await app.api.pqSendPreview(from: _from!, to: to, zat: zat);
+          PqSendPreviewInfo p;
+          try {
+            p = await app.api.pqSendPreview(from: _from!, to: to, zat: zat);
+          } catch (e) {
+            if (kindOf(e) != ErrorKind.paramsMissing) rethrow;
+            if (!mounted || !await preparePrivateSending(context)) return;
+            p = await app.api.pqSendPreview(from: _from!, to: to, zat: zat);
+          }
           setState(() => _pq = p);
           return;
         }
@@ -296,7 +305,7 @@ class _SendScreenState extends State<SendScreen> {
                 labelText: 'To',
                 hintText: _asset == Asset.yed
                     ? 'yb… address'
-                    : (_from != null ? 's…, sqf… or sqs… address' : 'ys1…, s…, sqf… or sqs… address'),
+                    : 'ys1…, s…, sqf… or sqs… address',
                 suffixIcon: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
