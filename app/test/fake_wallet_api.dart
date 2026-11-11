@@ -284,6 +284,9 @@ class FakeWalletApi implements WalletApi {
   Future<List<MintStatus>> mints() async => List.of(mintsAnswer);
 
   @override
+  Future<void> resetFeeReference() async => calls.add('resetFeeReference');
+
+  @override
   Future<MintStatus> mintFinish({required int mintId, String? acceptUnusualFee}) async {
     calls.add(acceptUnusualFee == null ? 'mintFinish $mintId' : 'mintFinish $mintId $acceptUnusualFee');
     if (mintFinishError != null && acceptUnusualFee == null) throw mintFinishError!;

@@ -540,10 +540,10 @@ mod tests {
             tx.zip317_conventional_fee(&sizes).unwrap()
         };
         assert_eq!(p.fee, params::pq_send_fee_limit(p.raw.len(), conventional));
-        // review YEW-REVIEW-4 M2: on first use (no price seen) nothing below the limit is flagged
-        assert!(p.fee_note.is_none() && p.fee_guard.ack.is_none());
-        // once a price was seen ($0.05), the same terms are flagged, with an acknowledgement
-        w.store.set_meta("fee_price_high_water", "50000").unwrap();
+        // review YEW-REVIEW-5 M1: on first use (no price seen) a fee above 0.1 YEC is flagged
+        assert_eq!(p.fee_note.is_some(), p.fee > 10_000_000);
+        // once a price was established ($0.05), the same terms are flagged, with an acknowledgement
+        w.set_fee_reference_for_test(50_000);
         let p = build_pq_send(&w, &from, &ecc_to(), 1_000_000, 100, VAULT_BRANCH_ID).unwrap();
         let note = p.fee_note.clone().expect("an unusual fee is marked");
         assert!(

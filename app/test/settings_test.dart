@@ -52,6 +52,17 @@ void main() {
     expect(h.secrets.bound, isFalse);
   });
 
+  testWidgets('Reset fee reference explains itself in one line and calls the core (review YEW-REVIEW-5 M1)', (tester) async {
+    final h = Harness(withWallet: true);
+    await openSettings(tester, h);
+    await tester.scrollUntilVisible(find.byKey(const Key('fee-reference')), 100);
+    expect(find.textContaining('Forget the YEC prices servers reported'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('fee-reference')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('resetFeeReference'));
+    expect(find.text('Fee reference reset'), findsOneWidget);
+  });
+
   testWidgets('export private key shows the warning before the key, then the WIF and both address forms', (tester) async {
     final h = Harness(withWallet: true);
     await openSettings(tester, h);

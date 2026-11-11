@@ -870,26 +870,141 @@ pub struct FeeGuard {
     pub ack: Option<String>,
     /// The YEC price the server's terms rest on, µUSD (0 = none): shown in every preview.
     pub reported_price_micro_usd: i64,
-    /// The usual fee for this size: at the highest YEC price this wallet has seen from a server it
-    /// synced with and the node's default dollar target (`None` before any price was seen).
+    /// The usual fee for this size: at this wallet's reference YEC price ([`PriceObservations`])
+    /// and the node's default dollar target (`None` before any price was seen).
     pub usual_zat: Option<i64>,
 }
 
-/// The guard on a fee priced from the server's terms (review YEW-REVIEW-4 M2), for a transaction of
-/// `size` bytes whose conventional fee is `conventional`:
+/// How many days of price reports the reference covers (review YEW-REVIEW-5 M1).
+pub const PRICE_WINDOW_DAYS: i64 = 30;
+/// The most one report can move the reference: × or ÷ this.
+pub const PRICE_MAX_STEP: i64 = 4;
+/// Below this many days with a report the reference is weak.
+pub const PRICE_MIN_OBSERVATIONS: usize = 3;
+/// While the reference is weak, a fee above this (0.1 YEC) is flagged whatever the reference.
+pub const WEAK_REFERENCE_FLAG_ZAT: i64 = 10_000_000;
+
+/// The YEC prices servers reported to this wallet (review YEW-REVIEW-5 M1): at most one per day
+/// (the day's first; the wallet does not tell servers apart), kept for [`PRICE_WINDOW_DAYS`]
+/// days. The reference is the median of the window, never moved more than [`PRICE_MAX_STEP`]×
+/// from the previous reference by one report. So one quote moves it at most ×4, a poisoned first quote is outvoted by
+/// the honest days that follow, and a spike ages out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PriceObservations {
+    /// (day number since the Unix epoch, µUSD per YEC), oldest first.
+    pub obs: Vec<(i64, i64)>,
+    /// The reference price, µUSD (0 = none yet).
+    pub reference: i64,
+}
+
+impl PriceObservations {
+    /// Parse the stored form (`"<reference>;<day>:<price>,…"`); anything malformed is "none yet".
+    pub fn parse(s: &str) -> PriceObservations {
+        let parse = || -> Option<PriceObservations> {
+            let (r, rest) = s.split_once(';')?;
+            let mut obs = Vec::new();
+            for e in rest.split(',').filter(|e| !e.is_empty()) {
+                let (d, p) = e.split_once(':')?;
+                obs.push((d.parse().ok()?, p.parse().ok()?));
+            }
+            Some(PriceObservations {
+                obs,
+                reference: r.parse().ok()?,
+            })
+        };
+        parse().unwrap_or_default()
+    }
+
+    /// The stored form.
+    pub fn encode(&self) -> String {
+        let obs: Vec<String> = self.obs.iter().map(|(d, p)| format!("{d}:{p}")).collect();
+        format!("{};{}", self.reference, obs.join(","))
+    }
+
+    /// The days with a report within the window ending on `today`.
+    pub fn in_window(&self, today: i64) -> usize {
+        self.obs
+            .iter()
+            .filter(|(d, _)| *d > today - PRICE_WINDOW_DAYS && *d <= today)
+            .count()
+    }
+
+    /// Record `price` reported on `today` (a second report of the same day, or a non-positive
+    /// price, changes nothing); returns whether it was counted.
+    pub fn observe(&mut self, today: i64, price: i64) -> bool {
+        if price <= 0 || self.obs.iter().any(|(d, _)| *d == today) {
+            return false;
+        }
+        self.obs
+            .retain(|(d, _)| *d > today - PRICE_WINDOW_DAYS && *d <= today);
+        let prev = self.reference;
+        let clamp = |p: i64| {
+            if prev > 0 {
+                p.clamp(
+                    (prev / PRICE_MAX_STEP).max(1),
+                    prev.saturating_mul(PRICE_MAX_STEP),
+                )
+            } else {
+                p
+            }
+        };
+        self.obs.push((today, price));
+        let mut v: Vec<i64> = self.obs.iter().map(|(_, p)| *p).collect();
+        v.sort_unstable();
+        let n = v.len();
+        let median = if n % 2 == 1 {
+            v[n / 2]
+        } else {
+            (v[n / 2 - 1] + v[n / 2]) / 2
+        };
+        self.reference = clamp(median);
+        true
+    }
+
+    /// The guard's view on `today`.
+    pub fn reference_on(&self, today: i64) -> FeeReference {
+        FeeReference {
+            price: self.reference,
+            observations: self.in_window(today),
+        }
+    }
+}
+
+/// What [`guard_fee`] compares a fee against: the reference YEC price (µUSD, 0 = none) and how
+/// many days in the window reported one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FeeReference {
+    /// The reference price, µUSD (0 = none yet).
+    pub price: i64,
+    /// Days with a report in the window.
+    pub observations: usize,
+}
+
+impl FeeReference {
+    /// Fewer than [`PRICE_MIN_OBSERVATIONS`] days, or a reference below 5×
+    /// [`params::FEE_PRICE_FLOOR_MICRO_USD`]: fees above [`WEAK_REFERENCE_FLAG_ZAT`] are flagged too.
+    pub fn weak(&self) -> bool {
+        self.observations < PRICE_MIN_OBSERVATIONS
+            || self.price < params::FEE_PRICE_FLOOR_MICRO_USD.saturating_mul(5)
+    }
+}
+
+/// The guard on a fee priced from the server's terms (review YEW-REVIEW-4 M2, YEW-REVIEW-5 M1),
+/// for a transaction of `size` bytes whose conventional fee is `conventional`:
 /// - refused above this build's limit ([`params::pq_send_fee_limit`] for [`FeeKind::Plain`],
 ///   [`params::yed_fee_limit`] for [`FeeKind::Yed`]), whatever the server says;
-/// - unusual (a separate confirmation, [`require_ack`]) when a high-water price `high_water` (µUSD,
-///   0 = none yet) is known and either the fee is above twice the usual fee (the default dollar
-///   target at the high-water price: `max(FEE_ZAT, rate × size, conventional)`) or the server's
-///   price is below half the high-water price. Before any price was seen nothing is flagged below
-///   the limit; the preview shows the reported price.
+/// - unusual (a separate confirmation, [`require_ack`]) when the wallet has a reference price
+///   (`reference`, [`PriceObservations`]) and either the fee is above twice the usual fee (the
+///   default dollar target at the reference price: `max(FEE_ZAT, rate × size, conventional)`) or
+///   the server's price is below half the reference;
+/// - also unusual, while the reference is weak ([`FeeReference::weak`]: fewer than three days of
+///   reports, or a reference below $0.05; first use included), when the fee is above 0.1 YEC.
 ///
 /// `id` names the transaction (a txid, or a stable label for a step not yet built): the ack binds
 /// the fee and it.
 pub fn guard_fee(
     terms: &PqTerms,
-    high_water: i64,
+    reference: FeeReference,
     kind: FeeKind,
     fee: i64,
     size: usize,
@@ -919,25 +1034,44 @@ pub fn guard_fee(
         reported_price_micro_usd: price,
         ..FeeGuard::default()
     };
-    if high_water <= 0 {
-        return Ok(g);
+    let high_water = reference.price;
+    if high_water > 0 {
+        let rate = params::attested_rate_zat_per_kb(
+            target,
+            high_water,
+            params::ATTESTED_FEE_FLOOR_ZAT_PER_KB,
+        );
+        let usual = params::FEE_ZAT
+            .max(params::rate_fee(rate, size))
+            .max(conventional);
+        g.usual_zat = Some(usual);
+        let low_price = price > 0 && price.saturating_mul(2) < high_water;
+        if fee > usual.saturating_mul(2) || low_price {
+            let times = fee as f64 / usual as f64;
+            g.note = Some(format!(
+                "Unusual fee: {} YEC, {times:.1}× the usual {} YEC for a transaction of this size at this wallet's reference YEC price ({}, the median of the last {PRICE_WINDOW_DAYS} days' reports). The fee terms came from the server, which reports {}; this app cannot verify them. Confirm only if you expect this fee.",
+                yec_text(fee),
+                yec_text(usual),
+                price_text(high_water),
+                price_text(price)
+            ));
+        }
     }
-    let rate =
-        params::attested_rate_zat_per_kb(target, high_water, params::ATTESTED_FEE_FLOOR_ZAT_PER_KB);
-    let usual = params::FEE_ZAT
-        .max(params::rate_fee(rate, size))
-        .max(conventional);
-    g.usual_zat = Some(usual);
-    let low_price = price > 0 && price.saturating_mul(2) < high_water;
-    if fee > usual.saturating_mul(2) || low_price {
-        let times = fee as f64 / usual as f64;
+    if g.note.is_none() && reference.weak() && fee > WEAK_REFERENCE_FLAG_ZAT {
         g.note = Some(format!(
-            "Unusual fee: {} YEC, {times:.1}× the usual {} YEC for a transaction of this size at the highest YEC price this wallet has seen ({}). The fee terms came from the server, which reports {}; this app cannot verify them. Confirm only if you expect this fee.",
+            "Unusual fee: {} YEC, above {} YEC, and this wallet has too few YEC price reports to judge it ({} of {PRICE_MIN_OBSERVATIONS} days{}). The fee terms came from the server, which reports {}; this app cannot verify them. Confirm only if you expect this fee.",
             yec_text(fee),
-            yec_text(usual),
-            price_text(high_water),
+            yec_text(WEAK_REFERENCE_FLAG_ZAT),
+            reference.observations.min(PRICE_MIN_OBSERVATIONS),
+            if high_water > 0 {
+                format!(", reference {}", price_text(high_water))
+            } else {
+                String::new()
+            },
             price_text(price)
         ));
+    }
+    if g.note.is_some() {
         g.ack = Some(format!("accept-unusual-fee:{fee}:{id}"));
     }
     Ok(g)
@@ -2545,6 +2679,11 @@ mod tests {
     /// acknowledgement that binds the fee and the transaction.
     #[test]
     fn fee_guard_limits_flags_and_acks() {
+        // an established reference (three days of reports) at `p`
+        let est = |p: i64| FeeReference {
+            price: p,
+            observations: PRICE_MIN_OBSERVATIONS,
+        };
         let t = PqTerms {
             price_micro_usd: 50_000, // $0.05 per YEC
             ..PqTerms::default()
@@ -2559,11 +2698,21 @@ mod tests {
                 FeeKind::Plain => params::pq_send_fee_limit(size, 0),
                 FeeKind::Yed => params::yed_fee_limit(size, 0),
             };
-            assert!(guard_fee(&t, 0, kind, limit + 1, size, 0, "x").is_err());
-            // first use: up to the limit, no flag; the price is carried
-            let g = guard_fee(&t, 0, kind, limit, size, 0, "x").unwrap();
+            assert!(guard_fee(&t, FeeReference::default(), kind, limit + 1, size, 0, "x").is_err());
+            // first use (review YEW-REVIEW-5 M1): up to 0.1 YEC no flag, above it flagged; the
+            // price is carried
+            let first = FeeReference::default();
+            let g = guard_fee(&t, first, kind, WEAK_REFERENCE_FLAG_ZAT, size, 0, "x").unwrap();
             assert!(g.note.is_none() && g.ack.is_none() && g.usual_zat.is_none());
             assert_eq!(g.reported_price_micro_usd, 50_000);
+            let g = guard_fee(&t, first, kind, limit, size, 0, "x").unwrap();
+            assert!(
+                g.ack.is_some()
+                    && g.note
+                        .as_deref()
+                        .unwrap()
+                        .contains("too few YEC price reports")
+            );
             // a price was seen ($0.05): the honest fee at it is not flagged...
             let target = match kind {
                 FeeKind::Plain => params::DEFAULT_PQ_FEE_USD_PER_KB_MICRO,
@@ -2575,15 +2724,15 @@ mod tests {
                 params::ATTESTED_FEE_FLOOR_ZAT_PER_KB,
             );
             let honest = params::rate_fee(rate, size).max(params::FEE_ZAT);
-            let g = guard_fee(&t, 50_000, kind, honest, size, 0, "x").unwrap();
+            let g = guard_fee(&t, est(50_000), kind, honest, size, 0, "x").unwrap();
             assert_eq!(g.usual_zat, Some(honest));
             assert!(g.note.is_none(), "{kind:?} {size}: {:?}", g.note);
             // ...up to twice it; above, flagged with the multiple and the server named
-            assert!(guard_fee(&t, 50_000, kind, 2 * honest, size, 0, "x")
+            assert!(guard_fee(&t, est(50_000), kind, 2 * honest, size, 0, "x")
                 .unwrap()
                 .ack
                 .is_none());
-            let g = guard_fee(&t, 50_000, kind, 2 * honest + 1, size, 0, "tx1").unwrap();
+            let g = guard_fee(&t, est(50_000), kind, 2 * honest + 1, size, 0, "tx1").unwrap();
             let note = g.note.clone().unwrap();
             assert!(
                 note.contains("2.0× the usual") && note.contains("server"),
@@ -2600,7 +2749,7 @@ mod tests {
                 price_micro_usd: 24_999,
                 ..t
             };
-            assert!(guard_fee(&low, 50_000, kind, honest, size, 0, "x")
+            assert!(guard_fee(&low, est(50_000), kind, honest, size, 0, "x")
                 .unwrap()
                 .ack
                 .is_some());
@@ -2618,10 +2767,121 @@ mod tests {
                 price_micro_usd: price,
                 ..PqTerms::default()
             };
-            assert!(guard_fee(&t, price, FeeKind::Plain, fee, 1_800, 0, "x")
-                .unwrap()
-                .note
-                .is_none());
+            // ...except below $0.05, where the reference is weak and a fee above 0.1 YEC is
+            // flagged all the same (review YEW-REVIEW-5 M1)
+            let weak =
+                price < 5 * params::FEE_PRICE_FLOOR_MICRO_USD && fee > WEAK_REFERENCE_FLAG_ZAT;
+            assert_eq!(
+                guard_fee(&t, est(price), FeeKind::Plain, fee, 1_800, 0, "x")
+                    .unwrap()
+                    .note
+                    .is_some(),
+                weak,
+                "{price}"
+            );
+        }
+    }
+
+    /// Review YEW-REVIEW-5 M1: the reference is the median of a 30-day window of daily reports,
+    /// each report and the reference moving at most ×4. Poisoned high first, then honest days:
+    /// the reference returns to the honest price within the window; poisoned low first: the
+    /// same; one report a day; a spike ages out after 30 days.
+    #[test]
+    fn price_reference_resists_poisoning_in_either_order() {
+        let honest = 300_000i64; // $0.30
+        for poison in [4_000_000_000i64, 10_000] {
+            let mut o = PriceObservations::default();
+            assert!(o.observe(100, poison));
+            assert_eq!(o.reference, poison);
+            assert!(o.reference_on(100).weak(), "one day is weak");
+            // a second report the same day is not counted
+            assert!(!o.observe(100, honest));
+            for d in 101..=110 {
+                o.observe(d, honest);
+                let r = o.reference;
+                assert!(r > 0);
+            }
+            assert_eq!(o.reference, honest, "poison {poison}: {o:?}");
+            assert!(!o.reference_on(110).weak());
+            // a spike now: one report moves the reference at most ×4 and is outvoted
+            let before = o.reference;
+            o.observe(111, poison);
+            assert!(
+                o.reference <= before * PRICE_MAX_STEP && o.reference >= before / PRICE_MAX_STEP
+            );
+            assert_eq!(o.reference, honest);
+            // the window: 31 days later only the new day counts
+            o.observe(142, honest);
+            assert_eq!(o.in_window(142), 1);
+            assert!(o.reference_on(142).weak());
+            // the stored form round-trips; garbage is "none"
+            assert_eq!(PriceObservations::parse(&o.encode()), o);
+            assert_eq!(
+                PriceObservations::parse("x;1:2"),
+                PriceObservations::default()
+            );
+        }
+    }
+
+    /// Property: whatever a hostile server reports on some days, (a) each new reference is within
+    /// ×4 of the one before; (b) once honest reports fill more than half of the window, the
+    /// reference lies within the honest range; in both orders (hostile first, honest first).
+    #[test]
+    fn price_reference_property() {
+        let mut seed = 0x5eed_u64;
+        let mut next = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        for round in 0..400 {
+            let hostile_first = round % 2 == 0;
+            let (lo, hi) = (200_000i64, 400_000i64); // honest: $0.20 .. $0.40
+            let days = 30;
+            let bad_days = next(14) as i64; // fewer than half
+            let mut o = PriceObservations::default();
+            let mut prev = 0i64;
+            for k in 0..days {
+                let bad = if hostile_first {
+                    k < bad_days
+                } else {
+                    k >= days - bad_days
+                };
+                let p = if bad {
+                    if next(2) == 0 {
+                        1 + next(1_000) as i64
+                    } else {
+                        4_000_000_000 - next(1_000) as i64
+                    }
+                } else {
+                    lo + next((hi - lo) as u64) as i64
+                };
+                o.observe(1_000 + k, p);
+                if prev > 0 {
+                    assert!(
+                        o.reference <= prev * PRICE_MAX_STEP
+                            && o.reference >= prev / PRICE_MAX_STEP,
+                        "round {round}: {prev} -> {}",
+                        o.reference
+                    );
+                }
+                prev = o.reference;
+            }
+            // honest days are more than half the window: the median is honest, unless the
+            // ×4 step still holds it back from a far poisoned start; then it keeps converging
+            let mut extra = 0;
+            while !(lo..=hi).contains(&o.reference) && extra < 30 {
+                o.observe(1_000 + days + extra, (lo + hi) / 2);
+                extra += 1;
+            }
+            assert!((lo..=hi).contains(&o.reference), "round {round}: {o:?}");
+            if !hostile_first {
+                assert_eq!(
+                    extra, 0,
+                    "honest first: never pulled out of range, round {round}"
+                );
+            }
         }
     }
 

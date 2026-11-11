@@ -174,6 +174,10 @@ abstract class WalletApi {
 
   Future<MintStatus> mintSweep({required int mintId});
 
+  /// Forget the YEC price reports the unusual-fee check compares against (review YEW-REVIEW-5
+  /// M1): until three days have reported again, every fee above 0.1 YEC needs its own confirmation.
+  Future<void> resetFeeReference();
+
   Future<List<VaultSummary>> vaults();
 
   /// Build and sign the redeem (or VOID release); nothing is sent. The preview carries the

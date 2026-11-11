@@ -664,12 +664,17 @@ impl Wallet {
         *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner()) = t;
     }
 
-    /// Set the fee guard's reference price directly (unit tests of the builders).
+    /// Set the fee guard's reference price directly, as an established one (unit tests of the
+    /// builders): `PRICE_MIN_OBSERVATIONS` days ending today at that price.
     #[cfg(test)]
     pub(crate) fn set_fee_reference_for_test(&self, price_micro_usd: i64) {
-        self.store
-            .set_meta("fee_price_high_water", &price_micro_usd.to_string())
-            .unwrap();
+        let today = unix_day();
+        let mut o = crate::build::terms::PriceObservations::default();
+        for d in 0..crate::build::terms::PRICE_MIN_OBSERVATIONS as i64 {
+            o.obs.push((today - d, price_micro_usd));
+        }
+        o.reference = price_micro_usd;
+        self.store.set_meta(FEE_PRICES_KEY, &o.encode()).unwrap();
     }
 
     /// TOK-PQ is in force for the next block as far as this wallet knows (the last synced tip
@@ -695,14 +700,9 @@ impl Wallet {
             read.as_ref().err().map(|e| e.to_string());
         let t = read?;
         *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner()) = t;
-        // review YEW-REVIEW-4 M2: the highest YEC price any server this wallet synced with has
-        // reported; the fee guard compares every later fee against it (a lower report never
-        // lowers it)
-        if t.price_micro_usd > self.fee_price_high_water() {
-            let _ = self
-                .store
-                .set_meta("fee_price_high_water", &t.price_micro_usd.to_string());
-        }
+        // review YEW-REVIEW-5 M1: one report a day into the rolling window the fee guard's
+        // reference price is the median of (a failed write only skips this report)
+        self.observe_fee_price(unix_day(), t.price_micro_usd);
         // Remembered for an offline open (the receive address, the CLI): a failed write only
         // costs the default until the next server answer.
         let _ = self.store.set_meta(
@@ -722,18 +722,42 @@ impl Wallet {
         Ok(t)
     }
 
-    /// The highest YEC price (µUSD) a server this wallet synced with has reported (0 = none yet):
-    /// the base of the fee guard's "usual fee" ([`crate::build::terms::guard_fee`]).
-    pub fn fee_price_high_water(&self) -> i64 {
+    /// The YEC price reports the fee guard's reference rests on (review YEW-REVIEW-5 M1).
+    pub fn fee_prices(&self) -> crate::build::terms::PriceObservations {
         self.store
-            .meta("fee_price_high_water")
+            .meta(FEE_PRICES_KEY)
             .ok()
             .flatten()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0)
+            .map(|v| crate::build::terms::PriceObservations::parse(&v))
+            .unwrap_or_default()
     }
 
-    /// [`crate::build::terms::guard_fee`] on this wallet's terms and high-water price.
+    /// Record a server's reported YEC price for `today` ([`crate::build::terms::PriceObservations::observe`]).
+    pub(crate) fn observe_fee_price(&self, today: i64, price_micro_usd: i64) {
+        let mut o = self.fee_prices();
+        if o.observe(today, price_micro_usd) {
+            let _ = self.store.set_meta(FEE_PRICES_KEY, &o.encode());
+        }
+    }
+
+    /// The fee guard's reference today: the median of the window's reports and how many days
+    /// reported (0 = none yet).
+    pub fn fee_reference(&self) -> crate::build::terms::FeeReference {
+        self.fee_prices().reference_on(unix_day())
+    }
+
+    /// Forget every YEC price report (review YEW-REVIEW-5 M1: the way out of a reference a
+    /// server poisoned): the guard is then as on first use, flagging every fee above 0.1 YEC
+    /// until three days have reported again.
+    pub fn reset_fee_reference(&self) -> Result<(), WalletError> {
+        self.store.set_meta(
+            FEE_PRICES_KEY,
+            &crate::build::terms::PriceObservations::default().encode(),
+        )?;
+        Ok(())
+    }
+
+    /// [`crate::build::terms::guard_fee`] on this wallet's terms and reference price.
     pub fn guard_fee(
         &self,
         kind: crate::build::terms::FeeKind,
@@ -744,7 +768,7 @@ impl Wallet {
     ) -> Result<crate::build::terms::FeeGuard, WalletError> {
         crate::build::terms::guard_fee(
             &self.pq_terms(),
-            self.fee_price_high_water(),
+            self.fee_reference(),
             kind,
             fee,
             size,
@@ -1105,6 +1129,26 @@ impl Wallet {
     }
 }
 
+/// The meta key of [`crate::build::terms::PriceObservations`] (the old
+/// `fee_price_high_water` is no longer read: a reference it poisoned is dropped on upgrade).
+const FEE_PRICES_KEY: &str = "fee_prices";
+
+/// Days since the Unix epoch on this device's clock (the browser's on wasm32, where
+/// `SystemTime::now` is not available).
+pub(crate) fn unix_day() -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        (js_sys::Date::now() / 86_400_000.0).floor() as i64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| (d.as_secs() / 86_400) as i64)
+            .unwrap_or(0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1191,6 +1235,33 @@ mod tests {
     /// The server's terms survive an offline reopen; mainnet and testnet are Falcon from day one
     /// (owner decision 2026-10-10) by the compiled default, and a server that disagrees is refused
     /// (LOW-06-Y-4), not overridden; regtest follows the server.
+    /// Review YEW-REVIEW-5 M1: the reports persist across a restart, feed the guard's
+    /// reference, and the reset forgets them (first-use behaviour again).
+    #[test]
+    fn fee_reference_persists_and_resets() {
+        let seed = keys::seed_from_mnemonic(PHRASE, "").unwrap();
+        let w = wallet();
+        assert_eq!(w.fee_reference().observations, 0);
+        let today = unix_day();
+        for d in (0..3).rev() {
+            w.observe_fee_price(today - d, 300_000);
+        }
+        w.observe_fee_price(today, 4_000_000_000); // a second report today: not counted
+        let r = w.fee_reference();
+        assert_eq!((r.price, r.observations, r.weak()), (300_000, 3, false));
+        let w = Wallet::from_parts(w.store, Network::Regtest, &seed, None).unwrap();
+        assert_eq!(w.fee_reference(), r);
+        // an old poisoned high-water mark is not read
+        w.store
+            .set_meta("fee_price_high_water", "4000000000")
+            .unwrap();
+        assert_eq!(w.fee_reference(), r);
+        w.reset_fee_reference().unwrap();
+        let r = w.fee_reference();
+        assert_eq!((r.price, r.observations), (0, 0));
+        assert!(r.weak());
+    }
+
     #[test]
     fn pq_terms_persist_and_mainnet_is_falcon_from_day_one() {
         let seed = keys::seed_from_mnemonic(PHRASE, "").unwrap();

@@ -109,6 +109,12 @@ Future<void> setServer({
   caPem: caPem,
 );
 
+/// Forget the YEC price reports the unusual-fee check compares against (Settings; review
+/// YEW-REVIEW-5 M1): for a reference a server poisoned. Until three days have reported again,
+/// every fee above 0.1 YEC needs its own confirmation.
+Future<void> resetFeeReference() =>
+    RustLib.instance.api.crateApiResetFeeReference();
+
 /// Server info, Yellowback info, tip, sync height (connects if needed).
 Future<Status> status() => RustLib.instance.api.crateApiStatus();
 

@@ -67,7 +67,7 @@ fn usage() -> ! {
          commands: status | yed-info | price | address [--new] [--shielded] [--falcon] | balance | sync | coins\n\
          \x20         | send-yec <addr> <zat> [--all] [--memo TEXT] | send-yed <addr> <cents> [<addr> <cents> ...]\n\
          \x20         | params-status | params-download <base-url>\n\
-         \x20         | export-wif <addr> | import-wif <wif> | history | version\n\
+         \x20         | export-wif <addr> | import-wif <wif> | history | version | fee-reference [--reset]\n\
          \x20         | mint-estimate <cents> <lockBlocks> | mint-start <cents> <lockBlocks>\n\
          \x20         | mint-status [<id>] | mint-finish <id> | mint-sweep <id>\n\
          \x20         | vaults | redeem <vaultTxid> | claimable | claim <vaultTxid>\n\
@@ -705,6 +705,26 @@ async fn main() {
             println!(
                 "sent {txid} (node dry run: verdict {} valid {} burned {} yedIn {} yedOut {})",
                 val.verdict, val.valid, val.burned, val.yed_in, val.yed_out
+            );
+        }
+        "fee-reference" => {
+            // review YEW-REVIEW-5 M1: the reference price the unusual-fee check uses, and the way
+            // out of one a server poisoned
+            let w = open_wallet(&o);
+            if o.rest.iter().any(|a| a == "--reset") {
+                fail(w.reset_fee_reference());
+                println!("fee reference reset: until 3 days have reported a YEC price again, every fee above 0.1 YEC needs its own confirmation");
+            }
+            let r = w.fee_reference();
+            println!(
+                "reference {} uUSD per YEC from {} day(s) of reports in the last 30{}",
+                r.price,
+                r.observations,
+                if r.weak() {
+                    " (weak: fees above 0.1 YEC are flagged)"
+                } else {
+                    ""
+                }
             );
         }
         "export-wif" => {

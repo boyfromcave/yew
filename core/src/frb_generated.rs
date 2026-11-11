@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 766689853;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1627574949;
 
 // Section: executor
 
@@ -1310,6 +1310,38 @@ fn wire__crate__api__release_preview_impl(
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
                     let output_ok = crate::api::release_preview(api_intent)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__reset_fee_reference_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "reset_fee_reference",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::YewError>((move || {
+                    let output_ok = crate::api::reset_fee_reference()?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -3076,15 +3108,16 @@ fn pde_ffi_dispatcher_primary_impl(
         36 => wire__crate__api__redeem_preview_impl(port, ptr, rust_vec_len, data_len),
         37 => wire__crate__api__release_confirm_impl(port, ptr, rust_vec_len, data_len),
         38 => wire__crate__api__release_preview_impl(port, ptr, rust_vec_len, data_len),
-        39 => wire__crate__api__send_yec_confirm_impl(port, ptr, rust_vec_len, data_len),
-        40 => wire__crate__api__send_yec_preview_impl(port, ptr, rust_vec_len, data_len),
-        41 => wire__crate__api__send_yed_confirm_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__crate__api__send_yed_preview_impl(port, ptr, rust_vec_len, data_len),
-        43 => wire__crate__api__set_server_impl(port, ptr, rust_vec_len, data_len),
-        44 => wire__crate__api__status_impl(port, ptr, rust_vec_len, data_len),
-        45 => wire__crate__api__sync_now_impl(port, ptr, rust_vec_len, data_len),
-        46 => wire__crate__api__unlock_impl(port, ptr, rust_vec_len, data_len),
-        48 => wire__crate__api__vaults_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__reset_fee_reference_impl(port, ptr, rust_vec_len, data_len),
+        40 => wire__crate__api__send_yec_confirm_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__send_yec_preview_impl(port, ptr, rust_vec_len, data_len),
+        42 => wire__crate__api__send_yed_confirm_impl(port, ptr, rust_vec_len, data_len),
+        43 => wire__crate__api__send_yed_preview_impl(port, ptr, rust_vec_len, data_len),
+        44 => wire__crate__api__set_server_impl(port, ptr, rust_vec_len, data_len),
+        45 => wire__crate__api__status_impl(port, ptr, rust_vec_len, data_len),
+        46 => wire__crate__api__sync_now_impl(port, ptr, rust_vec_len, data_len),
+        47 => wire__crate__api__unlock_impl(port, ptr, rust_vec_len, data_len),
+        49 => wire__crate__api__vaults_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -3102,7 +3135,7 @@ fn pde_ffi_dispatcher_sync_impl(
         10 => wire__crate__api__default_servers_impl(ptr, rust_vec_len, data_len),
         13 => wire__crate__api__generate_seed_words_impl(ptr, rust_vec_len, data_len),
         17 => wire__crate__api__is_unlocked_impl(ptr, rust_vec_len, data_len),
-        47 => wire__crate__api__validate_address_impl(ptr, rust_vec_len, data_len),
+        48 => wire__crate__api__validate_address_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }

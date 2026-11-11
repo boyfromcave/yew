@@ -4,7 +4,7 @@
 
 // The separate confirmation of an unusual fee (review YEW-REVIEW-4 M2). The core flags a fee
 // priced from the server's terms that is well above the usual fee for the transaction's size at
-// the highest YEC price this wallet has seen, and refuses the confirm call unless the preview's
+// this wallet's reference YEC price (the median of 30 days of reports), and refuses the confirm call unless the preview's
 // acknowledgement comes back with it. The slider alone never sends such a fee: this dialog shows
 // the core's text (the fee in YEC, how many times the usual fee it is, that the terms came from
 // the server) and returns the acknowledgement only when the user accepts it.

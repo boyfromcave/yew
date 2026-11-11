@@ -182,6 +182,9 @@ class RustWalletApi implements WalletApi {
   Future<MintStatus> mintSweep({required int mintId}) => rust.mintSweep(mintId: mintId);
 
   @override
+  Future<void> resetFeeReference() => rust.resetFeeReference();
+
+  @override
   Future<List<VaultSummary>> vaults() => rust.vaults();
 
   @override
