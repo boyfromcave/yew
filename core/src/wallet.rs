@@ -206,6 +206,14 @@ impl Wallet {
     /// history shows one (a wallet synced before the marker existed). A marked wallet refuses a
     /// plain YEC spend of transparent coins on a server without Yellowback
     /// ([`crate::gate::refuse_held_absent`]).
+    ///
+    /// **What it does not cover** (review YEW-REVIEW-3 L4; the C++ lines' `doc/yellowback.md`,
+    /// "What the has-held-YED marker does not cover"): the marker is not derived from the seed. A
+    /// wallet restored from its seed and synced only against a server without Yellowback stays
+    /// unmarked, so nothing refuses; only the class rule (an own output of exactly `TOKEN_VALUE`
+    /// is `HELD`) protects its YED there, and YED on an output of any other value is not
+    /// protected. Restore only against a server with Yellowback (README, "What the has-held-YED
+    /// marker does not cover").
     pub fn has_held_yed(&self) -> Result<bool, WalletError> {
         Ok(self.store.meta("yed_held")?.as_deref() == Some("1")
             || self.store.ever_held_token()?

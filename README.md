@@ -117,6 +117,18 @@ Three rules explain most of the design:
 
 Other things worth knowing before reading code:
 
+- **What the has-held-YED marker does not cover** (review YEW-REVIEW-3 L4; as the C++ lines'
+  `doc/yellowback.md`). A wallet that has held YED refuses a plain YEC spend of transparent coins
+  on a server without Yellowback (`gate::refuse_held_absent`, `Wallet::has_held_yed`). The marker
+  is wallet state, not part of the seed: it is written only at a sync against a server where
+  Yellowback is live (a token of the wallet's own, a pending token, a mint). A wallet restored
+  from its seed and synced against a server without Yellowback is unmarked, so nothing refuses
+  there; it sees its YED outputs as ordinary 10,000-zat outputs, and only the class rule (every
+  own output of exactly `TOKEN_VALUE` is `HELD`) keeps them from being spent as YEC. YED assigned
+  to an output of any other value is not covered by that rule. **Restore only against a server
+  with Yellowback:** there the first sync lists the tokens and sets the marker. The app has no
+  override (yewd's `-yellowback=0` has no counterpart here).
+
 - **Sync is per address, not per block.** The wallet derives its addresses
   (`m/44'/347'/0'/{0,1}/i`, Ywallet-compatible, gap limit 20), asks the server for their UTXOs
   and transaction history, and asks the Yellowback service which of those outputs are YED.
