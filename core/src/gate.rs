@@ -107,11 +107,15 @@ pub enum GateError {
     /// The server offers no Yellowback service, so nothing YED can be validated or sent.
     #[error("gate: the server offers no Yellowback service; YED cannot be sent through it")]
     YellowbackAbsent,
-    /// A YEC send to a post-quantum address ([`Path::YecToPq`]) on a server without Yellowback:
-    /// its dry run is mandatory and the server cannot run it (review YEW-REVIEW-6 L1: the
-    /// generic [`GateError::YellowbackAbsent`] text names YED, which this send is not).
-    #[error("gate: the server cannot check this transaction (it offers no Yellowback dry run), and a YEC send to a post-quantum address is only sent after that check. Nothing was sent; connect to a server that offers the Yellowback service and try again.")]
+    /// A YEC send to or from a post-quantum address ([`Path::YecToPq`], [`Path::SaplingToPq`],
+    /// [`Path::PqToSapling`]) on a server without Yellowback: its dry run is mandatory and the
+    /// server cannot run it (review YEW-REVIEW-6 L1: the generic
+    /// [`GateError::YellowbackAbsent`] text names YED, which this send is not).
+    #[error("gate: the server cannot check this transaction (it offers no Yellowback dry run), and a YEC send to or from a post-quantum address is only sent after that check. Nothing was sent; connect to a server that offers the Yellowback service and try again.")]
     NoDryRunForPqSend,
+    /// The Sapling -> post-quantum or post-quantum -> Sapling path's shape rule was broken.
+    #[error("gate: a YEC send between Sapling and a post-quantum address {0}")]
+    SaplingPqShape(&'static str),
     /// A plain YEC spend of transparent coins by a wallet that has held YED, on a server without
     /// Yellowback: its YED outputs cannot be told apart from plain YEC (yewd's and the C++
     /// lines' has-held-YED guard, beta2 item 32).
@@ -210,6 +214,19 @@ pub enum Path {
     /// `TOKEN_VALUE`. The remote layer is mandatory: a server without Yellowback lists no
     /// post-quantum coin and validates nothing, so the path is refused there.
     PqSpend,
+    /// A plain YEC send from the wallet's Sapling notes to a post-quantum key (beta2 D-2, D-5,
+    /// D-8; the builder decodes a D-9 plain-YEC address of this network to the key): no
+    /// transparent input; at least one Sapling spend, no JoinSplit; exactly one transparent
+    /// output, a `TX_PQPKH` paying the named key, not of exactly `TOKEN_VALUE`; the change is a
+    /// Sapling note; no payload. The remote layer is mandatory (the node's dry run must see a
+    /// transaction that pays a post-quantum key). [`Path::Shielded`] refuses a `TX_PQPKH` output.
+    SaplingToPq(crate::pq::PqKeyId),
+    /// A plain YEC send from one own post-quantum address (the named source key) to Sapling
+    /// (beta2 D-2, D-4, D-5, D-8): `PQ_OWNED` inputs only (never a token, a held output, the fee
+    /// reserve, a P2PKH coin or anything YED); no Sapling spend, at least one Sapling output, no
+    /// JoinSplit; at most one transparent output, the change, a `TX_PQPKH` paying the source key
+    /// (D-4), not of exactly `TOKEN_VALUE`; no payload. The remote layer is mandatory.
+    PqToSapling(crate::pq::PqKeyId),
 }
 
 impl Path {
@@ -229,6 +246,8 @@ impl Path {
             Path::Shielded => "shielded",
             Path::Shield => "shield",
             Path::PqSpend => "post-quantum send",
+            Path::SaplingToPq(_) => "Sapling to post-quantum",
+            Path::PqToSapling(_) => "post-quantum to Sapling",
         }
     }
 
@@ -246,6 +265,8 @@ impl Path {
             Path::Shielded => false,
             Path::Shield => c == UtxoClass::Yec,
             Path::PqSpend => c == UtxoClass::PqOwned,
+            Path::SaplingToPq(_) => false,
+            Path::PqToSapling(_) => c == UtxoClass::PqOwned,
         }
     }
 
@@ -266,8 +287,13 @@ pub fn check(
     if path == Path::Shielded {
         return check_shielded(tx);
     }
+    if let Path::SaplingToPq(id) = path {
+        return check_sapling_to_pq(tx, id);
+    }
     if path == Path::Shield {
         check_shield_shape(&tx)?;
+    } else if let Path::PqToSapling(_) = path {
+        check_pq_to_sapling_shape(&tx)?;
     } else if tx.shielded.any() {
         return Err(GateError::Shielded);
     }
@@ -443,9 +469,79 @@ pub fn check(
                 return Err(GateError::VaultShape(path.name(), named.display()));
             }
         }
+        Path::PqToSapling(source) => {
+            no_payload(&tx)?;
+            if tx.vout.len() > 1 {
+                return Err(GateError::SaplingPqShape(
+                    "from a post-quantum address has at most one transparent output, the change to the source",
+                ));
+            }
+            for (n, o) in tx.vout.iter().enumerate() {
+                if crate::pq::pqpkh_of(&o.script_pubkey) != Some(source) {
+                    return Err(GateError::SaplingPqShape(
+                        "from a post-quantum address pays its change only to the source address",
+                    ));
+                }
+                if o.value == crate::params::TOKEN_VALUE {
+                    return Err(GateError::TokenValuedOutput(n));
+                }
+            }
+        }
         Path::Shielded => unreachable!("checked by check_shielded above"),
+        Path::SaplingToPq(_) => unreachable!("checked by check_sapling_to_pq above"),
     }
     Ok(tx)
+}
+
+/// The local layer of [`Path::SaplingToPq`] (beta2 D-2, D-8).
+fn check_sapling_to_pq(tx: Transaction, id: crate::pq::PqKeyId) -> Result<Transaction, GateError> {
+    if !tx.vin.is_empty() {
+        return Err(GateError::SaplingPqShape(
+            "from Sapling spends no transparent input",
+        ));
+    }
+    if tx.shielded.joinsplits > 0 {
+        return Err(GateError::ShieldedShape("it carries a Sprout JoinSplit"));
+    }
+    if tx.shielded.spends == 0 {
+        return Err(GateError::SaplingPqShape(
+            "from Sapling spends at least one Sapling note",
+        ));
+    }
+    if tx.vout.len() != 1 {
+        return Err(GateError::SaplingPqShape(
+            "from Sapling has exactly one transparent output, the recipient",
+        ));
+    }
+    let o = &tx.vout[0];
+    if crate::pq::pqpkh_of(&o.script_pubkey) != Some(id) {
+        return Err(GateError::SaplingPqShape(
+            "from Sapling must pay the named post-quantum key",
+        ));
+    }
+    if o.value == crate::params::TOKEN_VALUE {
+        return Err(GateError::TokenValuedOutput(0));
+    }
+    Ok(tx)
+}
+
+/// The shape half of [`Path::PqToSapling`] (its inputs are classified like every transparent
+/// path): Sapling outputs, no Sapling spend, no JoinSplit.
+fn check_pq_to_sapling_shape(tx: &Transaction) -> Result<(), GateError> {
+    if tx.shielded.joinsplits > 0 {
+        return Err(GateError::ShieldedShape("it carries a Sprout JoinSplit"));
+    }
+    if tx.shielded.spends > 0 {
+        return Err(GateError::SaplingPqShape(
+            "from a post-quantum address spends no Sapling note",
+        ));
+    }
+    if tx.shielded.outputs == 0 {
+        return Err(GateError::SaplingPqShape(
+            "from a post-quantum address makes a Sapling output",
+        ));
+    }
+    Ok(())
 }
 
 /// The shape half of [`Path::Shield`] (its inputs are classified like every transparent path):
@@ -490,6 +586,15 @@ fn check_shielded(tx: Transaction) -> Result<Transaction, GateError> {
         .position(|o| script::is_op_return(&o.script_pubkey))
     {
         return Err(GateError::PayloadOnYecPath(i));
+    }
+    // beta2 item 5: paying a post-quantum key from Sapling is Path::SaplingToPq's, with its
+    // mandatory dry run
+    if let Some(i) = tx
+        .vout
+        .iter()
+        .position(|o| crate::pq::pqpkh_of(&o.script_pubkey).is_some())
+    {
+        return Err(GateError::PqOutputOnYecPath(i));
     }
     if tx
         .vout
@@ -595,7 +700,7 @@ pub async fn confirm_burning(
     let client = match validator {
         Validator::Remote(c) => c,
         Validator::Absent => {
-            return if let Path::YecToPq(_) = path {
+            return if let Path::YecToPq(_) | Path::SaplingToPq(_) | Path::PqToSapling(_) = path {
                 Err(GateError::NoDryRunForPqSend)
             } else if path.needs_yellowback() {
                 Err(GateError::YellowbackAbsent)
@@ -1686,6 +1791,209 @@ mod tests {
             let r = check(Path::YecToPq(id), &raw, class);
             assert_eq!(r.is_ok(), want, "YecToPq {inputs:?} {outs:?}: {r:?}");
         }
+    }
+
+    /// A v4 transaction with the given transparent inputs and outputs, `spends` Sapling spends
+    /// and `outputs` Sapling outputs (no JoinSplit; the binding signature when either is non-zero).
+    fn raw_sapling(vin: &[OutPoint], vout: &[(i64, Vec<u8>)], spends: u8, outputs: u8) -> Vec<u8> {
+        let mut t = Transaction::new_v4();
+        for op in vin {
+            t.vin.push(TxIn::new(*op));
+        }
+        for (v, spk) in vout {
+            t.vout.push(TxOut {
+                value: *v,
+                script_pubkey: spk.clone(),
+            });
+        }
+        let mut b = t.serialize().unwrap();
+        // the transparent serialization ends: valueBalance (8), 0 spends, 0 outputs, 0 JoinSplits
+        b.truncate(b.len() - 11);
+        b.extend_from_slice(&0i64.to_le_bytes());
+        b.push(spends);
+        b.extend(std::iter::repeat_n(0x11u8, 384 * spends as usize));
+        b.push(outputs);
+        b.extend(std::iter::repeat_n(0x22u8, 948 * outputs as usize));
+        b.push(0);
+        if spends > 0 || outputs > 0 {
+            b.extend(std::iter::repeat_n(0x33u8, 64));
+        }
+        b
+    }
+
+    /// Property, beta2 item 5 (review YEW-REVIEW-6): on random coin sets over every UTXO class,
+    /// random transparent outputs (the named key, another post-quantum key of either scheme,
+    /// P2PKH, P2SH, a payload; values sometimes exactly TOKEN_VALUE) and random Sapling parts:
+    /// - `Path::SaplingToPq(id)` passes exactly: no transparent input, at least one Sapling spend,
+    ///   exactly one transparent output, paying `id`, not of TOKEN_VALUE;
+    /// - `Path::PqToSapling(src)` passes exactly: at least one input, every input PQ_OWNED, no
+    ///   Sapling spend, at least one Sapling output, at most one transparent output and it pays
+    ///   `src`, not of TOKEN_VALUE;
+    /// - `Path::Shielded` passes nothing that pays a post-quantum key (it was its rule minus
+    ///   those outputs);
+    /// - neither new path admits any class but PQ_OWNED (`allows`), and both need the dry run.
+    #[test]
+    fn sapling_pq_paths_property_over_every_class_and_shape() {
+        let id = pq_id(7);
+        let src = crate::pq::PqKeyId {
+            scheme: crate::pq::SCHEME_SLH_DSA_SHA2_128S,
+            hash: [9; 32],
+        };
+        for c in ALL {
+            assert!(!Path::SaplingToPq(id).allows(c), "{c:?}");
+            assert_eq!(
+                Path::PqToSapling(src).allows(c),
+                c == UtxoClass::PqOwned,
+                "{c:?}"
+            );
+        }
+        assert!(Path::SaplingToPq(id).needs_yellowback());
+        assert!(Path::PqToSapling(src).needs_yellowback());
+        let to_pq = crate::pq::pqpkh_script(&id).unwrap();
+        let to_src = crate::pq::pqpkh_script(&src).unwrap();
+        let other_pq = crate::pq::pqpkh_script(&pq_id(8)).unwrap();
+        let p2pkh = script::p2pkh_script(&[3; 20]);
+        let p2sh = script::p2sh_script(&[4; 20]);
+        let op_ret = transfer_payload_script();
+        let kinds = [
+            to_pq.clone(),
+            to_src.clone(),
+            other_pq.clone(),
+            p2pkh.clone(),
+            p2sh.clone(),
+            op_ret.clone(),
+        ];
+        let mut rng = Rng(0x5a91_e2b0_7c3d_4f15);
+        let mut passed = (0, 0);
+        for _ in 0..4000 {
+            let n_coins = 1 + rng.below(6) as usize;
+            let mut coins: HashMap<OutPoint, UtxoClass> = HashMap::new();
+            let mut list = Vec::new();
+            for i in 0..n_coins {
+                let mut txid = [0u8; 32];
+                txid[0] = i as u8;
+                txid[1] = rng.below(256) as u8;
+                let op = OutPoint { txid, n: 0 };
+                // PQ_OWNED half the time, so the passing shapes are reached
+                let c = if rng.below(2) == 0 {
+                    UtxoClass::PqOwned
+                } else {
+                    ALL[rng.below(ALL.len() as u64) as usize]
+                };
+                coins.insert(op, c);
+                list.push(op);
+            }
+            let n_in = rng.below(list.len() as u64 + 1) as usize;
+            let inputs: Vec<OutPoint> = list[..n_in].to_vec();
+            let n_out = rng.below(3) as usize;
+            let outs: Vec<(i64, Vec<u8>)> = (0..n_out)
+                .map(|_| {
+                    let v = if rng.below(8) == 0 {
+                        crate::params::TOKEN_VALUE
+                    } else {
+                        1_000 + rng.below(1_000_000) as i64
+                    };
+                    (v, kinds[rng.below(kinds.len() as u64) as usize].clone())
+                })
+                .collect();
+            let spends = rng.below(3) as u8;
+            let sap_outs = rng.below(3) as u8;
+            let raw = raw_sapling(&inputs, &outs, spends, sap_outs);
+            let class = |op: &OutPoint| coins.get(op).copied();
+            let no_token_value = outs.iter().all(|(v, _)| *v != crate::params::TOKEN_VALUE);
+            // SaplingToPq
+            let want = inputs.is_empty()
+                && spends >= 1
+                && outs.len() == 1
+                && outs[0].1 == to_pq
+                && no_token_value;
+            let r = check(Path::SaplingToPq(id), &raw, class);
+            assert_eq!(
+                r.is_ok(),
+                want,
+                "SaplingToPq {inputs:?} {outs:?} {spends}/{sap_outs}: {r:?}"
+            );
+            passed.0 += usize::from(want);
+            // PqToSapling
+            let inputs_ok = !inputs.is_empty()
+                && inputs
+                    .iter()
+                    .all(|op| class(op) == Some(UtxoClass::PqOwned));
+            let want = inputs_ok
+                && spends == 0
+                && sap_outs >= 1
+                && outs.len() <= 1
+                && outs.iter().all(|(_, s)| *s == to_src)
+                && no_token_value;
+            let r = check(Path::PqToSapling(src), &raw, class);
+            assert_eq!(
+                r.is_ok(),
+                want,
+                "PqToSapling {inputs:?} {outs:?} {spends}/{sap_outs}: {r:?}"
+            );
+            passed.1 += usize::from(want);
+            // Shielded never pays a post-quantum key
+            if outs.iter().any(|(_, s)| crate::pq::pqpkh_of(s).is_some()) {
+                assert!(check(Path::Shielded, &raw, class).is_err(), "{outs:?}");
+            }
+        }
+        // the generator reaches the passing shapes of both paths
+        assert!(passed.0 > 20 && passed.1 > 20, "{passed:?}");
+    }
+
+    /// Beta2 item 5: without the remote layer both new paths are refused with the path-specific
+    /// text (never "YED"); with a held-YED wallet the refusal is the same (the guard's paths are
+    /// unchanged: these paths need the service anyway); layer 3 checks every PQ_OWNED input.
+    #[tokio::test]
+    async fn sapling_pq_paths_need_the_dry_run() {
+        let id = pq_id(7);
+        let mut v = Validator::Absent;
+        let raw = raw_sapling(
+            &[],
+            &[(50_000, crate::pq::pqpkh_script(&id).unwrap())],
+            1,
+            2,
+        );
+        assert!(check(Path::SaplingToPq(id), &raw, |_| None).is_ok());
+        assert_eq!(
+            confirm(&mut v, Path::SaplingToPq(id), &raw, |_| None)
+                .await
+                .unwrap_err(),
+            GateError::NoDryRunForPqSend
+        );
+        let a = OutPoint {
+            txid: [1; 32],
+            n: 0,
+        };
+        let raw = raw_sapling(
+            &[a],
+            &[(50_000, crate::pq::pqpkh_script(&id).unwrap())],
+            0,
+            1,
+        );
+        let class = |_: &OutPoint| Some(UtxoClass::PqOwned);
+        assert!(check(Path::PqToSapling(id), &raw, class).is_ok());
+        assert_eq!(
+            confirm(&mut v, Path::PqToSapling(id), &raw, class)
+                .await
+                .unwrap_err(),
+            GateError::NoDryRunForPqSend
+        );
+        let (tx, _) = Transaction::parse(&raw).unwrap();
+        assert!(spent_as_yec(Path::PqToSapling(id), &tx, class).contains(&a));
+        // the existing shielded path no longer pays a post-quantum key
+        let raw = raw_sapling(
+            &[],
+            &[(50_000, crate::pq::pqpkh_script(&id).unwrap())],
+            1,
+            2,
+        );
+        assert_eq!(
+            check(Path::Shielded, &raw, |_| None).unwrap_err(),
+            GateError::PqOutputOnYecPath(0)
+        );
+        let raw = raw_sapling(&[], &[(50_000, script::p2pkh_script(&[3; 20]))], 1, 2);
+        assert!(check(Path::Shielded, &raw, |_| None).is_ok());
     }
 
     /// Beta2 item 3: every previously valid ECC -> ECC shape (P2PKH or P2SH recipient, with or
