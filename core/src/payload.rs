@@ -561,11 +561,15 @@ pub fn find_op_return(tx: &Transaction) -> Option<usize> {
 }
 
 /// True when `tx`'s only `OP_RETURN` carries the Yellowback magic, in the size range, with a
-/// type byte this build does not know or a version other than that type's (the node, if it is
+/// type byte this build does not know or a version above that type's (the node, if it is
 /// newer, may give it a meaning, YED-creating or not; this build cannot tell). Layer 3 of the
 /// gate refuses to spend an output of such a transaction as plain YEC (review YEW-REVIEW-4 M1).
 /// A known type at its version with a malformed body is non-Yellowback to every node version
-/// (`DecodePayload` fails), so it is not counted here.
+/// (`DecodePayload` fails), so it is not counted here. Review YEW-REVIEW-5 L2: the retired
+/// versions are non-Yellowback on the node for good (ycash-dd `payload.cpp` `DecodePayload`,
+/// "versions 1, 2 and every later version: non-Yellowback (V23); a MINT is version 4 and every
+/// other type version 3 (C-1)"), so they are not counted either: versions 1 and 2 of any type
+/// byte, and a known type below its version (a MINT at version 3).
 pub fn unknown_yellowback(tx: &Transaction) -> bool {
     let Some(data) =
         find_op_return(tx).and_then(|i| extract_op_return_data(&tx.vout[i].script_pubkey))
@@ -575,9 +579,12 @@ pub fn unknown_yellowback(tx: &Transaction) -> bool {
     if data[0] != MAGIC[0] || data[1] != MAGIC[1] {
         return false;
     }
+    if data[2] == 1 || data[2] == 2 {
+        return false;
+    }
     match PayloadType::from_byte(data[3]) {
         None => true,
-        Some(t) => data[2] != version_of(t),
+        Some(t) => data[2] > version_of(t),
     }
 }
 
@@ -855,8 +862,9 @@ mod tests {
         assert_eq!(decode(&v4), None);
     }
 
-    /// `unknown_yellowback`: the magic with an unknown type or a wrong version counts; a known
-    /// type at its version (well formed or not), another magic, or no single `OP_RETURN` do not.
+    /// `unknown_yellowback`: the magic with an unknown type or a version above its type's counts; a
+    /// known type at its version (well formed or not), a retired version, another magic, or no
+    /// single `OP_RETURN` do not.
     #[test]
     fn unknown_yellowback_payloads() {
         let tx_with = |datas: &[Vec<u8>]| {
@@ -903,7 +911,21 @@ mod tests {
         })
         .unwrap();
         mint_v3[2] = 0x03;
-        assert!(unknown_yellowback(&tx_with(&[mint_v3])));
+        // review YEW-REVIEW-5 L2: retired versions are non-Yellowback on the node for good
+        // (payload.cpp DecodePayload): a MINT below version 4, and versions 1 and 2 of any type
+        // byte, known or not; a version above the type's stays unknown (a newer node's)
+        let mut mint_v5 = mint_v3.clone();
+        mint_v5[2] = MINT_VERSION + 1;
+        assert!(!unknown_yellowback(&tx_with(&[mint_v3])));
+        for v in [0x01u8, 0x02] {
+            for t in [0x01u8, 0x02, 0x03, 0x09, 0x0a, 0xff] {
+                assert!(
+                    !unknown_yellowback(&tx_with(&[vec![0x59, 0x42, v, t]])),
+                    "version {v} type {t:#x}"
+                );
+            }
+        }
+        assert!(unknown_yellowback(&tx_with(&[mint_v5])));
         // a known type at its version, malformed: non-Yellowback to every node version
         let mut bad = transfer.clone();
         bad.push(0);

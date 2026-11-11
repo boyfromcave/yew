@@ -668,7 +668,10 @@ async fn hold_unproven(
         if !matches!(u.class, UtxoClass::Yec | UtxoClass::PqOwned) {
             continue;
         }
-        if let Some(v) = wallet.store.provenance(&u.outpoint)? {
+        if let Some(v) = wallet
+            .store
+            .provenance(&u.outpoint, gate::PROVENANCE_CLASSIFIER)?
+        {
             verdicts.insert(u.outpoint, v.is_empty());
             continue;
         }
@@ -690,7 +693,9 @@ async fn hold_unproven(
                 .err()
                 .map(|e| e.to_string())
                 .unwrap_or_default();
-            wallet.store.set_provenance(&u.outpoint, &why)?;
+            wallet
+                .store
+                .set_provenance(&u.outpoint, &why, gate::PROVENANCE_CLASSIFIER)?;
         }
         // review YEW-REVIEW-4 L2: the listed value and script must be the creating transaction's
         // (a listing that differs holds the coin for this sync, not finally: the parent's own

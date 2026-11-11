@@ -583,6 +583,13 @@ pub fn check_provenance(
     Ok(())
 }
 
+/// The version of the layer-3 classifier ([`output_provenance`], [`payload::unknown_yellowback`])
+/// stored with each final verdict (review YEW-REVIEW-5 L2). Raise it whenever the classifier
+/// changes what it holds; the held verdicts of an older one are re-checked at the next sync.
+/// 1: YEW-REVIEW-4 M3 (implicit, stored as 0); 2: the retired payload versions 1 and 2 (and a
+/// MINT below version 4) are non-Yellowback, as on the node.
+pub const PROVENANCE_CLASSIFIER: i64 = 2;
+
 /// Layer 3's verdict on one output, from the bytes the server returned for the transaction that
 /// created it (`None`: not returned). `Ok` only when those bytes are that transaction (txid
 /// recomputed), it has the output, its payload is of a known type and version, and the payload
