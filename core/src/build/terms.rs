@@ -873,6 +873,11 @@ pub struct FeeGuard {
     /// The usual fee for this size: at this wallet's reference YEC price ([`PriceObservations`])
     /// and the node's default dollar target (`None` before any price was seen).
     pub usual_zat: Option<i64>,
+    /// The fee this guard priced, zat: exactly what the preview showed and the acknowledgement (if
+    /// any) names (review YEW-REVIEW-6 M1).
+    pub fee: i64,
+    /// The transaction size the fee was priced for, bytes.
+    pub size: usize,
 }
 
 /// How many days of price reports the reference covers (review YEW-REVIEW-5 M1).
@@ -1032,6 +1037,8 @@ pub fn guard_fee(
     }
     let mut g = FeeGuard {
         reported_price_micro_usd: price,
+        fee,
+        size,
         ..FeeGuard::default()
     };
     let high_water = reference.price;

@@ -516,25 +516,45 @@ fn write_fee_quote(wallet: &Wallet, id: i64, q: &FeeQuote) -> Result<(), WalletE
     Ok(())
 }
 
-/// Record on row `id` the main fee its start accepted (review YEW-REVIEW-5 M2): the fee and size
-/// [`main_fee_guard`] priced, and whether `g` (that guard, required at the start) was flagged. A
-/// restart keeps it (the store's meta).
+/// Record on row `id` the main fee its start accepted (review YEW-REVIEW-5 M2): exactly the fee
+/// and size `g` (the guard required at the start, [`main_fee_guard`]) priced and the user saw,
+/// and whether it was flagged. Never re-priced from the terms as they are now (review
+/// YEW-REVIEW-6 M1: the start refreshes them after the guard). A restart keeps it (the store's
+/// meta).
 pub(crate) fn note_fee_ack(
     wallet: &Wallet,
     id: i64,
     g: &terms::FeeGuard,
 ) -> Result<(), WalletError> {
-    let size = crate::params::yed_estimated_size(1, &[]);
-    let fee = wallet.pq_terms().yed_fee(size);
     write_fee_quote(
         wallet,
         id,
         &FeeQuote {
-            fee,
-            size,
+            fee: g.fee,
+            size: g.size,
             flagged: g.ack.is_some(),
         },
     )
+}
+
+/// After a start has refreshed the server's terms ([`vault_terms_now`]), before anything is
+/// funded (review YEW-REVIEW-6 M1): the main fee at `g`'s size under the terms now must not be
+/// above the fee `g` priced (what the user saw and, when flagged, acknowledged). A server that
+/// raised its rate within the start is refused here and the user starts again from a new preview.
+pub(crate) fn check_fee_not_raised(
+    wallet: &Wallet,
+    g: &terms::FeeGuard,
+    label: &str,
+) -> Result<(), WalletError> {
+    let now = wallet.pq_terms().yed_fee(g.size);
+    if now > g.fee {
+        return Err(WalletError::Other(format!(
+            "fee-terms-changed: the server's fee terms changed while the {label} was starting: its fee would now be {} YEC, above the {} YEC you confirmed. Nothing was sent; review the new fee and start again.",
+            crate::build::any_to_any::format_money(now),
+            crate::build::any_to_any::format_money(g.fee)
+        )));
+    }
+    Ok(())
 }
 
 /// The main transaction's fee at `finish` (review YEW-REVIEW-4 M2, YEW-REVIEW-5 M2):
@@ -840,6 +860,8 @@ pub async fn start(
     let r = est.ref_height;
     // The vault upgrade's terms (U-23) must be usable before the carrier is funded.
     vault_terms_now(wallet, yb).await?;
+    // review YEW-REVIEW-6 M1: the refresh must not have raised the fee the user confirmed
+    check_fee_not_raised(wallet, &est.fee_guard, "mint")?;
     // The bundle for (R, "") — the mint's selector is empty (BuildMint:1095).
     let b = yb.build_bundle(r, "").await?;
     let bundle_bytes = unhex(&b.hex).map_err(|e| MintError::Relay(format!("bundle hex: {e}")))?;
@@ -2075,6 +2097,115 @@ mod tests {
             assert_eq!((q2.fee, q2.size, q2.flagged), (fee, size, true));
             assert!(check_main_fee(&w, 7, fee, &ins, None).is_ok());
             assert!(check_main_fee(&w, 7, fee + 1, &ins, None).is_err());
+        }
+
+        /// A server whose answers to `GetYellowbackInfo` are served in order (each a reported
+        /// YEC price, µUSD, with the node's default rates at it): each call feeds the next answer
+        /// through `Wallet::note_server_params`, exactly as `vault_terms_now` does with the
+        /// start's second call (review YEW-REVIEW-6 M1).
+        struct RaisingServer {
+            answers: Vec<i64>,
+        }
+
+        impl RaisingServer {
+            fn info(&mut self, w: &Wallet) {
+                let price = self.answers.remove(0);
+                let mut fees = terms::fallback_fee_params(1_000);
+                let n = fees.network.as_mut().unwrap();
+                n.price_source = "tip".into();
+                n.price_micro_usd = price;
+                let floor = n.floor_zat_per_kb.max(n.fallback_zat_per_kb);
+                let plain = params::attested_rate_zat_per_kb(
+                    params::DEFAULT_PQ_FEE_USD_PER_KB_MICRO,
+                    price,
+                    floor,
+                );
+                n.plain.as_mut().unwrap().zat_per_kb = plain;
+                n.yellowback.as_mut().unwrap().zat_per_kb = params::attested_rate_zat_per_kb(
+                    params::DEFAULT_YED_FEE_USD_PER_KB_MICRO,
+                    price,
+                    floor,
+                );
+                let p = crate::net::rpc::YellowbackParams {
+                    pq: Some(crate::net::rpc::YellowbackPqParams {
+                        schemes: vec![1],
+                        falcon_active: false,
+                        falcon_height: -1,
+                        fee_rate_zat_per_kb: plain,
+                    }),
+                    fees: Some(fees),
+                    ..Default::default()
+                };
+                w.note_server_params(Some(&p)).unwrap();
+            }
+        }
+
+        /// Review YEW-REVIEW-6 M1: the server raises its Yellowback rate on the second info call
+        /// within one start. The start refuses before funding anything (the user starts again
+        /// from a new preview), and the quote is never stored at the raised value: what is stored
+        /// is exactly the fee and size the acknowledged guard priced, also across a restart.
+        #[test]
+        fn a_rate_raised_within_the_start_is_refused_and_never_stored() {
+            for label in ["mint", "claim"] {
+                let w = open(Store::open_in_memory().unwrap());
+                w.set_fee_reference_for_test(REF);
+                // first answer (the estimate / preview), then the start's refresh at a third of the
+                // price: 3x the Yellowback rate
+                let mut server = RaisingServer {
+                    answers: vec![3 * REF, REF],
+                };
+                server.info(&w);
+                let g = main_fee_guard(&w, label).unwrap();
+                assert_eq!(g.size, crate::params::yed_estimated_size(1, &[]));
+                assert_eq!(g.fee, w.pq_terms().yed_fee(g.size));
+                assert!(check_fee_not_raised(&w, &g, label).is_ok());
+                server.info(&w);
+                let raised = w.pq_terms().yed_fee(g.size);
+                assert!(raised > g.fee, "{raised} > {}", g.fee);
+                let e = check_fee_not_raised(&w, &g, label).unwrap_err().to_string();
+                assert!(e.starts_with("fee-terms-changed:"), "{e}");
+                assert!(
+                    e.contains(&format!("while the {label} was starting")),
+                    "{e}"
+                );
+                // even if a row were recorded (the refresh after a carrier), the quote is the
+                // acknowledged one, not the raised one
+                note_fee_ack(&w, 11, &g).unwrap();
+                let q = read_fee_quote(&w, 11).unwrap().unwrap();
+                assert_eq!((q.fee, q.size, q.flagged), (g.fee, g.size, g.ack.is_some()));
+                assert_ne!(q.fee, raised);
+                // restart between the start and the finish: the acknowledged quote is kept, and a
+                // finish at the raised rate is not paid without a new acknowledgement
+                let w = open(w.store);
+                w.set_fee_reference_for_test(REF);
+                let q2 = read_fee_quote(&w, 11).unwrap().unwrap();
+                assert_eq!(q2, q);
+                let ins = inputs(1);
+                let (size, _) = terms::yed_priced_size(ins.iter().map(|u| u.script.as_slice()));
+                let mut later = RaisingServer { answers: vec![REF] };
+                later.info(&w);
+                let fee = w.pq_terms().yed_fee(size);
+                assert!(fee > q.at(size) * 2, "{fee} > 2 x {}", q.at(size));
+                assert!(check_main_fee(&w, 11, fee, &ins, None).is_err());
+                assert!(check_main_fee(&w, 11, q.at(size), &ins, None).is_ok());
+            }
+        }
+
+        /// A rate lowered within the start is fine: the stored quote stays the acknowledged fee.
+        #[test]
+        fn a_rate_lowered_within_the_start_keeps_the_acknowledged_quote() {
+            let w = open(Store::open_in_memory().unwrap());
+            w.set_fee_reference_for_test(REF);
+            let mut server = RaisingServer {
+                answers: vec![REF, 3 * REF],
+            };
+            server.info(&w);
+            let g = main_fee_guard(&w, "mint").unwrap();
+            server.info(&w);
+            assert!(check_fee_not_raised(&w, &g, "mint").is_ok());
+            note_fee_ack(&w, 12, &g).unwrap();
+            let q = read_fee_quote(&w, 12).unwrap().unwrap();
+            assert_eq!((q.fee, q.size), (g.fee, g.size));
         }
 
         /// A flagged, acknowledged start: the finish pays at most that fee scaled to its real

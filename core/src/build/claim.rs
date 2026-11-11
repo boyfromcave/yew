@@ -317,6 +317,8 @@ pub async fn start(
     // script must be the YED vault this wallet rebuilds (U-23) — the one the claim spends.
     terms::check_vault(wallet.network, &v)?;
     let vt = mint::vault_terms_now(wallet, yb).await?;
+    // review YEW-REVIEW-6 M1: the refresh must not have raised the fee the user confirmed
+    mint::check_fee_not_raised(wallet, &fee_guard, "claim")?;
     let yv = terms::check_vault_script(&vt, &v)?;
     if v.minted_cents.max(0) as u64 != entry.minted_cents
         || v.collateral_zat != entry.collateral_zat
