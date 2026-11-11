@@ -116,6 +116,10 @@ pub enum GateError {
     /// The Sapling -> post-quantum or post-quantum -> Sapling path's shape rule was broken.
     #[error("gate: a YEC send between Sapling and a post-quantum address {0}")]
     SaplingPqShape(&'static str),
+    /// A carrier funded from another source than the wallet's ECC coins
+    /// ([`Path::CarrierFromSapling`]) broke its shape rule.
+    #[error("gate: a carrier funding from another source {0}")]
+    CarrierFundingShape(&'static str),
     /// A plain YEC spend of transparent coins by a wallet that has held YED, on a server without
     /// Yellowback: its YED outputs cannot be told apart from plain YEC (yewd's and the C++
     /// lines' has-held-YED guard, beta2 item 32).
@@ -231,13 +235,90 @@ pub enum Path {
     /// named source key; beta2 D-3 for the app, `build::mint::carrier_step` with
     /// `MintSource::Pq`): `PQ_OWNED` inputs only, each stored at the source's `TX_PQPKH` script
     /// ([`check_with_scripts`]; never a token, a held output, the fee reserve, a P2PKH coin or
-    /// anything YED); `vout[0]` the carrier (`CARRIER_VALUE` to a P2SH), `vout[1]` the staged
-    /// MINT funding (a P2PKH), at most `vout[2]`, the change, a `TX_PQPKH` paying the source
+    /// anything YED); `vout[0]` the carrier (`CARRIER_VALUE` to the P2SH of the core's carrier
+    /// script, [`CarrierOutputs::carrier_hash`]), `vout[1]` the staged MINT funding (a P2PKH to
+    /// exactly the key recorded for this mint, [`CarrierOutputs::staged_key`]), at most `vout[2]`, the change, a `TX_PQPKH` paying the source
     /// (D-4); no other output, no output but the carrier of exactly `TOKEN_VALUE` (which
     /// `CARRIER_VALUE` equals), no payload, nothing
     /// shielded. The remote layer is mandatory. The MINT itself is unchanged: it spends the staged
     /// P2PKH output as an ordinary `YEC` input.
-    CarrierFromPq(crate::pq::PqKeyId),
+    CarrierFromPq(crate::pq::PqKeyId, CarrierOutputs),
+    /// The carrier funding transaction of a mint funded from the wallet's private (Sapling)
+    /// balance (beta2 D-3 for the app, `build::mint::start_from_sapling`): no transparent input;
+    /// at least one Sapling spend, no JoinSplit; exactly two transparent outputs: `vout[0]` the
+    /// carrier, `CARRIER_VALUE` to the P2SH whose script hash is the one the core built
+    /// ([`CarrierOutputs::carrier_hash`]), and `vout[1]` the staged MINT funding, a P2PKH paying
+    /// exactly the key the core derived and recorded for this mint
+    /// ([`CarrierOutputs::staged_key`]), not of exactly `TOKEN_VALUE`; the change is a Sapling
+    /// note; no payload. The remote layer is mandatory. The MINT is unchanged: it spends the
+    /// staged output as an ordinary `YEC` input.
+    CarrierFromSapling(CarrierOutputs),
+}
+
+/// The two transparent outputs a carrier funding from another source than the ECC coins must pay
+/// (beta2 D-3; review YEW-REVIEW-8 M2, L1), compared by script, not by kind: the carrier P2SH the
+/// core built from its own carrier key and the bundle, and the own P2PKH key it derived for the
+/// staged MINT funding. The builders never fill it from their own arguments: they read it back
+/// with `build::mint::recorded_carrier_outputs`, which takes the staged key from the wallet's
+/// record (written before the transaction is built, keyed by the carrier key) and refuses one that
+/// is not a change-chain key of this wallet's seed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CarrierOutputs {
+    /// HASH160 of the carrier's redeem script (`vout[0]` is `P2SH(carrier_hash)`).
+    pub carrier_hash: [u8; 20],
+    /// HASH160 of the staged funding key (`vout[1]` is `P2PKH(staged_key)`).
+    pub staged_key: [u8; 20],
+}
+
+/// `vout[0]` and `vout[1]` of a carrier funding from another source: exactly the carrier P2SH
+/// and the staged own P2PKH named by `want`, the staged output not of exactly `TOKEN_VALUE`.
+fn check_carrier_outputs(tx: &Transaction, want: CarrierOutputs) -> Result<(), GateError> {
+    let carrier_ok = tx.vout.first().is_some_and(|o| {
+        o.value == crate::params::CARRIER_VALUE
+            && script::p2sh_hash(&o.script_pubkey) == Some(want.carrier_hash)
+    });
+    if !carrier_ok {
+        return Err(GateError::CarrierOutput);
+    }
+    let staged = tx.vout.get(1).ok_or(GateError::CarrierFundingShape(
+        "pays the staged mint funding in vout[1]",
+    ))?;
+    if staged.script_pubkey != script::p2pkh_script(&want.staged_key) {
+        return Err(GateError::CarrierFundingShape(
+            "pays vout[1] only to the key this wallet derived for the mint's staged funding",
+        ));
+    }
+    if staged.value == crate::params::TOKEN_VALUE {
+        return Err(GateError::TokenValuedOutput(1));
+    }
+    Ok(())
+}
+
+/// The local layer of [`Path::CarrierFromSapling`] (beta2 D-3).
+fn check_carrier_from_sapling(
+    tx: Transaction,
+    want: CarrierOutputs,
+) -> Result<Transaction, GateError> {
+    if !tx.vin.is_empty() {
+        return Err(GateError::CarrierFundingShape(
+            "from Sapling spends no transparent input",
+        ));
+    }
+    if tx.shielded.joinsplits > 0 {
+        return Err(GateError::ShieldedShape("it carries a Sprout JoinSplit"));
+    }
+    if tx.shielded.spends == 0 {
+        return Err(GateError::CarrierFundingShape(
+            "from Sapling spends at least one Sapling note",
+        ));
+    }
+    if tx.vout.len() != 2 {
+        return Err(GateError::CarrierFundingShape(
+            "from Sapling pays exactly two transparent outputs, the carrier and the staged mint funding",
+        ));
+    }
+    check_carrier_outputs(&tx, want)?;
+    Ok(tx)
 }
 
 impl Path {
@@ -259,7 +340,8 @@ impl Path {
             Path::PqSpend => "post-quantum send",
             Path::SaplingToPq(_) => "Sapling to post-quantum",
             Path::PqToSapling(_) => "post-quantum to Sapling",
-            Path::CarrierFromPq(_) => "carrier from post-quantum",
+            Path::CarrierFromPq(..) => "carrier from post-quantum",
+            Path::CarrierFromSapling(_) => "carrier from Sapling",
         }
     }
 
@@ -277,8 +359,8 @@ impl Path {
             Path::Shielded => false,
             Path::Shield => c == UtxoClass::Yec,
             Path::PqSpend => c == UtxoClass::PqOwned,
-            Path::SaplingToPq(_) => false,
-            Path::PqToSapling(_) | Path::CarrierFromPq(_) => c == UtxoClass::PqOwned,
+            Path::SaplingToPq(_) | Path::CarrierFromSapling(_) => false,
+            Path::PqToSapling(_) | Path::CarrierFromPq(..) => c == UtxoClass::PqOwned,
         }
     }
 
@@ -315,6 +397,9 @@ pub fn check_with_scripts(
     }
     if let Path::SaplingToPq(id) = path {
         return check_sapling_to_pq(tx, id);
+    }
+    if let Path::CarrierFromSapling(want) = path {
+        return check_carrier_from_sapling(tx, want);
     }
     if path == Path::Shield {
         check_shield_shape(&tx)?;
@@ -519,30 +604,22 @@ pub fn check_with_scripts(
                 }
             }
         }
-        Path::CarrierFromPq(source) => {
+        Path::CarrierFromPq(source, want) => {
             no_payload(&tx)?;
-            let want = crate::pq::pqpkh_script(&source);
-            if want.is_none() || tx.vin.iter().any(|i| script_of(&i.prevout) != want) {
+            let src = crate::pq::pqpkh_script(&source);
+            if src.is_none() || tx.vin.iter().any(|i| script_of(&i.prevout) != src) {
                 return Err(GateError::SaplingPqShape(
                     "from a post-quantum address spends only that address's coins",
                 ));
             }
-            let carrier_ok = tx.vout.first().is_some_and(|o| {
-                o.value == crate::params::CARRIER_VALUE
-                    && script::p2sh_hash(&o.script_pubkey).is_some()
-            });
-            if !carrier_ok {
-                return Err(GateError::CarrierOutput);
-            }
-            let staged_ok = tx
-                .vout
-                .get(1)
-                .is_some_and(|o| script::p2pkh_hash(&o.script_pubkey).is_some());
+            // review YEW-REVIEW-8 M2, L1: vout[0] the carrier the core built, vout[1] the staged
+            // key recorded for this mint (compared by script, not by kind)
+            check_carrier_outputs(&tx, want)?;
             let change_ok = tx
                 .vout
                 .get(2)
                 .is_none_or(|o| crate::pq::pqpkh_of(&o.script_pubkey) == Some(source));
-            if !staged_ok || !change_ok || tx.vout.len() > 3 {
+            if !change_ok || tx.vout.len() > 3 {
                 return Err(GateError::SaplingPqShape(
                     "a carrier funded from a post-quantum address pays the carrier, the staged mint funding (P2PKH) and at most the change to the source",
                 ));
@@ -559,6 +636,9 @@ pub fn check_with_scripts(
         }
         Path::Shielded => unreachable!("checked by check_shielded above"),
         Path::SaplingToPq(_) => unreachable!("checked by check_sapling_to_pq above"),
+        Path::CarrierFromSapling(_) => {
+            unreachable!("checked by check_carrier_from_sapling above")
+        }
     }
     Ok(tx)
 }
@@ -2055,9 +2135,10 @@ mod tests {
     /// Property, beta2 D-3 (a mint funded from a post-quantum address): on random coin sets over
     /// every UTXO class with random stored scripts, and random output lists (the carrier, a
     /// P2PKH, the source's or another post-quantum key, a payload; values sometimes exactly
-    /// TOKEN_VALUE), `Path::CarrierFromPq(src)` passes exactly: at least one input, every input
-    /// PQ_OWNED and stored at `src`'s script; `vout[0]` the carrier (CARRIER_VALUE to a P2SH),
-    /// `vout[1]` a P2PKH, at most `vout[2]` and it pays `src`; no other output of exactly
+    /// TOKEN_VALUE), `Path::CarrierFromPq(src, want)` passes exactly: at least one input, every input
+    /// PQ_OWNED and stored at `src`'s script; `vout[0]` the carrier (CARRIER_VALUE to the P2SH of
+    /// `want.carrier_hash`; another P2SH is refused), `vout[1]` the P2PKH of `want.staged_key`
+    /// (another P2PKH is refused), at most `vout[2]` and it pays `src`; no other output of exactly
     /// TOKEN_VALUE (the carrier's CARRIER_VALUE equals it); no payload. Without the stored scripts (`check`) it is refused; `Carrier`
     /// never admits a PQ_OWNED input; the remote layer is mandatory.
     #[tokio::test]
@@ -2070,6 +2151,13 @@ mod tests {
         let other_pq = crate::pq::pqpkh_script(&pq_id(8)).unwrap();
         let p2pkh = script::p2pkh_script(&[3; 20]);
         let p2sh = script::p2sh_script(&[4; 20]);
+        // review YEW-REVIEW-8 M2, L1: the carrier and the staged key by script
+        let want_out = CarrierOutputs {
+            carrier_hash: [4; 20],
+            staged_key: [3; 20],
+        };
+        let other_p2pkh = script::p2pkh_script(&[0x13; 20]);
+        let other_p2sh = script::p2sh_script(&[0x14; 20]);
         let op_ret = transfer_payload_script();
         let carrier = (crate::params::CARRIER_VALUE, p2sh.clone());
         let mut rng = Rng(0x1c3a_5e7f_9b2d_4086);
@@ -2109,14 +2197,18 @@ mod tests {
             let outs: Vec<(i64, Vec<u8>)> = (0..n_out)
                 .map(|k| {
                     if k == 0 && rng.below(4) != 0 {
-                        return carrier.clone();
+                        return if rng.below(8) == 0 {
+                            (crate::params::CARRIER_VALUE, other_p2sh.clone())
+                        } else {
+                            carrier.clone()
+                        };
                     }
                     let v = if rng.below(8) == 0 {
                         crate::params::TOKEN_VALUE
                     } else {
                         1_000 + rng.below(1_000_000) as i64
                     };
-                    let kinds = [&p2pkh, &to_src, &other_pq, &p2sh, &op_ret];
+                    let kinds = [&p2pkh, &to_src, &other_pq, &p2sh, &op_ret, &other_p2pkh];
                     let k = if k == 1 && rng.below(2) == 0 {
                         0
                     } else {
@@ -2134,15 +2226,15 @@ mod tests {
                 })
                 && (2..=3).contains(&outs.len())
                 && outs[0] == carrier
-                && script::p2pkh_hash(&outs[1].1).is_some()
+                && outs[1].1 == p2pkh
                 && outs.get(2).is_none_or(|o| o.1 == to_src)
                 && outs
                     .iter()
                     .skip(1)
                     .all(|(v, _)| *v != crate::params::TOKEN_VALUE);
-            let r = check_with_scripts(Path::CarrierFromPq(src), &raw, class, scripts);
+            let r = check_with_scripts(Path::CarrierFromPq(src, want_out), &raw, class, scripts);
             assert_eq!(r.is_ok(), want, "{inputs:?} {outs:?}: {r:?}");
-            assert!(check(Path::CarrierFromPq(src), &raw, class).is_err());
+            assert!(check(Path::CarrierFromPq(src, want_out), &raw, class).is_err());
             if inputs
                 .iter()
                 .any(|op| class(op) == Some(UtxoClass::PqOwned))
@@ -2165,16 +2257,153 @@ mod tests {
         );
         let class = |_: &OutPoint| Some(UtxoClass::PqOwned);
         let scripts = |_: &OutPoint| Some(to_src.clone());
-        assert!(check_with_scripts(Path::CarrierFromPq(src), &ok, class, scripts).is_ok());
+        assert!(
+            check_with_scripts(Path::CarrierFromPq(src, want_out), &ok, class, scripts).is_ok()
+        );
         let mut v = Validator::Absent;
         assert_eq!(
-            confirm_with_scripts(&mut v, Path::CarrierFromPq(src), &ok, class, scripts)
-                .await
-                .unwrap_err(),
+            confirm_with_scripts(
+                &mut v,
+                Path::CarrierFromPq(src, want_out),
+                &ok,
+                class,
+                scripts
+            )
+            .await
+            .unwrap_err(),
             GateError::YellowbackAbsent
         );
         let (tx, _) = Transaction::parse(&ok).unwrap();
-        assert_eq!(spent_as_yec(Path::CarrierFromPq(src), &tx, class).len(), 1);
+        assert_eq!(
+            spent_as_yec(Path::CarrierFromPq(src, want_out), &tx, class).len(),
+            1
+        );
+    }
+
+    /// Property, beta2 D-3 (a mint funded from the private balance): on random coin sets over
+    /// every UTXO class, random transparent outputs (the core's carrier, another P2SH, the staged
+    /// key, another P2PKH key, a post-quantum key, a payload; values sometimes exactly
+    /// TOKEN_VALUE or CARRIER_VALUE ± 1) and random Sapling parts, `Path::CarrierFromSapling`
+    /// passes exactly: no transparent input, at least one Sapling spend, exactly two transparent
+    /// outputs, `vout[0]` `CARRIER_VALUE` to the P2SH of the named carrier hash (another P2SH is
+    /// refused), `vout[1]` to the named staged key (another own-looking P2PKH is refused), not of
+    /// TOKEN_VALUE. No class is admitted as an input; the remote layer is mandatory; nothing is
+    /// spent as YEC.
+    #[tokio::test]
+    async fn carrier_from_sapling_property_over_every_class_and_shape() {
+        let want = CarrierOutputs {
+            carrier_hash: [0x41; 20],
+            staged_key: [0x42; 20],
+        };
+        let path = Path::CarrierFromSapling(want);
+        for c in ALL {
+            assert!(!path.allows(c), "{c:?}");
+        }
+        assert!(path.needs_yellowback());
+        let carrier = script::p2sh_script(&want.carrier_hash);
+        let other_p2sh = script::p2sh_script(&[0x43; 20]);
+        let staged = script::p2pkh_script(&want.staged_key);
+        let other_p2pkh = script::p2pkh_script(&[0x44; 20]);
+        let pq = crate::pq::pqpkh_script(&pq_id(7)).unwrap();
+        let op_ret = transfer_payload_script();
+        let kinds = [
+            carrier.clone(),
+            other_p2sh,
+            staged.clone(),
+            other_p2pkh,
+            pq,
+            op_ret,
+        ];
+        let cv = crate::params::CARRIER_VALUE;
+        let values = [
+            cv,
+            cv - 1,
+            cv + 1,
+            crate::params::TOKEN_VALUE,
+            5_000_000,
+            123_456_789,
+        ];
+        let mut rng = Rng(0x7e11_93c4_02ab_5d68);
+        let mut passed = 0;
+        for _ in 0..4000 {
+            let n_coins = rng.below(3) as usize;
+            let coins: HashMap<OutPoint, UtxoClass> = (0..n_coins)
+                .map(|i| {
+                    let mut txid = [0u8; 32];
+                    txid[0] = i as u8;
+                    (
+                        OutPoint { txid, n: 0 },
+                        ALL[rng.below(ALL.len() as u64) as usize],
+                    )
+                })
+                .collect();
+            let inputs: Vec<OutPoint> = coins.keys().copied().collect();
+            let n_out = rng.below(4) as usize;
+            let outs: Vec<(i64, Vec<u8>)> = (0..n_out)
+                .map(|k| {
+                    // the passing shape often enough to be reached
+                    if rng.below(2) == 0 && k < 2 {
+                        return if k == 0 {
+                            (cv, carrier.clone())
+                        } else {
+                            (5_000_000 + rng.below(1_000) as i64, staged.clone())
+                        };
+                    }
+                    (
+                        values[rng.below(values.len() as u64) as usize],
+                        kinds[rng.below(kinds.len() as u64) as usize].clone(),
+                    )
+                })
+                .collect();
+            let spends = rng.below(3) as u8;
+            let sap_outs = rng.below(3) as u8;
+            let raw = raw_sapling(&inputs, &outs, spends, sap_outs);
+            let class = |op: &OutPoint| coins.get(op).copied();
+            let ok = inputs.is_empty()
+                && spends >= 1
+                && outs.len() == 2
+                && outs[0] == (cv, carrier.clone())
+                && outs[1].1 == staged
+                && outs[1].0 != crate::params::TOKEN_VALUE;
+            let r = check(path, &raw, class);
+            assert_eq!(
+                r.is_ok(),
+                ok,
+                "{inputs:?} {outs:?} {spends}/{sap_outs}: {r:?}"
+            );
+            if ok {
+                let (tx, _) = Transaction::parse(&raw).unwrap();
+                assert!(spent_as_yec(path, &tx, class).is_empty());
+                // the same bytes for another carrier or another staged key: refused
+                for other in [
+                    CarrierOutputs {
+                        carrier_hash: [0x43; 20],
+                        ..want
+                    },
+                    CarrierOutputs {
+                        staged_key: [0x44; 20],
+                        ..want
+                    },
+                ] {
+                    assert!(check(Path::CarrierFromSapling(other), &raw, class).is_err());
+                }
+                // and no other path takes it
+                assert!(check(Path::Carrier, &raw, class).is_err());
+            }
+            passed += usize::from(ok);
+        }
+        assert!(passed > 20, "{passed}");
+        let ok = raw_sapling(
+            &[],
+            &[(cv, carrier.clone()), (7_000_000, staged.clone())],
+            1,
+            1,
+        );
+        let mut v = Validator::Absent;
+        assert_eq!(
+            confirm(&mut v, path, &ok, |_| None).await.unwrap_err(),
+            GateError::YellowbackAbsent
+        );
     }
 
     /// Beta2 item 5: without the remote layer both new paths are refused with the path-specific

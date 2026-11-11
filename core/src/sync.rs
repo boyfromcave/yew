@@ -654,6 +654,10 @@ pub async fn sync_with_progress(
         }
     }
 
+    // review YEW-REVIEW-8 L2: a staged mint funding is locked to its row while the row is in a
+    // carrier state; afterwards it is ordinary YEC again
+    report.locks_released += crate::build::mint::release_staged_locks(wallet)? as usize;
+
     // The balances once the locks are settled: what the wallet can spend, not every confirmed
     // output (an own token a pending transaction spends is locked, and not counted).
     (report.yec, report.yed) = wallet.spendable_balances()?;

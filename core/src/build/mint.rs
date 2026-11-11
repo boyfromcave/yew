@@ -1019,6 +1019,126 @@ pub(crate) fn stage_key(id: i64) -> String {
     format!("mint_stage:{id}")
 }
 
+/// The lock reason of a staged funding output (review YEW-REVIEW-8 L2): held for mint row `id`
+/// from the carrier funding until the MINT spends it (its `spent-by:` lock replaces this one) or
+/// the row leaves the carrier states (the sync releases it: the output is ordinary YEC again).
+pub(crate) const STAGED_FOR_MINT: &str = "staged-for-mint:";
+
+/// The meta key under which the staged funding key of the carrier whose key hash is
+/// `carrier_key` is recorded before the carrier funding is built (review YEW-REVIEW-8 M2). The
+/// mint row names the carrier key (`carrier_hash160`), so the record belongs to the row.
+pub(crate) fn staging_record_key(carrier_key: &[u8; 20]) -> String {
+    format!("mint_staging:{}", keys::hex(carrier_key))
+}
+
+/// Derive a fresh change key for a mint's staged funding and record it under the carrier's key
+/// before anything is built (review YEW-REVIEW-8 M2).
+fn record_stage_key(wallet: &Wallet, carrier_key: &[u8; 20]) -> Result<AddressRow, WalletError> {
+    let row = fresh_change(wallet)?;
+    wallet
+        .store
+        .set_meta(&staging_record_key(carrier_key), &keys::hex(&row.hash160))?;
+    Ok(row)
+}
+
+/// The outputs the gate's carrier-from-another-source paths compare (review YEW-REVIEW-8 M2,
+/// L1): the carrier is `P2SH(redeem)`, the script the core built; the staged key is read back
+/// from the wallet's record for this carrier key (never taken from a builder's argument) and
+/// must be a change-chain key of this wallet's seed (one a restore finds).
+pub(crate) fn recorded_carrier_outputs(
+    wallet: &Wallet,
+    carrier_key: &[u8; 20],
+    redeem: &[u8],
+) -> Result<gate::CarrierOutputs, WalletError> {
+    let bad = |m: &str| WalletError::Other(format!("the mint's staged funding key: {m}"));
+    let v = wallet
+        .store
+        .meta(&staging_record_key(carrier_key))?
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| bad("not recorded"))?;
+    let staged_key: [u8; 20] = unhex(&v)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .ok_or_else(|| bad("unreadable record"))?;
+    let row = wallet
+        .store
+        .addresses()?
+        .into_iter()
+        .find(|r| r.hash160 == staged_key)
+        .ok_or_else(|| bad("not a key of this wallet"))?;
+    if row.hd_chain() != Some(keys::Chain::Change) {
+        return Err(bad("not a change key of this wallet's seed"));
+    }
+    if wallet.key_for_hash(&staged_key)?.is_none() {
+        return Err(bad("not a key of this wallet"));
+    }
+    Ok(gate::CarrierOutputs {
+        carrier_hash: keys::hash160(redeem),
+        staged_key,
+    })
+}
+
+/// Record mint row `id`'s staged funding output (`txid:1`) and lock it to the row (review
+/// YEW-REVIEW-8 L2): no other coin selection takes it and it is not counted spendable.
+fn record_staged_output(
+    wallet: &Wallet,
+    id: i64,
+    txid: &[u8; 32],
+    expiry_height: u32,
+) -> Result<(), WalletError> {
+    wallet
+        .store
+        .set_meta(&stage_key(id), &format!("{}:1", txid_hex(txid)))?;
+    wallet.store.lock(
+        &OutPoint { txid: *txid, n: 1 },
+        &format!("{STAGED_FOR_MINT}{id}"),
+        expiry_height as u64,
+    )?;
+    Ok(())
+}
+
+/// The undo of [`record_staged_output`] and the row, for a carrier funding the server refused.
+fn undo_staged_output(
+    wallet: &Wallet,
+    id: Option<i64>,
+    txid: &[u8; 32],
+) -> Result<(), WalletError> {
+    wallet.store.unlock(&OutPoint { txid: *txid, n: 1 })?;
+    match id {
+        Some(id) => {
+            wallet.store.set_meta(&stage_key(id), "")?;
+            Ok(wallet.store.delete_mint(id)?)
+        }
+        None => Ok(()),
+    }
+}
+
+/// Release the staged-funding locks of rows that left the carrier states (review YEW-REVIEW-8
+/// L2): a lapsed, failed or deleted row's staged output is ordinary YEC again. A row whose MINT
+/// was sent has its output under the MINT's `spent-by:` lock instead. Returns how many.
+pub(crate) fn release_staged_locks(wallet: &Wallet) -> Result<u32, WalletError> {
+    let mut n = 0;
+    for l in wallet.store.locks()? {
+        let Some(id) = l.reason.strip_prefix(STAGED_FOR_MINT) else {
+            continue;
+        };
+        let live = id
+            .parse::<i64>()
+            .ok()
+            .and_then(|id| wallet.store.mint(id).ok().flatten());
+        if !live.is_some_and(|m| {
+            matches!(
+                m.state,
+                MintState::CarrierSent | MintState::CarrierConfirmed
+            )
+        }) {
+            wallet.store.unlock(&l.outpoint)?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
 /// [`carrier_step`] from a post-quantum source: [`plan_pq_funding`], each input signed with
 /// the source's key through the existing `Transaction::sign_pqpkh_input` and checked against
 /// its digest, the signed size re-priced, the fee bounded by this build's limit and by the
@@ -1046,8 +1166,11 @@ where
     let key = super::release::own_pq_key(wallet, &id)?.ok_or_else(|| {
         other("From address does not belong to this node, post-quantum key not found.".into())
     })?;
-    let stage_row = fresh_change(wallet)?;
-    let stage_spk = script::p2pkh_script(&stage_row.hash160);
+    // review YEW-REVIEW-8 M2: the staged key is recorded before anything is built, and the gate
+    // compares the outputs with what the record and the carrier script say
+    let stage_row = record_stage_key(wallet, &carrier_row.hash160)?;
+    let want = recorded_carrier_outputs(wallet, &carrier_row.hash160, redeem)?;
+    let stage_spk = script::p2pkh_script(&want.staged_key);
     let carrier_spk = script::p2sh_of(redeem);
     let f = plan_pq_funding(wallet, &id, &carrier_spk, staged, &stage_spk, tip)?;
     let p = f.plan;
@@ -1119,7 +1242,7 @@ where
             .flatten()
             .map(|o| o.script_pubkey)
     };
-    let path = gate::Path::CarrierFromPq(id);
+    let path = gate::Path::CarrierFromPq(id, want);
     let (_, validation) = gate::confirm_with_scripts(
         validator,
         path,
@@ -1171,19 +1294,11 @@ where
                 .store
                 .insert_own_output(&OutPoint { txid, n: 1 }, staged, &stage_row.hash160)?;
             let id = persist_row(&step)?;
-            wallet
-                .store
-                .set_meta(&stage_key(id), &format!("{}:1", txid_hex(&txid)))?;
+            record_staged_output(wallet, id, &txid, expiry_height)?;
             row_id.set(Some(id));
             Ok(())
         },
-        || match row_id.get() {
-            Some(id) => {
-                wallet.store.set_meta(&stage_key(id), "")?;
-                Ok(wallet.store.delete_mint(id)?)
-            }
-            None => Ok(()),
-        },
+        || undo_staged_output(wallet, row_id.get(), &txid),
         send(client, &raw, &txid),
     )
     .await?;
@@ -1766,8 +1881,9 @@ pub async fn finish(
     // is the Yellowback size fee (rpcversion 8), raised as the selection grows (`PQFeeFollower`).
     let spendable = wallet.spendable_utxos()?;
     // beta2 D-3: a carrier funded from another source staged the MINT's YEC in its vout[1]; the
-    // MINT spends that output first (a plain YEC input), and more YEC only if the fee rose
-    let staged = staged_input(wallet, m.id, &spendable)?;
+    // MINT spends that output first (a plain YEC input), and more YEC only if the fee rose. It is
+    // locked to this row (review YEW-REVIEW-8 L2), so it is looked up among all the outputs.
+    let staged = staged_input(wallet, m.id, &wallet.store.utxos()?)?;
     let rest: Vec<Utxo> = spendable
         .iter()
         .filter(|u| Some(u.outpoint) != staged.as_ref().map(|s| s.outpoint))
@@ -1911,9 +2027,12 @@ pub async fn finish(
     })
 }
 
-/// The staged funding output a mint row's carrier paid (beta2 D-3), when there is one: it must be
-/// spendable plain `YEC` now (the carrier confirmed, so it did too), else the finish waits.
-fn staged_input(wallet: &Wallet, id: i64, spendable: &[Utxo]) -> Result<Option<Utxo>, WalletError> {
+/// The staged funding output a mint row's carrier paid (beta2 D-3), when there is one, among
+/// `outputs` (every output the store holds: the staged one is locked to the row). It must be
+/// plain `YEC` now; the finish runs only once the carrier confirmed, and the staged output is in
+/// the same transaction, so a staged output missing from the store was spent by something else
+/// (review YEW-REVIEW-8 L2): that is said plainly, with the way out.
+fn staged_input(wallet: &Wallet, id: i64, outputs: &[Utxo]) -> Result<Option<Utxo>, WalletError> {
     let Some(v) = wallet.store.meta(&stage_key(id))?.filter(|v| !v.is_empty()) else {
         return Ok(None);
     };
@@ -1925,10 +2044,14 @@ fn staged_input(wallet: &Wallet, id: i64, spendable: &[Utxo]) -> Result<Option<U
         n: n.parse()
             .map_err(|_| WalletError::Other(format!("staged funding {v}")))?,
     };
-    match spendable.iter().find(|u| u.outpoint == op) {
+    match outputs.iter().find(|u| u.outpoint == op) {
         Some(u) if u.class == UtxoClass::Yec => Ok(Some(u.clone())),
-        _ => Err(WalletError::Other(format!(
+        Some(_) => Err(WalletError::Other(format!(
             "the mint's staged funding {}:{} is not spendable YEC yet; sync and try again",
+            t, op.n
+        ))),
+        None => Err(WalletError::Other(format!(
+            "the mint's staged funding {}:{} was spent by another transaction, so this MINT cannot be sent. Nothing was sent. The carrier stays locked until the mint's window closes; then sweep it from the mint's row to get it back.",
             t, op.n
         ))),
     }
@@ -2132,16 +2255,42 @@ mod tests {
                 .flatten()
                 .map(|o| o.script_pubkey)
         };
-        let r = gate::check_with_scripts(gate::Path::CarrierFromPq(id), &raw, class, scripts);
+        let want = gate::CarrierOutputs {
+            carrier_hash: [7; 20],
+            staged_key: [8; 20],
+        };
+        let r = gate::check_with_scripts(gate::Path::CarrierFromPq(id, want), &raw, class, scripts);
         assert!(r.is_ok(), "{r:?}");
+        // review YEW-REVIEW-8 M2, L1: another staged key or another carrier is refused
+        for other in [
+            gate::CarrierOutputs {
+                staged_key: [9; 20],
+                ..want
+            },
+            gate::CarrierOutputs {
+                carrier_hash: [9; 20],
+                ..want
+            },
+        ] {
+            assert!(gate::check_with_scripts(
+                gate::Path::CarrierFromPq(id, other),
+                &raw,
+                class,
+                scripts
+            )
+            .is_err());
+        }
         let not_src = crate::pq::PqKeyId {
             scheme: id.scheme,
             hash: [0x31; 32],
         };
-        assert!(
-            gate::check_with_scripts(gate::Path::CarrierFromPq(not_src), &raw, class, scripts)
-                .is_err()
-        );
+        assert!(gate::check_with_scripts(
+            gate::Path::CarrierFromPq(not_src, want),
+            &raw,
+            class,
+            scripts
+        )
+        .is_err());
         assert!(gate::check(gate::Path::Carrier, &raw, class).is_err());
         // too little at the source
         let e = plan_pq_funding(&w, &id, &carrier, 400_000_000, &stage, 100)
@@ -2196,13 +2345,162 @@ mod tests {
             staged_input(&w, 7, std::slice::from_ref(&u)).unwrap(),
             Some(u.clone())
         );
+        // review YEW-REVIEW-8 L2: gone from the store after the carrier confirmed = spent
+        // elsewhere, said plainly with the way out
         let e = staged_input(&w, 7, &[]).unwrap_err();
-        assert!(e.to_string().contains("not spendable YEC yet"), "{e}");
+        assert!(
+            e.to_string().contains("was spent by another transaction"),
+            "{e}"
+        );
+        assert!(e.to_string().contains("sweep"), "{e}");
         let held = Utxo {
             class: UtxoClass::Held,
             ..u
         };
-        assert!(staged_input(&w, 7, &[held]).is_err());
+        let e = staged_input(&w, 7, &[held]).unwrap_err();
+        assert!(e.to_string().contains("not spendable YEC yet"), "{e}");
+    }
+
+    /// Review YEW-REVIEW-8 M2, L2 and the restore rule: the staged key is recorded under the
+    /// carrier key before anything is built and read back from that record only (a missing
+    /// record, an external key or a key not of this wallet is refused); the staged output is
+    /// locked to its row (not spendable, not in the balance) while the row is in a carrier state
+    /// and released by the sync's rule once the row lapses or is gone, so a mint killed between
+    /// its two transactions leaves the staged YEC as ordinary balance; and a wallet restored from
+    /// the same seed has the staged key in its derivation and scan set, and classifies the staged
+    /// output as plain YEC.
+    #[test]
+    fn staged_key_record_lock_and_restore() {
+        use crate::params::Network;
+        use crate::store::Store;
+        let seed = keys::seed_from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "",
+        )
+        .unwrap();
+        let open = || {
+            Wallet::from_parts(
+                Store::open_in_memory().unwrap(),
+                Network::Regtest,
+                &seed,
+                None,
+            )
+            .unwrap()
+        };
+        let w = open();
+        w.ensure_gap().unwrap();
+        // as carrier_step does: the carrier key, then the staged key recorded under it
+        let carrier = fresh_change(&w).unwrap();
+        let redeem = vec![0x51u8; 40];
+        let e = recorded_carrier_outputs(&w, &carrier.hash160, &redeem).unwrap_err();
+        assert!(e.to_string().contains("not recorded"), "{e}");
+        let stage = record_stage_key(&w, &carrier.hash160).unwrap();
+        let want = recorded_carrier_outputs(&w, &carrier.hash160, &redeem).unwrap();
+        assert_eq!(want.staged_key, stage.hash160);
+        assert_eq!(want.carrier_hash, keys::hash160(&redeem));
+        // a record naming an external key, or a key this wallet does not have, is refused
+        let ext = w.receive_address(false).unwrap();
+        w.store
+            .set_meta(
+                &staging_record_key(&carrier.hash160),
+                &keys::hex(&ext.hash160),
+            )
+            .unwrap();
+        assert!(recorded_carrier_outputs(&w, &carrier.hash160, &redeem).is_err());
+        w.store
+            .set_meta(
+                &staging_record_key(&carrier.hash160),
+                &keys::hex(&[0x77; 20]),
+            )
+            .unwrap();
+        assert!(recorded_carrier_outputs(&w, &carrier.hash160, &redeem).is_err());
+        w.store
+            .set_meta(
+                &staging_record_key(&carrier.hash160),
+                &keys::hex(&stage.hash160),
+            )
+            .unwrap();
+
+        // the carrier funding was sent and its row recorded; then the app was killed
+        let txid = [0x3c; 32];
+        let staged_value = 7_000_000;
+        let row = MintRow {
+            id: 0,
+            kind: MintKind::Mint,
+            state: MintState::CarrierSent,
+            created_height: 10,
+            cents: 10_000,
+            lock_blocks: 48,
+            term_class: "A".into(),
+            ref_height: 10,
+            lock_height: 58,
+            claim_height: 70,
+            collateral_zat: 1_000,
+            fee_zat: 0,
+            payee: String::new(),
+            attest_fee_zat: 0,
+            attest_payee: String::new(),
+            residual_zat: 0,
+            bundle: Vec::new(),
+            bundle_seqs: String::new(),
+            carrier_hash160: carrier.hash160,
+            owner_hash160: [0; 20],
+            carrier_txid: txid,
+            carrier_vout: 0,
+            main_txid: [0; 32],
+            sweep_txid: [0; 32],
+            expiry_height: 40,
+            vault_txid: [0; 32],
+            owner: None,
+            note: String::new(),
+        };
+        let id = w.store.insert_mint(&row).unwrap();
+        record_staged_output(&w, id, &txid, 40).unwrap();
+        let op = OutPoint { txid, n: 1 };
+        let stage_spk = script::p2pkh_script(&stage.hash160);
+        let own = |h: &[u8; 20]| w.store.addresses().unwrap().iter().any(|r| r.hash160 == *h);
+        let (class, _) = coins::classify(&op, &stage_spk, staged_value, own, &Default::default());
+        assert_eq!(class, UtxoClass::Yec);
+        let utxo = Utxo {
+            outpoint: op,
+            address: String::new(),
+            script: stage_spk.clone(),
+            value: staged_value,
+            height: 12,
+            class,
+            cents: 0,
+        };
+        let mut w = w;
+        w.store.replace_utxos(std::slice::from_ref(&utxo)).unwrap();
+        // locked to the row: not spendable, not in the balance; the finish still finds it
+        assert!(w.spendable_utxos().unwrap().is_empty());
+        assert_eq!(release_staged_locks(&w).unwrap(), 0);
+        assert_eq!(
+            staged_input(&w, id, &w.store.utxos().unwrap()).unwrap(),
+            Some(utxo.clone())
+        );
+        // the row lapses (the window closed): the sync's rule releases the lock
+        w.store
+            .set_mint_state(id, MintState::Lapsed, None, None, "test")
+            .unwrap();
+        assert_eq!(release_staged_locks(&w).unwrap(), 1);
+        assert_eq!(w.spendable_utxos().unwrap(), vec![utxo.clone()]);
+        let (yec, _) = coins::yec_balances(&w.spendable_utxos().unwrap());
+        assert_eq!(yec, staged_value);
+
+        // restored from the seed: the staged key is in the derivation and scan set
+        let r = open();
+        r.ensure_gap().unwrap();
+        let rows = r.store.addresses().unwrap();
+        let found = rows
+            .iter()
+            .find(|a| a.hash160 == stage.hash160)
+            .expect("the staged key is in a restored wallet's scan set");
+        assert_eq!(found.hd_chain(), Some(keys::Chain::Change));
+        assert!(found.index < crate::params::GAP_LIMIT);
+        let own_r = |h: &[u8; 20]| rows.iter().any(|a| a.hash160 == *h);
+        let (class, _) = coins::classify(&op, &stage_spk, staged_value, own_r, &Default::default());
+        assert_eq!(class, UtxoClass::Yec);
     }
 
     /// The second answer at `mint_start` may not differ from the confirmed estimate (audit G-2).
