@@ -79,6 +79,7 @@ pub fn served(method: &str) -> bool {
         || crate::admin::SERVED.contains(&method)
         || crate::zsend::SERVED.contains(&method)
         || crate::legacy::SERVED.contains(&method)
+        || crate::bytype::SERVED.contains(&method)
 }
 
 /// Every served wallet method, S1's reads and S2's builders.
@@ -94,6 +95,7 @@ pub fn all_served() -> Vec<&'static str> {
         .chain(crate::admin::SERVED)
         .chain(crate::zsend::SERVED)
         .chain(crate::legacy::SERVED)
+        .chain(crate::bytype::SERVED)
         .copied()
         .collect()
 }
@@ -422,6 +424,7 @@ impl Wallet {
             m if crate::admin::SERVED.contains(&m) => self.admin_call(node, m, p).await,
             m if crate::zsend::SERVED.contains(&m) => self.zsend_call(node, m, p).await,
             m if crate::legacy::SERVED.contains(&m) => self.legacy_call(node, m, p).await,
+            m if crate::bytype::SERVED.contains(&m) => self.bytype_call(node, m, p).await,
             _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
         }
     }

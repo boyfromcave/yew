@@ -41,7 +41,11 @@ async fn every_wallet_method_answers_32601() {
             assert_eq!(msg, e, "{m}");
         }
     }
-    assert_eq!(n, 22 + 25 + 1 + 30 + 4 + 5);
+    assert_eq!(
+        n,
+        22 + 25 + 1 + 30 + 4 + 5 + 2,
+        "+ 2: K-25 amended for beta2"
+    );
     for m in methods::OUT_OF_SCOPE {
         let (status, v, _) = call(&c, m, "[]").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{m}");

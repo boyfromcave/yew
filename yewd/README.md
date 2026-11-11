@@ -13,7 +13,8 @@ kogany plan (`docs/plans/kogany/kogany-yellowback-plan.md` §3b, §4.3, §5; dec
 **State: S4, the façade complete** (S3: the roles; S2: the builders and the signer boundary; S1:
 the wallet; S0: the shell). Every wallet RPC of the façade's table is served — `yewd-wallet/src/rpc.rs`
 `all_served()`: **47 of the 47** (all 22 R5 `set_*`/`vault_*`, all 25 R6 `yed_*`), R7's
-`z_importpqkey`, and **34 of the 34** of the K-25 stock set — and the three raw helpers
+`z_importpqkey`, and **34 of the 34** of the K-25 stock set (with the two reads K-25 gained when it was
+amended for beta2, 2026-11-11: `z_gettotalbalance`, `listaddresses`) — and the three raw helpers
 (`createrawtransaction`, `decoderawtransaction`, `decodescript`) are answered by the façade itself.
 Arity is ycashd's (`-32602` "Not enough|Too many parameters for method …" with the help text,
 `facade/src/ycashd_rpc.json`, generated from a plain ycash6 wallet node by `qa/gen_ycashd_rpc_table.py`),
@@ -89,7 +90,8 @@ the node's decimal text).
 | Wallet, R6 YED | the 25 `yed_*` wallet RPCs (ycash6 `src/rpc/yellowbackwallet.cpp`) | served (`wallet/src/{rpc,yed,mint,claim,attest,armed,zfund}.rs`) |
 | Wallet, R7 | `z_importpqkey` | served (`wallet/src/admin.rs`; the key in the signer) |
 | Wallet, K-25 stock | the 30 the Yellowback scripts call, and the 4 only the roles call | served: the reads (S1), the sends and `signrawtransaction` (S2), `signmessage`/`importprivkey`/`dumpprivkey` (S3); S4's `addmultisigaddress`, `backupwallet`, `encryptwallet`, `walletpassphrase`, `walletlock`, `settxfee`, `importwallet`, `z_exportwallet`, `z_importwallet`, `z_getnewdiversifiedaddress`, `z_listreceivedbyaddress` (`wallet/src/admin.rs`), `z_sendmany`, `z_getoperationstatus`, `z_getoperationresult`, `z_listoperationids` (`wallet/src/zsend.rs`); the forwarded node RPC `sendrawtransaction` keeps ycashd's H7 wallet guard first (`allowyedburn`) |
-| Out of scope | the rest of ycashd's wallet table (39: `listtransactions`, `z_shieldcoinbase`, …) | `-32601` "yewd: not served" |
+| Wallet, K-25 amended for beta2 (2026-11-11) | `z_gettotalbalance`, `listaddresses`: the balance and the addresses by type (ECC, post-quantum by scheme, Sapling), read-only | served (`wallet/src/bytype.rs`); ycash-dd v4.5.0 has no `listaddresses`, ycash6's is the reference |
+| Out of scope | the rest of ycashd's wallet table (33: `z_shieldcoinbase`, …) | `-32601` "yewd: not served" |
 | Local | `createrawtransaction`, `decoderawtransaction`, `decodescript` | answered by the façade (`wallet/src/raw.rs`: ycashd's `TxToJSON`, `ScriptToAsmStr`, `Solver`); a refusal takes the backend's words when it has the helper (the C++ deserializer's texts), ours when it lacks it (kogany) |
 | Augmented | `getinfo`, `validateaddress`, `z_validateaddress`, `set_getinfo`, `vault_list`, `yed_gettxinfo`, `yed_getinfo` | forwarded, then the wallet adds its fields (`balance`, `paytxfee`, `unlocked_until`…, `ismine`…, a known redeem script's `script`/`hex`/`addresses`/`sigsrequired`, `memberlist[].wallet`, the `wallet` column and the `mine` filter of `vault_list`, `yed_getinfo`'s `lockedOutputs`/`protectedByIndex`). `z_validateaddress` is answered by yewd itself: a ycash6 `-disablewallet` backend before `eac62c942` stops on it |
 | Own | `help` (the backend's listing with ycashd's lines for the façade's methods merged in), `stop` | served |

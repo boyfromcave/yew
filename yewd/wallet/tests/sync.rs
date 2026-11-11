@@ -71,6 +71,8 @@ struct Chain {
     mempool: Vec<(String, Vec<u8>)>,
     /// What `yed_listtokens` answers (the index's tokens, whatever addresses are asked about).
     tokens: Vec<Value>,
+    /// The vault upgrade's activation height `getblockchaininfo` reports (none: not scheduled).
+    vault_height: Option<u64>,
 }
 
 #[derive(Clone, Default)]
@@ -180,7 +182,10 @@ impl Node for MockNode {
                         json!({"trees": {"sapling": {"size": 0}}})
                     }
                 }
-                "getblockchaininfo" => json!({"upgrades": {}}),
+                "getblockchaininfo" => match c.vault_height {
+                    Some(h) => json!({"upgrades": {"6d5b7a31": {"activationheight": h}}}),
+                    None => json!({"upgrades": {}}),
+                },
                 "yed_listtokens" => json!(c.tokens),
                 "getrawmempool" => json!(c
                     .mempool
@@ -839,4 +844,186 @@ async fn z_importpqkey_reads_a_pre_d9_dump_line() {
     .unwrap();
     assert!(w.st.book.contains_key(&yec), "imported under the D-9 form");
     assert!(w.book.pq_by_id(&id).is_some());
+    // listaddresses (K-25 amended for beta2): an imported PQ key is under source "imported"
+    let la = call_json(&mut w, &node, "listaddresses", &[]).await;
+    let imported = la
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["source"] == "imported")
+        .unwrap_or_else(|| panic!("{la}"));
+    assert_eq!(
+        imported["pq"],
+        json!([{"address": yec, "pqscheme": 2, "pqschemename": "FN-DSA-512"}])
+    );
+}
+
+/// K-25 amended for beta2 (2026-11-11): `z_gettotalbalance` with ycash6 e9a6cf33f's fields
+/// (amounts as `FormatMoney` strings; `transparent` = AvailableCoins at depth >= minconf, the
+/// outputs YED holds left out as ycashd's lock leaves them out; `transparent_ecc` = transparent
+/// minus `transparent_pq`; both schemes always, SLH-DSA first) and `listaddresses` by source
+/// with the post-quantum addresses, their scheme and `yed_holder`.
+#[tokio::test]
+async fn z_gettotalbalance_and_listaddresses_over_the_mock_chain() {
+    let node = MockNode::default();
+    genesis(&node);
+    node.0.lock().unwrap().vault_height = Some(1);
+    let d = dir("totalbal");
+    let mut w = Wallet::open(&d, Network::Regtest, signer(), 0).unwrap();
+    w.sync(&node).await.unwrap();
+    let ecc_addr = w
+        .call(&node, "getnewaddress", &[])
+        .await
+        .unwrap()
+        .text()
+        .trim_matches('"')
+        .to_string();
+    let slh_addr = w
+        .call(&node, "getnewaddress", &[json!("pqslh")])
+        .await
+        .unwrap()
+        .text()
+        .trim_matches('"')
+        .to_string();
+    let zaddr = w
+        .call(&node, "z_getnewaddress", &[])
+        .await
+        .unwrap()
+        .text()
+        .trim_matches('"')
+        .to_string();
+    let ecc = yewd_wallet::rpc::parse_taddr_script(Network::Regtest, &ecc_addr).unwrap();
+    let slh = yewd_wallet::rpc::parse_taddr_script(Network::Regtest, &slh_addr).unwrap();
+    assert_eq!(yew_core::pq::pqpkh_of(&slh).unwrap().scheme, 1);
+    let fn_id = w.book.pq_key(2, 0).unwrap().id;
+    let fn_ = yew_core::pq::pqpkh_script(&fn_id).unwrap();
+    let change = yew_core::script::p2pkh_script(&w.book.key(1, 0).unwrap().hash);
+    let foreign = |n: u32| OutPoint { txid: [9; 32], n };
+    let pay_ecc = payment(foreign(0), ecc.clone(), 50_000_000);
+    let pay_ecc_id = Transaction::parse(&pay_ecc).unwrap().1;
+    let token = payment(foreign(3), fn_.clone(), 10_000);
+    let token_id = rev_hex(&Transaction::parse(&token).unwrap().1);
+    node.mine(
+        vec![
+            coinbase(1, ecc.clone(), 1_000_000_000), // immature
+            pay_ecc,
+            payment(foreign(1), fn_.clone(), 300_000_000),
+            payment(foreign(2), slh.clone(), 100_000_000),
+            token,
+        ],
+        0,
+    );
+    // an own send: the ECC coin to a foreign script, change to the internal chain
+    let mut own = Transaction::new_v4();
+    let mut i = TxIn::new(OutPoint {
+        txid: pay_ecc_id,
+        n: 0,
+    });
+    i.script_sig = vec![0x51];
+    own.vin.push(i);
+    own.vout.push(TxOut {
+        value: 30_000_000,
+        script_pubkey: vec![0x51],
+    });
+    own.vout.push(TxOut {
+        value: 19_990_000,
+        script_pubkey: change.clone(),
+    });
+    node.mine(
+        vec![coinbase(2, vec![0x51], 0), own.serialize().unwrap()],
+        0,
+    );
+    node.to_mempool(payment(foreign(4), fn_.clone(), 20_000_000));
+    node.0.lock().unwrap().tokens = vec![json!({"txid": token_id, "vout": 0})];
+    w.sync(&node).await.unwrap();
+
+    let tb = call_json(&mut w, &node, "z_gettotalbalance", &[]).await;
+    // strings, FormatMoney (at least two decimals)
+    assert_eq!(tb["transparent"], json!("4.1999"));
+    assert_eq!(tb["private"], json!("0.00"));
+    assert_eq!(tb["total"], json!("4.1999"));
+    assert_eq!(tb["transparent_ecc"], json!("0.1999"));
+    assert_eq!(tb["transparent_pq"], json!("4.00"));
+    // ycashd's field order (serde_json sorts keys: read the order from the text)
+    let text = w
+        .call(&node, "z_gettotalbalance", &[])
+        .await
+        .unwrap()
+        .text();
+    let at = |k: &str| text.find(&format!("\"{k}\"")).unwrap();
+    let order = [
+        "transparent",
+        "private",
+        "total",
+        "transparent_ecc",
+        "transparent_pq",
+        "pq_by_scheme",
+    ];
+    assert!(order.windows(2).all(|p| at(p[0]) < at(p[1])), "{text}");
+    assert_eq!(
+        tb["pq_by_scheme"],
+        json!([
+            {"pqscheme": 1, "pqschemename": "SLH-DSA-SHA2-128s", "transparent_pq": "1.00"},
+            {"pqscheme": 2, "pqschemename": "FN-DSA-512", "transparent_pq": "3.00"}
+        ])
+    );
+    // minconf 0 counts the mempool payment; the parts add up in zatoshi
+    let tb0 = call_json(&mut w, &node, "z_gettotalbalance", &[json!(0), json!(true)]).await;
+    assert_eq!(zat(&tb0["transparent"]), 439_990_000);
+    assert_eq!(zat(&tb0["transparent_pq"]), 420_000_000);
+    assert_eq!(
+        zat(&tb0["transparent_ecc"]) + zat(&tb0["transparent_pq"]),
+        zat(&tb0["transparent"])
+    );
+    // minconf 3 leaves out both blocks' outputs
+    let tb3 = call_json(&mut w, &node, "z_gettotalbalance", &[json!(3)]).await;
+    assert_eq!(tb3["transparent"], json!("0.00"));
+    let e = w
+        .call(&node, "z_gettotalbalance", &[json!(-1)])
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (e.code, e.message.as_str()),
+        (-8, "Minimum number of confirmations cannot be less than 0")
+    );
+    assert!(w
+        .call(
+            &node,
+            "z_gettotalbalance",
+            &[json!(1), json!(false), json!(0)]
+        )
+        .await
+        .is_err());
+
+    let la = call_json(&mut w, &node, "listaddresses", &[]).await;
+    let fn_addr = yew_core::keys::encode_pq_yec(Network::Regtest, &fn_id).unwrap();
+    let change_addr =
+        yew_core::keys::encode_p2pkh(Network::Regtest, &w.book.key(1, 0).unwrap().hash);
+    // the book's P2PKH addresses (the one opened with the wallet and getnewaddress's), in
+    // ycashd's std::set<CTxDestination> order: by key hash
+    let mut book_t: Vec<(Vec<u8>, String)> =
+        w.st.book
+            .keys()
+            .filter_map(|a| {
+                let s = yewd_wallet::rpc::parse_taddr_script(Network::Regtest, a)?;
+                Some((yew_core::script::p2pkh_hash(&s)?.to_vec(), a.clone()))
+            })
+            .collect();
+    book_t.sort();
+    let book_t: Vec<String> = book_t.into_iter().map(|(_, a)| a).collect();
+    assert!(book_t.contains(&ecc_addr));
+    assert_eq!(
+        la,
+        json!([{
+            "source": "mnemonic_seed",
+            "transparent": {"addresses": book_t, "changeAddresses": [change_addr]},
+            "sapling": [{"zip32KeyPath": "m/32'/347'/0'", "addresses": [zaddr]}],
+            "pq": [
+                {"address": slh_addr, "pqscheme": 1, "pqschemename": "SLH-DSA-SHA2-128s"},
+                {"address": fn_addr, "pqscheme": 2, "pqschemename": "FN-DSA-512", "yed_holder": true}
+            ]
+        }]),
+        "{la}"
+    );
+    assert!(w.call(&node, "listaddresses", &[json!(1)]).await.is_err());
 }

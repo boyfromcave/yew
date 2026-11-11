@@ -185,6 +185,11 @@ pub const GATE_WALLET: &[(&str, Stage)] = &[
     ("z_mergetoaddress", S5),
 ];
 
+/// K-25, amended for beta2, 2026-11-11 (the Yellowback lead architect's mandate "easy and
+/// accurate balances for all address types"; beta2 item 37 decision 1): two more read-only stock
+/// wallet RPCs, the balance by address type and the address listing, as ycash6 answers them.
+pub const BETA2_WALLET: &[(&str, Stage)] = &[("listaddresses", S5), ("z_gettotalbalance", S5)];
+
 /// The rest of ycashd's wallet table (`src/wallet/rpcwallet.cpp`, `rpcdump.cpp`, the
 /// disclosure pair): outside K-25, answered `-32601` and never forwarded.
 pub const OUT_OF_SCOPE: &[&str] = &[
@@ -195,14 +200,12 @@ pub const OUT_OF_SCOPE: &[&str] = &[
     "importaddress",
     "importpubkey",
     "keypoolrefill",
-    "listaddresses",
     "listaddressgroupings",
     "listsinceblock",
     "walletpassphrasechange",
     "walletconfirmbackup",
     "zcbenchmark",
     "zcsamplejoinsplit",
-    "z_gettotalbalance",
     "z_getbalanceforviewingkey",
     "z_getbalanceforaccount",
     "z_setmigration",
@@ -247,7 +250,8 @@ pub const AUGMENTED: &[&str] = &[
 pub const OWN: &[&str] = &["help", "stop"];
 
 /// Every wallet RPC the façade serves, with its group and stage, in table order:
-/// R5 (22), R6 (25), R7 (1), the K-25 stock set (30 + 4).
+/// R5 (22), R6 (25), R7 (1), the K-25 stock set (30 + 4), S5's gate reads (5) and the beta2
+/// amendment (2).
 pub fn wallet_methods() -> impl Iterator<Item = (&'static str, Group, Stage)> {
     let g = |t: &'static [(&'static str, Stage)], g: Group| t.iter().map(move |&(m, s)| (m, g, s));
     g(VAULT_WALLET, Vault)
@@ -256,6 +260,7 @@ pub fn wallet_methods() -> impl Iterator<Item = (&'static str, Group, Stage)> {
         .chain(g(STOCK_WALLET, Stock))
         .chain(g(ROLE_WALLET, Role))
         .chain(g(GATE_WALLET, Stock))
+        .chain(g(BETA2_WALLET, Stock))
 }
 
 /// The class of `method`; `None` = a node RPC, forwarded unchanged.
@@ -312,7 +317,8 @@ mod tests {
         assert_eq!(STOCK_WALLET.len(), 30, "K-25 scripts");
         assert_eq!(ROLE_WALLET.len(), 4, "K-25 roles");
         assert_eq!(GATE_WALLET.len(), 5, "S5's findings F-S5-1, F-S5-10");
-        assert_eq!(OUT_OF_SCOPE.len(), 35, "the rest of ycashd's wallet table");
+        assert_eq!(BETA2_WALLET.len(), 2, "K-25 amended for beta2, 2026-11-11");
+        assert_eq!(OUT_OF_SCOPE.len(), 33, "the rest of ycashd's wallet table");
     }
 
     #[test]

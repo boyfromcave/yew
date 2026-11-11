@@ -26,6 +26,7 @@ pub mod admin;
 pub mod armed;
 pub mod attest;
 pub mod build;
+pub mod bytype;
 pub mod claim;
 pub mod json;
 pub mod keys;
