@@ -69,8 +69,13 @@ class _SendScreenState extends State<SendScreen> {
   YecPreview? _yec;
   YedPreview? _yed;
 
-  /// The post-quantum source (beta2 D-8), null = automatic (private first, then public ECC).
+  /// The source (beta2 D-8): null = automatic (private first, then public ECC), [privateSource]
+  /// = the private balance (to a post-quantum recipient, beta2 D-2), else one of the wallet's
+  /// post-quantum addresses.
   String? _from;
+
+  /// The From value of the private balance (never an address).
+  static const privateSource = 'private';
   PqSendPreviewInfo? _pq;
   SendResult? _result;
 
@@ -132,6 +137,22 @@ class _SendScreenState extends State<SendScreen> {
         final p = await app.api.sendYedPreview(recipients: [Recipient(address: to, cents: cents)]);
         setState(() => _yed = p);
       } else {
+        if (_from == privateSource) {
+          // from the private balance to a post-quantum address (beta2 D-2): proven at the
+          // preview, the proving-files sheet first if needed; the core's refusals verbatim
+          final zat = parseYecZat(_amount.text);
+          if (zat == null || zat <= 0) throw const YewError(kind: ErrorKind.input, message: 'Enter an amount in YEC, up to eight decimals');
+          PqSendPreviewInfo p;
+          try {
+            p = await app.api.privatePqSendPreview(to: to, zat: zat);
+          } catch (e) {
+            if (kindOf(e) != ErrorKind.paramsMissing) rethrow;
+            if (!mounted || !await preparePrivateSending(context)) return;
+            p = await app.api.privatePqSendPreview(to: to, zat: zat);
+          }
+          setState(() => _pq = p);
+          return;
+        }
         if (_from != null) {
           // from a post-quantum address: the core's refusals (the policy, the fee cap,
           // insufficient funds) are shown verbatim. A private (ys1…) recipient is proven at the
@@ -223,10 +244,10 @@ class _SendScreenState extends State<SendScreen> {
     final sources = app.pqSources;
     // review YEW-REVIEW-3 L5: the chosen source can drop out of the list (spent, a refresh);
     // the dropdown then falls back to Automatic instead of asserting on a missing value
-    final listed = _from != null && sources.any((s) => s.address == _from);
+    final listed = _from != null && (_from == privateSource || sources.any((s) => s.address == _from));
     if (_from != null && !listed && _pq == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _from != null && !AppScope.of(context).pqSources.any((s) => s.address == _from)) {
+        if (mounted && _from != null && _from != privateSource && !AppScope.of(context).pqSources.any((s) => s.address == _from)) {
           setState(() => _from = null);
         }
       });
@@ -262,7 +283,7 @@ class _SendScreenState extends State<SendScreen> {
               key: const Key('available'),
               style: t.bodyMedium?.copyWith(color: c.pending),
             ),
-            if (_asset == Asset.yec && sources.isNotEmpty) ...[
+            if (_asset == Asset.yec && (sources.isNotEmpty || b.yecShieldedSpendableZat > 0)) ...[
               const SizedBox(height: 12),
               // keyed by the listed addresses: a changed list rebuilds the field with a listed value
               KeyedSubtree(
@@ -274,6 +295,14 @@ class _SendScreenState extends State<SendScreen> {
                   decoration: const InputDecoration(labelText: 'From'),
                   items: [
                     const DropdownMenuItem<String?>(value: null, child: Text('Automatic: private first, then public')),
+                    if (b.yecShieldedSpendableZat > 0)
+                      DropdownMenuItem<String?>(
+                        value: privateSource,
+                        child: Text(
+                          'Private · ${formatYec(b.yecShieldedSpendableZat)} YEC (to a post-quantum address)',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
                     for (final s in sources)
                       DropdownMenuItem<String?>(
                         value: s.address,
@@ -305,7 +334,9 @@ class _SendScreenState extends State<SendScreen> {
                 labelText: 'To',
                 hintText: _asset == Asset.yed
                     ? 'yb… address'
-                    : 'ys1…, s…, sqf… or sqs… address',
+                    : _from == privateSource
+                        ? 'sqf… or sqs… address'
+                        : 'ys1…, s…, sqf… or sqs… address',
                 suffixIcon: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [

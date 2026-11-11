@@ -161,4 +161,41 @@ void main() {
     await tester.pumpAndSettle();
     expect(h.api.calls.where((c) => c.startsWith('mintStart')), isEmpty);
   });
+
+  testWidgets('beta2 D-3: the mint is funded from a chosen post-quantum address; the carrier fee is shown and passed back', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.pqSourcesAnswer = const [
+      PqSource(address: fakePqSlh, scheme: 1, schemeName: 'SLH-DSA-SHA2-128s', balanceZat: 300000000),
+    ];
+    await openMint(tester, h);
+    // each source with its balance
+    await tester.tap(find.byKey(const Key('mint-from')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Public · 1.50105'), findsWidgets);
+    await tester.tap(find.textContaining('Post-quantum SLH-DSA-SHA2-128s').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('amount')), '25');
+    await tester.tap(find.byKey(const Key('estimate')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('mintEstimate 2500 48 from $fakePqSlh'));
+    await tester.scrollUntilVisible(find.byKey(const Key('carrier-fee')), 200, scrollable: find.byType(Scrollable).first);
+    expect(find.byKey(const Key('mint-funded-from')), findsOneWidget);
+    expect(find.textContaining('priced on its signature size'), findsOneWidget);
+    await tester.scrollUntilVisible(find.byKey(const Key('start')), 200, scrollable: find.byType(Scrollable).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('start')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('mintStart from $fakePqSlh carrier 18000'));
+  });
+
+  testWidgets('without post-quantum coins there is no funding chooser and the public balance funds the mint', (tester) async {
+    final h = Harness(withWallet: true);
+    await openMint(tester, h);
+    expect(find.byKey(const Key('mint-from')), findsNothing);
+    await tester.enterText(find.byKey(const Key('amount')), '25');
+    await tester.tap(find.byKey(const Key('estimate')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('mintEstimate 2500 48'));
+    expect(find.byKey(const Key('carrier-fee')), findsNothing);
+  });
 }

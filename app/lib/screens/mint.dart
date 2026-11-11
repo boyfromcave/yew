@@ -50,6 +50,10 @@ class _MintScreenState extends State<MintScreen> {
   String? _error;
   bool _needYec = false;
   MintEstimate? _estimate;
+
+  /// Where the YEC comes from (beta2 D-3): '' = the public balance, else one of the wallet's
+  /// post-quantum addresses holding YEC.
+  String _from = '';
   MintAvailability? _avail;
   String? _availError;
   bool _checking = true;
@@ -143,7 +147,7 @@ class _MintScreenState extends State<MintScreen> {
       _needYec = false;
     });
     try {
-      final e = await app.api.mintEstimate(cents: cents, lockBlocks: lock);
+      final e = await app.api.mintEstimate(cents: cents, lockBlocks: lock, from: _from);
       setState(() => _estimate = e);
     } catch (e) {
       setState(() {
@@ -165,6 +169,9 @@ class _MintScreenState extends State<MintScreen> {
       // The terms shown are the terms confirmed: the core refuses a server answer that differs.
       // review YEW-REVIEW-4 M2: an unusual MINT fee needs its own confirmation
       final ack = await acceptUnusualFee(context, note: e.feeNote, ack: e.unusualFeeAck);
+      // beta2 D-3: a post-quantum source's carrier fee rests on the server's terms
+      if (!mounted) return;
+      final carrierAck = await acceptUnusualFee(context, note: e.carrierFeeNote, ack: e.unusualCarrierFeeAck);
       final row = await app.api.mintStart(
         cents: e.cents,
         lockBlocks: e.lockBlocks,
@@ -176,6 +183,7 @@ class _MintScreenState extends State<MintScreen> {
           acceptUnusualFee: ack,
           from: e.from,
           carrierFeeZat: e.carrierFeeZat,
+          acceptUnusualCarrierFee: carrierAck,
         ),
       );
       await app.refresh();
@@ -276,6 +284,40 @@ class _MintScreenState extends State<MintScreen> {
               },
               decoration: const InputDecoration(labelText: 'Lock, in blocks', helperText: 'Redeem at any time after the lock; a liquidator may claim once the grace period after it has passed'),
             ),
+            // beta2 D-3: fund the mint from the public balance or a post-quantum address
+            if (app.pqSources.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              KeyedSubtree(
+                key: ValueKey('mint-from-${app.pqSources.map((s) => s.address).join(',')}'),
+                child: DropdownButtonFormField<String>(
+                  key: const Key('mint-from'),
+                  initialValue: app.pqSources.any((s) => s.address == _from) ? _from : '',
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Fund from'),
+                  items: [
+                    DropdownMenuItem<String>(
+                      value: '',
+                      child: Text('Public · ${formatYec(app.balances.yecZat + app.balances.yecReservedZat)} YEC', overflow: TextOverflow.ellipsis),
+                    ),
+                    for (final s in app.pqSources)
+                      DropdownMenuItem<String>(
+                        value: s.address,
+                        child: Text(
+                          'Post-quantum ${s.schemeName} · ${shorten(s.address, head: 6, tail: 4)} · ${formatYec(s.balanceZat)} YEC',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                  ],
+                  onChanged: e != null
+                      ? null
+                      : (v) => setState(() {
+                          _from = v ?? '';
+                          _estimate = null;
+                          _error = null;
+                        }),
+                ),
+              ),
+            ],
             const SizedBox(height: 16),
             if (e == null)
               FilledButton(
@@ -416,6 +458,15 @@ class MintEstimateCard extends StatelessWidget {
             if (e.attestFeeZat > 0) PreviewRow('Attestor fee', '${formatYec(e.attestFeeZat)} YEC'),
             PreviewRow('Carrier + token', '${formatYec(e.carrierZat + e.tokenZat)} YEC'),
             PreviewRow('Network fees', '${formatYec(e.networkFeeZat)} YEC (two transactions)', key: const Key('network-fees')),
+            if (e.from.isNotEmpty) ...[
+              PreviewRow('Funded from', 'post-quantum · ${shorten(e.from, head: 6, tail: 4)}', key: const Key('mint-funded-from')),
+              PreviewRow('Carrier fee', '${formatYec(e.carrierFeeZat)} YEC (priced on its signature size)', key: const Key('carrier-fee')),
+              if (e.carrierFeeNote != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(e.carrierFeeNote!, key: const Key('carrier-fee-note'), style: Theme.of(context).textTheme.bodySmall?.copyWith(color: c.danger)),
+                ),
+            ],
             PreviewRow('Total YEC needed', '${formatYec(e.totalZat)} YEC', emphasis: true),
             const Divider(height: 20),
             PreviewRow('Price at R', e.pMintMicroUsd == null ? 'unavailable' : formatUsdPerYec(e.pMintMicroUsd!)),

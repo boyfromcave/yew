@@ -132,6 +132,11 @@ abstract class WalletApi {
 
   Future<SendResult> pqSendConfirm({required String previewId, String? acceptUnusualFee});
 
+  /// A send from the private balance to a post-quantum address (`sqf…`/`sqs…`; beta2 D-2):
+  /// proven at the preview (the proving files first), confirmed with [pqSendConfirm]. The
+  /// preview's `fromPrivate` is set: the amount and the recipient become visible on the chain.
+  Future<PqSendPreviewInfo> privatePqSendPreview({required String to, required int zat});
+
   /// The Sapling proving files on this device (no network).
   Future<ParamsStatus> paramsStatus();
 

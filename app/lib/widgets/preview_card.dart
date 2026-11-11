@@ -169,7 +169,7 @@ class PqSendPreviewCard extends StatelessWidget {
             PreviewRow('To', shorten(p.to, head: 14, tail: 8)),
             PreviewRow('Amount', '${formatYec(p.amountZat)} YEC', emphasis: true, color: c.yec),
             if (p.amountBumped) const PreviewRow('', 'Raised by 1 zat: exactly 0.0001 YEC would look like a YED token'),
-            PreviewRow('From', 'post-quantum ${p.schemeName} · ${shorten(p.from, head: 6, tail: 4)}'),
+            PreviewRow('From', p.fromPrivate ? 'your private balance' : 'post-quantum ${p.schemeName} · ${shorten(p.from, head: 6, tail: 4)}'),
             PreviewRow('Fee', '${formatYec(p.feeZat)} YEC', key: const Key('pq-fee'), color: p.feeNote != null ? c.danger : null, emphasis: p.feeNote != null),
             // review YEW-REVIEW-3 M1: a fee above the unusual threshold rests on the server's price
             if (p.feeNote != null)
@@ -177,10 +177,29 @@ class PqSendPreviewCard extends StatelessWidget {
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Text(p.feeNote!, key: const Key('pq-fee-note'), style: t.bodySmall?.copyWith(color: c.danger)),
               ),
-            PreviewRow('Size', '${p.sizeBytes} bytes · ${p.inputs} input${p.inputs == 1 ? '' : 's'}'),
-            PreviewRow('Signing', signing, key: const Key('pq-signing')),
-            if (p.changeZat > 0) PreviewRow('Change', '${formatYec(p.changeZat)} YEC back to the same address'),
+            PreviewRow('Size', '${p.sizeBytes} bytes · ${p.inputs} ${p.fromPrivate ? 'note' : 'input'}${p.inputs == 1 ? '' : 's'}'),
+            PreviewRow(p.fromPrivate ? 'Proving' : 'Signing', signing, key: const Key('pq-signing')),
+            if (p.changeZat > 0) PreviewRow('Change', p.fromPrivate ? '${formatYec(p.changeZat)} YEC back to your private balance' : '${formatYec(p.changeZat)} YEC back to the same address'),
             PreviewRow('Expires', 'height ${p.expiryHeight}'),
+            // beta2 D-5: the private -> public notice, in the words of the private -> public send
+            if (p.fromPrivate)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Row(
+                  key: const Key('reveals'),
+                  children: [
+                    const Icon(Icons.lock_open_rounded, size: 18, color: YecPreviewCard.amber),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'This payment leaves your private balance',
+                        style: t.bodyMedium?.copyWith(color: YecPreviewCard.amber, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            if (!p.fromPrivate)
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(

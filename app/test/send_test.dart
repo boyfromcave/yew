@@ -354,4 +354,61 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('from')), findsNothing);
   });
+
+  testWidgets('from the private balance to a post-quantum address: the private -> public notice, then the confirm', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.balancesAnswer = Balances(
+      yecZat: h.api.balancesAnswer.yecZat, yecReservedZat: 0, yecPendingZat: 0, yedCents: 5000, yedPendingCents: 0,
+      heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 90000000, yecShieldedSpendableZat: 90000000,
+      yecShieldedPendingZat: 0, shieldedScannedHeight: 484, shieldedSendable: true, yecPqZat: 0, yecPqSlhZat: 0,
+      yecPqFalconZat: 0, pqCoins: const []);
+    await openSend(tester, h);
+    await tester.tap(find.text('YEC'));
+    await tester.pumpAndSettle();
+    // no post-quantum coins, but a private balance: the chooser offers Private
+    await tester.tap(find.byKey(const Key('from')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Private · 0.90').last);
+    await tester.pumpAndSettle();
+    expect(find.text('sqf… or sqs… address'), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('address')), fakePqSlh);
+    await tester.enterText(find.byKey(const Key('amount')), '0.5');
+    await tester.tap(find.byKey(const Key('preview')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('privatePqPreview $fakePqSlh 50000000'));
+    expect(h.api.calls.where((c) => c.startsWith('pqPreview') || c.startsWith('yecPreview')), isEmpty);
+    expect(find.text('your private balance'), findsOneWidget);
+    expect(find.text('This payment leaves your private balance'), findsOneWidget);
+    expect(find.byKey(const Key('pq-size-note')), findsNothing);
+    expect(find.textContaining('YEC back to your private balance'), findsOneWidget);
+    // nothing sent by previewing
+    expect(h.api.calls.where((c) => c.startsWith('pqConfirm')), isEmpty);
+    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('pqConfirm zq1'));
+    expect(find.text('Sent'), findsWidgets);
+  });
+
+  testWidgets('a private -> post-quantum refusal is shown verbatim and nothing is sent', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.balancesAnswer = Balances(
+      yecZat: 0, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0,
+      heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 1000, yecShieldedSpendableZat: 1000,
+      yecShieldedPendingZat: 0, shieldedScannedHeight: 484, shieldedSendable: true, yecPqZat: 0, yecPqSlhZat: 0,
+      yecPqFalconZat: 0, pqCoins: const []);
+    h.api.pqPreviewError = const YewError(kind: ErrorKind.other, message: 'Not enough private YEC: 1000 zat spendable, 50002000 zat needed (amount plus fee).');
+    await openSend(tester, h);
+    await tester.tap(find.text('YEC'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('from')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Private · ').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('address')), fakePqSlh);
+    await tester.enterText(find.byKey(const Key('amount')), '0.5');
+    await tester.tap(find.byKey(const Key('preview')));
+    await tester.pumpAndSettle();
+    expect(find.text('Not enough private YEC: 1000 zat spendable, 50002000 zat needed (amount plus fee).'), findsOneWidget);
+    expect(find.byKey(const Key('slide-to-confirm')), findsNothing);
+  });
 }

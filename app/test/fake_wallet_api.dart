@@ -273,6 +273,7 @@ class FakeWalletApi implements WalletApi {
   Future<MintStatus> mintStart({required int cents, required int lockBlocks, required MintTerms confirmed}) async {
     calls.add('mintStart $cents $lockBlocks');
     calls.add('mintStart confirmed ${confirmed.collateralZat} ${confirmed.feeZat} ${confirmed.payee} ${confirmed.termClass}');
+    if (confirmed.from.isNotEmpty) calls.add('mintStart from ${confirmed.from} carrier ${confirmed.carrierFeeZat}');
     if (mintStartError != null) throw mintStartError!;
     final m = mintRow(id: mintsAnswer.length + 1, state: 'CARRIER_SENT', cents: cents, tip: tip, refHeight: tip - 4);
     _set(m);
@@ -595,6 +596,30 @@ class FakeWalletApi implements WalletApi {
       expiryHeight: 524,
       txid: 'qq' * 32,
       fromPrivate: false,
+    );
+  }
+
+  @override
+  Future<PqSendPreviewInfo> privatePqSendPreview({required String to, required int zat}) async {
+    calls.add('privatePqPreview $to $zat');
+    if (pqPreviewError != null) throw pqPreviewError!;
+    return PqSendPreviewInfo(
+      previewId: 'zq1',
+      from: '',
+      schemeName: to.startsWith('rqs') ? 'SLH-DSA-SHA2-128s' : 'FN-DSA-512',
+      to: to,
+      amountZat: zat,
+      amountBumped: false,
+      feeZat: 2000,
+      changeZat: 40000,
+      inputs: 1,
+      sizeBytes: 2801,
+      signMillis: BigInt.from(4100),
+      feeNote: pqFeeNote,
+      unusualFeeAck: pqFeeAck,
+      expiryHeight: 524,
+      txid: 'zz' * 32,
+      fromPrivate: true,
     );
   }
 
