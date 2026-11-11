@@ -9,6 +9,11 @@
 // (yew-shielded plan §3): the YEC address field also takes `ys1…`, which shows an optional
 // message (memo) field; the core funds privacy first and the preview says when a payment
 // leaves the private balance; the first private send fetches the proving files once.
+// Sends between address types (beta2 D-8): where the wallet holds YEC at its own post-quantum
+// addresses, a "From" chooser offers each of them beside the automatic (private first) funding;
+// the core plans and signs the post-quantum send (the planner yewd uses) and the preview shows
+// the fee, the size and the signing time before the slider. Plain YEC goes to `s…`, `sqf…`
+// (FN-DSA-512) or `sqs…` (SLH-DSA); YED to `yb…`/`ybf…`/`ybs…`.
 import 'dart:convert' show utf8;
 
 import 'package:flutter/material.dart';
@@ -35,10 +40,10 @@ enum Asset { yed, yec }
 /// builders refuse the other way round too, this says so before the preview.
 String? destinationMismatch(Asset asset, String kind) {
   if (asset == Asset.yec && kind == 'pq') {
-    return 'This is a post-quantum YED address (yb…). To send YEC to the same wallet, ask for its sq… address.';
+    return 'This is a post-quantum YED address (ybf…/ybs…). To send YEC to the same wallet, ask for its sqf… or sqs… address.';
   }
   if (asset == Asset.yed && kind == 'pq_yec') {
-    return 'This is a post-quantum YEC address (sq…): it receives YEC, not YED. Ask for a yb… address.';
+    return 'This is a post-quantum YEC address (sqf…/sqs…): it receives YEC, not YED. Ask for a yb… address.';
   }
   return null;
 }
@@ -62,6 +67,10 @@ class _SendScreenState extends State<SendScreen> {
   bool _needYec = false;
   YecPreview? _yec;
   YedPreview? _yed;
+
+  /// The post-quantum source (beta2 D-8), null = automatic (private first, then public ECC).
+  String? _from;
+  PqSendPreviewInfo? _pq;
   SendResult? _result;
 
   @override
@@ -75,6 +84,7 @@ class _SendScreenState extends State<SendScreen> {
   void _reset() => setState(() {
     _yec = null;
     _yed = null;
+    _pq = null;
     _error = null;
     _needYec = false;
   });
@@ -121,6 +131,15 @@ class _SendScreenState extends State<SendScreen> {
         final p = await app.api.sendYedPreview(recipients: [Recipient(address: to, cents: cents)]);
         setState(() => _yed = p);
       } else {
+        if (_from != null) {
+          // from a post-quantum address: the core's refusals (a private recipient, the policy,
+          // the fee cap, insufficient funds) are shown verbatim
+          final zat = parseYecZat(_amount.text);
+          if (zat == null || zat <= 0) throw const YewError(kind: ErrorKind.input, message: 'Enter an amount in YEC, up to eight decimals');
+          final p = await app.api.pqSendPreview(from: _from!, to: to, zat: zat);
+          setState(() => _pq = p);
+          return;
+        }
         final everything = _everything && !private;
         final zat = everything ? app.balances.yecZat + app.balances.yecReservedZat - 1000 : parseYecZat(_amount.text);
         if (zat == null || zat <= 0) throw const YewError(kind: ErrorKind.input, message: 'Enter an amount in YEC, up to eight decimals');
@@ -146,6 +165,8 @@ class _SendScreenState extends State<SendScreen> {
       final SendResult r;
       if (_yed != null) {
         r = await app.api.sendYedConfirm(previewId: _yed!.previewId);
+      } else if (_pq != null) {
+        r = await app.api.pqSendConfirm(previewId: _pq!.previewId);
       } else {
         r = await _confirmYec(app);
       }
@@ -158,6 +179,7 @@ class _SendScreenState extends State<SendScreen> {
         _error = messageOf(e);
         _yed = null;
         _yec = null;
+        _pq = null;
       });
     }
   }
@@ -180,8 +202,9 @@ class _SendScreenState extends State<SendScreen> {
     final c = yewColors(context);
     final t = Theme.of(context).textTheme;
     final accent = _asset == Asset.yed ? c.yed : c.yec;
-    final hasPreview = _yed != null || _yec != null;
-    final private = _asset == Asset.yec && _toPrivate(app);
+    final hasPreview = _yed != null || _yec != null || _pq != null;
+    final private = _asset == Asset.yec && _from == null && _toPrivate(app);
+    final sources = app.pqSources;
     final b = app.balances;
     if (_result != null) return SendResultView(result: _result!, accent: accent);
     return Scaffold(
@@ -213,6 +236,33 @@ class _SendScreenState extends State<SendScreen> {
               key: const Key('available'),
               style: t.bodyMedium?.copyWith(color: c.pending),
             ),
+            if (_asset == Asset.yec && sources.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String?>(
+                key: const Key('from'),
+                initialValue: _from,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'From'),
+                items: [
+                  const DropdownMenuItem<String?>(value: null, child: Text('Automatic: private first, then public')),
+                  for (final s in sources)
+                    DropdownMenuItem<String?>(
+                      value: s.address,
+                      child: Text(
+                        'Post-quantum ${s.schemeName} · ${shorten(s.address, head: 6, tail: 4)} · ${formatYec(s.balanceZat)} YEC',
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                onChanged: hasPreview
+                    ? null
+                    : (v) => setState(() {
+                        _from = v;
+                        _everything = false;
+                        _error = null;
+                      }),
+              ),
+            ],
             const SizedBox(height: 12),
             TextField(
               key: const Key('address'),
@@ -223,7 +273,9 @@ class _SendScreenState extends State<SendScreen> {
               onChanged: (_) => _reset(),
               decoration: InputDecoration(
                 labelText: 'To',
-                hintText: _asset == Asset.yed ? 'yb… address' : 'ys1…, s… or sq… address',
+                hintText: _asset == Asset.yed
+                    ? 'yb… address'
+                    : (_from != null ? 's…, sqf… or sqs… address' : 'ys1…, s…, sqf… or sqs… address'),
                 suffixIcon: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -267,7 +319,7 @@ class _SendScreenState extends State<SendScreen> {
               const SizedBox(height: 12),
               MemoField(controller: _memo, enabled: !hasPreview, bytes: _memoBytes, onChanged: _reset),
             ],
-            if (_asset == Asset.yec && !private)
+            if (_asset == Asset.yec && !private && _from == null)
               SwitchListTile(
                 key: const Key('everything'),
                 value: _everything,
@@ -290,10 +342,13 @@ class _SendScreenState extends State<SendScreen> {
             ],
             if (_yec != null) YecPreviewCard(_yec!),
             if (_yed != null) YedPreviewCard(_yed!),
+            if (_pq != null) PqSendPreviewCard(_pq!),
             if (hasPreview) ...[
               const SizedBox(height: 16),
               SlideToConfirm(
-                label: _yed != null ? 'Slide to send ${formatYed(_yed!.totalCents)}' : 'Slide to send ${formatYec(_yec!.amountZat)} YEC',
+                label: _yed != null
+                    ? 'Slide to send ${formatYed(_yed!.totalCents)}'
+                    : 'Slide to send ${formatYec((_pq?.amountZat ?? _yec!.amountZat))} YEC',
                 color: accent,
                 enabled: _yed == null || _yed!.dryRun.accepted,
                 onConfirmed: _confirm,

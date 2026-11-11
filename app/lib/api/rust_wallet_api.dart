@@ -123,6 +123,16 @@ class RustWalletApi implements WalletApi {
   Future<SendResult> moveConfirm({required String previewId}) => rust.moveConfirm(previewId: previewId);
 
   @override
+  Future<List<PqSource>> pqSources() => rust.pqSources();
+
+  @override
+  Future<PqSendPreviewInfo> pqSendPreview({required String from, required String to, required int zat}) =>
+      rust.pqSendPreview(from: from, to: to, zat: zat);
+
+  @override
+  Future<SendResult> pqSendConfirm({required String previewId}) => rust.pqSendConfirm(previewId: previewId);
+
+  @override
   Future<ParamsStatus> paramsStatus() => rust.paramsStatus();
 
   @override

@@ -23,7 +23,7 @@ void main() {
       syncHeight: 484,
       yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false,
       yecPqZat: 0,
-      pqCoins: [],
+      yecPqSlhZat: 0, yecPqFalconZat: 0, pqCoins: [],
     );
     await h.pump(tester);
     // The lock screen auto-unlocks (no biometrics) and Home syncs once.
@@ -33,7 +33,10 @@ void main() {
     expect(find.text('+ \$2.50 pending'), findsOneWidget);
     // One YEC total (private + public, the reserve included), then the two-line split.
     expect(find.text('1.23561789'), findsOneWidget);
-    expect(find.text('0.00000000 YEC'), findsOneWidget); // private
+    expect((tester.widget(find.byKey(const Key('yec-private'))) as Text).data, '0.00000000 YEC'); // private
+    // beta2 D-8: the post-quantum rows by scheme (zero here), the scheme named
+    expect(find.text('PQ · SLH-DSA'), findsOneWidget);
+    expect(find.text('PQ · FN-DSA-512'), findsOneWidget);
     expect(find.text('1.23561789 YEC'), findsOneWidget); // public
     expect(find.text('0.00105000 YEC reserved for fees'), findsOneWidget);
     expect(find.text('0.00050000 YEC pending'), findsOneWidget);
@@ -55,11 +58,15 @@ void main() {
       syncHeight: 484,
       yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false,
       yecPqZat: 150000000,
-      pqCoins: [coin],
+      yecPqSlhZat: 150000000, yecPqFalconZat: 0, pqCoins: [coin],
     );
     await h.pump(tester);
     // Not in the public balance: no P2PKH path spends it.
     expect(find.text('0.00100000 YEC'), findsOneWidget);
+    // beta2 D-8: its scheme's row, and the total counts it
+    expect((tester.widget(find.byKey(const Key('yec-pq-slh'))) as Text).data, '1.50000000 YEC');
+    expect((tester.widget(find.byKey(const Key('yec-pq-falcon'))) as Text).data, '0.00000000 YEC');
+    expect(find.text('1.50100000'), findsOneWidget);
     expect(find.text('1.50000000 YEC at your post-quantum addresses · tap to move it to your wallet'), findsOneWidget);
     await tester.tap(find.byKey(const Key('pq-yec')));
     await tester.pumpAndSettle();

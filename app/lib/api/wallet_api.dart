@@ -29,6 +29,8 @@ export '../src/rust/api.dart'
         NetworkId,
         ParamsProgress,
         ParamsStatus,
+        PqSendPreviewInfo,
+        PqSource,
         ReceiveKind,
         Recipient,
         RedeemPreview,
@@ -93,7 +95,8 @@ abstract class WalletApi {
 
   Future<Balances> balances();
 
-  /// The receive address of [kind]: `s…` (transparent), `yb…` (YED) or `ys1…` (private).
+  /// The receive address of [kind]: `s…` (transparent), `yb…` (YED), `ys1…` (private), or the
+  /// receive key's post-quantum pair (`sqf…` FN-DSA-512, `sqs…` SLH-DSA).
   Future<AddressPair> receiveAddress({ReceiveKind kind = ReceiveKind.transparent, required bool fresh});
 
   /// A new private address of the same private balance (Receive → "New private address").
@@ -118,6 +121,16 @@ abstract class WalletApi {
   Future<YecPreview> movePreview({required MoveDirection direction, int? amountZat});
 
   Future<SendResult> moveConfirm({required String previewId});
+
+  /// The wallet's post-quantum addresses holding spendable YEC (beta2 D-8), largest first.
+  /// Empty on a server without Yellowback.
+  Future<List<PqSource>> pqSources();
+
+  /// A send from the own post-quantum address [from] to a public address (`s…`, `sqf…`, `sqs…`):
+  /// planned and signed by the core (the planner yewd uses), nothing broadcast.
+  Future<PqSendPreviewInfo> pqSendPreview({required String from, required String to, required int zat});
+
+  Future<SendResult> pqSendConfirm({required String previewId});
 
   /// The Sapling proving files on this device (no network).
   Future<ParamsStatus> paramsStatus();

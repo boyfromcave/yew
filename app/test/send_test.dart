@@ -69,7 +69,7 @@ void main() {
 
   testWidgets('no YEC for fees: the explanation with the receive address one tap away', (tester) async {
     final h = Harness(withWallet: true);
-    h.api.balancesAnswer = const Balances(yecZat: 0, yecReservedZat: 0, yecPendingZat: 0, yedCents: 5000, yedPendingCents: 0, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false, yecPqZat: 0, pqCoins: []);
+    h.api.balancesAnswer = const Balances(yecZat: 0, yecReservedZat: 0, yecPendingZat: 0, yedCents: 5000, yedPendingCents: 0, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false, yecPqZat: 0, yecPqSlhZat: 0, yecPqFalconZat: 0, pqCoins: []);
     h.api.yedPreviewError = const YewError(kind: ErrorKind.needYecForFees, message: 'You need about 0.00021000 YEC to send YED. Receive YEC first.');
     await openSend(tester, h);
     await tester.enterText(find.byKey(const Key('address')), 'yr1recipient');
@@ -117,7 +117,7 @@ void main() {
     await openSend(tester, h);
     await tester.tap(find.text('YEC'));
     await tester.pumpAndSettle();
-    expect(find.text('ys1…, s… or sq… address'), findsOneWidget);
+    expect(find.text('ys1…, s…, sqf… or sqs… address'), findsOneWidget);
     await tester.enterText(find.byKey(const Key('address')), pqYec);
     await tester.enterText(find.byKey(const Key('amount')), '0.5');
     await tester.tap(find.byKey(const Key('preview')));
@@ -136,7 +136,7 @@ void main() {
     await tester.tap(find.byKey(const Key('preview')));
     await tester.pumpAndSettle();
     expect(
-      find.text('This is a post-quantum YED address (yb…). To send YEC to the same wallet, ask for its sq… address.'),
+      find.text('This is a post-quantum YED address (ybf…/ybs…). To send YEC to the same wallet, ask for its sqf… or sqs… address.'),
       findsOneWidget,
     );
     await tester.enterText(find.byKey(const Key('address')), pqOwner);
@@ -154,7 +154,7 @@ void main() {
     await tester.tap(find.byKey(const Key('preview')));
     await tester.pumpAndSettle();
     expect(
-      find.text('This is a post-quantum YEC address (sq…): it receives YEC, not YED. Ask for a yb… address.'),
+      find.text('This is a post-quantum YEC address (sqf…/sqs…): it receives YEC, not YED. Ask for a yb… address.'),
       findsOneWidget,
     );
     expect(h.api.calls.where((c) => c.startsWith('yedPreview')), isEmpty);
@@ -162,5 +162,74 @@ void main() {
     await tester.tap(find.byKey(const Key('preview')));
     await tester.pumpAndSettle();
     expect(h.api.calls, contains('yedPreview $pqYed:100'));
+  });
+
+  // beta2 D-8: a send from an own post-quantum address: the source chooser, the fee with the
+  // size and signing time before the slider, the core's messages verbatim.
+  const slhSource = PqSource(address: fakePqSlh, scheme: 1, schemeName: 'SLH-DSA-SHA2-128s', balanceZat: 300000000);
+
+  Future<void> choosePqSource(WidgetTester tester) async {
+    await tester.tap(find.text('YEC'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('from')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Post-quantum SLH-DSA-SHA2-128s').last);
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('YEC from a post-quantum address previews the larger fee and its size, then confirms', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.pqSourcesAnswer = const [slhSource];
+    await openSend(tester, h);
+    await choosePqSource(tester);
+    expect(find.text('s…, sqf… or sqs… address'), findsOneWidget);
+    expect(find.byKey(const Key('everything')), findsNothing);
+    await tester.enterText(find.byKey(const Key('address')), fakeS);
+    await tester.enterText(find.byKey(const Key('amount')), '0.5');
+    await tester.tap(find.byKey(const Key('preview')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('pqPreview $fakePqSlh $fakeS 50000000'));
+    expect(find.byKey(const Key('pq-preview')), findsOneWidget);
+    expect(find.text('0.00002000 YEC'), findsOneWidget);
+    expect(find.text('8120 bytes · 1 input'), findsOneWidget);
+    expect(find.text('0.90 s on this device'), findsOneWidget);
+    expect(find.text('0.00050000 YEC back to the same address'), findsOneWidget);
+    expect(find.textContaining('An SLH-DSA signature is about 7.9 KB per input'), findsOneWidget);
+    expect(h.api.calls.where((c) => c.startsWith('pqConfirm')), isEmpty);
+    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('pqConfirm q1'));
+    expect(find.text('qq' * 32), findsOneWidget);
+  });
+
+  testWidgets('a post-quantum send shows the core\'s refusal and its status-unknown answer verbatim', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.pqSourcesAnswer = const [slhSource];
+    const refusal = 'Insufficient transparent funds, have 0.03, need 0.50002';
+    h.api.pqPreviewError = const YewError(kind: ErrorKind.other, message: refusal);
+    await openSend(tester, h);
+    await choosePqSource(tester);
+    await tester.enterText(find.byKey(const Key('address')), fakeS);
+    await tester.enterText(find.byKey(const Key('amount')), '0.5');
+    await tester.tap(find.byKey(const Key('preview')));
+    await tester.pumpAndSettle();
+    expect(find.text(refusal), findsOneWidget);
+    h.api.pqPreviewError = null;
+    final unknown = 'transport error; status unknown, txid ${'qq' * 32}: check before sending again';
+    h.api.pqConfirmError = YewError(kind: ErrorKind.other, message: unknown);
+    await tester.tap(find.byKey(const Key('preview')));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await tester.pumpAndSettle();
+    expect(find.text(unknown), findsOneWidget);
+    expect(find.text('Sent'), findsNothing);
+  });
+
+  testWidgets('without post-quantum coins there is no source chooser', (tester) async {
+    final h = Harness(withWallet: true);
+    await openSend(tester, h);
+    await tester.tap(find.text('YEC'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('from')), findsNothing);
   });
 }

@@ -141,3 +141,49 @@ class YedPreviewCard extends StatelessWidget {
     );
   }
 }
+
+/// The preview of a send from an own post-quantum address (beta2 D-8): the fee is priced on the
+/// transaction's size, and a post-quantum signature is large (SLH-DSA ~7.9 KB, FN-DSA-512 ~1.6 KB
+/// per input), so the card shows the size and the signing time next to the fee, before the
+/// slider. The change goes back to the source address.
+class PqSendPreviewCard extends StatelessWidget {
+  const PqSendPreviewCard(this.p, {super.key});
+  final PqSendPreviewInfo p;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = yewColors(context);
+    final t = Theme.of(context).textTheme;
+    final slh = p.schemeName.startsWith('SLH');
+    final secs = p.signMillis.toInt() / 1000;
+    return Card(
+      key: const Key('pq-preview'),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            PreviewRow('To', shorten(p.to, head: 14, tail: 8)),
+            PreviewRow('Amount', '${formatYec(p.amountZat)} YEC', emphasis: true, color: c.yec),
+            if (p.amountBumped) const PreviewRow('', 'Raised by 1 zat: exactly 0.0001 YEC would look like a YED token'),
+            PreviewRow('From', 'post-quantum ${p.schemeName} · ${shorten(p.from, head: 6, tail: 4)}'),
+            PreviewRow('Fee', '${formatYec(p.feeZat)} YEC'),
+            PreviewRow('Size', '${p.sizeBytes} bytes · ${p.inputs} input${p.inputs == 1 ? '' : 's'}'),
+            PreviewRow('Signing', '${secs.toStringAsFixed(secs < 1 ? 2 : 1)} s on this device'),
+            if (p.changeZat > 0) PreviewRow('Change', '${formatYec(p.changeZat)} YEC back to the same address'),
+            PreviewRow('Expires', 'height ${p.expiryHeight}'),
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                slh
+                    ? 'An SLH-DSA signature is about 7.9 KB per input, so this send is large: its fee is higher than a public send\'s and signing takes longer.'
+                    : 'An FN-DSA-512 signature is about 1.6 KB per input: the fee is priced on that size.',
+                key: const Key('pq-size-note'),
+                style: t.bodySmall?.copyWith(color: c.pending),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

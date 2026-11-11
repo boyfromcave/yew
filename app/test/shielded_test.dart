@@ -29,7 +29,7 @@ const synced = Balances(
   shieldedScannedHeight: 484,
   shieldedSendable: true,
   yecPqZat: 0,
-  pqCoins: [],
+  yecPqSlhZat: 0, yecPqFalconZat: 0, pqCoins: [],
 );
 
 SyncEvent ev(
@@ -85,7 +85,7 @@ void main() {
         findsOneWidget,
       ); // 0.5 private + 1.5 + 0.00105 public
       expect(find.text('Private'), findsOneWidget);
-      expect(find.text('Public'), findsOneWidget);
+      expect(find.text('Public (ECC)'), findsOneWidget);
       expect(
         tester.widget<Text>(find.byKey(const Key('yec-private'))).data,
         '0.50000000 YEC',
@@ -542,7 +542,7 @@ void main() {
         shieldedScannedHeight: 484,
         shieldedSendable: true,
         yecPqZat: 0,
-        pqCoins: [],
+        yecPqSlhZat: 0, yecPqFalconZat: 0, pqCoins: [],
       );
       await h.pump(tester);
       await tester.tap(find.byKey(const Key('tab-yellowback')));
@@ -582,7 +582,7 @@ void main() {
         shieldedScannedHeight: 484,
         shieldedSendable: true,
         yecPqZat: 0,
-        pqCoins: [],
+        yecPqSlhZat: 0, yecPqFalconZat: 0, pqCoins: [],
       );
       h.api.yedPreviewError = const YewError(
         kind: ErrorKind.needYecForFees,

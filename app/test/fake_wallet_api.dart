@@ -19,6 +19,9 @@ const fakeYe = 'yr1qkfcjyqz9y4d3qz9v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8';
 const fakeS = 'smV6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v';
 /// A regtest post-quantum vault-owner address (53 characters, rpcversion 7).
 const fakeOwnerPq = 'yrPq8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8vOwn';
+/// Regtest D-9 post-quantum plain-YEC addresses of the receive key (53 characters).
+const fakePqFalcon = 'rqfPqFalcon8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8y';
+const fakePqSlh = 'rqsPqSlh8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6yy';
 const fakeZ = 'yregtestsapling1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfake';
 const fakeZ2 = 'yregtestsapling1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzsecond';
 const fakeWords = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -37,7 +40,7 @@ class FakeWalletApi implements WalletApi {
     syncHeight: 484,
     yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false,
     yecPqZat: 0,
-    pqCoins: [],
+    yecPqSlhZat: 0, yecPqFalconZat: 0, pqCoins: [],
   );
   List<HistoryItem> historyAnswer = const [];
   Object? yedPreviewError;
@@ -468,7 +471,7 @@ class FakeWalletApi implements WalletApi {
     birthday: 1,
     syncHeight: 484,
     addresses: 40,
-    yellowback: const YellowbackStatus(present: true, usable: true, rpcversion: 6, enabled: true, active: true, serverVersion: 'lwd', feeZat: 1000),
+    yellowback: YellowbackStatus(present: yellowbackPresent, usable: yellowbackPresent, rpcversion: 6, enabled: true, active: true, serverVersion: 'lwd', feeZat: 1000),
     coreVersion: '0.1.0',
   );
 
@@ -478,6 +481,8 @@ class FakeWalletApi implements WalletApi {
   @override
   Future<AddressPair> receiveAddress({ReceiveKind kind = ReceiveKind.transparent, required bool fresh}) async {
     if (kind == ReceiveKind.shielded) return privateAddress;
+    if (kind == ReceiveKind.pqFalcon) return pqFalconAddress;
+    if (kind == ReceiveKind.pqSlh) return pqSlhAddress;
     if (fresh) this.fresh++;
     return address;
   }
@@ -546,6 +551,47 @@ class FakeWalletApi implements WalletApi {
     return SendResult(txid: 'mm' * 32, verdict: 'ok');
   }
 
+  // ---- beta2 D-8: sends from an own post-quantum address.
+  /// The server offers Yellowback (the capability post-quantum coins are listed under).
+  bool yellowbackPresent = true;
+  List<PqSource> pqSourcesAnswer = const [];
+  Object? pqPreviewError;
+  Object? pqConfirmError;
+  AddressPair pqFalconAddress = const AddressPair(ye: '', s: fakeS, path: "m/44'/347'/0'/0/0 (FN-DSA-512)", coveredBySeed: true, address: fakePqFalcon, kind: ReceiveKind.pqFalcon);
+  AddressPair pqSlhAddress = const AddressPair(ye: '', s: fakeS, path: "m/44'/347'/0'/0/0 (SLH-DSA-SHA2-128s)", coveredBySeed: true, address: fakePqSlh, kind: ReceiveKind.pqSlh);
+
+  @override
+  Future<List<PqSource>> pqSources() async => pqSourcesAnswer;
+
+  @override
+  Future<PqSendPreviewInfo> pqSendPreview({required String from, required String to, required int zat}) async {
+    calls.add('pqPreview $from $to $zat');
+    if (pqPreviewError != null) throw pqPreviewError!;
+    final slh = from.startsWith('rqs');
+    return PqSendPreviewInfo(
+      previewId: 'q1',
+      from: from,
+      schemeName: slh ? 'SLH-DSA-SHA2-128s' : 'FN-DSA-512',
+      to: to,
+      amountZat: zat,
+      amountBumped: false,
+      feeZat: slh ? 2000 : 1000,
+      changeZat: 50000,
+      inputs: 1,
+      sizeBytes: slh ? 8120 : 1800,
+      signMillis: BigInt.from(slh ? 900 : 12),
+      expiryHeight: 524,
+      txid: 'qq' * 32,
+    );
+  }
+
+  @override
+  Future<SendResult> pqSendConfirm({required String previewId}) async {
+    calls.add('pqConfirm $previewId');
+    if (pqConfirmError != null) throw pqConfirmError!;
+    return SendResult(txid: 'qq' * 32, verdict: 'ok');
+  }
+
   @override
   Future<YedPreview> sendYedPreview({required List<Recipient> recipients}) async {
     calls.add('yedPreview ${recipients.map((r) => '${r.address}:${r.cents}').join(',')}');
@@ -577,10 +623,10 @@ class FakeWalletApi implements WalletApi {
   Stream<SyncEvent> syncNow() {
     calls.add('sync');
     if (syncController != null) return syncController!.stream;
-    return Stream.fromIterable(const [
-      SyncEvent(stage: SyncStage.connecting, message: 'Connecting', tip: 0, syncHeight: 0, yellowbackUsable: false, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
-      SyncEvent(stage: SyncStage.probing, message: 'Yellowback service present', tip: 484, syncHeight: 0, yellowbackUsable: true, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
-      SyncEvent(stage: SyncStage.done, message: 'Synced to 484', tip: 484, syncHeight: 484, yellowbackUsable: true, percent: 100, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
+    return Stream.fromIterable([
+      const SyncEvent(stage: SyncStage.connecting, message: 'Connecting', tip: 0, syncHeight: 0, yellowbackUsable: false, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
+      SyncEvent(stage: SyncStage.probing, message: 'Yellowback service present', tip: 484, syncHeight: 0, yellowbackUsable: yellowbackPresent, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
+      SyncEvent(stage: SyncStage.done, message: 'Synced to 484', tip: 484, syncHeight: 484, yellowbackUsable: yellowbackPresent, percent: 100, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
     ]);
   }
 
