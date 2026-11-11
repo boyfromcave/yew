@@ -130,7 +130,7 @@ abstract class WalletApi {
   /// planned and signed by the core (the planner yewd uses), nothing broadcast.
   Future<PqSendPreviewInfo> pqSendPreview({required String from, required String to, required int zat});
 
-  Future<SendResult> pqSendConfirm({required String previewId});
+  Future<SendResult> pqSendConfirm({required String previewId, String? acceptUnusualFee});
 
   /// The Sapling proving files on this device (no network).
   Future<ParamsStatus> paramsStatus();
@@ -141,7 +141,7 @@ abstract class WalletApi {
 
   Future<YedPreview> sendYedPreview({required List<Recipient> recipients});
 
-  Future<SendResult> sendYedConfirm({required String previewId});
+  Future<SendResult> sendYedConfirm({required String previewId, String? acceptUnusualFee});
 
   Future<WifExport> exportWif({required String address});
 
@@ -192,7 +192,7 @@ abstract class WalletApi {
   /// Build and sign the release of a matured intent (`txid:n`); nothing is sent.
   Future<ReleasePreview> releasePreview({required String intent});
 
-  Future<ReleaseResult> releaseConfirm({required String previewId});
+  Future<ReleaseResult> releaseConfirm({required String previewId, String? acceptUnusualFee});
 
   String generateSeedWords({required int words});
 

@@ -693,7 +693,7 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
     // the FEE_ZAT floor (`max(FEE_ZAT, rate x size)`).
     assert!(p.fee >= FEE_ZAT, "the fee is at least FEE_ZAT");
     assert!(p.yec_inputs.iter().all(|u| u.class.yec_spendable()));
-    let (txid, val) = yed_transfer::broadcast(&a, &mut c, &mut v, &p)
+    let (txid, val) = yed_transfer::broadcast(&a, &mut c, &mut v, &p, p.fee_guard.ack.as_deref())
         .await
         .expect("accepted");
     assert_eq!(
@@ -1507,6 +1507,7 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
             yew_core::build::terms::ClaimBounds {
                 max_burn_cents: entry.minted_cents - 1,
                 min_out_zat: entry.claimant_zat,
+                accept_unusual_fee: None,
             },
         ),
         (
@@ -1514,6 +1515,7 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
             yew_core::build::terms::ClaimBounds {
                 max_burn_cents: entry.minted_cents,
                 min_out_zat: entry.claimant_zat + 1,
+                accept_unusual_fee: None,
             },
         ),
     ] {
@@ -1534,6 +1536,7 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     let bounds = yew_core::build::terms::ClaimBounds {
         max_burn_cents: entry.minted_cents,
         min_out_zat: entry.claimant_zat,
+        accept_unusual_fee: None,
     };
     let idc = a
         .claim(
@@ -1670,7 +1673,10 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     // an upgradable NOP there and every RELEASE answers valid:false. The gate refuses it (no
     // override). YEW_DEVNET_RELEASE_VIA_NODE=1 records the refusal and then sends YEW's exact
     // bytes with sendrawtransaction, to show they are consensus-valid and to drive the sync side.
-    let rel = match a.release_confirm(&mut c, &mut v, &rp).await {
+    let rel = match a
+        .release_confirm(&mut c, &mut v, &rp, rp.fee_guard.ack.as_deref())
+        .await
+    {
         Ok((rel, rv)) => {
             println!(
                 "release {rel}: verdict {} type {:?}",
@@ -1884,6 +1890,7 @@ async fn w4_claim_cancelled_by_the_attestor_set() {
     let bounds = yew_core::build::terms::ClaimBounds {
         max_burn_cents: entry.minted_cents,
         min_out_zat: entry.claimant_zat,
+        accept_unusual_fee: None,
     };
     let id = b
         .claim(
@@ -2336,6 +2343,7 @@ async fn it_early_redeem_and_in_term_claim() {
     let bounds = yew_core::build::terms::ClaimBounds {
         max_burn_cents: entry.minted_cents,
         min_out_zat: entry.claimant_zat,
+        accept_unusual_fee: None,
     };
     let idc = a
         .claim(
@@ -2415,7 +2423,10 @@ async fn it_early_redeem_and_in_term_claim() {
         r = mine_and_sync(&dn, &mut c, &mut v, &mut a).await;
     }
     let rp = a.release_preview(&intent_op, r.tip, r.branch_id).unwrap();
-    let (rel, rv) = a.release_confirm(&mut c, &mut v, &rp).await.unwrap();
+    let (rel, rv) = a
+        .release_confirm(&mut c, &mut v, &rp, rp.fee_guard.ack.as_deref())
+        .await
+        .unwrap();
     assert_eq!(rv.verdict, "ok");
     confirm(&dn, &mut c, &rel).await;
     sync(&mut a, &mut c, v.client_mut()).await.unwrap();
@@ -2884,7 +2895,7 @@ async fn s2_shielded_receive_send_memo_and_regressions() {
     let node_yed_before = node_yed(&dn);
     let yp = yed_transfer::build_yed_transfer(&w, &[(node_ye.clone(), 1_234)], r.tip, r.branch_id)
         .unwrap();
-    let (yt, val) = yed_transfer::broadcast(&w, &mut c, &mut v, &yp)
+    let (yt, val) = yed_transfer::broadcast(&w, &mut c, &mut v, &yp, yp.fee_guard.ack.as_deref())
         .await
         .expect("YED transfer accepted");
     assert_eq!((val.verdict.as_str(), val.burned), ("ok", 0));
@@ -4141,9 +4152,10 @@ async fn q_falcon_holders_receive_send_mint_and_restore() {
     assert_eq!(falcon_in.script_sig.len(), 1_577);
     let change = yew_core::pq::pqpkh_of(&tx.vout[1].script_pubkey).expect("Falcon change");
     assert!(a.own_falcon_holders().unwrap().contains_key(&change));
-    let (txid, validation) = yed_transfer::broadcast(&a, &mut c, &mut v, &p)
-        .await
-        .unwrap();
+    let (txid, validation) =
+        yed_transfer::broadcast(&a, &mut c, &mut v, &p, p.fee_guard.ack.as_deref())
+            .await
+            .unwrap();
     assert_eq!(validation.verdict, "ok", "{validation:?}");
     confirm(&dn, &mut c, &txid).await;
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
@@ -4341,7 +4353,10 @@ async fn q_pqaddr_sq_receive_send_and_move() {
     let (mtx, _) = Transaction::parse(&mv.raw).unwrap();
     assert_eq!(mtx.vin.len(), 1);
     assert_eq!(mtx.vin[0].script_sig.len(), 1_577);
-    let (moved, validation) = a.release_confirm(&mut c, &mut v, &mv).await.unwrap();
+    let (moved, validation) = a
+        .release_confirm(&mut c, &mut v, &mv, mv.fee_guard.ack.as_deref())
+        .await
+        .unwrap();
     assert_eq!(validation.verdict, "ok", "{validation:?}");
     assert_eq!(validation.burned, 0);
     confirm(&dn, &mut c, &moved).await;

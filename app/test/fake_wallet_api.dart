@@ -395,7 +395,7 @@ class FakeWalletApi implements WalletApi {
   }
 
   @override
-  Future<ReleaseResult> releaseConfirm({required String previewId}) async {
+  Future<ReleaseResult> releaseConfirm({required String previewId, String? acceptUnusualFee}) async {
     calls.add('releaseConfirm $previewId');
     final intent = previewId.substring(3);
     if (balancesAnswer.pqCoins.contains(intent)) {
@@ -559,6 +559,7 @@ class FakeWalletApi implements WalletApi {
   Object? pqConfirmError;
   /// The core's unusual-fee note on the next PQ preview (review YEW-REVIEW-3 M1).
   String? pqFeeNote;
+  String? pqFeeAck;
   /// The browser: no signing time measured (review YEW-REVIEW-3 L5).
   bool pqSignUnmeasured = false;
   AddressPair pqFalconAddress = const AddressPair(ye: '', s: fakeS, path: "m/44'/347'/0'/0/0 (FN-DSA-512)", coveredBySeed: true, address: fakePqFalcon, kind: ReceiveKind.pqFalcon);
@@ -585,14 +586,19 @@ class FakeWalletApi implements WalletApi {
       sizeBytes: slh ? 8120 : 1800,
       signMillis: pqSignUnmeasured ? null : BigInt.from(slh ? 900 : 12),
       feeNote: pqFeeNote,
+      unusualFeeAck: pqFeeAck,
       expiryHeight: 524,
       txid: 'qq' * 32,
     );
   }
 
   @override
-  Future<SendResult> pqSendConfirm({required String previewId}) async {
-    calls.add('pqConfirm $previewId');
+  Future<SendResult> pqSendConfirm({required String previewId, String? acceptUnusualFee}) async {
+    calls.add('pqConfirm $previewId${acceptUnusualFee == null ? '' : ' ack=$acceptUnusualFee'}');
+    // the core's rule: a flagged fee needs exactly its acknowledgement
+    if (pqFeeAck != null && acceptUnusualFee != pqFeeAck) {
+      throw const YewError(kind: ErrorKind.other, message: 'unusual-fee: this fee needs its own confirmation.');
+    }
     if (pqConfirmError != null) throw pqConfirmError!;
     return SendResult(txid: 'qq' * 32, verdict: 'ok');
   }
@@ -606,7 +612,7 @@ class FakeWalletApi implements WalletApi {
   }
 
   @override
-  Future<SendResult> sendYedConfirm({required String previewId}) async {
+  Future<SendResult> sendYedConfirm({required String previewId, String? acceptUnusualFee}) async {
     calls.add('yedConfirm $previewId');
     if (yedConfirmError != null) throw yedConfirmError!;
     return SendResult(txid: 'bb' * 32, verdict: 'ok');

@@ -566,6 +566,16 @@ pub struct YedPreview {
     pub txid: String,
     /// The node's dry run on these bytes (the same rule the gate applies at confirm).
     pub dry_run: DryRun,
+    /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
+    /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
+    /// the server). `None`: the normal confirmation.
+    pub fee_note: Option<String>,
+    /// Set exactly when [`YedPreview::fee_note`] is: pass it as `accept_unusual_fee` to the confirm call
+    /// after the user confirmed the fee separately; without it the confirm refuses.
+    pub unusual_fee_ack: Option<String>,
+    /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported). Shown in
+    /// the preview: the app cannot verify it.
+    pub fee_price_micro_usd: Option<i64>,
 }
 
 /// The result of a confirm.
@@ -721,6 +731,15 @@ pub struct MintEstimate {
     pub armed: bool,
     /// The attestor `seq`s the bundle would carry.
     pub bundle_seqs: Vec<u32>,
+    /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
+    /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
+    /// the server). `None`: the normal confirmation.
+    pub fee_note: Option<String>,
+    /// Set exactly when [`MintEstimate::fee_note`] is: pass it back in `accept_unusual_fee` of
+    /// [`MintTerms`] to [`mint_start`] after the separate confirmation; without it the start refuses.
+    pub unusual_fee_ack: Option<String>,
+    /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported).
+    pub fee_price_micro_usd: Option<i64>,
 }
 
 /// One `mints` row (plan §5.3, README "the two-step state machine is a table"): a mint or a
@@ -996,6 +1015,16 @@ pub struct ReleasePreview {
     pub fee_zat: i64,
     /// The txid the broadcast will have.
     pub txid: String,
+    /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
+    /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
+    /// the server). `None`: the normal confirmation.
+    pub fee_note: Option<String>,
+    /// Set exactly when [`ReleasePreview::fee_note`] is: pass it as `accept_unusual_fee` to the confirm call
+    /// after the user confirmed the fee separately; without it the confirm refuses.
+    pub unusual_fee_ack: Option<String>,
+    /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported). Shown in
+    /// the preview: the app cannot verify it.
+    pub fee_price_micro_usd: Option<i64>,
 }
 
 /// The result of [`release_confirm`].
@@ -1041,6 +1070,8 @@ pub struct ClaimTerms {
     pub max_burn_cents: i64,
     /// `ClaimableItem::claimant_zat`.
     pub min_out_zat: i64,
+    /// `ClaimableItem::unusual_fee_ack` when the user confirmed the unusual fee separately.
+    pub accept_unusual_fee: Option<String>,
 }
 
 /// One `ListClaimable` row (the liquidator persona, plan §5.3).
@@ -1092,6 +1123,15 @@ pub struct ClaimableItem {
     pub cancel_count: i64,
     /// From this height a cancel needs one attestor again; 0 when never cancelled.
     pub cancel_quiet_until: i64,
+    /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
+    /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
+    /// the server). `None`: the normal confirmation.
+    pub fee_note: Option<String>,
+    /// Set exactly when [`ClaimableItem::fee_note`] is: pass it back in `accept_unusual_fee` of
+    /// [`ClaimTerms`] to [`claim`] after the separate confirmation; without it the start refuses.
+    pub unusual_fee_ack: Option<String>,
+    /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported).
+    pub fee_price_micro_usd: Option<i64>,
 }
 
 /// The terms of a [`MintEstimate`] the user confirmed, passed back to [`mint_start`] so the
@@ -1106,6 +1146,8 @@ pub struct MintTerms {
     pub payee: String,
     /// `MintEstimate::term_class`.
     pub term_class: String,
+    /// `MintEstimate::unusual_fee_ack` when the user confirmed the unusual fee separately.
+    pub accept_unusual_fee: Option<String>,
 }
 
 /// [`redeem_preview`]: the signed REDEEM (or VOID release) waiting for [`redeem_confirm`]
@@ -1760,6 +1802,11 @@ pub fn status() -> Result<Status, YewError> {
     })
 }
 
+/// A reported price as the previews carry it (`None` for none).
+fn price_opt(micro_usd: i64) -> Option<i64> {
+    (micro_usd > 0).then_some(micro_usd)
+}
+
 /// The balances from the store (no network).
 pub fn balances() -> Result<Balances, YewError> {
     with_open(|o| {
@@ -2287,9 +2334,15 @@ pub struct PqSendPreviewInfo {
     /// Milliseconds the signatures took on this device; `None` where the platform cannot
     /// measure it (the browser).
     pub sign_millis: Option<u64>,
-    /// Set when the fee is unusually high: why (the price it rests on is the server's, which the
-    /// app cannot verify). Show it next to the fee.
+    /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
+    /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
+    /// the server). Show it next to the fee.
     pub fee_note: Option<String>,
+    /// Set exactly when [`PqSendPreviewInfo::fee_note`] is: pass it as `accept_unusual_fee` to
+    /// [`pq_send_confirm`] after the separate confirmation; without it the confirm refuses.
+    pub unusual_fee_ack: Option<String>,
+    /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported).
+    pub fee_price_micro_usd: Option<i64>,
     /// `nExpiryHeight`.
     pub expiry_height: u32,
     /// The txid the transaction will have.
@@ -2327,6 +2380,8 @@ pub fn pq_send_preview(from: String, to: String, zat: i64) -> Result<PqSendPrevi
                 size_bytes: p.raw.len() as u32,
                 sign_millis: p.sign_millis,
                 fee_note: p.fee_note.clone(),
+                unusual_fee_ack: p.fee_guard.ack.clone(),
+                fee_price_micro_usd: price_opt(p.fee_guard.reported_price_micro_usd),
                 expiry_height: p.expiry_height,
                 txid,
             };
@@ -2339,10 +2394,18 @@ pub fn pq_send_preview(from: String, to: String, zat: i64) -> Result<PqSendPrevi
 
 /// Broadcast a [`pq_send_preview`] through both gate layers (the node's dry run must say `ok,
 /// burned 0`; a server without Yellowback refuses it). A send whose outcome is unknown says
-/// `…; status unknown, txid <txid>: check before sending again`.
-pub fn pq_send_confirm(preview_id: String) -> Result<SendResult, YewError> {
+/// `…; status unknown, txid <txid>: check before sending again`. A flagged fee
+/// ([`PqSendPreviewInfo::unusual_fee_ack`]) needs that acknowledgement as `accept_unusual_fee`;
+/// without it the call refuses and the preview stays.
+pub fn pq_send_confirm(
+    preview_id: String,
+    accept_unusual_fee: Option<String>,
+) -> Result<SendResult, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
+            if let Some(Preview::Pq(p)) = o.previews.get(&preview_id) {
+                crate::build::terms::require_ack(&p.fee_guard, accept_unusual_fee.as_deref())?;
+            }
             let p = match o.previews.remove(&preview_id) {
                 Some(Preview::Pq(p)) => p,
                 _ => {
@@ -2360,6 +2423,7 @@ pub fn pq_send_confirm(preview_id: String) -> Result<SendResult, YewError> {
                 &mut conn.compact,
                 &mut conn.validator,
                 &p,
+                accept_unusual_fee.as_deref(),
             )
             .await?;
             Ok(SendResult {
@@ -2578,6 +2642,9 @@ pub fn send_yed_preview(recipients: Vec<Recipient>) -> Result<YedPreview, YewErr
                     yed_out_cents: v.yed_out,
                     accepted: crate::gate::accept(&v, 0).is_ok(),
                 },
+                fee_note: p.fee_guard.note.clone(),
+                unusual_fee_ack: p.fee_guard.ack.clone(),
+                fee_price_micro_usd: price_opt(p.fee_guard.reported_price_micro_usd),
             };
             o.previews.insert(txid, Preview::Yed(p));
             Ok(out)
@@ -2585,10 +2652,18 @@ pub fn send_yed_preview(recipients: Vec<Recipient>) -> Result<YedPreview, YewErr
     })
 }
 
-/// Broadcast a YED preview through the gate (D-W-5): both layers again on the same bytes.
-pub fn send_yed_confirm(preview_id: String) -> Result<SendResult, YewError> {
+/// Broadcast a YED preview through the gate (D-W-5): both layers again on the same bytes. A
+/// preview whose fee is flagged ([`YedPreview::unusual_fee_ack`]) is confirmed only with that
+/// acknowledgement as `accept_unusual_fee`; without it the call refuses and the preview stays.
+pub fn send_yed_confirm(
+    preview_id: String,
+    accept_unusual_fee: Option<String>,
+) -> Result<SendResult, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
+            if let Some(Preview::Yed(p)) = o.previews.get(&preview_id) {
+                crate::build::terms::require_ack(&p.fee_guard, accept_unusual_fee.as_deref())?;
+            }
             let p = match o.previews.remove(&preview_id) {
                 Some(Preview::Yed(p)) => p,
                 _ => {
@@ -2601,8 +2676,14 @@ pub fn send_yed_confirm(preview_id: String) -> Result<SendResult, YewError> {
             ensure_conn(o).await?;
             let Open { wallet, conn, .. } = o;
             let conn = conn.as_mut().expect("connected");
-            let (txid, v) =
-                yed_transfer::broadcast(wallet, &mut conn.compact, &mut conn.validator, &p).await?;
+            let (txid, v) = yed_transfer::broadcast(
+                wallet,
+                &mut conn.compact,
+                &mut conn.validator,
+                &p,
+                accept_unusual_fee.as_deref(),
+            )
+            .await?;
             Ok(SendResult {
                 txid,
                 verdict: v.verdict,
@@ -3182,6 +3263,9 @@ pub fn mint_estimate(cents: i64, lock_blocks: u32) -> Result<MintEstimate, YewEr
                 p_mint_micro_usd: if e.p_mint > 0 { Some(e.p_mint) } else { None },
                 armed: e.armed,
                 bundle_seqs: e.bundle_seqs.iter().map(|s| *s as u32).collect(),
+                fee_note: e.fee_guard.note.clone(),
+                unusual_fee_ack: e.fee_guard.ack.clone(),
+                fee_price_micro_usd: price_opt(e.fee_guard.reported_price_micro_usd),
             })
         })
     })
@@ -3210,6 +3294,7 @@ pub fn mint_start(
                 fee_zat: confirmed.fee_zat,
                 payee: confirmed.payee,
                 term_class: confirmed.term_class,
+                accept_unusual_fee: confirmed.accept_unusual_fee,
             };
             let id = {
                 let Open { wallet, conn, .. } = &mut *o;
@@ -3454,6 +3539,9 @@ pub fn release_preview(intent: String) -> Result<ReleasePreview, YewError> {
                 recipient_address: p.recipient_address.clone(),
                 fee_zat: p.fee,
                 txid: id.clone(),
+                fee_note: p.fee_guard.note.clone(),
+                unusual_fee_ack: p.fee_guard.ack.clone(),
+                fee_price_micro_usd: price_opt(p.fee_guard.reported_price_micro_usd),
             };
             o.previews.insert(id, Preview::Release(p));
             Ok(out)
@@ -3461,10 +3549,18 @@ pub fn release_preview(intent: String) -> Result<ReleasePreview, YewError> {
     })
 }
 
-/// Broadcast a release preview through both gate layers.
-pub fn release_confirm(preview_id: String) -> Result<ReleaseResult, YewError> {
+/// Broadcast a release preview through both gate layers. A flagged fee
+/// ([`ReleasePreview::unusual_fee_ack`]) needs that acknowledgement as `accept_unusual_fee`;
+/// without it the call refuses and the preview stays.
+pub fn release_confirm(
+    preview_id: String,
+    accept_unusual_fee: Option<String>,
+) -> Result<ReleaseResult, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
+            if let Some(Preview::Release(p)) = o.previews.get(&preview_id) {
+                crate::build::terms::require_ack(&p.fee_guard, accept_unusual_fee.as_deref())?;
+            }
             let p = match o.previews.remove(&preview_id) {
                 Some(Preview::Release(p)) => p,
                 _ => {
@@ -3478,7 +3574,12 @@ pub fn release_confirm(preview_id: String) -> Result<ReleaseResult, YewError> {
             let Open { wallet, conn, .. } = o;
             let conn = conn.as_mut().expect("connected");
             let (sent, v) = wallet
-                .release_confirm(&mut conn.compact, &mut conn.validator, &p)
+                .release_confirm(
+                    &mut conn.compact,
+                    &mut conn.validator,
+                    &p,
+                    accept_unusual_fee.as_deref(),
+                )
                 .await?;
             Ok(ReleaseResult {
                 txid: sent,
@@ -3496,11 +3597,15 @@ pub fn claimable() -> Result<Vec<ClaimableItem>, YewError> {
             ensure_conn(o).await?;
             let Open { wallet, conn, .. } = o;
             let conn = conn.as_mut().expect("connected");
+            let g = crate::build::mint::main_fee_guard(wallet, "claim")?;
             Ok(wallet
                 .claimable(&mut conn.validator)
                 .await?
                 .into_iter()
                 .map(|c| ClaimableItem {
+                    fee_note: g.note.clone(),
+                    unusual_fee_ack: g.ack.clone(),
+                    fee_price_micro_usd: price_opt(g.reported_price_micro_usd),
                     vault_txid: c.vault_txid,
                     owner_address: c.owner_address,
                     cents: c.minted_cents as i64,
@@ -3544,6 +3649,7 @@ pub fn claim(vault_txid: String, confirmed: ClaimTerms) -> Result<MintStatus, Ye
     let bounds = crate::build::terms::ClaimBounds {
         max_burn_cents: confirmed.max_burn_cents as u64,
         min_out_zat: confirmed.min_out_zat,
+        accept_unusual_fee: confirmed.accept_unusual_fee,
     };
     with_open_async(|o| {
         Box::pin(async move {
@@ -3606,6 +3712,7 @@ mod tests {
         let terms = ClaimTerms {
             max_burn_cents: 10_000,
             min_out_zat: 1,
+            accept_unusual_fee: None,
         };
         assert_eq!(
             claim("x".into(), terms.clone()).unwrap_err().kind,
@@ -3615,6 +3722,7 @@ mod tests {
         let unbounded = ClaimTerms {
             max_burn_cents: 0,
             min_out_zat: 0,
+            accept_unusual_fee: None,
         };
         assert_eq!(
             claim("ab".repeat(32), unbounded).unwrap_err().kind,

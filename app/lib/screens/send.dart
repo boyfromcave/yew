@@ -31,6 +31,7 @@ import '../widgets/scan_sheet.dart';
 import '../widgets/send_error_card.dart';
 import '../widgets/send_result.dart';
 import '../widgets/slide_to_confirm.dart';
+import '../widgets/unusual_fee.dart';
 
 enum Asset { yed, yec }
 
@@ -162,11 +163,15 @@ class _SendScreenState extends State<SendScreen> {
     try {
       // First private send: the one-time proving-files sheet; the preview stays valid.
       if (_yec != null && _yec!.paramsNeeded && !await preparePrivateSending(context)) return;
+      if (!mounted) return;
       final SendResult r;
       if (_yed != null) {
-        r = await app.api.sendYedConfirm(previewId: _yed!.previewId);
+        // review YEW-REVIEW-4 M2: an unusual fee needs its own confirmation
+        final ack = await acceptUnusualFee(context, note: _yed!.feeNote, ack: _yed!.unusualFeeAck);
+        r = await app.api.sendYedConfirm(previewId: _yed!.previewId, acceptUnusualFee: ack);
       } else if (_pq != null) {
-        r = await app.api.pqSendConfirm(previewId: _pq!.previewId);
+        final ack = await acceptUnusualFee(context, note: _pq!.feeNote, ack: _pq!.unusualFeeAck);
+        r = await app.api.pqSendConfirm(previewId: _pq!.previewId, acceptUnusualFee: ack);
       } else {
         r = await _confirmYec(app);
       }
@@ -174,6 +179,8 @@ class _SendScreenState extends State<SendScreen> {
       await app.refresh();
     } on _NotNow {
       return;
+    } on UnusualFeeDeclined {
+      return; // the preview stays; nothing was sent
     } catch (e) {
       setState(() {
         _error = messageOf(e);

@@ -701,7 +701,7 @@ async fn main() {
                 p.expiry_height,
                 yew_core::keys::hex(&p.payload)
             );
-            let (txid, val) = fail(yed_transfer::broadcast(&w, &mut c, &mut v, &p).await);
+            let (txid, val) = fail(yed_transfer::broadcast(&w, &mut c, &mut v, &p, None).await);
             println!(
                 "sent {txid} (node dry run: verdict {} valid {} burned {} yedIn {} yedOut {})",
                 val.verdict, val.valid, val.burned, val.yed_in, val.yed_out
@@ -837,6 +837,8 @@ async fn main() {
                 fee_zat: e.fee_zat,
                 payee: e.payee.clone(),
                 term_class: e.term_class.clone(),
+                // an unusual fee is refused here: the CLI has no second confirmation
+                accept_unusual_fee: None,
             };
             let id = fail(
                 w.mint_start(
@@ -953,6 +955,7 @@ async fn main() {
             let bounds = yew_core::build::terms::ClaimBounds {
                 max_burn_cents: entry.minted_cents,
                 min_out_zat: entry.claimant_zat,
+                accept_unusual_fee: None,
             };
             let id = fail(
                 w.claim(&mut c, &mut v, &txid, Some(&bounds), r.tip, r.branch_id)
@@ -1000,7 +1003,7 @@ async fn main() {
                 "preview release {}: {} zat to {} (fee from YEC, change {} zat)",
                 arg, p.value, p.recipient_address, p.change
             );
-            let (sent, val) = fail(w.release_confirm(&mut c, &mut v, &p).await);
+            let (sent, val) = fail(w.release_confirm(&mut c, &mut v, &p, None).await);
             println!(
                 "release {sent} sent (node dry run: verdict {} valid {} type {:?})",
                 val.verdict, val.valid, val.tx_type

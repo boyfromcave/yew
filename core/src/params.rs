@@ -797,6 +797,19 @@ pub fn pq_send_fee_limit(size: usize, conventional: i64) -> i64 {
     size_fee.min(MAX_YED_TX_FEE_ZAT).max(conventional)
 }
 
+/// The highest flat fee (`fees.network.flatZat`, a floor on every Yellowback fee) YEW accepts from
+/// a server: 10× [`FEE_ZAT`] (review YEW-REVIEW-4 M2; the node's default is `FEE_ZAT`).
+pub const MAX_FLAT_ZAT: i64 = 10 * FEE_ZAT;
+
+/// The most YEW pays for a vault / Yellowback transaction of `size` bytes whose conventional fee
+/// is `conventional`, whatever a server reports (review YEW-REVIEW-4 M2): the size fee at
+/// [`MAX_YED_FEE_RATE_ZAT_PER_KB`] or [`MAX_FLAT_ZAT`], never above [`MAX_YED_TX_FEE_ZAT`]
+/// unless the conventional fee alone is higher.
+pub fn yed_fee_limit(size: usize, conventional: i64) -> i64 {
+    let size_fee = MAX_FLAT_ZAT.max(rate_fee(MAX_YED_FEE_RATE_ZAT_PER_KB, size));
+    size_fee.min(MAX_YED_TX_FEE_ZAT).max(conventional)
+}
+
 /// The fee above which YEW marks a post-quantum send's fee as unusual in the preview: the larger
 /// of the node's price-free cap [`DEFAULT_TRANSACTION_MAXFEE_ZAT`] (0.1 YEC) and three times the
 /// fee at the attested floor rate [`ATTESTED_FEE_FLOOR_ZAT_PER_KB`] (the cheapest any priced

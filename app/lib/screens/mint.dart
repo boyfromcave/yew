@@ -22,6 +22,7 @@ import '../theme.dart';
 import '../trust_text.dart';
 import '../widgets/move_public_hint.dart';
 import '../widgets/preview_card.dart';
+import '../widgets/unusual_fee.dart';
 import 'mint_progress.dart';
 import 'receive.dart';
 
@@ -162,14 +163,18 @@ class _MintScreenState extends State<MintScreen> {
     setState(() => _busy = true);
     try {
       // The terms shown are the terms confirmed: the core refuses a server answer that differs.
+      // review YEW-REVIEW-4 M2: an unusual MINT fee needs its own confirmation
+      final ack = await acceptUnusualFee(context, note: e.feeNote, ack: e.unusualFeeAck);
       final row = await app.api.mintStart(
         cents: e.cents,
         lockBlocks: e.lockBlocks,
-        confirmed: MintTerms(collateralZat: e.collateralZat, feeZat: e.feeZat, payee: e.payee, termClass: e.termClass),
+        confirmed: MintTerms(collateralZat: e.collateralZat, feeZat: e.feeZat, payee: e.payee, termClass: e.termClass, acceptUnusualFee: ack),
       );
       await app.refresh();
       if (!mounted) return;
       Navigator.of(context).pushReplacement(MaterialPageRoute<void>(builder: (_) => MintProgressScreen(mintId: row.mintId)));
+    } on UnusualFeeDeclined {
+      return;
     } catch (err) {
       setState(() {
         _error = messageOf(err);

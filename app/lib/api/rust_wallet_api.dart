@@ -130,7 +130,8 @@ class RustWalletApi implements WalletApi {
       rust.pqSendPreview(from: from, to: to, zat: zat);
 
   @override
-  Future<SendResult> pqSendConfirm({required String previewId}) => rust.pqSendConfirm(previewId: previewId);
+  Future<SendResult> pqSendConfirm({required String previewId, String? acceptUnusualFee}) =>
+      rust.pqSendConfirm(previewId: previewId, acceptUnusualFee: acceptUnusualFee);
 
   @override
   Future<ParamsStatus> paramsStatus() => rust.paramsStatus();
@@ -143,8 +144,8 @@ class RustWalletApi implements WalletApi {
       rust.sendYedPreview(recipients: recipients);
 
   @override
-  Future<SendResult> sendYedConfirm({required String previewId}) =>
-      rust.sendYedConfirm(previewId: previewId);
+  Future<SendResult> sendYedConfirm({required String previewId, String? acceptUnusualFee}) =>
+      rust.sendYedConfirm(previewId: previewId, acceptUnusualFee: acceptUnusualFee);
 
   @override
   Future<WifExport> exportWif({required String address}) => rust.exportWif(address: address);
@@ -202,7 +203,8 @@ class RustWalletApi implements WalletApi {
   Future<ReleasePreview> releasePreview({required String intent}) => rust.releasePreview(intent: intent);
 
   @override
-  Future<ReleaseResult> releaseConfirm({required String previewId}) => rust.releaseConfirm(previewId: previewId);
+  Future<ReleaseResult> releaseConfirm({required String previewId, String? acceptUnusualFee}) =>
+      rust.releaseConfirm(previewId: previewId, acceptUnusualFee: acceptUnusualFee);
 
   @override
   String generateSeedWords({required int words}) => rust.generateSeedWords(words: words);

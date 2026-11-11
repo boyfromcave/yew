@@ -34,6 +34,7 @@ use crate::wallet::{Wallet, WalletError};
 
 use super::mint;
 use super::release::own_pq_key;
+use super::terms;
 
 /// The privacy policy the app sends under: the transparent sender is revealed by any spend from
 /// a post-quantum address, and the recipient is transparent too (6.x `AllowFullyTransparent`,
@@ -68,9 +69,11 @@ pub struct PqSendPreview {
     /// Milliseconds spent signing (an SLH-DSA signature takes noticeably longer than ECDSA);
     /// `None` where the platform has no clock to measure it (the browser).
     pub sign_millis: Option<u64>,
-    /// Set when the fee is unusually high (above [`params::pq_fee_unusual_threshold`]): why, for
-    /// the preview to show next to the fee (review YEW-REVIEW-3 M1).
+    /// Set when the fee is unusual ([`terms::guard_fee`]): why, for the preview to show next to
+    /// the fee and the separate confirmation (review YEW-REVIEW-3 M1, YEW-REVIEW-4 M2).
     pub fee_note: Option<String>,
+    /// The fee guard: [`broadcast`] refuses a flagged fee without its acknowledgement.
+    pub fee_guard: terms::FeeGuard,
 }
 
 fn other(m: impl Into<String>) -> WalletError {
@@ -216,17 +219,16 @@ pub fn build_pq_send(
     }
     // review YEW-REVIEW-3 L6: the signed bytes are what the preview shows
     check_signed_locally(&tx, &p.selected, p.fee)?;
-    let unusual = params::pq_fee_unusual_threshold(raw.len(), conventional);
-    let fee_note = (p.fee > unusual).then(|| {
-        format!(
-            "Unusually high fee: {} YEC, above {} YEC for a {}-byte post-quantum send. It is priced at {} zat/KB from the YEC price the server reports, which this app cannot verify; check the YEC price before you send.",
-            plan::format_money(p.fee),
-            plan::format_money(unusual),
-            raw.len(),
-            rate
-        )
-    });
     let txid = tx.txid()?;
+    // review YEW-REVIEW-4 M2: unusual relative to the highest price this wallet has seen
+    let fee_guard = wallet.guard_fee(
+        terms::FeeKind::Plain,
+        p.fee,
+        raw.len(),
+        conventional,
+        &txid_hex(&txid),
+    )?;
+    let fee_note = fee_guard.note.clone();
     gate::check(gate::Path::PqSpend, &raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
     })?;
@@ -244,6 +246,7 @@ pub fn build_pq_send(
         txid,
         sign_millis,
         fee_note,
+        fee_guard,
     })
 }
 
@@ -316,7 +319,10 @@ pub async fn broadcast(
     client: &mut CompactClient,
     validator: &mut Validator,
     p: &PqSendPreview,
+    accept_unusual_fee: Option<&str>,
 ) -> Result<(String, Validation), WalletError> {
+    // YEW-PORT-6 item 2: a flagged fee is never confirmed by the normal button
+    terms::require_ack(&p.fee_guard, accept_unusual_fee)?;
     let (_, validation) = gate::confirm(validator, gate::Path::PqSpend, &p.raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
     })
@@ -507,6 +513,7 @@ mod tests {
         let honest = build_pq_send(&w, &from, &ecc_to(), 1_000_000, 100, VAULT_BRANCH_ID).unwrap();
         assert!(honest.fee_note.is_none());
         assert!(honest.fee < params::DEFAULT_TRANSACTION_MAXFEE_ZAT);
+        let base = w.pq_terms();
         let mut t = w.pq_terms();
         // hostile: 10 YEC/KB with the 10 YEC cap
         t.fee_rate_zat_per_kb = 10 * params::COIN;
@@ -529,11 +536,37 @@ mod tests {
             tx.zip317_conventional_fee(&sizes).unwrap()
         };
         assert_eq!(p.fee, params::pq_send_fee_limit(p.raw.len(), conventional));
-        let note = p.fee_note.expect("an unusual fee is marked");
+        // review YEW-REVIEW-4 M2: on first use (no price seen) nothing below the limit is flagged
+        assert!(p.fee_note.is_none() && p.fee_guard.ack.is_none());
+        // once a price was seen ($0.05), the same terms are flagged, with an acknowledgement
+        w.store.set_meta("fee_price_high_water", "50000").unwrap();
+        let p = build_pq_send(&w, &from, &ecc_to(), 1_000_000, 100, VAULT_BRANCH_ID).unwrap();
+        let note = p.fee_note.clone().expect("an unusual fee is marked");
         assert!(
-            note.starts_with("Unusually high fee:") && note.contains("cannot verify"),
+            note.starts_with("Unusual fee:")
+                && note.contains("× the usual")
+                && note.contains("came from the server"),
             "{note}"
         );
+        let ack = p
+            .fee_guard
+            .ack
+            .clone()
+            .expect("flagged: an acknowledgement");
+        assert!(ack.ends_with(&txid_hex(&p.txid)), "{ack}");
+        // YEW-PORT-6 item 2: the confirm refuses without it, with another, and passes with it
+        assert!(terms::require_ack(&p.fee_guard, None)
+            .unwrap_err()
+            .to_string()
+            .starts_with("unusual-fee:"));
+        assert!(terms::require_ack(&p.fee_guard, Some("accept-unusual-fee:1:x")).is_err());
+        assert!(terms::require_ack(&p.fee_guard, Some(&ack)).is_ok());
+        // honest terms at that price: not flagged, and a stray acknowledgement is refused
+        w.set_pq_terms_for_test(base);
+        let honest = build_pq_send(&w, &from, &ecc_to(), 1_000_000, 100, VAULT_BRANCH_ID).unwrap();
+        assert!(honest.fee_note.is_none());
+        assert!(terms::require_ack(&honest.fee_guard, None).is_ok());
+        assert!(terms::require_ack(&honest.fee_guard, Some(&ack)).is_err());
     }
 
     /// Review YEW-REVIEW-3 M1: when the server's terms were refused, the send refuses with the

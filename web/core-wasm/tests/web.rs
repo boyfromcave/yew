@@ -363,7 +363,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
         field_u64(&p, "inputs")
     );
     let t3 = now();
-    let c = yew_web_core::confirm(preview_id.clone())
+    let c = yew_web_core::confirm(preview_id.clone(), None)
         .await
         .expect("t→t confirm");
     console_log!(
@@ -373,7 +373,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
         now() - t3
     );
     assert_eq!(field_str(&c, "txid"), preview_id);
-    let e = yew_web_core::confirm(preview_id.clone())
+    let e = yew_web_core::confirm(preview_id.clone(), None)
         .await
         .expect_err("consumed");
     assert!(message(&e).starts_with("invalid: This preview is no longer valid"));
@@ -429,7 +429,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
     let shield_id = field_str(&p, "previewId");
     let shield_fee = field_amt(&p, "fee");
     if !field_bool(&ps, "present") {
-        let e = yew_web_core::confirm(shield_id.clone())
+        let e = yew_web_core::confirm(shield_id.clone(), None)
             .await
             .expect_err("no params yet");
         assert!(message(&e).starts_with("params: "), "{}", message(&e));
@@ -481,7 +481,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
     );
 
     let t7 = now();
-    let c = yew_web_core::confirm(shield_id.clone())
+    let c = yew_web_core::confirm(shield_id.clone(), None)
         .await
         .expect("shield confirm");
     let shield_txid = field_str(&c, "txid");
@@ -534,7 +534,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
     let z_id = field_str(&p, "previewId");
     let z_fee = field_amt(&p, "fee");
     let t8 = now();
-    let c = yew_web_core::confirm(z_id).await.expect("z→z confirm");
+    let c = yew_web_core::confirm(z_id, None).await.expect("z→z confirm");
     let z_txid = field_str(&c, "txid");
     console_log!(
         "yew-web-core: z→z {z_txid} (fee {z_fee}) proved and broadcast in {:.0} ms",

@@ -7,7 +7,7 @@ import 'frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `claim_intent_of`, `connect`, `download_params_inner`, `download_params_to`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `height_time`, `hex_or_empty`, `history_item`, `locked`, `merge_shielded`, `mint_status_of`, `new`, `now_secs`, `open_wallet`, `params_dir_of`, `params_status_of`, `parse_outpoint`, `parse_server`, `parse_txid`, `renew_lock_blocks`, `row_status`, `runtime`, `shielded_pair`, `store_err`, `sync_shielded`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `with_pending_spend`, `yec_preview_of`, `yellowback_refusal`, `yellowback_status`, `yellowback_usable`
+// These functions are ignored because they are not marked as `pub`: `claim_intent_of`, `connect`, `download_params_inner`, `download_params_to`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `height_time`, `hex_or_empty`, `history_item`, `locked`, `merge_shielded`, `mint_status_of`, `new`, `now_secs`, `open_wallet`, `params_dir_of`, `params_status_of`, `parse_outpoint`, `parse_server`, `parse_txid`, `price_opt`, `renew_lock_blocks`, `row_status`, `runtime`, `shielded_pair`, `store_err`, `sync_shielded`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `with_pending_spend`, `yec_preview_of`, `yellowback_refusal`, `yellowback_status`, `yellowback_usable`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Conn`, `Open`, `Preview`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
 
@@ -188,9 +188,16 @@ Future<PqSendPreviewInfo> pqSendPreview({
 
 /// Broadcast a [`pq_send_preview`] through both gate layers (the node's dry run must say `ok,
 /// burned 0`; a server without Yellowback refuses it). A send whose outcome is unknown says
-/// `…; status unknown, txid <txid>: check before sending again`.
-Future<SendResult> pqSendConfirm({required String previewId}) =>
-    RustLib.instance.api.crateApiPqSendConfirm(previewId: previewId);
+/// `…; status unknown, txid <txid>: check before sending again`. A flagged fee
+/// ([`PqSendPreviewInfo::unusual_fee_ack`]) needs that acknowledgement as `accept_unusual_fee`;
+/// without it the call refuses and the preview stays.
+Future<SendResult> pqSendConfirm({
+  required String previewId,
+  String? acceptUnusualFee,
+}) => RustLib.instance.api.crateApiPqSendConfirm(
+  previewId: previewId,
+  acceptUnusualFee: acceptUnusualFee,
+);
 
 /// Broadcast a YEC preview through the gate (D-W-5). A private send is proved and signed
 /// here (seconds), with the proving parameters verified first ([`ErrorKind::ParamsMissing`]
@@ -216,9 +223,16 @@ Stream<ParamsProgress> downloadParams({required String baseUrl}) =>
 Future<YedPreview> sendYedPreview({required List<Recipient> recipients}) =>
     RustLib.instance.api.crateApiSendYedPreview(recipients: recipients);
 
-/// Broadcast a YED preview through the gate (D-W-5): both layers again on the same bytes.
-Future<SendResult> sendYedConfirm({required String previewId}) =>
-    RustLib.instance.api.crateApiSendYedConfirm(previewId: previewId);
+/// Broadcast a YED preview through the gate (D-W-5): both layers again on the same bytes. A
+/// preview whose fee is flagged ([`YedPreview::unusual_fee_ack`]) is confirmed only with that
+/// acknowledgement as `accept_unusual_fee`; without it the call refuses and the preview stays.
+Future<SendResult> sendYedConfirm({
+  required String previewId,
+  String? acceptUnusualFee,
+}) => RustLib.instance.api.crateApiSendYedConfirm(
+  previewId: previewId,
+  acceptUnusualFee: acceptUnusualFee,
+);
 
 /// Export the WIF of an own address (D-W-11). The app shows the warning: YEC **and** YED on
 /// this address move with the key.
@@ -313,9 +327,16 @@ Future<List<ClaimIntent>> claimIntents() =>
 Future<ReleasePreview> releasePreview({required String intent}) =>
     RustLib.instance.api.crateApiReleasePreview(intent: intent);
 
-/// Broadcast a release preview through both gate layers.
-Future<ReleaseResult> releaseConfirm({required String previewId}) =>
-    RustLib.instance.api.crateApiReleaseConfirm(previewId: previewId);
+/// Broadcast a release preview through both gate layers. A flagged fee
+/// ([`ReleasePreview::unusual_fee_ack`]) needs that acknowledgement as `accept_unusual_fee`;
+/// without it the call refuses and the preview stays.
+Future<ReleaseResult> releaseConfirm({
+  required String previewId,
+  String? acceptUnusualFee,
+}) => RustLib.instance.api.crateApiReleaseConfirm(
+  previewId: previewId,
+  acceptUnusualFee: acceptUnusualFee,
+);
 
 /// `ListClaimable` at the node's tip (connects; the liquidator persona).
 Future<List<ClaimableItem>> claimable() =>
@@ -716,10 +737,18 @@ class ClaimTerms {
   /// `ClaimableItem::claimant_zat`.
   final PlatformInt64 minOutZat;
 
-  const ClaimTerms({required this.maxBurnCents, required this.minOutZat});
+  /// `ClaimableItem::unusual_fee_ack` when the user confirmed the unusual fee separately.
+  final String? acceptUnusualFee;
+
+  const ClaimTerms({
+    required this.maxBurnCents,
+    required this.minOutZat,
+    this.acceptUnusualFee,
+  });
 
   @override
-  int get hashCode => maxBurnCents.hashCode ^ minOutZat.hashCode;
+  int get hashCode =>
+      maxBurnCents.hashCode ^ minOutZat.hashCode ^ acceptUnusualFee.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -727,7 +756,8 @@ class ClaimTerms {
       other is ClaimTerms &&
           runtimeType == other.runtimeType &&
           maxBurnCents == other.maxBurnCents &&
-          minOutZat == other.minOutZat;
+          minOutZat == other.minOutZat &&
+          acceptUnusualFee == other.acceptUnusualFee;
 }
 
 /// One `ListClaimable` row (the liquidator persona, plan §5.3).
@@ -799,6 +829,18 @@ class ClaimableItem {
   /// From this height a cancel needs one attestor again; 0 when never cancelled.
   final PlatformInt64 cancelQuietUntil;
 
+  /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
+  /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
+  /// the server). `None`: the normal confirmation.
+  final String? feeNote;
+
+  /// Set exactly when [`ClaimableItem::fee_note`] is: pass it back in `accept_unusual_fee` of
+  /// [`ClaimTerms`] to [`claim`] after the separate confirmation; without it the start refuses.
+  final String? unusualFeeAck;
+
+  /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported).
+  final PlatformInt64? feePriceMicroUsd;
+
   const ClaimableItem({
     required this.vaultTxid,
     required this.ownerAddress,
@@ -821,6 +863,9 @@ class ClaimableItem {
     required this.cancelsRequired,
     required this.cancelCount,
     required this.cancelQuietUntil,
+    this.feeNote,
+    this.unusualFeeAck,
+    this.feePriceMicroUsd,
   });
 
   @override
@@ -845,7 +890,10 @@ class ClaimableItem {
       inTerm.hashCode ^
       cancelsRequired.hashCode ^
       cancelCount.hashCode ^
-      cancelQuietUntil.hashCode;
+      cancelQuietUntil.hashCode ^
+      feeNote.hashCode ^
+      unusualFeeAck.hashCode ^
+      feePriceMicroUsd.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -872,7 +920,10 @@ class ClaimableItem {
           inTerm == other.inTerm &&
           cancelsRequired == other.cancelsRequired &&
           cancelCount == other.cancelCount &&
-          cancelQuietUntil == other.cancelQuietUntil;
+          cancelQuietUntil == other.cancelQuietUntil &&
+          feeNote == other.feeNote &&
+          unusualFeeAck == other.unusualFeeAck &&
+          feePriceMicroUsd == other.feePriceMicroUsd;
 }
 
 /// The result of [`create_wallet`].
@@ -1288,6 +1339,18 @@ class MintEstimate {
   /// The attestor `seq`s the bundle would carry.
   final Uint32List bundleSeqs;
 
+  /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
+  /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
+  /// the server). `None`: the normal confirmation.
+  final String? feeNote;
+
+  /// Set exactly when [`MintEstimate::fee_note`] is: pass it back in `accept_unusual_fee` of
+  /// [`MintTerms`] to [`mint_start`] after the separate confirmation; without it the start refuses.
+  final String? unusualFeeAck;
+
+  /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported).
+  final PlatformInt64? feePriceMicroUsd;
+
   const MintEstimate({
     required this.cents,
     required this.lockBlocks,
@@ -1312,6 +1375,9 @@ class MintEstimate {
     this.pMintMicroUsd,
     required this.armed,
     required this.bundleSeqs,
+    this.feeNote,
+    this.unusualFeeAck,
+    this.feePriceMicroUsd,
   });
 
   @override
@@ -1338,7 +1404,10 @@ class MintEstimate {
       affordable.hashCode ^
       pMintMicroUsd.hashCode ^
       armed.hashCode ^
-      bundleSeqs.hashCode;
+      bundleSeqs.hashCode ^
+      feeNote.hashCode ^
+      unusualFeeAck.hashCode ^
+      feePriceMicroUsd.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1367,7 +1436,10 @@ class MintEstimate {
           affordable == other.affordable &&
           pMintMicroUsd == other.pMintMicroUsd &&
           armed == other.armed &&
-          bundleSeqs == other.bundleSeqs;
+          bundleSeqs == other.bundleSeqs &&
+          feeNote == other.feeNote &&
+          unusualFeeAck == other.unusualFeeAck &&
+          feePriceMicroUsd == other.feePriceMicroUsd;
 }
 
 /// One `mints` row (plan §5.3, README "the two-step state machine is a table"): a mint or a
@@ -1577,11 +1649,15 @@ class MintTerms {
   /// `MintEstimate::term_class`.
   final String termClass;
 
+  /// `MintEstimate::unusual_fee_ack` when the user confirmed the unusual fee separately.
+  final String? acceptUnusualFee;
+
   const MintTerms({
     required this.collateralZat,
     required this.feeZat,
     required this.payee,
     required this.termClass,
+    this.acceptUnusualFee,
   });
 
   @override
@@ -1589,7 +1665,8 @@ class MintTerms {
       collateralZat.hashCode ^
       feeZat.hashCode ^
       payee.hashCode ^
-      termClass.hashCode;
+      termClass.hashCode ^
+      acceptUnusualFee.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1599,7 +1676,8 @@ class MintTerms {
           collateralZat == other.collateralZat &&
           feeZat == other.feeZat &&
           payee == other.payee &&
-          termClass == other.termClass;
+          termClass == other.termClass &&
+          acceptUnusualFee == other.acceptUnusualFee;
 }
 
 /// The direction of [`move_preview`].
@@ -1747,9 +1825,17 @@ class PqSendPreviewInfo {
   /// measure it (the browser).
   final BigInt? signMillis;
 
-  /// Set when the fee is unusually high: why (the price it rests on is the server's, which the
-  /// app cannot verify). Show it next to the fee.
+  /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
+  /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
+  /// the server). Show it next to the fee.
   final String? feeNote;
+
+  /// Set exactly when [`PqSendPreviewInfo::fee_note`] is: pass it as `accept_unusual_fee` to
+  /// [`pq_send_confirm`] after the separate confirmation; without it the confirm refuses.
+  final String? unusualFeeAck;
+
+  /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported).
+  final PlatformInt64? feePriceMicroUsd;
 
   /// `nExpiryHeight`.
   final int expiryHeight;
@@ -1770,6 +1856,8 @@ class PqSendPreviewInfo {
     required this.sizeBytes,
     this.signMillis,
     this.feeNote,
+    this.unusualFeeAck,
+    this.feePriceMicroUsd,
     required this.expiryHeight,
     required this.txid,
   });
@@ -1788,6 +1876,8 @@ class PqSendPreviewInfo {
       sizeBytes.hashCode ^
       signMillis.hashCode ^
       feeNote.hashCode ^
+      unusualFeeAck.hashCode ^
+      feePriceMicroUsd.hashCode ^
       expiryHeight.hashCode ^
       txid.hashCode;
 
@@ -1808,6 +1898,8 @@ class PqSendPreviewInfo {
           sizeBytes == other.sizeBytes &&
           signMillis == other.signMillis &&
           feeNote == other.feeNote &&
+          unusualFeeAck == other.unusualFeeAck &&
+          feePriceMicroUsd == other.feePriceMicroUsd &&
           expiryHeight == other.expiryHeight &&
           txid == other.txid;
 }
@@ -2164,6 +2256,19 @@ class ReleasePreview {
   /// The txid the broadcast will have.
   final String txid;
 
+  /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
+  /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
+  /// the server). `None`: the normal confirmation.
+  final String? feeNote;
+
+  /// Set exactly when [`ReleasePreview::fee_note`] is: pass it as `accept_unusual_fee` to the confirm call
+  /// after the user confirmed the fee separately; without it the confirm refuses.
+  final String? unusualFeeAck;
+
+  /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported). Shown in
+  /// the preview: the app cannot verify it.
+  final PlatformInt64? feePriceMicroUsd;
+
   const ReleasePreview({
     required this.previewId,
     required this.kind,
@@ -2172,6 +2277,9 @@ class ReleasePreview {
     required this.recipientAddress,
     required this.feeZat,
     required this.txid,
+    this.feeNote,
+    this.unusualFeeAck,
+    this.feePriceMicroUsd,
   });
 
   @override
@@ -2182,7 +2290,10 @@ class ReleasePreview {
       valueZat.hashCode ^
       recipientAddress.hashCode ^
       feeZat.hashCode ^
-      txid.hashCode;
+      txid.hashCode ^
+      feeNote.hashCode ^
+      unusualFeeAck.hashCode ^
+      feePriceMicroUsd.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -2195,7 +2306,10 @@ class ReleasePreview {
           valueZat == other.valueZat &&
           recipientAddress == other.recipientAddress &&
           feeZat == other.feeZat &&
-          txid == other.txid;
+          txid == other.txid &&
+          feeNote == other.feeNote &&
+          unusualFeeAck == other.unusualFeeAck &&
+          feePriceMicroUsd == other.feePriceMicroUsd;
 }
 
 /// The result of [`release_confirm`].
@@ -3018,6 +3132,19 @@ class YedPreview {
   /// The node's dry run on these bytes (the same rule the gate applies at confirm).
   final DryRun dryRun;
 
+  /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
+  /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
+  /// the server). `None`: the normal confirmation.
+  final String? feeNote;
+
+  /// Set exactly when [`YedPreview::fee_note`] is: pass it as `accept_unusual_fee` to the confirm call
+  /// after the user confirmed the fee separately; without it the confirm refuses.
+  final String? unusualFeeAck;
+
+  /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported). Shown in
+  /// the preview: the app cannot verify it.
+  final PlatformInt64? feePriceMicroUsd;
+
   const YedPreview({
     required this.previewId,
     required this.recipients,
@@ -3032,6 +3159,9 @@ class YedPreview {
     required this.expiryHeight,
     required this.txid,
     required this.dryRun,
+    this.feeNote,
+    this.unusualFeeAck,
+    this.feePriceMicroUsd,
   });
 
   @override
@@ -3048,7 +3178,10 @@ class YedPreview {
       yecChangeZat.hashCode ^
       expiryHeight.hashCode ^
       txid.hashCode ^
-      dryRun.hashCode;
+      dryRun.hashCode ^
+      feeNote.hashCode ^
+      unusualFeeAck.hashCode ^
+      feePriceMicroUsd.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -3067,7 +3200,10 @@ class YedPreview {
           yecChangeZat == other.yecChangeZat &&
           expiryHeight == other.expiryHeight &&
           txid == other.txid &&
-          dryRun == other.dryRun;
+          dryRun == other.dryRun &&
+          feeNote == other.feeNote &&
+          unusualFeeAck == other.unusualFeeAck &&
+          feePriceMicroUsd == other.feePriceMicroUsd;
 }
 
 /// Yellowback availability on the server (contract rule 1).

@@ -176,6 +176,9 @@ pub struct ConfirmedTerms {
     pub payee: String,
     /// `term_class` of the estimate.
     pub term_class: String,
+    /// The estimate's [`MintEstimate::fee_guard`] acknowledgement, when its fee was flagged
+    /// (review YEW-REVIEW-4 M2): required then, refused otherwise.
+    pub accept_unusual_fee: Option<String>,
 }
 
 /// What the Mint screen shows before anything is signed (plan §5.3).
@@ -224,6 +227,9 @@ pub struct MintEstimate {
     pub total_zat: i64,
     /// Spendable `YEC` + `FEE_RESERVE`.
     pub available_zat: i64,
+    /// The guard on the MINT's network fee (review YEW-REVIEW-4 M2): a flagged fee needs its
+    /// acknowledgement in [`ConfirmedTerms::accept_unusual_fee`] at `start`.
+    pub fee_guard: terms::FeeGuard,
 }
 
 impl MintEstimate {
@@ -444,7 +450,60 @@ pub async fn estimate(
         bundle_seqs,
         total_zat,
         available_zat: avail + reserved,
+        fee_guard: main_fee_guard(wallet, "mint")?,
     })
+}
+
+/// The guard on a two-step row's main transaction (the MINT, or a CLAIM) as its start sees it:
+/// the Yellowback size fee at one P2PKH funding input (as the estimate prices it), labelled
+/// `label` so the acknowledgement names the kind of row (review YEW-REVIEW-4 M2).
+pub fn main_fee_guard(wallet: &Wallet, label: &str) -> Result<terms::FeeGuard, WalletError> {
+    let size = crate::params::yed_estimated_size(1, &[]);
+    let fee = wallet.pq_terms().yed_fee(size);
+    wallet.guard_fee(terms::FeeKind::Yed, fee, size, 0, label)
+}
+
+/// The meta key that records that the start of row `id` acknowledged an unusual fee.
+fn fee_ack_key(id: i64) -> String {
+    format!("fee_ack:{id}")
+}
+
+/// Record the start's acknowledgement on row `id` when its guard was flagged.
+pub(crate) fn note_fee_ack(
+    wallet: &Wallet,
+    id: i64,
+    g: &terms::FeeGuard,
+) -> Result<(), WalletError> {
+    if g.ack.is_some() {
+        wallet.store.set_meta(&fee_ack_key(id), "1")?;
+    }
+    Ok(())
+}
+
+/// The main transaction's fee at `finish` (review YEW-REVIEW-4 M2): above this build's limit,
+/// refused; unusual, refused unless the row's start acknowledged an unusual fee (the user then
+/// accepted the server's terms as unusual; the limit still holds).
+pub(crate) fn check_main_fee(
+    wallet: &Wallet,
+    id: i64,
+    fee: i64,
+    inputs: &[Utxo],
+) -> Result<(), WalletError> {
+    let (size, conventional) = terms::yed_priced_size(inputs.iter().map(|u| u.script.as_slice()));
+    let g = wallet.guard_fee(
+        terms::FeeKind::Yed,
+        fee,
+        size,
+        conventional,
+        &format!("row:{id}"),
+    )?;
+    if g.ack.is_some() && wallet.store.meta(&fee_ack_key(id))?.is_none() {
+        return Err(WalletError::Other(format!(
+            "unusual-fee: the fee became unusual after you confirmed, so nothing was sent. {} The carrier lapses at the end of its window and can then be swept back.",
+            g.note.unwrap_or_default()
+        )));
+    }
+    Ok(())
 }
 
 /// The mint gate now: `GetYellowbackInfo` (its parameter set checked against the network's,
@@ -664,6 +723,11 @@ pub async fn start(
     if let Some(c) = confirmed {
         check_confirmed(c, &est)?;
     }
+    // YEW-PORT-6 item 2 / review YEW-REVIEW-4 M2: a flagged fee needs its own acknowledgement
+    terms::require_ack(
+        &est.fee_guard,
+        confirmed.and_then(|c| c.accept_unusual_fee.as_deref()),
+    )?;
     if !est.affordable() {
         return Err(MintError::Unaffordable {
             need: est.total_zat,
@@ -752,6 +816,7 @@ pub async fn start(
         persist_row,
     )
     .await?;
+    note_fee_ack(wallet, id, &est.fee_guard)?;
     Ok(id)
 }
 
@@ -1188,6 +1253,7 @@ pub async fn finish(
         }
         fee = next;
     };
+    check_main_fee(wallet, m.id, fee, &inputs)?;
     let needed = outputs + fee - CARRIER_VALUE;
     let selected: i64 = inputs.iter().map(|u| u.value).sum();
     let mut change = selected - needed;
@@ -1433,12 +1499,14 @@ mod tests {
             bundle_seqs: vec![0, 1],
             total_zat: 0,
             available_zat: 0,
+            fee_guard: Default::default(),
         };
         let confirmed = ConfirmedTerms {
             collateral_zat: est.collateral_zat,
             fee_zat: est.fee_zat,
             payee: est.payee.clone(),
             term_class: est.term_class.clone(),
+            accept_unusual_fee: None,
         };
         assert!(check_confirmed(&confirmed, &est).is_ok());
         for bent in [

@@ -332,6 +332,13 @@ pub struct YedPreview {
     pub txid: String,
     pub verdict: String,
     pub dry_run: DryRun,
+    /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the separate confirmation's text.
+    pub fee_note: Option<String>,
+    /// Set exactly when `feeNote` is: pass it to `confirm` as `acceptUnusualFee` after the
+    /// separate confirmation; without it the confirm refuses.
+    pub unusual_fee_ack: Option<String>,
+    /// The YEC price the server's fee terms rest on, µUSD per YEC (`null`: none reported).
+    pub fee_price_micro_usd: Option<String>,
 }
 
 pub fn yed_preview(id: String, p: &YedTransferPreview, v: &Validation) -> YedPreview {
@@ -353,6 +360,10 @@ pub fn yed_preview(id: String, p: &YedTransferPreview, v: &Validation) -> YedPre
         txid: id,
         verdict: v.verdict.clone(),
         dry_run: dry_run(v),
+        fee_note: p.fee_guard.note.clone(),
+        unusual_fee_ack: p.fee_guard.ack.clone(),
+        fee_price_micro_usd: (p.fee_guard.reported_price_micro_usd > 0)
+            .then(|| amt(p.fee_guard.reported_price_micro_usd)),
     }
 }
 
@@ -390,6 +401,13 @@ pub struct MintEstimate {
     pub p_mint_micro_usd: Option<String>,
     pub armed: bool,
     pub bundle_seqs: Vec<u32>,
+    /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the separate confirmation's text.
+    pub fee_note: Option<String>,
+    /// Set exactly when `feeNote` is: pass it to `confirm` as `acceptUnusualFee` after the
+    /// separate confirmation; without it the confirm refuses.
+    pub unusual_fee_ack: Option<String>,
+    /// The YEC price the server's fee terms rest on, µUSD per YEC (`null`: none reported).
+    pub fee_price_micro_usd: Option<String>,
 }
 
 pub fn mint_estimate(e: &CoreMintEstimate) -> MintEstimate {
@@ -415,6 +433,10 @@ pub fn mint_estimate(e: &CoreMintEstimate) -> MintEstimate {
         p_mint_micro_usd: (e.p_mint > 0).then(|| amt(e.p_mint)),
         armed: e.armed,
         bundle_seqs: e.bundle_seqs.iter().map(|s| *s as u32).collect(),
+        fee_note: e.fee_guard.note.clone(),
+        unusual_fee_ack: e.fee_guard.ack.clone(),
+        fee_price_micro_usd: (e.fee_guard.reported_price_micro_usd > 0)
+            .then(|| amt(e.fee_guard.reported_price_micro_usd)),
     }
 }
 
@@ -735,6 +757,13 @@ pub struct ClaimPreview {
     pub item: ClaimableItem,
     pub max_burn_cents: String,
     pub min_out_zat: String,
+    /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the separate confirmation's text.
+    pub fee_note: Option<String>,
+    /// Set exactly when `feeNote` is: pass it to `confirm` as `acceptUnusualFee` after the
+    /// separate confirmation; without it the confirm refuses.
+    pub unusual_fee_ack: Option<String>,
+    /// The YEC price the server's fee terms rest on, µUSD per YEC (`null`: none reported).
+    pub fee_price_micro_usd: Option<String>,
 }
 
 /// `redeem_preview` (`api::RedeemPreview`).
@@ -792,6 +821,13 @@ pub struct ReleasePreview {
     pub recipient_address: String,
     pub fee_zat: String,
     pub txid: String,
+    /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the separate confirmation's text.
+    pub fee_note: Option<String>,
+    /// Set exactly when `feeNote` is: pass it to `confirm` as `acceptUnusualFee` after the
+    /// separate confirmation; without it the confirm refuses.
+    pub unusual_fee_ack: Option<String>,
+    /// The YEC price the server's fee terms rest on, µUSD per YEC (`null`: none reported).
+    pub fee_price_micro_usd: Option<String>,
 }
 
 pub fn release_preview(id: String, p: &ReleaseBuild) -> ReleasePreview {
@@ -800,8 +836,12 @@ pub fn release_preview(id: String, p: &ReleaseBuild) -> ReleasePreview {
         intent: format!("{}:{}", txid_hex(&p.intent.txid), p.intent.n),
         value_zat: amt(p.value),
         recipient_address: p.recipient_address.clone(),
-        fee_zat: amt(params::FEE_ZAT),
+        fee_zat: amt(p.fee),
         txid: id,
+        fee_note: p.fee_guard.note.clone(),
+        unusual_fee_ack: p.fee_guard.ack.clone(),
+        fee_price_micro_usd: (p.fee_guard.reported_price_micro_usd > 0)
+            .then(|| amt(p.fee_guard.reported_price_micro_usd)),
     }
 }
 

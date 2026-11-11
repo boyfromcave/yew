@@ -244,6 +244,53 @@ void main() {
     expect(find.textContaining('0.00 s'), findsNothing);
   });
 
+  testWidgets('an unusual fee is never sent by the slider alone: a separate confirmation passes the core\'s acknowledgement', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.pqSourcesAnswer = const [slhSource];
+    const note = 'Unusual fee: 0.50000000 YEC, 4.2× the usual 0.11880000 YEC for a transaction of this size at the highest YEC price this wallet has seen. The fee terms came from the server.';
+    h.api.pqFeeNote = note;
+    h.api.pqFeeAck = 'accept-unusual-fee:50000000:qq';
+    await openSend(tester, h);
+    await choosePqSource(tester);
+    await tester.enterText(find.byKey(const Key('address')), fakeS);
+    await tester.enterText(find.byKey(const Key('amount')), '0.5');
+    await tester.tap(find.byKey(const Key('preview')));
+    await tester.pumpAndSettle();
+    // the slider opens the separate confirmation; declining sends nothing and keeps the preview
+    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('unusual-fee-dialog')), findsOneWidget);
+    expect(find.descendant(of: find.byKey(const Key('unusual-fee-dialog')), matching: find.text(note)), findsOneWidget);
+    await tester.tap(find.byKey(const Key('unusual-fee-cancel')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls.where((c) => c.startsWith('pqConfirm')), isEmpty);
+    expect(find.text('Sent'), findsNothing);
+    expect(find.byKey(const Key('pq-fee-note')), findsOneWidget);
+    // accepting passes exactly the acknowledgement the preview carried
+    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('unusual-fee-accept')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('pqConfirm q1 ack=accept-unusual-fee:50000000:qq'));
+    expect(find.text('Sent'), findsWidgets);
+  });
+
+  testWidgets('a fee that is not flagged sends with the slider and no acknowledgement', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.pqSourcesAnswer = const [slhSource];
+    await openSend(tester, h);
+    await choosePqSource(tester);
+    await tester.enterText(find.byKey(const Key('address')), fakeS);
+    await tester.enterText(find.byKey(const Key('amount')), '0.5');
+    await tester.tap(find.byKey(const Key('preview')));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('unusual-fee-dialog')), findsNothing);
+    expect(h.api.calls.where((c) => c.startsWith('pqConfirm')).single.contains('ack='), isFalse);
+    expect(find.text('Sent'), findsWidgets);
+  });
+
   testWidgets('a chosen post-quantum source that drops out of the list falls back to Automatic', (tester) async {
     final h = Harness(withWallet: true);
     h.api.pqSourcesAnswer = const [slhSource, falconSource];

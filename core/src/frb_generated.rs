@@ -1031,10 +1031,12 @@ fn wire__crate__api__pq_send_confirm_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_preview_id = <String>::sse_decode(&mut deserializer);
+            let api_accept_unusual_fee = <Option<String>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
-                    let output_ok = crate::api::pq_send_confirm(api_preview_id)?;
+                    let output_ok =
+                        crate::api::pq_send_confirm(api_preview_id, api_accept_unusual_fee)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -1268,10 +1270,12 @@ fn wire__crate__api__release_confirm_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_preview_id = <String>::sse_decode(&mut deserializer);
+            let api_accept_unusual_fee = <Option<String>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
-                    let output_ok = crate::api::release_confirm(api_preview_id)?;
+                    let output_ok =
+                        crate::api::release_confirm(api_preview_id, api_accept_unusual_fee)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -1408,10 +1412,12 @@ fn wire__crate__api__send_yed_confirm_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_preview_id = <String>::sse_decode(&mut deserializer);
+            let api_accept_unusual_fee = <Option<String>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
-                    let output_ok = crate::api::send_yed_confirm(api_preview_id)?;
+                    let output_ok =
+                        crate::api::send_yed_confirm(api_preview_id, api_accept_unusual_fee)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -1840,9 +1846,11 @@ impl SseDecode for crate::api::ClaimTerms {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_maxBurnCents = <i64>::sse_decode(deserializer);
         let mut var_minOutZat = <i64>::sse_decode(deserializer);
+        let mut var_acceptUnusualFee = <Option<String>>::sse_decode(deserializer);
         return crate::api::ClaimTerms {
             max_burn_cents: var_maxBurnCents,
             min_out_zat: var_minOutZat,
+            accept_unusual_fee: var_acceptUnusualFee,
         };
     }
 }
@@ -1871,6 +1879,9 @@ impl SseDecode for crate::api::ClaimableItem {
         let mut var_cancelsRequired = <i64>::sse_decode(deserializer);
         let mut var_cancelCount = <i64>::sse_decode(deserializer);
         let mut var_cancelQuietUntil = <i64>::sse_decode(deserializer);
+        let mut var_feeNote = <Option<String>>::sse_decode(deserializer);
+        let mut var_unusualFeeAck = <Option<String>>::sse_decode(deserializer);
+        let mut var_feePriceMicroUsd = <Option<i64>>::sse_decode(deserializer);
         return crate::api::ClaimableItem {
             vault_txid: var_vaultTxid,
             owner_address: var_ownerAddress,
@@ -1893,6 +1904,9 @@ impl SseDecode for crate::api::ClaimableItem {
             cancels_required: var_cancelsRequired,
             cancel_count: var_cancelCount,
             cancel_quiet_until: var_cancelQuietUntil,
+            fee_note: var_feeNote,
+            unusual_fee_ack: var_unusualFeeAck,
+            fee_price_micro_usd: var_feePriceMicroUsd,
         };
     }
 }
@@ -2221,6 +2235,9 @@ impl SseDecode for crate::api::MintEstimate {
         let mut var_pMintMicroUsd = <Option<i64>>::sse_decode(deserializer);
         let mut var_armed = <bool>::sse_decode(deserializer);
         let mut var_bundleSeqs = <Vec<u32>>::sse_decode(deserializer);
+        let mut var_feeNote = <Option<String>>::sse_decode(deserializer);
+        let mut var_unusualFeeAck = <Option<String>>::sse_decode(deserializer);
+        let mut var_feePriceMicroUsd = <Option<i64>>::sse_decode(deserializer);
         return crate::api::MintEstimate {
             cents: var_cents,
             lock_blocks: var_lockBlocks,
@@ -2245,6 +2262,9 @@ impl SseDecode for crate::api::MintEstimate {
             p_mint_micro_usd: var_pMintMicroUsd,
             armed: var_armed,
             bundle_seqs: var_bundleSeqs,
+            fee_note: var_feeNote,
+            unusual_fee_ack: var_unusualFeeAck,
+            fee_price_micro_usd: var_feePriceMicroUsd,
         };
     }
 }
@@ -2322,11 +2342,13 @@ impl SseDecode for crate::api::MintTerms {
         let mut var_feeZat = <i64>::sse_decode(deserializer);
         let mut var_payee = <String>::sse_decode(deserializer);
         let mut var_termClass = <String>::sse_decode(deserializer);
+        let mut var_acceptUnusualFee = <Option<String>>::sse_decode(deserializer);
         return crate::api::MintTerms {
             collateral_zat: var_collateralZat,
             fee_zat: var_feeZat,
             payee: var_payee,
             term_class: var_termClass,
+            accept_unusual_fee: var_acceptUnusualFee,
         };
     }
 }
@@ -2438,6 +2460,8 @@ impl SseDecode for crate::api::PqSendPreviewInfo {
         let mut var_sizeBytes = <u32>::sse_decode(deserializer);
         let mut var_signMillis = <Option<u64>>::sse_decode(deserializer);
         let mut var_feeNote = <Option<String>>::sse_decode(deserializer);
+        let mut var_unusualFeeAck = <Option<String>>::sse_decode(deserializer);
+        let mut var_feePriceMicroUsd = <Option<i64>>::sse_decode(deserializer);
         let mut var_expiryHeight = <u32>::sse_decode(deserializer);
         let mut var_txid = <String>::sse_decode(deserializer);
         return crate::api::PqSendPreviewInfo {
@@ -2453,6 +2477,8 @@ impl SseDecode for crate::api::PqSendPreviewInfo {
             size_bytes: var_sizeBytes,
             sign_millis: var_signMillis,
             fee_note: var_feeNote,
+            unusual_fee_ack: var_unusualFeeAck,
+            fee_price_micro_usd: var_feePriceMicroUsd,
             expiry_height: var_expiryHeight,
             txid: var_txid,
         };
@@ -2598,6 +2624,9 @@ impl SseDecode for crate::api::ReleasePreview {
         let mut var_recipientAddress = <String>::sse_decode(deserializer);
         let mut var_feeZat = <i64>::sse_decode(deserializer);
         let mut var_txid = <String>::sse_decode(deserializer);
+        let mut var_feeNote = <Option<String>>::sse_decode(deserializer);
+        let mut var_unusualFeeAck = <Option<String>>::sse_decode(deserializer);
+        let mut var_feePriceMicroUsd = <Option<i64>>::sse_decode(deserializer);
         return crate::api::ReleasePreview {
             preview_id: var_previewId,
             kind: var_kind,
@@ -2606,6 +2635,9 @@ impl SseDecode for crate::api::ReleasePreview {
             recipient_address: var_recipientAddress,
             fee_zat: var_feeZat,
             txid: var_txid,
+            fee_note: var_feeNote,
+            unusual_fee_ack: var_unusualFeeAck,
+            fee_price_micro_usd: var_feePriceMicroUsd,
         };
     }
 }
@@ -2943,6 +2975,9 @@ impl SseDecode for crate::api::YedPreview {
         let mut var_expiryHeight = <u32>::sse_decode(deserializer);
         let mut var_txid = <String>::sse_decode(deserializer);
         let mut var_dryRun = <crate::api::DryRun>::sse_decode(deserializer);
+        let mut var_feeNote = <Option<String>>::sse_decode(deserializer);
+        let mut var_unusualFeeAck = <Option<String>>::sse_decode(deserializer);
+        let mut var_feePriceMicroUsd = <Option<i64>>::sse_decode(deserializer);
         return crate::api::YedPreview {
             preview_id: var_previewId,
             recipients: var_recipients,
@@ -2957,6 +2992,9 @@ impl SseDecode for crate::api::YedPreview {
             expiry_height: var_expiryHeight,
             txid: var_txid,
             dry_run: var_dryRun,
+            fee_note: var_feeNote,
+            unusual_fee_ack: var_unusualFeeAck,
+            fee_price_micro_usd: var_feePriceMicroUsd,
         };
     }
 }
@@ -3179,6 +3217,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::ClaimTerms {
         [
             self.max_burn_cents.into_into_dart().into_dart(),
             self.min_out_zat.into_into_dart().into_dart(),
+            self.accept_unusual_fee.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -3214,6 +3253,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::ClaimableItem {
             self.cancels_required.into_into_dart().into_dart(),
             self.cancel_count.into_into_dart().into_dart(),
             self.cancel_quiet_until.into_into_dart().into_dart(),
+            self.fee_note.into_into_dart().into_dart(),
+            self.unusual_fee_ack.into_into_dart().into_dart(),
+            self.fee_price_micro_usd.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -3401,6 +3443,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::MintEstimate {
             self.p_mint_micro_usd.into_into_dart().into_dart(),
             self.armed.into_into_dart().into_dart(),
             self.bundle_seqs.into_into_dart().into_dart(),
+            self.fee_note.into_into_dart().into_dart(),
+            self.unusual_fee_ack.into_into_dart().into_dart(),
+            self.fee_price_micro_usd.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -3462,6 +3507,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::MintTerms {
             self.fee_zat.into_into_dart().into_dart(),
             self.payee.into_into_dart().into_dart(),
             self.term_class.into_into_dart().into_dart(),
+            self.accept_unusual_fee.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -3558,6 +3604,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::PqSendPreviewInfo {
             self.size_bytes.into_into_dart().into_dart(),
             self.sign_millis.into_into_dart().into_dart(),
             self.fee_note.into_into_dart().into_dart(),
+            self.unusual_fee_ack.into_into_dart().into_dart(),
+            self.fee_price_micro_usd.into_into_dart().into_dart(),
             self.expiry_height.into_into_dart().into_dart(),
             self.txid.into_into_dart().into_dart(),
         ]
@@ -3699,6 +3747,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::ReleasePreview {
             self.recipient_address.into_into_dart().into_dart(),
             self.fee_zat.into_into_dart().into_dart(),
             self.txid.into_into_dart().into_dart(),
+            self.fee_note.into_into_dart().into_dart(),
+            self.unusual_fee_ack.into_into_dart().into_dart(),
+            self.fee_price_micro_usd.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -3974,6 +4025,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::YedPreview {
             self.expiry_height.into_into_dart().into_dart(),
             self.txid.into_into_dart().into_dart(),
             self.dry_run.into_into_dart().into_dart(),
+            self.fee_note.into_into_dart().into_dart(),
+            self.unusual_fee_ack.into_into_dart().into_dart(),
+            self.fee_price_micro_usd.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4137,6 +4191,7 @@ impl SseEncode for crate::api::ClaimTerms {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <i64>::sse_encode(self.max_burn_cents, serializer);
         <i64>::sse_encode(self.min_out_zat, serializer);
+        <Option<String>>::sse_encode(self.accept_unusual_fee, serializer);
     }
 }
 
@@ -4164,6 +4219,9 @@ impl SseEncode for crate::api::ClaimableItem {
         <i64>::sse_encode(self.cancels_required, serializer);
         <i64>::sse_encode(self.cancel_count, serializer);
         <i64>::sse_encode(self.cancel_quiet_until, serializer);
+        <Option<String>>::sse_encode(self.fee_note, serializer);
+        <Option<String>>::sse_encode(self.unusual_fee_ack, serializer);
+        <Option<i64>>::sse_encode(self.fee_price_micro_usd, serializer);
     }
 }
 
@@ -4425,6 +4483,9 @@ impl SseEncode for crate::api::MintEstimate {
         <Option<i64>>::sse_encode(self.p_mint_micro_usd, serializer);
         <bool>::sse_encode(self.armed, serializer);
         <Vec<u32>>::sse_encode(self.bundle_seqs, serializer);
+        <Option<String>>::sse_encode(self.fee_note, serializer);
+        <Option<String>>::sse_encode(self.unusual_fee_ack, serializer);
+        <Option<i64>>::sse_encode(self.fee_price_micro_usd, serializer);
     }
 }
 
@@ -4470,6 +4531,7 @@ impl SseEncode for crate::api::MintTerms {
         <i64>::sse_encode(self.fee_zat, serializer);
         <String>::sse_encode(self.payee, serializer);
         <String>::sse_encode(self.term_class, serializer);
+        <Option<String>>::sse_encode(self.accept_unusual_fee, serializer);
     }
 }
 
@@ -4572,6 +4634,8 @@ impl SseEncode for crate::api::PqSendPreviewInfo {
         <u32>::sse_encode(self.size_bytes, serializer);
         <Option<u64>>::sse_encode(self.sign_millis, serializer);
         <Option<String>>::sse_encode(self.fee_note, serializer);
+        <Option<String>>::sse_encode(self.unusual_fee_ack, serializer);
+        <Option<i64>>::sse_encode(self.fee_price_micro_usd, serializer);
         <u32>::sse_encode(self.expiry_height, serializer);
         <String>::sse_encode(self.txid, serializer);
     }
@@ -4671,6 +4735,9 @@ impl SseEncode for crate::api::ReleasePreview {
         <String>::sse_encode(self.recipient_address, serializer);
         <i64>::sse_encode(self.fee_zat, serializer);
         <String>::sse_encode(self.txid, serializer);
+        <Option<String>>::sse_encode(self.fee_note, serializer);
+        <Option<String>>::sse_encode(self.unusual_fee_ack, serializer);
+        <Option<i64>>::sse_encode(self.fee_price_micro_usd, serializer);
     }
 }
 
@@ -4900,6 +4967,9 @@ impl SseEncode for crate::api::YedPreview {
         <u32>::sse_encode(self.expiry_height, serializer);
         <String>::sse_encode(self.txid, serializer);
         <crate::api::DryRun>::sse_encode(self.dry_run, serializer);
+        <Option<String>>::sse_encode(self.fee_note, serializer);
+        <Option<String>>::sse_encode(self.unusual_fee_ack, serializer);
+        <Option<i64>>::sse_encode(self.fee_price_micro_usd, serializer);
     }
 }
 

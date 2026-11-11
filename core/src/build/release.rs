@@ -76,6 +76,9 @@ pub struct ReleaseBuild {
     pub raw: Vec<u8>,
     /// Its txid.
     pub txid: [u8; 32],
+    /// The fee guard (review YEW-REVIEW-4 M2): [`broadcast`] refuses a flagged fee without its
+    /// acknowledgement.
+    pub fee_guard: super::terms::FeeGuard,
 }
 
 /// The post-quantum coin of a released residual that still waits to be moved: `spend_txid:0`
@@ -258,6 +261,15 @@ pub fn build_release(
     gate::check(gate::Path::IntentRelease(row.outpoint), &raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
     })?;
+    // review YEW-REVIEW-4 M2: priced at the Yellowback rate on the size `sized` assumed
+    let priced_size = 30 + 45 + inputs.len() * 151 + 90 + row.recipient_script.len();
+    let fee_guard = wallet.guard_fee(
+        super::terms::FeeKind::Yed,
+        fee,
+        priced_size.max(raw.len()),
+        0,
+        &txid_hex(&txid),
+    )?;
     Ok(ReleaseBuild {
         kind: ReleaseKind::Release,
         intent: row.outpoint,
@@ -269,6 +281,7 @@ pub fn build_release(
         expiry_height: tx.expiry_height,
         raw,
         txid,
+        fee_guard,
     })
 }
 
@@ -391,10 +404,9 @@ fn pq_move(
         .ok_or_else(|| WalletError::Other("the key's scheme is not registered".into()))?;
     // At least the 6.20.0 line's ZIP-317 conventional fee (audit 04/N-1; as `CreateTransaction`
     // on both node lines, outside the cap).
-    let fee = wallet
-        .pq_terms()
-        .fee(tx.size_with_script_sigs(&[ss])?)
-        .max(tx.zip317_conventional_fee(&[ss])?);
+    let priced_size = tx.size_with_script_sigs(&[ss])?;
+    let conventional = tx.zip317_conventional_fee(&[ss])?;
+    let fee = wallet.pq_terms().fee(priced_size).max(conventional);
     let mut value = value_in - fee;
     if value == TOKEN_VALUE {
         value -= 1; // never a YEC output that looks like a token
@@ -420,6 +432,14 @@ fn pq_move(
     gate::check(gate::Path::PqSweep(coin), &raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
     })?;
+    // review YEW-REVIEW-4 M2: a plain post-quantum spend's fee, bounded and flagged
+    let fee_guard = wallet.guard_fee(
+        super::terms::FeeKind::Plain,
+        value_in - value,
+        priced_size.max(raw.len()),
+        conventional,
+        &txid_hex(&txid),
+    )?;
     Ok(ReleaseBuild {
         kind: ReleaseKind::PqSweep,
         intent,
@@ -431,6 +451,7 @@ fn pq_move(
         expiry_height: tx.expiry_height,
         raw,
         txid,
+        fee_guard,
     })
 }
 
@@ -590,7 +611,10 @@ pub async fn broadcast(
     client: &mut CompactClient,
     validator: &mut Validator,
     p: &ReleaseBuild,
+    accept_unusual_fee: Option<&str>,
 ) -> Result<(String, Validation), WalletError> {
+    // YEW-PORT-6 item 2: a flagged fee is never confirmed by the normal button
+    super::terms::require_ack(&p.fee_guard, accept_unusual_fee)?;
     let row = match wallet.store.intent(&p.intent)? {
         Some(r) => r,
         None if p.kind == ReleaseKind::PqSweep => {

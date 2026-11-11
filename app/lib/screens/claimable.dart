@@ -16,6 +16,7 @@ import '../state/app_scope.dart';
 import '../theme.dart';
 import '../widgets/preview_card.dart';
 import '../widgets/slide_to_confirm.dart';
+import '../widgets/unusual_fee.dart';
 import 'mint_progress.dart';
 
 /// CAN-2 (the node's `yed_listclaimable`): who can cancel a claim of this vault made now, and when the
@@ -68,10 +69,14 @@ class _ClaimableScreenState extends State<ClaimableScreen> {
     try {
       // The row shown is the bound confirmed: the core refuses a claim that would burn more
       // or pay less than this (H-9.3).
-      final row = await app.api.claim(vaultTxid: v.vaultTxid, confirmed: ClaimTerms(maxBurnCents: v.cents, minOutZat: v.claimantZat));
+      // review YEW-REVIEW-4 M2: an unusual CLAIM fee needs its own confirmation
+      final ack = await acceptUnusualFee(context, note: v.feeNote, ack: v.unusualFeeAck);
+      final row = await app.api.claim(vaultTxid: v.vaultTxid, confirmed: ClaimTerms(maxBurnCents: v.cents, minOutZat: v.claimantZat, acceptUnusualFee: ack));
       await app.refresh();
       if (!mounted) return;
       Navigator.of(context).pushReplacement(MaterialPageRoute<void>(builder: (_) => MintProgressScreen(mintId: row.mintId)));
+    } on UnusualFeeDeclined {
+      return;
     } catch (e) {
       setState(() {
         _error = messageOf(e);

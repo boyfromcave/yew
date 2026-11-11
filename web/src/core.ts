@@ -38,6 +38,8 @@ export interface DryRun { valid: boolean; verdict: string; burnedCents: string; 
 export interface YedPreview {
   previewId: string; to: string; cents: string; stage: string; inputs: number; changeCents: string; yecInputs: number;
   feeZat: string; yecChangeZat: string; expiryHeight: number; txid: string; verdict: string; dryRun: DryRun;
+  /** review YEW-REVIEW-4 M2: set when the fee is unusual (a separate confirmation; pass unusualFeeAck to confirm). */
+  feeNote: string | null; unusualFeeAck: string | null; feePriceMicroUsd: string | null;
 }
 export type MovePreview = YecPreview;
 export interface MintAvailability {
@@ -48,6 +50,7 @@ export interface MintEstimate {
   cents: string; lockBlocks: number; termClass: string; refHeight: number; lockHeight: number; claimHeight: number; expiryHeight: number;
   requiredZat: string; collateralZat: string; feeZat: string; attestFeeZat: string; payee: string; carrierZat: string; tokenZat: string;
   networkFeeZat: string; totalZat: string; availableZat: string; affordable: boolean; pMintMicroUsd: string | null; armed: boolean; bundleSeqs: number[];
+  feeNote: string | null; unusualFeeAck: string | null; feePriceMicroUsd: string | null;
 }
 /** `mint_start`: the carrier, staged; `confirm` funds and broadcasts it and answers the mintId. */
 export interface MintStart { previewId: string; cents: string; lockBlocks: number }
@@ -81,7 +84,7 @@ export interface ClaimableItem {
   claimable: boolean; underwaterAtMicroUsd: string; lockHeight: number; inTerm: boolean;
 }
 /** The bounds the confirm holds the server to (H-9.3): never more burned, never less paid. */
-export interface ClaimPreview { previewId: string; item: ClaimableItem; maxBurnCents: string; minOutZat: string }
+export interface ClaimPreview { previewId: string; item: ClaimableItem; maxBurnCents: string; minOutZat: string; feeNote: string | null; unusualFeeAck: string | null; feePriceMicroUsd: string | null; }
 export interface Confirmed { txid: string; verdict: string; mintId: number | null }
 export interface AddressCheck { valid: boolean; kind: string; yellowbackForm: boolean; message: string }
 export interface AddressPair { ye: string; s: string; path: string; coveredBySeed: boolean; address: string; kind: string }
@@ -125,8 +128,9 @@ export interface Core {
   redeem_preview(vaultTxid: string): Promise<RedeemPreview>;
   claimable(): Promise<ClaimableItem[]>;
   claim_preview(vaultTxid: string): Promise<ClaimPreview>;
-  /** The ONLY path that signs and broadcasts; passes gate.rs. */
-  confirm(previewId: string): Promise<Confirmed>;
+  /** The ONLY path that signs and broadcasts; passes gate.rs. A preview with `unusualFeeAck`
+   *  needs it back as `acceptUnusualFee` after a separate confirmation; without it the core refuses. */
+  confirm(previewId: string, acceptUnusualFee?: string): Promise<Confirmed>;
   export_wif(address: string): Promise<string>;
   import_wif(wif: string, birthday?: number): Promise<AddressPair>;
   /** The open wallet's network, or `network` when none is open. */
@@ -212,7 +216,7 @@ export class CoreClient implements Core {
   redeem_preview(vaultTxid: string) { return this.call<RedeemPreview>("redeem_preview", vaultTxid); }
   claimable() { return this.call<ClaimableItem[]>("claimable"); }
   claim_preview(vaultTxid: string) { return this.call<ClaimPreview>("claim_preview", vaultTxid); }
-  confirm(previewId: string) { return this.call<Confirmed>("confirm", previewId); }
+  confirm(previewId: string, acceptUnusualFee?: string) { return this.call<Confirmed>("confirm", previewId, acceptUnusualFee); }
   export_wif(address: string) { return this.call<string>("export_wif", address); }
   import_wif(wif: string, birthday?: number) { return this.call<AddressPair>("import_wif", wif, birthday === undefined ? undefined : BigInt(birthday)); }
   validate_address(s: string, network?: string) { return this.call<AddressCheck>("validate_address", s, network); }

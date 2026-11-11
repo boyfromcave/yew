@@ -24,6 +24,7 @@ use crate::params::{
 };
 
 use super::mint::MintError;
+use crate::wallet::WalletError;
 
 /// The node reports `requiredZat` rounded up to this granularity (`RequiredCollateralRounded`,
 /// `ycash-dd/src/yellowback/math.h:127-135`): the server's figure must lie between the exact
@@ -590,6 +591,10 @@ pub struct PqTerms {
     pub falcon_height: Option<u64>,
     /// `pq.falconActive` as the node judged it (at its next block).
     pub falcon_active: bool,
+    /// The YEC price the server's rates rest on (`fees.network.priceMicroUsd`, µUSD per YEC; 0 =
+    /// none): the server's word, shown in the preview and compared with the wallet's high-water
+    /// price ([`guard_fee`]).
+    pub price_micro_usd: i64,
 }
 
 impl Default for PqTerms {
@@ -604,6 +609,7 @@ impl Default for PqTerms {
             max_fee_zat: params::MAX_YED_TX_FEE_ZAT,
             falcon_height: None,
             falcon_active: false,
+            price_micro_usd: 0,
         }
     }
 }
@@ -729,11 +735,13 @@ pub fn pq_terms(p: &rpc::YellowbackParams, network: Network) -> Result<PqTerms, 
     if n.price_micro_usd < 0 || n.price_micro_usd > params::PRICE_MAX_MICRO_USD {
         return bad(format!("priceMicroUsd {}", n.price_micro_usd));
     }
-    if n.flat_zat < params::FEE_ZAT || n.flat_zat > params::MAX_YED_TX_FEE_ZAT {
+    // review YEW-REVIEW-4 M2: flatZat is a floor on every fee, so it is bounded on its own
+    if n.flat_zat < params::FEE_ZAT || n.flat_zat > params::MAX_FLAT_ZAT {
         return bad(format!(
-            "flatZat {} (at least {})",
+            "flatZat {} (YEW accepts {}..={})",
             n.flat_zat,
-            params::FEE_ZAT
+            params::FEE_ZAT,
+            params::MAX_FLAT_ZAT
         ));
     }
     let floor_eff = n.floor_zat_per_kb.max(n.fallback_zat_per_kb);
@@ -820,7 +828,153 @@ pub fn pq_terms(p: &rpc::YellowbackParams, network: Network) -> Result<PqTerms, 
         max_fee_zat: cap.min(params::MAX_YED_TX_FEE_ZAT),
         falcon_height: u64::try_from(pq.falcon_height).ok(),
         falcon_active: pq.falcon_active,
+        price_micro_usd: n.price_micro_usd,
     })
+}
+
+/// The size and the conventional fee the node's YED builder prices a Yellowback transaction with
+/// these inputs at (`YedNetworkFee`: [`params::yed_estimated_size`],
+/// [`params::yed_conventional_fee_estimate`]): what [`guard_fee`] compares a YED fee against.
+pub fn yed_priced_size<'a>(scripts: impl Iterator<Item = &'a [u8]>) -> (usize, i64) {
+    let mut pq = Vec::new();
+    let mut other = 0;
+    for s in scripts {
+        match crate::pq::pqpkh_of(s) {
+            Some(id) => pq.push(id.scheme),
+            None => other += 1,
+        }
+    }
+    (
+        params::yed_estimated_size(other, &pq),
+        params::yed_conventional_fee_estimate(other, &pq),
+    )
+}
+
+/// Which dollar target a fee is priced on: the plain post-quantum one or the vault / Yellowback one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeeKind {
+    /// A plain post-quantum spend (`fees.network.plain`, $0.02/KB by default).
+    Plain,
+    /// A vault / Yellowback transaction (`fees.network.yellowback`, $0.05/KB by default).
+    Yed,
+}
+
+/// The fee guard's answer for one built transaction (review YEW-REVIEW-4 M2, YEW-PORT-6 item 2).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FeeGuard {
+    /// Set when the fee is unusual: the text the separate confirmation shows (the fee in YEC, how
+    /// many times the usual fee for this size it is, and that the fee terms came from the server).
+    pub note: Option<String>,
+    /// Set exactly when [`FeeGuard::note`] is: the acknowledgement the confirm call must pass back
+    /// (`accept_unusual_fee`); without it the confirm refuses.
+    pub ack: Option<String>,
+    /// The YEC price the server's terms rest on, µUSD (0 = none): shown in every preview.
+    pub reported_price_micro_usd: i64,
+    /// The usual fee for this size: at the highest YEC price this wallet has seen from a server it
+    /// synced with and the node's default dollar target (`None` before any price was seen).
+    pub usual_zat: Option<i64>,
+}
+
+/// The guard on a fee priced from the server's terms (review YEW-REVIEW-4 M2), for a transaction of
+/// `size` bytes whose conventional fee is `conventional`:
+/// - refused above this build's limit ([`params::pq_send_fee_limit`] for [`FeeKind::Plain`],
+///   [`params::yed_fee_limit`] for [`FeeKind::Yed`]), whatever the server says;
+/// - unusual (a separate confirmation, [`require_ack`]) when a high-water price `high_water` (µUSD,
+///   0 = none yet) is known and either the fee is above twice the usual fee (the default dollar
+///   target at the high-water price: `max(FEE_ZAT, rate × size, conventional)`) or the server's
+///   price is below half the high-water price. Before any price was seen nothing is flagged below
+///   the limit; the preview shows the reported price.
+///
+/// `id` names the transaction (a txid, or a stable label for a step not yet built): the ack binds
+/// the fee and it.
+pub fn guard_fee(
+    terms: &PqTerms,
+    high_water: i64,
+    kind: FeeKind,
+    fee: i64,
+    size: usize,
+    conventional: i64,
+    id: &str,
+) -> Result<FeeGuard, WalletError> {
+    let (limit, target) = match kind {
+        FeeKind::Plain => (
+            params::pq_send_fee_limit(size, conventional),
+            params::DEFAULT_PQ_FEE_USD_PER_KB_MICRO,
+        ),
+        FeeKind::Yed => (
+            params::yed_fee_limit(size, conventional),
+            params::DEFAULT_YED_FEE_USD_PER_KB_MICRO,
+        ),
+    };
+    let price = terms.price_micro_usd;
+    if fee > limit {
+        return Err(WalletError::Other(format!(
+            "Fee {} YEC is above this app's limit of {} YEC for a {size}-byte transaction; the server's fee terms rest on a YEC price of {} that this app cannot verify. Nothing was sent; try another server.",
+            yec_text(fee),
+            yec_text(limit),
+            price_text(price)
+        )));
+    }
+    let mut g = FeeGuard {
+        reported_price_micro_usd: price,
+        ..FeeGuard::default()
+    };
+    if high_water <= 0 {
+        return Ok(g);
+    }
+    let rate =
+        params::attested_rate_zat_per_kb(target, high_water, params::ATTESTED_FEE_FLOOR_ZAT_PER_KB);
+    let usual = params::FEE_ZAT
+        .max(params::rate_fee(rate, size))
+        .max(conventional);
+    g.usual_zat = Some(usual);
+    let low_price = price > 0 && price.saturating_mul(2) < high_water;
+    if fee > usual.saturating_mul(2) || low_price {
+        let times = fee as f64 / usual as f64;
+        g.note = Some(format!(
+            "Unusual fee: {} YEC, {times:.1}× the usual {} YEC for a transaction of this size at the highest YEC price this wallet has seen ({}). The fee terms came from the server, which reports {}; this app cannot verify them. Confirm only if you expect this fee.",
+            yec_text(fee),
+            yec_text(usual),
+            price_text(high_water),
+            price_text(price)
+        ));
+        g.ack = Some(format!("accept-unusual-fee:{fee}:{id}"));
+    }
+    Ok(g)
+}
+
+/// The confirm side of [`guard_fee`]: a flagged fee is refused unless `accept` is exactly the
+/// guard's acknowledgement; an unflagged one needs none (and refuses a stray one, which would
+/// name a different fee or transaction).
+pub fn require_ack(g: &FeeGuard, accept: Option<&str>) -> Result<(), WalletError> {
+    match (&g.ack, accept) {
+        (None, None) => Ok(()),
+        (Some(want), Some(got)) if want == got => Ok(()),
+        (Some(_), _) => Err(WalletError::Other(format!(
+            "unusual-fee: this fee needs its own confirmation. {}",
+            g.note.as_deref().unwrap_or("")
+        ))),
+        (None, Some(_)) => Err(WalletError::Other(
+            "unusual-fee: the acknowledgement does not match this transaction's fee; start again"
+                .into(),
+        )),
+    }
+}
+
+fn yec_text(zat: i64) -> String {
+    crate::build::any_to_any::format_money(zat)
+}
+
+fn price_text(micro_usd: i64) -> String {
+    if micro_usd <= 0 {
+        "no price".into()
+    } else {
+        format!(
+            "${}.{:04} per YEC",
+            micro_usd / 1_000_000,
+            (micro_usd % 1_000_000) / 100
+        )
+    }
 }
 
 /// The server's Falcon activation (`params.pq.falconHeight` / `falconActive`) against the height
@@ -1218,13 +1372,16 @@ pub fn check_claimable(c: &rpc::YedClaimable, p_emerg: Option<i64>) -> Result<i6
 /// The bounds the user saw on the Claimable screen (the light-client form of `yed_claim`'s
 /// `maxBurnCents` / `minOutZat`, audit C/F-1, hardening H-9.3): the claim is refused before
 /// anything is signed when the server's numbers would burn more YED or pay less YEC.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClaimBounds {
     /// The most debt the claim may burn, cents (the row's `mintedCents` as shown).
     pub max_burn_cents: u64,
     /// The least YEC the claimant takes from the vault, zat: collateral − fees − residual −
     /// the network fee, as shown.
     pub min_out_zat: i64,
+    /// The acknowledgement of an unusual network fee (shown on the Claimable screen,
+    /// review YEW-REVIEW-4 M2): required at the claim's start when the fee is flagged.
+    pub accept_unusual_fee: Option<String>,
 }
 
 /// What the claimant takes from the vault (the carrier and YED inputs aside):
@@ -2266,6 +2423,7 @@ mod tests {
         let bounds = ClaimBounds {
             max_burn_cents: 10_000,
             min_out_zat: take,
+            accept_unusual_fee: None,
         };
         assert!(check_claim_bounds(&bounds, 10_000, take).is_ok());
         assert!(check_claim_bounds(&bounds, 9_000, take + 1).is_ok());
@@ -2378,5 +2536,119 @@ mod tests {
         assert_eq!((yv.owner_height(), yv.app_height()), (377, 401));
         v.lock_height = 378;
         assert!(check_vault_script(&t, &v).is_err());
+    }
+
+    /// Review YEW-REVIEW-4 M2 (and YEW-PORT-6 item 2): the fee guard. Above the build's limit a
+    /// fee is refused; before any price was seen nothing below it is flagged (the reported price
+    /// is carried for the preview); after one, an honest fee at that price is not flagged, a fee
+    /// above twice the usual one or a price below half the high-water mark is, with an
+    /// acknowledgement that binds the fee and the transaction.
+    #[test]
+    fn fee_guard_limits_flags_and_acks() {
+        let t = PqTerms {
+            price_micro_usd: 50_000, // $0.05 per YEC
+            ..PqTerms::default()
+        };
+        // one-input FN-DSA (~1.8 KB) and SLH-DSA (~8.1 KB) sends, a YED transfer (~1.2 KB priced)
+        for (kind, size) in [
+            (FeeKind::Plain, 1_800usize),
+            (FeeKind::Plain, 8_100),
+            (FeeKind::Yed, 1_150),
+        ] {
+            let limit = match kind {
+                FeeKind::Plain => params::pq_send_fee_limit(size, 0),
+                FeeKind::Yed => params::yed_fee_limit(size, 0),
+            };
+            assert!(guard_fee(&t, 0, kind, limit + 1, size, 0, "x").is_err());
+            // first use: up to the limit, no flag; the price is carried
+            let g = guard_fee(&t, 0, kind, limit, size, 0, "x").unwrap();
+            assert!(g.note.is_none() && g.ack.is_none() && g.usual_zat.is_none());
+            assert_eq!(g.reported_price_micro_usd, 50_000);
+            // a price was seen ($0.05): the honest fee at it is not flagged...
+            let target = match kind {
+                FeeKind::Plain => params::DEFAULT_PQ_FEE_USD_PER_KB_MICRO,
+                FeeKind::Yed => params::DEFAULT_YED_FEE_USD_PER_KB_MICRO,
+            };
+            let rate = params::attested_rate_zat_per_kb(
+                target,
+                50_000,
+                params::ATTESTED_FEE_FLOOR_ZAT_PER_KB,
+            );
+            let honest = params::rate_fee(rate, size).max(params::FEE_ZAT);
+            let g = guard_fee(&t, 50_000, kind, honest, size, 0, "x").unwrap();
+            assert_eq!(g.usual_zat, Some(honest));
+            assert!(g.note.is_none(), "{kind:?} {size}: {:?}", g.note);
+            // ...up to twice it; above, flagged with the multiple and the server named
+            assert!(guard_fee(&t, 50_000, kind, 2 * honest, size, 0, "x")
+                .unwrap()
+                .ack
+                .is_none());
+            let g = guard_fee(&t, 50_000, kind, 2 * honest + 1, size, 0, "tx1").unwrap();
+            let note = g.note.clone().unwrap();
+            assert!(
+                note.contains("2.0× the usual") && note.contains("server"),
+                "{note}"
+            );
+            assert_eq!(
+                g.ack.as_deref(),
+                Some(&*format!("accept-unusual-fee:{}:tx1", 2 * honest + 1))
+            );
+            assert!(require_ack(&g, None).is_err());
+            assert!(require_ack(&g, g.ack.as_deref()).is_ok());
+            // the price is below half the high-water mark: flagged whatever the fee
+            let low = PqTerms {
+                price_micro_usd: 24_999,
+                ..t
+            };
+            assert!(guard_fee(&low, 50_000, kind, honest, size, 0, "x")
+                .unwrap()
+                .ack
+                .is_some());
+        }
+        // the reviewer's case: honest FN-DSA sends at real prices are not flagged once the price
+        // is known (the old rule flagged every one below about $0.34)
+        for price in [20_000i64, 50_000, 100_000, 340_000] {
+            let rate = params::attested_rate_zat_per_kb(
+                params::DEFAULT_PQ_FEE_USD_PER_KB_MICRO,
+                price,
+                params::ATTESTED_FEE_FLOOR_ZAT_PER_KB,
+            );
+            let fee = params::rate_fee(rate, 1_800).max(params::FEE_ZAT);
+            let t = PqTerms {
+                price_micro_usd: price,
+                ..PqTerms::default()
+            };
+            assert!(guard_fee(&t, price, FeeKind::Plain, fee, 1_800, 0, "x")
+                .unwrap()
+                .note
+                .is_none());
+        }
+    }
+
+    /// Review YEW-REVIEW-4 M2: `flatZat` is a floor on every fee, accepted only up to 10× FEE_ZAT.
+    #[test]
+    fn flat_fee_is_bounded() {
+        let base = server_params(Network::Regtest);
+        let with_flat = |flat: i64| {
+            let mut p = base.clone();
+            p.fees.as_mut().unwrap().network.as_mut().unwrap().flat_zat = flat;
+            if let Some(y) = p
+                .fees
+                .as_mut()
+                .unwrap()
+                .network
+                .as_mut()
+                .unwrap()
+                .yellowback
+                .as_mut()
+            {
+                y.max_tx_fee_zat = y.max_tx_fee_zat.max(flat);
+            }
+            p
+        };
+        assert!(pq_terms(&with_flat(params::MAX_FLAT_ZAT), Network::Regtest).is_ok());
+        let e = pq_terms(&with_flat(params::MAX_FLAT_ZAT + 1), Network::Regtest).unwrap_err();
+        assert!(e.to_string().contains("flatZat"), "{e}");
+        assert!(pq_terms(&with_flat(params::COIN), Network::Regtest).is_err());
     }
 }

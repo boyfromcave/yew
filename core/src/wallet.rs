@@ -687,22 +687,62 @@ impl Wallet {
             read.as_ref().err().map(|e| e.to_string());
         let t = read?;
         *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner()) = t;
+        // review YEW-REVIEW-4 M2: the highest YEC price any server this wallet synced with has
+        // reported; the fee guard compares every later fee against it (a lower report never
+        // lowers it)
+        if t.price_micro_usd > self.fee_price_high_water() {
+            let _ = self
+                .store
+                .set_meta("fee_price_high_water", &t.price_micro_usd.to_string());
+        }
         // Remembered for an offline open (the receive address, the CLI): a failed write only
         // costs the default until the next server answer.
         let _ = self.store.set_meta(
             "pq_terms",
             &format!(
-                "{} {} {} {} {} {} {}",
+                "{} {} {} {} {} {} {} {}",
                 t.fee_rate_zat_per_kb,
                 t.falcon_height.map(|h| h as i64).unwrap_or(-1),
                 u8::from(t.falcon_active),
                 t.yed_rate_zat_per_kb,
                 t.floor_rate_zat_per_kb,
                 t.flat_zat,
-                t.max_fee_zat
+                t.max_fee_zat,
+                t.price_micro_usd
             ),
         );
         Ok(t)
+    }
+
+    /// The highest YEC price (µUSD) a server this wallet synced with has reported (0 = none yet):
+    /// the base of the fee guard's "usual fee" ([`crate::build::terms::guard_fee`]).
+    pub fn fee_price_high_water(&self) -> i64 {
+        self.store
+            .meta("fee_price_high_water")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// [`crate::build::terms::guard_fee`] on this wallet's terms and high-water price.
+    pub fn guard_fee(
+        &self,
+        kind: crate::build::terms::FeeKind,
+        fee: i64,
+        size: usize,
+        conventional: i64,
+        id: &str,
+    ) -> Result<crate::build::terms::FeeGuard, WalletError> {
+        crate::build::terms::guard_fee(
+            &self.pq_terms(),
+            self.fee_price_high_water(),
+            kind,
+            fee,
+            size,
+            conventional,
+            id,
+        )
     }
 
     /// The terms [`Wallet::note_server_params`] last remembered in the store, else
@@ -737,9 +777,9 @@ impl Wallet {
         let floor = crate::params::RELAY_FLOOR_ZAT_PER_KB;
         let yed = next(d.yed_rate_zat_per_kb).max(floor);
         let floor_rate = next(d.floor_rate_zat_per_kb).max(floor);
-        let flat =
-            next(d.flat_zat).clamp(crate::params::FEE_ZAT, crate::params::MAX_YED_TX_FEE_ZAT);
+        let flat = next(d.flat_zat).clamp(crate::params::FEE_ZAT, crate::params::MAX_FLAT_ZAT);
         let cap = next(d.max_fee_zat).clamp(flat, crate::params::MAX_YED_TX_FEE_ZAT);
+        let price = next(0).clamp(0, crate::params::PRICE_MAX_MICRO_USD);
         Some(crate::build::terms::PqTerms {
             // review YEW-REVIEW-3 M1: a stored rate is held to the same limits as a server's
             fee_rate_zat_per_kb: rate
@@ -751,6 +791,7 @@ impl Wallet {
             max_fee_zat: cap,
             falcon_height: u64::try_from(height).ok(),
             falcon_active: active != 0,
+            price_micro_usd: price,
         })
     }
 
@@ -999,8 +1040,9 @@ impl Wallet {
         client: &mut CompactClient,
         validator: &mut Validator,
         preview: &crate::build::release::ReleaseBuild,
+        accept_unusual_fee: Option<&str>,
     ) -> Result<(String, Validation), WalletError> {
-        crate::build::release::broadcast(self, client, validator, preview).await
+        crate::build::release::broadcast(self, client, validator, preview, accept_unusual_fee).await
     }
 
     /// The mint gate (hardening H-1, H-5): whether a mint can be made now and why not, from

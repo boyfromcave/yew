@@ -307,6 +307,12 @@ pub async fn start(
         )));
     }
     super::redeem::check_no_pending_spend(&v)?;
+    // YEW-PORT-6 item 2 / review YEW-REVIEW-4 M2: a flagged CLAIM fee needs its own acknowledgement
+    let fee_guard = mint::main_fee_guard(wallet, "claim")?;
+    terms::require_ack(
+        &fee_guard,
+        bounds.and_then(|b| b.accept_unusual_fee.as_deref()),
+    )?;
     // The vault's script terms and debt, as the node reports them, checked (audit G-1); its V
     // script must be the YED vault this wallet rebuilds (U-23) — the one the claim spends.
     terms::check_vault(wallet.network, &v)?;
@@ -449,6 +455,7 @@ pub async fn start(
         persist_row,
     )
     .await?;
+    mint::note_fee_ack(wallet, id, &fee_guard)?;
     Ok(id)
 }
 
@@ -881,6 +888,7 @@ pub async fn finish(
                 &terms::ClaimBounds {
                     max_burn_cents,
                     min_out_zat,
+                    accept_unusual_fee: None,
                 },
                 debt,
                 terms::claimant_take(
@@ -917,6 +925,8 @@ pub async fn finish(
         }
         break (plan, tx, funding);
     };
+    let priced: Vec<Utxo> = yed_inputs.iter().chain(funding.iter()).cloned().collect();
+    mint::check_main_fee(wallet, m.id, network_fee, &priced)?;
     let raw = tx.serialize()?;
     let txid = tx.txid()?;
     let (_, validation) = gate::confirm_burning(

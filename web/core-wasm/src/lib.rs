@@ -1231,6 +1231,8 @@ pub fn mint_start(cents: JsValue, lock_blocks: u32, terms: JsValue) -> Result<Js
             fee_zat: String,
             payee: String,
             term_class: String,
+            #[serde(default)]
+            accept_unusual_fee: Option<String>,
         }
         let t: Terms = serde_wasm_bindgen::from_value(terms)
             .map_err(|e| err("invalid", format!("terms: {e}")))?;
@@ -1239,6 +1241,7 @@ pub fn mint_start(cents: JsValue, lock_blocks: u32, terms: JsValue) -> Result<Js
             fee_zat: amount_arg(&JsValue::from_str(&t.fee_zat), "feeZat")?,
             payee: t.payee,
             term_class: t.term_class,
+            accept_unusual_fee: t.accept_unusual_fee,
         })
     };
     with_session_sync(|s| {
@@ -1452,13 +1455,20 @@ pub async fn claim_preview(vault_txid: String) -> Result<JsValue, JsValue> {
             let bounds = ClaimBounds {
                 max_burn_cents: item.minted_cents,
                 min_out_zat: item.claimant_zat,
+                accept_unusual_fee: None,
             };
+            let guard =
+                yew_core::build::mint::main_fee_guard(&s.wallet, "claim").map_err(wallet_err)?;
             let id = s.next_preview_id();
             let out = dto::ClaimPreview {
                 preview_id: id.clone(),
                 item: dto::claimable_item(item),
                 max_burn_cents: dto::amt(item.minted_cents as i64),
                 min_out_zat: dto::amt(item.claimant_zat),
+                fee_note: guard.note.clone(),
+                unusual_fee_ack: guard.ack.clone(),
+                fee_price_micro_usd: (guard.reported_price_micro_usd > 0)
+                    .then(|| dto::amt(guard.reported_price_micro_usd)),
             };
             s.previews.insert(
                 id,
@@ -1480,11 +1490,25 @@ pub async fn claim_preview(vault_txid: String) -> Result<JsValue, JsValue> {
 /// Broadcast a preview (`api::*_confirm`): the only path that signs (a private send or shield is
 /// proved here, seconds) and broadcasts, through both gate layers (`gate.rs`, D-W-5). A preview
 /// is consumed, except when the proving parameters are missing (`params: …`): run
-/// [`fetch_params`], then confirm again.
+/// [`fetch_params`], then confirm again. A preview whose fee is flagged (`unusualFeeAck`) is
+/// confirmed only with that acknowledgement as `accept_unusual_fee` (review YEW-REVIEW-4 M2);
+/// without it the call refuses and the preview stays.
 #[wasm_bindgen]
-pub async fn confirm(preview_id: String) -> Result<JsValue, JsValue> {
+pub async fn confirm(
+    preview_id: String,
+    accept_unusual_fee: Option<String>,
+) -> Result<JsValue, JsValue> {
     with_session(|s| {
         Box::pin(async move {
+            let guard = match s.previews.get(&preview_id) {
+                Some(Preview::Yed(p)) => Some(&p.fee_guard),
+                Some(Preview::Release(p)) => Some(&p.fee_guard),
+                _ => None,
+            };
+            if let Some(g) = guard {
+                yew_core::build::terms::require_ack(g, accept_unusual_fee.as_deref())
+                    .map_err(wallet_err)?;
+            }
             let p = s
                 .previews
                 .remove(&preview_id)
@@ -1522,10 +1546,15 @@ pub async fn confirm(preview_id: String) -> Result<JsValue, JsValue> {
                     s.ensure_conn().await?;
                     let Session { wallet, conn, .. } = &mut *s;
                     let conn = conn.as_mut().expect("connected");
-                    let (txid, v) =
-                        yed_transfer::broadcast(wallet, &mut conn.compact, &mut conn.validator, &p)
-                            .await
-                            .map_err(wallet_err)?;
+                    let (txid, v) = yed_transfer::broadcast(
+                        wallet,
+                        &mut conn.compact,
+                        &mut conn.validator,
+                        &p,
+                        accept_unusual_fee.as_deref(),
+                    )
+                    .await
+                    .map_err(wallet_err)?;
                     dto::SendResult {
                         txid,
                         verdict: v.verdict,
@@ -1551,7 +1580,12 @@ pub async fn confirm(preview_id: String) -> Result<JsValue, JsValue> {
                     let Session { wallet, conn, .. } = &mut *s;
                     let conn = conn.as_mut().expect("connected");
                     let (txid, v) = wallet
-                        .release_confirm(&mut conn.compact, &mut conn.validator, &p)
+                        .release_confirm(
+                            &mut conn.compact,
+                            &mut conn.validator,
+                            &p,
+                            accept_unusual_fee.as_deref(),
+                        )
                         .await
                         .map_err(wallet_err)?;
                     dto::SendResult {
@@ -1565,6 +1599,13 @@ pub async fn confirm(preview_id: String) -> Result<JsValue, JsValue> {
                     lock_blocks,
                     terms,
                 } => {
+                    // the acknowledgement may come with the terms or with the confirm
+                    let terms = terms.map(|mut t| {
+                        if accept_unusual_fee.is_some() {
+                            t.accept_unusual_fee = accept_unusual_fee.clone();
+                        }
+                        t
+                    });
                     let r = s.sync().await?;
                     let id = {
                         let Session { wallet, conn, .. } = &mut *s;
@@ -1635,7 +1676,11 @@ pub async fn confirm(preview_id: String) -> Result<JsValue, JsValue> {
                         mint_id: Some(id),
                     }
                 }
-                Preview::Claim { vault_txid, bounds } => {
+                Preview::Claim {
+                    vault_txid,
+                    mut bounds,
+                } => {
+                    bounds.accept_unusual_fee = accept_unusual_fee.clone();
                     let r = s.sync().await?;
                     let id = {
                         let Session { wallet, conn, .. } = &mut *s;
