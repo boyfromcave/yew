@@ -501,6 +501,13 @@ pub fn sign_hybrid(
     branch_id: u32,
     rng: impl RngCore + CryptoRng,
 ) -> Result<(Vec<[u8; 32]>, Vec<u8>), Refused> {
+    // review YEW-REVIEW-7 L3: the digests are taken under the branch the part was prepared under
+    if u32::from(hybrid.data.consensus_branch_id()) != branch_id {
+        return no(
+            refuse::MALFORMED,
+            format!("branch id {branch_id:08x}: the Sapling part was prepared under another"),
+        );
+    }
     if inputs.len() != tx.vin.len() {
         return no(
             refuse::MALFORMED,

@@ -671,4 +671,56 @@ mod tests {
         drop(w);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Review YEW-REVIEW-7 L3: `sign_hybrid` refuses a branch id other than the one the Sapling
+    /// part was prepared under (it used to ignore its parameter when a part existed).
+    #[test]
+    fn sign_hybrid_refuses_another_branch() {
+        use crate::build::hybrid;
+        use crate::sapling_part::{SaplingOut, SaplingPart};
+        let acct = crate::shielded_keys::SaplingAccount::from_mnemonic(
+            PHRASE,
+            "",
+            crate::params::Network::Regtest,
+        )
+        .unwrap();
+        let (_, own) = acct.default_address();
+        let part = SaplingPart {
+            target_height: 100,
+            vault_height: None,
+            spends: Vec::new(),
+            outputs: vec![SaplingOut::Shielded {
+                address: own,
+                value: 1_000,
+                memo: String::new(),
+                own: true,
+            }],
+            anchor: String::new(),
+            params_dir: params_dir().display().to_string(),
+        };
+        let tx = Transaction::new_v4();
+        let prepare = || {
+            hybrid::sapling_prepare(
+                acct.extended_spending_key(),
+                crate::params::Network::Regtest,
+                &part,
+                &tx,
+                VAULT_BRANCH_ID,
+                rand_core::OsRng,
+            )
+            .unwrap()
+        };
+        let e = hybrid::sign_hybrid(prepare(), tx.clone(), &[], 0x4dec_4df0, rand_core::OsRng)
+            .err()
+            .unwrap();
+        assert!(e.1.contains("prepared under another"), "{e:?}");
+        assert!(hybrid::sign_hybrid(
+            prepare(),
+            tx.clone(),
+            &[],
+            VAULT_BRANCH_ID,
+            rand_core::OsRng
+        )
+        .is_ok());
+    }
 }
