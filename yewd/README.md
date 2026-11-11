@@ -286,7 +286,10 @@ for `-wallet`). **The Sapling build** (`signer/src/sapling.rs`): `sapling_build`
 Merkle paths checked against the anchor, the outputs, the exact fee); a `sign` request with a
 `SaplingPart` builds and proves the Sapling bundle first, makes every transparent digest over the whole
 transaction (ZIP-243 with `hashShieldedSpends`/`hashShieldedOutputs`), signs the carrier, template, bond
-and coin inputs as without one, then authorizes the spends and the binding signature.
+and coin inputs as without one, then authorizes the spends and the binding signature. A `z_sendmany`
+with a post-quantum party (beta2 D-2, D-4, D-5: a PQ from address, whose change returns to it, or a PQ
+recipient, which librustzcash's builder cannot pay) takes that `sign` path on the YEC gate, its PQ inputs
+signed with the PQ keys over the same digests; every other shape keeps `sapling_build`.
 
 **The attestation equivocation guard** (`signer/src/attest.rs`, ycash6 S16 / EQV-1 self-protection):
 `<signer dir>/attest-signed.jsonl`, one record `(seq, key, citedHeight, blockHash, price, sig)` per

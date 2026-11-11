@@ -14,13 +14,21 @@
 //! signer builds, proves and signs it (K-24); the façade broadcasts it and records the
 //! operation's outcome. The operation runs to completion before its id is returned; the
 //! status objects are ycashd's.
+//!
+//! Beta2 (D-2, D-4, D-5): `z_sendmany` is any-to-any across ECC transparent, Sapling and
+//! post-quantum addresses, as ycash6 92e434626 (`wallet_tx_builder.cpp` `PreparePQTransaction`)
+//! answers it. A post-quantum from address spends its own `TX_PQPKH` coins and its change
+//! returns to it; a post-quantum recipient is a transparent output. A shape with a post-quantum
+//! party is signed through the signer's [`Request::Sign`] with the Sapling part built beside it
+//! (the YED builders' path: every transparent digest is ZIP-243 over the proven Sapling bundle,
+//! under the next block's branch ID); every other shape keeps the signer's Sapling build.
 
 use std::collections::BTreeSet;
 
 use serde_json::Value;
 use yewd_proto::{
-    KeyRef, Prevout, Request, Response, SaplingBuildRequest, SaplingOut, SaplingSpend,
-    SaplingTInput,
+    GatePath, KeyRef, Prevout, Request, Response, SaplingBuildRequest, SaplingOut, SaplingPart,
+    SaplingSpend, SaplingTInput,
 };
 
 use crate::build::{amount_param, next_block, signer_error, TX_EXPIRY_DELTA};
@@ -30,8 +38,9 @@ use crate::node::{self, Node};
 use crate::rpc::invalid;
 use crate::{code, txid_hex, RpcError, Wallet};
 
-/// `RefusePQSource` / `RefusePQRecipient` (ycashd `wallet/rpcwallet.cpp`, quantum spec A-15): the
-/// z_* operations never spend or pay `TX_PQPKH`.
+/// `RefusePQSource` (ycashd `wallet/rpcwallet.cpp`, quantum spec A-15), now only for the
+/// operations outside K-25 (`z_shieldcoinbase`, D-7; `z_mergetoaddress`, whose merging yewd does
+/// not serve): z_sendmany spends and pays `TX_PQPKH` (beta2 D-2).
 const PQ_SOURCE: &str = " cannot spend from a post-quantum address; use sendtoaddress or sendmany";
 const PQ_RECIPIENT: &str = " cannot pay a post-quantum address; use sendtoaddress or sendmany";
 
@@ -91,6 +100,24 @@ pub const SERVED: &[&str] = &[
 
 /// `WEIGHT_RATIO_CAP`: an explicit fee above this many conventional fees is refused.
 const WEIGHT_RATIO_CAP: i64 = 4;
+
+/// `MAX_PQ_INPUTS_PER_TX` (ycash6 `wallet/asyncrpcoperation_common.h`).
+pub const MAX_PQ_INPUTS_PER_TX: usize = 100;
+/// `MAX_STANDARD_TX_SIGOPS` (`policy/policy.h`: `MAX_BLOCK_SIGOPS / 5`).
+const MAX_STANDARD_TX_SIGOPS: usize = 20_000 / 5;
+/// `pq::SIGOP_COST`: the policy sigops of one `OP_CHECKPQSIG` (`crypto/pq/scheme.h`).
+const PQ_SIGOP_COST: usize = 20;
+/// `LEGACY_DEFAULT_FEE`: the base of the post-quantum fee rule without an explicit fee (the
+/// -feepolicy default, peroutput, of a send with at most 50 Sapling outputs).
+const LEGACY_DEFAULT_FEE: i64 = 1000;
+/// A v4 Sapling spend and output description, and the binding signature (ZIP-243 sizes).
+const SAPLING_SPEND_BYTES: usize = 384;
+const SAPLING_OUTPUT_BYTES: usize = 948;
+const SAPLING_BINDING_SIG_BYTES: usize = 64;
+
+/// The input-selection errors of ycash6 `ThrowInputSelectionError` (`asyncrpcoperation_common.cpp`).
+const TRANSPARENT_RECIPIENT_NOT_ALLOWED: &str = "This transaction would have transparent recipients, which is not enabled by default because it will publicly reveal transaction recipients and amounts. THIS MAY AFFECT YOUR PRIVACY. Resubmit with the `privacyPolicy` parameter set to `AllowRevealedRecipients` or weaker if you wish to allow this transaction to proceed anyway.";
+const REVEALING_SAPLING_AMOUNT_NOT_ALLOWED: &str = "Could not send to the Sapling shielded pool without spending non-Sapling funds, which would reveal transaction amounts. THIS MAY AFFECT YOUR PRIVACY. Resubmit with the `privacyPolicy` parameter set to `AllowRevealedAmounts` or weaker if you wish to allow this transaction to proceed anyway.";
 
 const PRIVACY_POLICIES: &[&str] = &[
     "FullPrivacy",
@@ -183,6 +210,67 @@ enum Source {
     AnyTaddr,
     T(Vec<u8>),
     Z(String),
+    /// A post-quantum address of this wallet (beta2 D-2): its key and its `TX_PQPKH` script.
+    Pq(yew_core::pq::PqKeyId, Vec<u8>),
+}
+
+/// The privacy levels a policy permits (ycash6 `TransactionStrategy::IsCompatibleWith`, the
+/// lattice of `PrivacyPolicyMeet`): whether `policy` allows a transaction that needs `required`.
+fn policy_allows(policy: &str, required: &str) -> bool {
+    let allowed: &[&str] = match policy {
+        "FullPrivacy" => &["FullPrivacy"],
+        "AllowRevealedAmounts" => &["FullPrivacy", "AllowRevealedAmounts"],
+        "AllowRevealedRecipients" => &[
+            "FullPrivacy",
+            "AllowRevealedAmounts",
+            "AllowRevealedRecipients",
+        ],
+        "AllowRevealedSenders" => &[
+            "FullPrivacy",
+            "AllowRevealedAmounts",
+            "AllowRevealedSenders",
+        ],
+        "AllowFullyTransparent" => &[
+            "FullPrivacy",
+            "AllowRevealedAmounts",
+            "AllowRevealedRecipients",
+            "AllowRevealedSenders",
+            "AllowFullyTransparent",
+        ],
+        "AllowLinkingAccountAddresses" => &[
+            "FullPrivacy",
+            "AllowRevealedAmounts",
+            "AllowRevealedSenders",
+            "AllowLinkingAccountAddresses",
+        ],
+        _ => return true, // NoPrivacy
+    };
+    allowed.contains(&required)
+}
+
+/// The size of a compact-size length prefix.
+fn compact(n: usize) -> usize {
+    match n {
+        0..=252 => 1,
+        253..=0xffff => 3,
+        _ => 5,
+    }
+}
+
+/// A Sapling bundle's padded output count (the builder pads a lone output to two).
+fn padded(outputs: usize) -> usize {
+    if outputs == 1 {
+        2
+    } else {
+        outputs
+    }
+}
+
+/// ycash6 `PQBuilderFee(base, shape)`: max(min(max(base, PQSizeFee(LEGACY_DEFAULT_FEE, bytes)),
+/// PQMaxTxFee()), the shape's ZIP-317 conventional fee), the size fee at the node's plain rate.
+fn pq_builder_fee(base: i64, bytes: usize, conventional: i64, rate: i64, cap: i64) -> i64 {
+    let size_fee = LEGACY_DEFAULT_FEE.max(rate * bytes as i64 / 1000);
+    base.max(size_fee).min(cap).max(conventional)
 }
 
 /// What an input-selection or build failure reports (`ThrowInputSelectionError`): the
@@ -292,9 +380,18 @@ impl Wallet {
             let a = obj.get("address").and_then(|v| v.as_str()).ok_or_else(|| {
                 RpcError::new(code::MISC_ERROR, "JSON value is not a string as expected")
             })?;
-            // RefusePQRecipient (ycashd rpcwallet.cpp): before the transparent parse, which takes rq… too
-            refuse_pq(self.network, a, "z_sendmany", PQ_RECIPIENT)?;
-            let dest = if let Some(s) = crate::rpc::parse_taddr_script(self.network, a) {
+            // A post-quantum recipient is a transparent (TX_PQPKH) output (beta2 D-2; reverses
+            // quantum spec A-15), payable once the vault upgrade (and for FN-DSA-512 Falcon) is
+            // active at the next block
+            let pq = yew_core::keys::parse_pq_yec_address(self.network, a).ok();
+            let dest = if let Some(id) = pq {
+                let s = yew_core::pq::pqpkh_script(&id).ok_or_else(|| {
+                    invalid(format!("Invalid parameter, unknown address format: {a}"))
+                })?;
+                self.ensure_pq_payable(&s)?;
+                has_t = true;
+                Dest::T(s)
+            } else if let Some(s) = crate::rpc::parse_taddr_script(self.network, a) {
                 has_t = true;
                 Dest::T(s)
             } else if yew_core::shielded_keys::is_sapling_address(self.network, a) {
@@ -308,6 +405,9 @@ impl Wallet {
                 return Err(invalid(format!(
                     "Invalid parameter, duplicated recipient address: {a}"
                 )));
+            }
+            if pq.is_some() && obj.get("memo").is_some_and(|m| !m.is_null()) {
+                return Err(invalid("Memos cannot be sent to transparent addresses."));
             }
             let memo = match obj.get("memo") {
                 None | Some(Value::Null) => String::new(),
@@ -339,14 +439,34 @@ impl Wallet {
             if amount < 0 {
                 return Err(invalid("Invalid parameter, amount must be positive"));
             }
+            if let (Some(_), Dest::T(s)) = (pq, &dest) {
+                // EnsurePQAmountNotDust: the dust threshold of a PQ output at its real spend size
+                let dust = crate::send::dust_threshold(s);
+                if amount < dust {
+                    return Err(invalid(format!(
+                        "Invalid parameter, amount {} is below the dust threshold {} of a post-quantum output",
+                        money(amount),
+                        money(dust)
+                    )));
+                }
+            }
             recipients.push((dest, amount, memo));
         }
         let from = p.first().and_then(|v| v.as_str()).ok_or_else(|| {
             RpcError::new(code::MISC_ERROR, "JSON value is not a string as expected")
         })?;
-        refuse_pq(self.network, from, "z_sendmany", PQ_SOURCE)?;
         let source = if from == "ANY_TADDR" {
             Source::AnyTaddr
+        } else if let Ok(id) = yew_core::keys::parse_pq_yec_address(self.network, from) {
+            // A post-quantum from address spends its own TX_PQPKH coins (beta2 D-2)
+            self.ensure_pq_spendable(&id)?;
+            let s = yew_core::pq::pqpkh_script(&id).ok_or_else(|| {
+                RpcError::new(
+                    code::INVALID_ADDRESS_OR_KEY,
+                    "Invalid from address: should be a taddr, zaddr, UA, or the string 'ANY_TADDR'.",
+                )
+            })?;
+            Source::Pq(id, s)
         } else if let Some(s) = crate::rpc::parse_taddr_script(self.network, from) {
             if yew_core::script::p2pkh_hash(&s)
                 .and_then(|h| self.book.by_hash(&h))
@@ -435,6 +555,11 @@ impl Wallet {
         fee: Option<i64>,
         policy: &str,
     ) -> Result<String, RpcError> {
+        if let Source::Pq(id, script) = source {
+            return self
+                .run_pq_source(node, next, id, script, recipients, min, fee, policy)
+                .await;
+        }
         let reveal_recipients = matches!(
             policy,
             "AllowRevealedRecipients" | "AllowFullyTransparent" | "NoPrivacy"
@@ -452,6 +577,12 @@ impl Wallet {
             .filter(|r| matches!(r.0, Dest::T(_)))
             .count();
         let n_z_out = recipients.len() - n_t_out;
+        // a TX_PQPKH output's 35-byte script: 10 bytes more than ZIP-317's 34-byte output each
+        let n_pq_out = recipients
+            .iter()
+            .filter(|r| matches!(&r.0, Dest::T(s) if yew_core::pq::pqpkh_of(s).is_some()))
+            .count();
+        let pq_extra = n_pq_out * 10;
         let tip = self.tip_height();
         // the candidates
         let mut t_coins: Vec<(yew_core::tx::OutPoint, i64, Vec<u8>, bool, KeyRef)> = Vec::new();
@@ -511,6 +642,7 @@ impl Wallet {
                 // non-coinbase first, then the largest
                 t_coins.sort_by(|a, b| a.3.cmp(&b.3).then(b.1.cmp(&a.1)));
             }
+            Source::Pq(..) => unreachable!("run_pq_source"),
             Source::Z(addr) => {
                 for n in &self.notes {
                     if n.spent || &n.address != addr {
@@ -530,7 +662,8 @@ impl Wallet {
         let z_source = matches!(source, Source::Z(_));
         // the first pass already asks for the fee of the outputs alone (ycashd's target in its
         // "Insufficient funds: have …, need …" is amount + fee: vault_pq_wallet.py)
-        let mut need_fee = fee.unwrap_or_else(|| conventional_fee(0, n_t_out, 0, n_z_out));
+        let mut need_fee =
+            fee.unwrap_or_else(|| conventional_fee_bytes(0, n_t_out, pq_extra, 0, n_z_out));
         let mut sel_t: Vec<_> = Vec::new();
         let mut sel_z: Vec<crate::NoteRow> = Vec::new();
         let mut change = 0i64;
@@ -576,9 +709,10 @@ impl Wallet {
             // the conventional fee of this shape (Sapling change for a Sapling source)
             let t_change = change > 0 && !z_source;
             let z_change = change > 0 && z_source;
-            let conventional = conventional_fee(
+            let conventional = conventional_fee_bytes(
                 sel_t.len(),
                 n_t_out + usize::from(t_change),
+                pq_extra,
                 sel_z.len(),
                 n_z_out + usize::from(z_change),
             );
@@ -658,6 +792,16 @@ impl Wallet {
                 }
             })
             .collect();
+        if n_pq_out > 0 {
+            // a post-quantum recipient: librustzcash's builder pays P2PKH/P2SH only, so the
+            // transparent part is built here and the signer adds the Sapling part (beta2 D-2)
+            let inputs: Vec<(yew_core::tx::OutPoint, i64, Vec<u8>, KeyRef)> =
+                sel_t.iter().map(|c| (c.0, c.1, c.2.clone(), c.4)).collect();
+            let hexs = self
+                .sign_hybrid(next, &inputs, spends, anchor, outputs, total + fee_zat)
+                .await?;
+            return self.commit_z(node, &hexs).await;
+        }
         let req = SaplingBuildRequest {
             target_height: next.height,
             expiry_height: next.height + TX_EXPIRY_DELTA,
@@ -690,6 +834,13 @@ impl Wallet {
             }
             other => return Err(signer_error(other)),
         };
+        self.commit_z(node, &hexs).await
+    }
+
+    /// `SendTransaction`: the node's `sendrawtransaction`, then the barrier. A refused transaction
+    /// is never recorded: the wallet learns its transactions from the node's mempool and chain
+    /// only, so nothing it was told failed is broadcast again later (audit H1's class).
+    async fn commit_z(&mut self, node: &dyn Node, hexs: &str) -> Result<String, RpcError> {
         let txid = match node::call(node, "sendrawtransaction", serde_json::json!([hexs])).await {
             Ok(v) => v.as_str().unwrap_or_default().to_string(),
             Err(crate::node::NodeError::Rpc { code, message }) => {
@@ -838,6 +989,430 @@ impl Wallet {
     }
 }
 
+impl Wallet {
+    /// ycash6 `EnsurePQSourceSpendable` (`wallet/rpcwallet.cpp`, beta2 D-2): a post-quantum from
+    /// address spends only once the vault upgrade (and for FN-DSA-512 Falcon) is active at the
+    /// next block, only with its key in this wallet, and only unlocked.
+    fn ensure_pq_spendable(&self, id: &yew_core::pq::PqKeyId) -> Result<(), RpcError> {
+        if !self.vault_active_next() {
+            return Err(RpcError::new(
+                code::INVALID_ADDRESS_OR_KEY,
+                "post-quantum addresses can be spent from only once the vault upgrade is active at the next block",
+            ));
+        }
+        if id.scheme == yew_core::pq::SCHEME_FN_DSA_512 && !self.falcon_next() {
+            return Err(RpcError::new(
+                code::INVALID_ADDRESS_OR_KEY,
+                "an FN-DSA-512 (scheme 2) post-quantum address can be spent from only once Falcon is active at the next block",
+            ));
+        }
+        if self.book.pq_by_id(id).is_none() {
+            return Err(RpcError::new(
+                code::INVALID_ADDRESS_OR_KEY,
+                "From address does not belong to this node, post-quantum key not found.",
+            ));
+        }
+        self.ensure_unlocked()
+    }
+
+    /// The outputs YED holds (the index's tokens at this wallet's scripts and every output of a
+    /// mempool wallet transaction carrying a payload), as [`Wallet::yed_reserved`], but strict:
+    /// where the node serves the Yellowback index and cannot answer for it, plain YEC is not
+    /// spent at all (ycash6 `YellowbackInputRefusal`'s unhealthy-index refusal). A node where
+    /// Yellowback is not live answers `-32601` and holds no token.
+    pub(crate) async fn yed_reserved_strict(
+        &self,
+        node: &dyn Node,
+    ) -> Result<BTreeSet<(String, u32)>, RpcError> {
+        if let Err(e) = self.tokens(node).await {
+            if e.code != code::METHOD_NOT_FOUND {
+                let reason = e
+                    .message
+                    .trim_start_matches("yellowback-unhealthy: ")
+                    .trim_end_matches("; restart with -reindex-yellowback")
+                    .to_string();
+                return Err(RpcError::new(
+                    code::WALLET_ERROR,
+                    format!("refusing to spend as plain YEC while the Yellowback index is unhealthy ({reason}): the wallet's YED coin locks cannot be trusted; restart with -reindex-yellowback"),
+                ));
+            }
+        }
+        self.yed_reserved(node).await
+    }
+
+    /// ycash6 `WalletTxBuilder::PreparePQTransaction` (beta2 D-2, D-4, D-5): `z_sendmany` from a
+    /// post-quantum address. Its own `TX_PQPKH` coins (never a YED output, never a locked coin),
+    /// largest first; the fee priced on the transaction's size (`PQBuilderFee`) and settled with
+    /// the selection; change below the post-quantum dust threshold folded into the fee, any
+    /// other back to the source address; the privacy policy of a transparent sender.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_pq_source(
+        &mut self,
+        node: &dyn Node,
+        next: &crate::build::Next,
+        id: &yew_core::pq::PqKeyId,
+        source: &[u8],
+        recipients: &[(Dest, i64, String)],
+        min: i64,
+        fee: Option<i64>,
+        policy: &str,
+    ) -> Result<String, RpcError> {
+        let (rate, cap) = crate::send::pq_fee_params(node).await;
+        if let Some(f) = fee {
+            // EnsurePQFeeWithinCap (ycash-dd 8e67b2a35, audit H1): never build what the commit refuses
+            if f > cap {
+                return Err(op_error(code::INVALID_PARAMETER, format!(
+                    "Fee {} is above the {} cap on a post-quantum spend (-maxtxfee, or $2 at the attested price, at most -yellowbackmaxtxfee)",
+                    money(f),
+                    money(cap)
+                )));
+            }
+        }
+        // the payments: a PQ source has no shielded funds, so a Sapling recipient reveals the
+        // amount; a transparent one (ECC or PQ) the recipient (D-5)
+        for (d, _, _) in recipients {
+            let ok = match d {
+                Dest::T(_) => policy_allows(policy, "AllowRevealedRecipients"),
+                Dest::Z(_) => policy_allows(policy, "AllowRevealedAmounts"),
+            };
+            if !ok {
+                return Err(op_error(
+                    code::INVALID_PARAMETER,
+                    match d {
+                        Dest::T(_) => TRANSPARENT_RECIPIENT_NOT_ALLOWED,
+                        Dest::Z(_) => REVEALING_SAPLING_AMOUNT_NOT_ALLOWED,
+                    },
+                ));
+            }
+        }
+        let send: i64 = recipients.iter().map(|r| r.1).sum();
+        // the source's own coins: unspent, unlocked, mature, at depth >= minconf, not spent by a
+        // mempool transaction of this wallet, and never an output YED holds
+        let reserved = self.yed_reserved_strict(node).await?;
+        let spent = self.mempool_spent();
+        let key =
+            KeyRef::Pq {
+                scheme: id.scheme,
+                index: self.book.pq_by_id(id).map(|k| k.index).ok_or_else(|| {
+                    RpcError::new(code::WALLET_ERROR, "post-quantum key not found")
+                })?,
+            };
+        let mut coins: Vec<(yew_core::tx::OutPoint, i64, Vec<u8>, KeyRef)> = Vec::new();
+        for (c, d) in self.available_coins(None) {
+            if c.script != source
+                || c.coinbase
+                || d < min
+                || spent.contains(&(c.txid.clone(), c.vout))
+                || reserved.contains(&(c.txid.clone(), c.vout))
+            {
+                continue;
+            }
+            let op = yew_core::tx::OutPoint {
+                txid: yew_core::tx::txid_from_hex(&c.txid)
+                    .map_err(|e| RpcError::new(code::MISC_ERROR, e))?,
+                n: c.vout,
+            };
+            coins.push((op, c.value, c.script.clone(), key));
+        }
+        if coins.is_empty() {
+            return Err(op_error(
+                code::WALLET_INSUFFICIENT_FUNDS,
+                "Insufficient transparent funds, no UTXOs found for taddr from address.",
+            ));
+        }
+        coins.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then((a.0.txid, a.0.n).cmp(&(b.0.txid, b.0.n)))
+        });
+        // the transparent outputs: the ECC recipients, then the PQ ones (ycash6's order), the
+        // change last; the Sapling ones in the Sapling part
+        let mut t_outs: Vec<(Vec<u8>, i64)> = Vec::new();
+        for pq_first in [false, true] {
+            for (d, v, _) in recipients {
+                if let Dest::T(s) = d {
+                    if yew_core::pq::pqpkh_of(s).is_some() == pq_first {
+                        t_outs.push((s.clone(), *v));
+                    }
+                }
+            }
+        }
+        let n_z = recipients
+            .iter()
+            .filter(|r| matches!(r.0, Dest::Z(_)))
+            .count();
+        let z_outs = padded(n_z);
+        let mut cur_fee = fee.unwrap_or(LEGACY_DEFAULT_FEE);
+        let mut selected: Vec<(yew_core::tx::OutPoint, i64, Vec<u8>, KeyRef)> = Vec::new();
+        let mut change;
+        let mut round = 0;
+        loop {
+            if round >= 16 {
+                return Err(op_error(
+                    code::WALLET_ERROR,
+                    "Could not settle the fee of this post-quantum spend",
+                ));
+            }
+            round += 1;
+            let target = send + cur_fee;
+            selected.clear();
+            let mut sum = 0i64;
+            for c in &coins {
+                if sum >= target {
+                    break;
+                }
+                sum += c.1;
+                selected.push(c.clone());
+            }
+            if sum < target {
+                return Err(op_error(
+                    code::WALLET_INSUFFICIENT_FUNDS,
+                    format!(
+                        "Insufficient transparent funds, have {}, need {}",
+                        money(sum),
+                        money(target)
+                    ),
+                ));
+            }
+            change = sum - target;
+            // change below the PQ dust threshold goes to the fee: no dust output is made
+            let mut dust_to_fee = 0;
+            if change > 0 && change < crate::send::dust_threshold(source) {
+                dust_to_fee = change;
+                change = 0;
+            }
+            let mut outs = t_outs.clone();
+            if change > 0 {
+                outs.push((source.to_vec(), change));
+            }
+            // EnsurePQShapeStandard
+            if selected.len() > MAX_PQ_INPUTS_PER_TX {
+                return Err(op_error(code::WALLET_ERROR, format!(
+                    "This send needs {} post-quantum inputs, more than the {MAX_PQ_INPUTS_PER_TX} one transaction may carry; combine the address's coins first with z_mergetoaddress",
+                    selected.len()
+                )));
+            }
+            let sigops = selected.len() * PQ_SIGOP_COST
+                + outs
+                    .iter()
+                    .filter(|o| yew_core::script::p2pkh_hash(&o.0).is_some())
+                    .count();
+            if sigops > MAX_STANDARD_TX_SIGOPS {
+                return Err(op_error(code::WALLET_ERROR, format!(
+                    "This transaction needs {sigops} signature operations, more than the {MAX_STANDARD_TX_SIGOPS} a standard transaction allows; spend fewer inputs"
+                )));
+            }
+            let (bytes, conventional) = shape_size(&selected, &outs, 0, z_outs);
+            let base = fee.unwrap_or(LEGACY_DEFAULT_FEE);
+            let needed = pq_builder_fee(base, bytes, conventional, rate, cap);
+            if needed <= cur_fee {
+                cur_fee += dust_to_fee;
+                break;
+            }
+            if let Some(f) = fee {
+                return Err(op_error(
+                    code::INVALID_PARAMETER,
+                    format!(
+                        "Fee {} is below the {} this post-quantum spend needs",
+                        money(f),
+                        money(needed)
+                    ),
+                ));
+            }
+            cur_fee = needed;
+        }
+        // ApproveAndBuild: a transparent sender, and a transparent recipient if any (the D-4
+        // change is one)
+        let required = if !t_outs.is_empty() || change > 0 {
+            "AllowFullyTransparent"
+        } else {
+            "AllowRevealedSenders"
+        };
+        if !policy_allows(policy, required) {
+            return Err(op_error(code::WALLET_ERROR, format!(
+                "Failed to build transaction: The specified privacy policy, {policy}, does not permit the creation of the requested transaction. Select {required} or weaker to allow this transaction to be constructed."
+            )));
+        }
+        // defence in depth: no selected coin is an output YED holds (never true after the filter)
+        if let Some(c) = selected
+            .iter()
+            .find(|c| reserved.contains(&(txid_hex(&c.0.txid), c.0.n)))
+        {
+            return Err(op_error(
+                code::WALLET_ERROR,
+                format!(
+                    "refusing to spend a Yellowback outpoint as plain YEC: {}:{}",
+                    txid_hex(&c.0.txid),
+                    c.0.n
+                ),
+            ));
+        }
+        let mut outputs: Vec<SaplingOut> = Vec::new();
+        for (s, v) in &t_outs {
+            outputs.push(SaplingOut::Transparent {
+                script: hex::encode(s),
+                value: *v,
+                own: self.book.owns_script(s).is_some(),
+            });
+        }
+        for (d, v, memo) in recipients {
+            if let Dest::Z(a) = d {
+                outputs.push(SaplingOut::Shielded {
+                    address: a.clone(),
+                    value: *v,
+                    memo: memo.clone(),
+                    own: self.view.owns_address(a).is_some(),
+                });
+            }
+        }
+        if change > 0 {
+            // beta2 D-4: the change returns to the source address (same scheme, no new key)
+            outputs.push(SaplingOut::Transparent {
+                script: hex::encode(source),
+                value: change,
+                own: true,
+            });
+        }
+        let hexs = self
+            .sign_hybrid(
+                next,
+                &selected,
+                Vec::new(),
+                String::new(),
+                outputs,
+                send + cur_fee,
+            )
+            .await?;
+        // the signed transaction re-priced: the estimate must cover it
+        let raw =
+            hex::decode(&hexs).map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
+        let (signed, _) = yew_core::tx::Transaction::parse(&raw).map_err(|e| {
+            RpcError::new(
+                code::INTERNAL_ERROR,
+                format!("yewd: the signer's transaction: {e}"),
+            )
+        })?;
+        let sizes: Vec<usize> = signed.vin.iter().map(|i| i.script_sig.len()).collect();
+        let conventional = signed
+            .zip317_conventional_fee(&sizes)
+            .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
+        let needed = pq_builder_fee(
+            fee.unwrap_or(LEGACY_DEFAULT_FEE),
+            raw.len(),
+            conventional,
+            rate,
+            cap,
+        );
+        if needed > cur_fee {
+            return Err(op_error(
+                code::WALLET_ERROR,
+                format!(
+                    "Post-quantum fee estimate {} fell short of the {} the signed transaction needs",
+                    money(cur_fee),
+                    money(needed)
+                ),
+            ));
+        }
+        self.commit_z(node, &hexs).await
+    }
+
+    /// A `z_sendmany` transaction with a post-quantum party, signed by the signer's `Sign` with the
+    /// Sapling part (spends, shielded outputs) built beside the transparent one: `inputs` (P2PKH or
+    /// `TX_PQPKH` wallet coins, each with its key), `outputs` in order (the transparent ones into
+    /// `vout`, the shielded ones into the Sapling part). The YEC gate path: no data output, no
+    /// template, no owner key; the outflow at most `cap`.
+    async fn sign_hybrid(
+        &self,
+        next: &crate::build::Next,
+        inputs: &[(yew_core::tx::OutPoint, i64, Vec<u8>, KeyRef)],
+        spends: Vec<SaplingSpend>,
+        anchor: String,
+        outputs: Vec<SaplingOut>,
+        cap: i64,
+    ) -> Result<String, RpcError> {
+        let mut tx = yew_core::tx::Transaction::new_v4();
+        tx.expiry_height = next.height + TX_EXPIRY_DELTA;
+        for i in inputs {
+            tx.vin.push(yew_core::tx::TxIn::new(i.0));
+        }
+        let mut shielded = Vec::new();
+        for o in outputs {
+            match o {
+                SaplingOut::Transparent { script, value, .. } => {
+                    tx.vout.push(yew_core::tx::TxOut {
+                        value,
+                        script_pubkey: hex::decode(&script)
+                            .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?,
+                    })
+                }
+                other => shielded.push(other),
+            }
+        }
+        let sapling = (!spends.is_empty() || !shielded.is_empty()).then(|| SaplingPart {
+            target_height: next.height,
+            vault_height: self.chain.vault_activation,
+            spends,
+            outputs: shielded,
+            anchor,
+            params_dir: self.params_dir(),
+        });
+        let prevouts: Vec<crate::build::NodeCoin> = inputs
+            .iter()
+            .map(|i| crate::build::NodeCoin {
+                value: i.1,
+                script: i.2.clone(),
+                height: None,
+                coinbase: false,
+            })
+            .collect();
+        let keys: Vec<KeyRef> = inputs.iter().map(|i| i.3).collect();
+        self.sign_inputs_hex(
+            &tx,
+            &prevouts,
+            &keys,
+            &[],
+            GatePath::Yec,
+            cap,
+            next.branch,
+            sapling,
+        )
+        .await
+    }
+}
+
+/// The serialized size and the ZIP-317 conventional fee of a transparent shape with Sapling parts:
+/// each input with the scriptSig its coin's key makes (a post-quantum signature's pushes at their
+/// largest), each output at its real size, `spends` Sapling spends and `outs` (padded) outputs.
+fn shape_size(
+    inputs: &[(yew_core::tx::OutPoint, i64, Vec<u8>, KeyRef)],
+    outputs: &[(Vec<u8>, i64)],
+    spends: usize,
+    outs: usize,
+) -> (usize, i64) {
+    let in_bytes: usize = inputs
+        .iter()
+        .map(|i| {
+            let n = crate::send::script_sig_size(&i.2);
+            36 + compact(n) + n + 4
+        })
+        .sum();
+    let out_bytes: usize = outputs
+        .iter()
+        .map(|o| 8 + compact(o.0.len()) + o.0.len())
+        .sum();
+    let sapling = if spends + outs > 0 {
+        spends * SAPLING_SPEND_BYTES + outs * SAPLING_OUTPUT_BYTES + SAPLING_BINDING_SIG_BYTES
+    } else {
+        0
+    };
+    // header, version group, lock time, expiry, valueBalance and the three counts of a v4
+    // transaction, the input and output counts
+    let fixed = 4 + 4 + 4 + 4 + 8 + 3 + compact(inputs.len()) + compact(outputs.len());
+    let bytes = fixed + in_bytes + out_bytes + sapling;
+    let conventional =
+        yew_core::params::zip317_conventional_fee(in_bytes, out_bytes, spends.max(outs));
+    (bytes, conventional)
+}
+
 /// `{:.8}` text of an amount, for the operation's context.
 fn money8(z: i64) -> String {
     crate::json::amount_text(z)
@@ -846,13 +1421,25 @@ fn money8(z: i64) -> String {
 /// ZIP-317's conventional fee of a `z_sendmany` shape: P2PKH inputs and outputs, Sapling spends,
 /// and Sapling outputs padded to two whenever the bundle is present.
 pub fn conventional_fee(t_in: usize, t_out: usize, z_spends: usize, z_outs: usize) -> i64 {
+    conventional_fee_bytes(t_in, t_out, 0, z_spends, z_outs)
+}
+
+/// [`conventional_fee`] with `extra_out_bytes` more output bytes (a `TX_PQPKH` output is 10 bytes
+/// longer than a P2PKH one).
+pub fn conventional_fee_bytes(
+    t_in: usize,
+    t_out: usize,
+    extra_out_bytes: usize,
+    z_spends: usize,
+    z_outs: usize,
+) -> i64 {
     let padded = if z_spends + z_outs > 0 {
         z_outs.max(2)
     } else {
         0
     };
     let in_bytes = t_in * yew_core::params::ZIP317_INPUT_SIZE;
-    let out_bytes = t_out * yew_core::params::ZIP317_OUTPUT_SIZE;
+    let out_bytes = t_out * yew_core::params::ZIP317_OUTPUT_SIZE + extra_out_bytes;
     yew_core::params::zip317_conventional_fee(in_bytes, out_bytes, z_spends.max(padded))
 }
 

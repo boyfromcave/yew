@@ -41,7 +41,7 @@ const DUST: i64 = 54;
 /// `GetPQDustThreshold` at `ONE_THIRD_DUST_THRESHOLD_RATE` (100 zat/kB): 3 × the fee of the output
 /// plus the input that spends it, the input a post-quantum spend for `TX_PQPKH`, 148 bytes otherwise
 /// (`CTxOut::GetDustThreshold`: 54 zat for P2PKH).
-fn dust_threshold(script: &[u8]) -> i64 {
+pub(crate) fn dust_threshold(script: &[u8]) -> i64 {
     let out = 8 + if script.len() > 252 { 3 } else { 1 } + script.len();
     let input = match yew_core::pq::pqpkh_of(script) {
         Some(id) => crate::yed::pq_input_size(id.scheme),
@@ -52,7 +52,7 @@ fn dust_threshold(script: &[u8]) -> i64 {
 
 /// The scriptSig a wallet coin's input will carry: a post-quantum signature's pushes for
 /// `TX_PQPKH`, the P2PKH maximum otherwise.
-fn script_sig_size(script: &[u8]) -> usize {
+pub(crate) fn script_sig_size(script: &[u8]) -> usize {
     match yew_core::pq::pqpkh_of(script) {
         Some(id) => yew_core::pq::pq_sig_pushes_size(id.scheme).unwrap_or(MAX_P2PKH_SCRIPT_SIG),
         None => MAX_P2PKH_SCRIPT_SIG,
@@ -71,7 +71,22 @@ async fn pq_spend_fee(
     conventional: i64,
 ) -> Result<i64, RpcError> {
     const LEGACY_DEFAULT_FEE: i64 = 1000;
-    let (rate, cap) = match node::call(node, "yed_getinfo", serde_json::json!([])).await {
+    let (rate, cap) = pq_fee_params(node).await;
+    let unsigned = tx
+        .serialize()
+        .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?
+        .len();
+    let compact = |n: usize| if n <= 252 { 1 } else { 3 };
+    let bytes = unsigned + sizes.iter().map(|n| n + compact(*n) - 1).sum::<usize>();
+    let size_fee = LEGACY_DEFAULT_FEE.max(rate * bytes as i64 / 1000);
+    Ok(conventional.max(size_fee).min(cap).max(conventional))
+}
+
+/// The plain fee rate (zat/kB) and the post-quantum fee cap (`PQMaxTxFee`) the node reports
+/// (`yed_getinfo.params.fees.network`: `plain.zatPerKB`, `yellowback.maxTxFeeZat`); without a live
+/// Yellowback the -pqfeerate default (the relay floor, 100 zat/kB) and -maxtxfee's 0.1 YEC.
+pub(crate) async fn pq_fee_params(node: &dyn Node) -> (i64, i64) {
+    match node::call(node, "yed_getinfo", serde_json::json!([])).await {
         Ok(v) => {
             let n = &v["params"]["fees"]["network"];
             (
@@ -85,21 +100,13 @@ async fn pq_spend_fee(
         }
         // -pqfeerate's default, the relay floor (DEFAULT_MIN_RELAY_TX_FEE), and -maxtxfee's
         Err(_) => (crate::pq_fee_rate(), 10_000_000),
-    };
-    let unsigned = tx
-        .serialize()
-        .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?
-        .len();
-    let compact = |n: usize| if n <= 252 { 1 } else { 3 };
-    let bytes = unsigned + sizes.iter().map(|n| n + compact(*n) - 1).sum::<usize>();
-    let size_fee = LEGACY_DEFAULT_FEE.max(rate * bytes as i64 / 1000);
-    Ok(conventional.max(size_fee).min(cap).max(conventional))
+    }
 }
 
 impl Wallet {
     /// ycashd's `EnsurePQRecipientPayable` (`wallet/rpcwallet.cpp`): a post-quantum recipient only
     /// once the vault upgrade, and for FN-DSA-512 Falcon, is active at the next block.
-    fn ensure_pq_payable(&self, script: &[u8]) -> Result<(), RpcError> {
+    pub(crate) fn ensure_pq_payable(&self, script: &[u8]) -> Result<(), RpcError> {
         let Some(id) = yew_core::pq::pqpkh_of(script) else {
             return Ok(());
         };
