@@ -16,13 +16,15 @@
 //! names this module; `tests::not_exported_to_the_apps` holds that.
 
 use crate as yew_core;
-use crate::params::Network;
+use crate::params::{Network, SIGHASH_ALL};
+use crate::pq::PqKey;
 use crate::refuse::{self, no, Refused};
 use crate::sapling_part::SaplingOut;
 use rand_core::{CryptoRng, RngCore};
 use sapling_crypto::value::NoteValue;
 use sapling_crypto::zip32::ExtendedSpendingKey;
 use sapling_crypto::{Anchor, MerklePath, Node, Note, PaymentAddress, Rseed};
+use secp256k1::SecretKey;
 use yew_core::shielded_keys::SaplingAccount;
 use zcash_protocol::value::Zatoshis;
 use zcash_transparent::address::TransparentAddress;
@@ -380,6 +382,172 @@ fn spend_parts(
         dfvk.fvk().clone()
     };
     Ok((note, path, fvk))
+}
+
+// ---------------------------------------------------------------------------------------------
+// The signing loop's P2PKH and post-quantum arms (moved from yewd/signer/src/sign.rs
+// `SignerCore::sign`, review YEW-REVIEW-6 item 4, a pure move: the bodies are the signer's; the
+// lines that are not are listed in that commit). yewd-signer calls them for its `KeyRef::Bip32`
+// and `KeyRef::Pq` inputs; [`sign_hybrid`] is the core's loop over them.
+
+/// The ZIP-243 digest of input `i` (`SIGHASH_ALL`) under `branch_id`: over the proven Sapling
+/// part when there is one ([`Hybrid::digest`]), else over the transparent transaction (the
+/// signer's `digest_of`).
+pub fn input_digest(
+    hybrid: Option<&Hybrid>,
+    branch_id: u32,
+    tx: &yew_core::tx::Transaction,
+    i: usize,
+    script_code: &[u8],
+    script: &[u8],
+    amount: i64,
+) -> Result<[u8; 32], Refused> {
+    match hybrid {
+        Some(h) => h.digest(i, script_code, script, amount, SIGHASH_ALL),
+        None => tx
+            .sighash(i, script_code, amount, SIGHASH_ALL, branch_id)
+            .map_err(|e| (refuse::FAILED, e.to_string())),
+    }
+}
+
+/// A DER ECDSA signature over `digest` with the `SIGHASH_ALL` byte appended (the signer's
+/// `ecdsa`).
+pub fn ecdsa(digest: [u8; 32], sk: &SecretKey) -> Vec<u8> {
+    let sig = secp256k1::ecdsa::sign(secp256k1::Message::from_digest(digest), sk);
+    let mut der = sig.serialize_der().to_vec();
+    der.push(SIGHASH_ALL as u8);
+    der
+}
+
+/// Sign P2PKH input `i` (prevout `script`, `amount`) with `sk` / `pk`: its scriptSig is set and
+/// its digest returned (the signer's `KeyRef::Bip32` arm).
+#[allow(clippy::too_many_arguments)]
+pub fn sign_p2pkh_input(
+    hybrid: Option<&Hybrid>,
+    branch_id: u32,
+    tx: &mut yew_core::tx::Transaction,
+    i: usize,
+    script: &[u8],
+    amount: i64,
+    sk: &SecretKey,
+    pk: &[u8; 33],
+) -> Result<[u8; 32], Refused> {
+    let digest = input_digest(hybrid, branch_id, tx, i, script, script, amount)?;
+    tx.vin[i].script_sig = yew_core::script::p2pkh_script_sig(&ecdsa(digest, sk), pk);
+    Ok(digest)
+}
+
+/// Sign `TX_PQPKH` input `i` (prevout `script`, `amount`) with `k`: its scriptSig is set and its
+/// digest returned (the signer's `KeyRef::Pq` arm).
+pub fn sign_pq_input(
+    hybrid: Option<&Hybrid>,
+    branch_id: u32,
+    tx: &mut yew_core::tx::Transaction,
+    i: usize,
+    script: &[u8],
+    amount: i64,
+    k: &PqKey,
+) -> Result<[u8; 32], Refused> {
+    let digest = input_digest(hybrid, branch_id, tx, i, script, script, amount)?;
+    let mut sig = k.sign(&digest);
+    sig.push(SIGHASH_ALL as u8);
+    tx.vin[i].script_sig = yew_core::pq::pqpkh_script_sig(&sig, k.public_key())
+        .map_err(|e| (refuse::FAILED, e.to_string()))?;
+    Ok(digest)
+}
+
+/// The finished bytes of the signed `tx`: with a Sapling part, [`Hybrid::finish`] (`rng`: the
+/// Sapling authorizations' randomness, `OsRng` in production); else its serialization.
+pub fn finish_signed(
+    hybrid: Option<Hybrid>,
+    tx: &yew_core::tx::Transaction,
+    rng: impl RngCore + CryptoRng,
+) -> Result<Vec<u8>, Refused> {
+    let out = match hybrid {
+        Some(h) => h.finish(tx, rng)?,
+        None => tx
+            .serialize()
+            .map_err(|e| (refuse::FAILED, e.to_string()))?,
+    };
+    Ok(out)
+}
+
+/// The key of a transparent input [`sign_hybrid`] signs.
+pub enum HybridKey<'a> {
+    /// A P2PKH coin: its ECC key and compressed public key.
+    P2pkh(&'a SecretKey, &'a [u8; 33]),
+    /// A `TX_PQPKH` coin: its post-quantum key.
+    Pq(&'a PqKey),
+}
+
+/// A transparent input of a hybrid transaction: its prevout's scriptPubKey and amount, its key.
+pub struct HybridInput<'a> {
+    /// The prevout's scriptPubKey (the script code too: P2PKH and `TX_PQPKH`).
+    pub script: &'a [u8],
+    /// The prevout's amount, zat.
+    pub amount: i64,
+    /// The key that owns it.
+    pub key: HybridKey<'a>,
+}
+
+/// Sign every transparent input of `tx` (`inputs[i]` is `vin[i]`) over the proven Sapling part
+/// with [`sign_p2pkh_input`] / [`sign_pq_input`], then [`finish_signed`]. Returns each input's
+/// digest and the final bytes. A key that does not own its prevout script is refused before
+/// anything is signed. Not an app API: the caller passes the bytes through `gate::check`.
+pub fn sign_hybrid(
+    hybrid: Hybrid,
+    mut tx: yew_core::tx::Transaction,
+    inputs: &[HybridInput<'_>],
+    branch_id: u32,
+    rng: impl RngCore + CryptoRng,
+) -> Result<(Vec<[u8; 32]>, Vec<u8>), Refused> {
+    if inputs.len() != tx.vin.len() {
+        return no(
+            refuse::MALFORMED,
+            format!("{} inputs and {} keys", tx.vin.len(), inputs.len()),
+        );
+    }
+    for (i, inp) in inputs.iter().enumerate() {
+        let owns = match inp.key {
+            HybridKey::P2pkh(_, pk) => {
+                yew_core::script::p2pkh_script(&yew_core::keys::hash160(pk)) == inp.script
+            }
+            HybridKey::Pq(k) => yew_core::pq::pqpkh_script(&k.id()).as_deref() == Some(inp.script),
+        };
+        if !owns {
+            return no(
+                refuse::KEY_MISMATCH,
+                format!("input {i} is not paid to the named key"),
+            );
+        }
+    }
+    let mut sighashes = Vec::with_capacity(inputs.len());
+    for (i, inp) in inputs.iter().enumerate() {
+        let digest = match inp.key {
+            HybridKey::P2pkh(sk, pk) => sign_p2pkh_input(
+                Some(&hybrid),
+                branch_id,
+                &mut tx,
+                i,
+                inp.script,
+                inp.amount,
+                sk,
+                pk,
+            )?,
+            HybridKey::Pq(k) => sign_pq_input(
+                Some(&hybrid),
+                branch_id,
+                &mut tx,
+                i,
+                inp.script,
+                inp.amount,
+                k,
+            )?,
+        };
+        sighashes.push(digest);
+    }
+    let raw = finish_signed(Some(hybrid), &tx, rng)?;
+    Ok((sighashes, raw))
 }
 
 #[cfg(test)]
