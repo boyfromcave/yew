@@ -26,6 +26,37 @@ impl Signer for TestSigner {
     }
 }
 
+/// A signer that signs: the real signer core over the test phrase, its records in `dir`.
+struct CoreSigner(yewd_signer::sign::SignerCore);
+
+impl Signer for CoreSigner {
+    fn public(&self, req: &PublicRequest) -> Result<PublicBundle, String> {
+        match self
+            .0
+            .handle(&yewd_proto::Envelope::new(yewd_proto::Request::Public(
+                req.clone(),
+            ))) {
+            yewd_proto::Response::Public(b) => Ok(b),
+            other => Err(format!("{other:?}")),
+        }
+    }
+
+    fn request(&self, r: yewd_proto::Request) -> Result<yewd_proto::Response, String> {
+        Ok(self.0.handle(&yewd_proto::Envelope::new(r)))
+    }
+}
+
+fn core_signer(dir: &std::path::Path) -> Box<dyn Signer> {
+    std::fs::create_dir_all(dir).unwrap();
+    Box::new(CoreSigner(
+        yewd_signer::sign::SignerCore::open(
+            yewd_signer::Keystore::from_mnemonic(Network::Regtest, PHRASE),
+            dir,
+        )
+        .unwrap(),
+    ))
+}
+
 fn signer() -> Box<dyn Signer> {
     Box::new(TestSigner(yewd_signer::Keystore::from_mnemonic(
         Network::Regtest,
@@ -38,6 +69,8 @@ struct Chain {
     /// (display hash, raw block)
     blocks: Vec<(String, Vec<u8>)>,
     mempool: Vec<(String, Vec<u8>)>,
+    /// What `yed_listtokens` answers (the index's tokens, whatever addresses are asked about).
+    tokens: Vec<Value>,
 }
 
 #[derive(Clone, Default)]
@@ -148,6 +181,7 @@ impl Node for MockNode {
                     }
                 }
                 "getblockchaininfo" => json!({"upgrades": {}}),
+                "yed_listtokens" => json!(c.tokens),
                 "getrawmempool" => json!(c
                     .mempool
                     .iter()
@@ -553,4 +587,256 @@ async fn balances_by_type_over_the_mock_chain() {
         &w.book.key(0, 0).unwrap().hash,
     ));
     assert!(e.get("pqscheme").is_none());
+}
+
+/// Integer zatoshi of an amount the wallet printed (a JSON number or a string), no float.
+fn zat(v: &Value) -> i64 {
+    let s = match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    let (i, f) = s.split_once('.').unwrap_or((&s, ""));
+    let neg = i.starts_with('-');
+    let i: i64 = i.trim_start_matches('-').parse().unwrap();
+    let mut f = f.to_string();
+    assert!(f.len() <= 8, "{s}");
+    while f.len() < 8 {
+        f.push('0');
+    }
+    let z = i * 100_000_000 + f.parse::<i64>().unwrap();
+    if neg {
+        -z
+    } else {
+        z
+    }
+}
+
+async fn call_json(w: &mut Wallet, node: &MockNode, m: &str, p: &[Value]) -> Value {
+    serde_json::from_str(&w.call(node, m, p).await.unwrap().text()).unwrap()
+}
+
+/// Review of stage 2, finding 4: the total and its ECC and post-quantum parts come from one
+/// implementation, so getbalance = getwalletinfo balance = balance_ecc + balance_pq, with an
+/// immature coinbase, a spent output and an unconfirmed one present.
+#[tokio::test]
+async fn balance_parts_add_up_with_immature_spent_and_unconfirmed() {
+    let node = MockNode::default();
+    genesis(&node);
+    let d = dir("addup");
+    let mut w = Wallet::open(&d, Network::Regtest, signer(), 0).unwrap();
+    let ecc = yew_core::script::p2pkh_script(&w.book.key(0, 0).unwrap().hash);
+    let fn_ = yew_core::pq::pqpkh_script(&w.book.pq_key(2, 0).unwrap().id).unwrap();
+    let slh = yew_core::pq::pqpkh_script(&w.book.pq_key(1, 0).unwrap().id).unwrap();
+    let foreign = |n: u32| OutPoint { txid: [9; 32], n };
+    let pay_fn = payment(foreign(0), fn_.clone(), 300_000_000);
+    let pay_fn_id = Transaction::parse(&pay_fn).unwrap().1;
+    node.mine(
+        vec![
+            coinbase(1, ecc.clone(), 1_000_000_000), // immature
+            pay_fn,
+            payment(foreign(1), slh.clone(), 100_000_000),
+            payment(foreign(2), ecc.clone(), 50_000_000),
+        ],
+        0,
+    );
+    // the FN-DSA coin is spent (to a foreign script), the SLH-DSA one is not
+    node.mine(
+        vec![
+            coinbase(2, vec![0x51], 0),
+            payment(
+                OutPoint {
+                    txid: pay_fn_id,
+                    n: 0,
+                },
+                vec![0x51],
+                299_000_000,
+            ),
+        ],
+        0,
+    );
+    node.to_mempool(payment(foreign(3), fn_.clone(), 20_000_000));
+    w.sync(&node).await.unwrap();
+    let info = call_json(&mut w, &node, "getwalletinfo", &[]).await;
+    let bal = zat(&info["balance"]);
+    assert_eq!(bal, 150_000_000);
+    assert_eq!(zat(&info["balance_ecc"]) + zat(&info["balance_pq"]), bal);
+    assert_eq!(zat(&info["balance_pq"]), 100_000_000);
+    let unc = zat(&info["unconfirmed_balance"]);
+    assert_eq!(unc, 20_000_000);
+    assert_eq!(
+        zat(&info["unconfirmed_balance_ecc"]) + zat(&info["unconfirmed_balance_pq"]),
+        unc
+    );
+    let by: i64 = info["pq_by_scheme"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| zat(&s["balance_pq"]))
+        .sum();
+    assert_eq!(by, zat(&info["balance_pq"]));
+    let gb = w.call(&node, "getbalance", &[]).await.unwrap().text();
+    assert_eq!(zat(&Value::String(gb)), bal);
+}
+
+/// Review of stage 2, finding 5: `yed_holder` is present (true) on a PQ address at which the
+/// index holds a token of this wallet, and absent on one without.
+#[tokio::test]
+async fn yed_holder_is_marked_where_the_index_holds_a_token() {
+    let node = MockNode::default();
+    genesis(&node);
+    let d = dir("holder");
+    let mut w = Wallet::open(&d, Network::Regtest, signer(), 0).unwrap();
+    let holder = w.book.pq_key(2, 0).unwrap().id;
+    let plain = w.book.pq_key(2, 1).unwrap().id;
+    let tok = payment(
+        OutPoint {
+            txid: [9; 32],
+            n: 0,
+        },
+        yew_core::pq::pqpkh_script(&holder).unwrap(),
+        10_000,
+    );
+    let tok_id = rev_hex(&Transaction::parse(&tok).unwrap().1);
+    node.mine(
+        vec![
+            tok,
+            payment(
+                OutPoint {
+                    txid: [9; 32],
+                    n: 1,
+                },
+                yew_core::pq::pqpkh_script(&plain).unwrap(),
+                50_000_000,
+            ),
+        ],
+        0,
+    );
+    node.0.lock().unwrap().tokens = vec![json!({"txid": tok_id, "vout": 0})];
+    w.sync(&node).await.unwrap();
+    let rows = call_json(&mut w, &node, "listreceivedbyaddress", &[json!(0)]).await;
+    let row = |id| {
+        let a = yew_core::keys::encode_pq_yec(Network::Regtest, &id).unwrap();
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["address"] == a.as_str())
+            .cloned()
+            .unwrap_or_else(|| panic!("{a} not listed: {rows}"))
+    };
+    assert_eq!(row(holder)["yed_holder"], json!(true));
+    assert!(row(plain).get("yed_holder").is_none());
+}
+
+/// The pre-D-9 form of a PQ key: `version2 ‖ scheme ‖ keyHash` (YED form when `yed`).
+fn old_pq_form(id: &yew_core::pq::PqKeyId, yed: bool) -> String {
+    let (y, p) = Network::Regtest.legacy_pq_versions();
+    let mut v = if yed { y.to_vec() } else { p.to_vec() };
+    v.extend_from_slice(&id.to_bytes());
+    yew_core::keys::base58check_encode(&v)
+}
+
+/// Review of stage 1, finding 5: a wallet whose book was written before D-9 opens with the book
+/// keyed by the D-9 form (label kept), end to end through `Wallet::open` and the listings; and,
+/// finding 3, a datadir it cannot write still opens, with the rewritten book in memory.
+#[tokio::test]
+async fn a_pre_d9_book_opens_rewritten_also_read_only() {
+    let node = MockNode::default();
+    genesis(&node);
+    let d = dir("oldbook");
+    let id = {
+        let w = Wallet::open(&d, Network::Regtest, signer(), 0).unwrap();
+        w.book.pq_key(1, 0).unwrap().id
+    };
+    let path = d.join("wallet.json");
+    let mut st: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    st["book"][old_pq_form(&id, false)] = json!({"label": "old", "purpose": "receive"});
+    std::fs::write(&path, serde_json::to_vec(&st).unwrap()).unwrap();
+    let new = yew_core::keys::encode_pq_yec(Network::Regtest, &id).unwrap();
+    // read-only datadir: opens, rewritten in memory, the file unchanged
+    let mut perm = std::fs::metadata(&d).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    perm.set_mode(0o555);
+    std::fs::set_permissions(&d, perm.clone()).unwrap();
+    let ro = Wallet::open(&d, Network::Regtest, signer(), 0);
+    perm.set_mode(0o755);
+    std::fs::set_permissions(&d, perm).unwrap();
+    let ro = ro.expect("a read-only datadir still opens");
+    assert_eq!(ro.st.book[&new].label, "old");
+    assert!(!ro.st.book.contains_key(&old_pq_form(&id, false)));
+    drop(ro);
+    let on_disk: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(on_disk["book"].get(old_pq_form(&id, false)).is_some());
+    // writable: rewritten and saved, and the listings show the D-9 form
+    let mut w = Wallet::open(&d, Network::Regtest, signer(), 0).unwrap();
+    let on_disk: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(on_disk["book"].get(old_pq_form(&id, false)).is_none());
+    assert_eq!(on_disk["book"][&new]["label"], "old");
+    w.sync(&node).await.unwrap();
+    let rows = call_json(
+        &mut w,
+        &node,
+        "listreceivedbyaddress",
+        &[json!(0), json!(true)],
+    )
+    .await;
+    assert!(
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["address"] == new.as_str()),
+        "{rows}"
+    );
+    assert!(!rows.to_string().contains(&old_pq_form(&id, false)));
+}
+
+/// Review of stage 1, finding 5: `z_importpqkey` accepts a dump line that names the key in the
+/// pre-D-9 form (`addr=` YED, `yecaddr=` YEC), and refuses a line whose address, scheme or key
+/// does not match the seed, importing nothing.
+#[tokio::test]
+async fn z_importpqkey_reads_a_pre_d9_dump_line() {
+    let node = MockNode::default();
+    genesis(&node);
+    let d = dir("pqimport");
+    let mut w = Wallet::open(&d, Network::Regtest, core_signer(&d.join("signer")), 0).unwrap();
+    let seed = [0x42u8; yew_core::pq::SEED_SIZE];
+    let id = yew_core::pq::PqKey::from_seed(2, &seed).unwrap().id();
+    let other = yew_core::pq::PqKey::from_seed(2, &[0x43u8; yew_core::pq::SEED_SIZE])
+        .unwrap()
+        .id();
+    let line = |scheme: u8, addr: &str, yecaddr: &str| {
+        format!(
+            "pqseed={scheme}:{} addr={addr} yecaddr={yecaddr}",
+            hex::encode(seed)
+        )
+    };
+    let refused = [
+        // the address of another key
+        line(2, &old_pq_form(&id, true), &old_pq_form(&other, false)),
+        // the scheme of the line is not the one the address names (same seed, scheme 1)
+        line(1, &old_pq_form(&id, true), &old_pq_form(&id, false)),
+        // the YED form where the YEC form belongs
+        line(2, &old_pq_form(&id, true), &old_pq_form(&id, true)),
+    ];
+    for l in &refused {
+        let e = w
+            .call(&node, "z_importpqkey", &[json!(l), json!(false)])
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, -5, "{l}: {e:?}");
+        assert!(e.message.ends_with("nothing imported"), "{}", e.message);
+    }
+    let yec = yew_core::keys::encode_pq_yec(Network::Regtest, &id).unwrap();
+    assert!(!w.st.book.contains_key(&yec));
+    w.call(
+        &node,
+        "z_importpqkey",
+        &[
+            json!(line(2, &old_pq_form(&id, true), &old_pq_form(&id, false))),
+            json!(false),
+        ],
+    )
+    .await
+    .unwrap();
+    assert!(w.st.book.contains_key(&yec), "imported under the D-9 form");
+    assert!(w.book.pq_by_id(&id).is_some());
 }

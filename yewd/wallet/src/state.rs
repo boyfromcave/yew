@@ -73,7 +73,8 @@ pub struct State {
     pub birthday: u32,
     pub created: i64,
     pub issued: Issued,
-    /// Keyed by the address ycashd keys its book by: `s…` for P2PKH, `sq…` for a PQ holder.
+    /// Keyed by the address ycashd keys its book by: `s…` for P2PKH, `sqf…`/`sqs…` (D-9) for a PQ
+    /// holder.
     pub book: BTreeMap<String, BookEntry>,
     /// PQ owner keys handed out (`vault_getnewowner`, `yed_getnewaddress "pqowner"`), pqkeyid hex.
     pub owners: BTreeSet<String>,
@@ -176,7 +177,7 @@ impl State {
     }
 
     /// D-9: see [`migrate_pq_book`].
-    pub fn migrate_pq_book(&mut self, network: yew_core::params::Network) -> usize {
+    pub fn migrate_pq_book(&mut self, network: yew_core::params::Network) -> PqBookMigration {
         migrate_pq_book(&mut self.book, network)
     }
 
@@ -198,28 +199,72 @@ impl State {
     }
 }
 
+/// What [`migrate_pq_book`] did: how many keys it rewrote, and the warnings to log (a dropped
+/// label of a key the book held in both forms; an old-form key with an unregistered scheme byte,
+/// left in the book as it is).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PqBookMigration {
+    pub rewritten: usize,
+    pub warnings: Vec<String>,
+}
+
 /// D-9: rewrite every address-book key written in the pre-D-9 post-quantum form (`sq…`/`tq…`/
 /// `rq…` + a digit, `version2 ‖ scheme ‖ keyHash`) to the D-9 form of the same key (`sqf…`/
 /// `sqs…`, …), as ycashd rewrites its address-book records once at load. The old form is never an
-/// address, so no other key changes. Returns how many keys were rewritten.
+/// address, so no other key changes. When the book already holds the D-9 form of the same key,
+/// that entry stays; it takes the old entry's label and purpose if its own label is empty, and
+/// two different non-empty labels keep the new one with a warning naming both. An old-form key
+/// whose scheme byte is outside the registry is left in the book, with a warning.
 pub fn migrate_pq_book(
     book: &mut BTreeMap<String, BookEntry>,
     network: yew_core::params::Network,
-) -> usize {
+) -> PqBookMigration {
     use yew_core::keys;
-    let old: Vec<(String, String)> = book
-        .keys()
-        .filter_map(|a| {
-            let id = keys::parse_legacy_pq_address(network, a, false)?;
-            Some((a.clone(), keys::encode_pq_yec(network, &id)?))
-        })
-        .collect();
-    for (from, to) in &old {
-        if let Some(e) = book.remove(from) {
-            book.entry(to.clone()).or_insert(e);
+    let mut r = PqBookMigration::default();
+    let (_, plain) = network.legacy_pq_versions();
+    let mut old: Vec<(String, String)> = Vec::new();
+    for a in book.keys() {
+        match keys::parse_legacy_pq_address(network, a, false) {
+            Some(id) => {
+                if let Some(to) = keys::encode_pq_yec(network, &id) {
+                    old.push((a.clone(), to));
+                }
+            }
+            None => {
+                // the old form's shape (35 bytes under the old version) with a scheme byte
+                // outside the registry: kept, unread
+                if let Ok(payload) = keys::base58check_decode(a) {
+                    if payload.len() == 35 && payload[..2] == plain {
+                        r.warnings.push(format!(
+                            "address book: {a} is a pre-D-9 post-quantum address with the unregistered scheme byte {}; left as it is",
+                            payload[2]
+                        ));
+                    }
+                }
+            }
         }
     }
-    old.len()
+    for (from, to) in &old {
+        let Some(e) = book.remove(from) else { continue };
+        match book.get_mut(to) {
+            None => {
+                book.insert(to.clone(), e);
+            }
+            Some(have) if have.label.is_empty() => {
+                *have = e;
+            }
+            Some(have) => {
+                if !e.label.is_empty() && e.label != have.label {
+                    r.warnings.push(format!(
+                        "address book: {from} and {to} are one key; kept the label {:?} of {to}, dropped {:?} of {from}",
+                        have.label, e.label
+                    ));
+                }
+            }
+        }
+        r.rewritten += 1;
+    }
+    r
 }
 
 #[cfg(test)]
@@ -250,13 +295,93 @@ mod tests {
         }
         let p2pkh = keys::encode_p2pkh(net, &[5; 20]);
         book.insert(p2pkh.clone(), entry("ecc"));
-        assert_eq!(migrate_pq_book(&mut book, net), 2);
+        assert_eq!(migrate_pq_book(&mut book, net).rewritten, 2);
         assert_eq!(book.len(), 3);
         assert_eq!(book[&p2pkh].label, "ecc");
         for (i, id) in ids.iter().enumerate() {
             let a = keys::encode_pq_yec(net, id).unwrap();
             assert_eq!(book[&a].label, format!("pq{i}"));
         }
-        assert_eq!(migrate_pq_book(&mut book, net), 0);
+        assert_eq!(migrate_pq_book(&mut book, net), PqBookMigration::default());
+    }
+    fn old_form(net: Network, id: &PqKeyId) -> String {
+        let mut old = net.legacy_pq_versions().1.to_vec();
+        old.extend_from_slice(&id.to_bytes());
+        keys::base58check_encode(&old)
+    }
+
+    fn entry(label: &str, purpose: &str) -> BookEntry {
+        BookEntry {
+            label: label.into(),
+            purpose: purpose.into(),
+        }
+    }
+
+    /// Review of stage 1, finding 1: a key the book holds in both forms keeps one entry, the D-9
+    /// one; an empty new label takes the old label and purpose; two different labels keep the
+    /// new one and warn naming both; equal labels warn nothing.
+    #[test]
+    fn migrate_pq_book_merges_a_key_held_in_both_forms() {
+        let net = Network::Regtest;
+        let id = |b: u8| PqKeyId {
+            scheme: 2,
+            hash: [b; 32],
+        };
+        let mut book = BTreeMap::new();
+        // empty new label: the old entry wins
+        book.insert(old_form(net, &id(1)), entry("old1", "send"));
+        book.insert(
+            keys::encode_pq_yec(net, &id(1)).unwrap(),
+            entry("", "receive"),
+        );
+        // both labelled, different: the new one stays, with a warning
+        book.insert(old_form(net, &id(2)), entry("old2", "send"));
+        book.insert(
+            keys::encode_pq_yec(net, &id(2)).unwrap(),
+            entry("new2", "receive"),
+        );
+        // both labelled the same: no warning
+        book.insert(old_form(net, &id(3)), entry("same", "receive"));
+        book.insert(
+            keys::encode_pq_yec(net, &id(3)).unwrap(),
+            entry("same", "receive"),
+        );
+        let m = migrate_pq_book(&mut book, net);
+        assert_eq!(m.rewritten, 3);
+        assert_eq!(book.len(), 3);
+        assert_eq!(
+            book[&keys::encode_pq_yec(net, &id(1)).unwrap()],
+            entry("old1", "send")
+        );
+        assert_eq!(
+            book[&keys::encode_pq_yec(net, &id(2)).unwrap()],
+            entry("new2", "receive")
+        );
+        assert_eq!(
+            book[&keys::encode_pq_yec(net, &id(3)).unwrap()],
+            entry("same", "receive")
+        );
+        assert_eq!(m.warnings.len(), 1, "{:?}", m.warnings);
+        let w = &m.warnings[0];
+        assert!(w.contains("\"new2\"") && w.contains("\"old2\""), "{w}");
+        assert!(w.contains(&old_form(net, &id(2))), "{w}");
+    }
+
+    /// Review of stage 1, finding 2: an old-form key with a scheme byte outside the registry is
+    /// left in the book and warned about once per load.
+    #[test]
+    fn migrate_pq_book_warns_on_an_unregistered_scheme() {
+        let net = Network::Regtest;
+        let mut payload = net.legacy_pq_versions().1.to_vec();
+        payload.push(9);
+        payload.extend_from_slice(&[4; 32]);
+        let odd = keys::base58check_encode(&payload);
+        let mut book = BTreeMap::new();
+        book.insert(odd.clone(), entry("odd", "receive"));
+        let m = migrate_pq_book(&mut book, net);
+        assert_eq!(m.rewritten, 0);
+        assert_eq!(m.warnings.len(), 1);
+        assert!(m.warnings[0].contains(&odd) && m.warnings[0].contains("scheme byte 9"));
+        assert_eq!(book[&odd], entry("odd", "receive"));
     }
 }

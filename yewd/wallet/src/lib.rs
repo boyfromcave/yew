@@ -430,8 +430,16 @@ impl Wallet {
                     ));
                 }
                 // D-9: a book from before the scheme-visible prefixes is rewritten once.
-                if s.migrate_pq_book(network) > 0 {
-                    s.save(&path)?;
+                let m = s.migrate_pq_book(network);
+                for w in &m.warnings {
+                    eprintln!("yewd: {w}");
+                }
+                if m.rewritten > 0 {
+                    // as before D-9, a wallet on a datadir it cannot write still opens: the
+                    // rewritten book is kept in memory and written at the next save that succeeds
+                    if let Err(e) = s.save(&path) {
+                        eprintln!("yewd: could not save the rewritten address book ({e}); continuing with it in memory");
+                    }
                 }
                 s
             }

@@ -309,25 +309,14 @@ impl Wallet {
     }
 
     /// `GetAvailableCredit` of one wallet transaction: its own unspent outputs, nothing for an
-    /// immature coinbase.
+    /// immature coinbase. The total of [`Self::available_credit_split`], so the ECC and
+    /// post-quantum parts add up to it by construction.
     fn available_credit(&self, txid: &str, asof: Option<u32>) -> i64 {
-        let Some(p) = self.parsed(txid) else { return 0 };
-        if self.immature(p.coinbase, self.tx_depth(txid, asof)) {
-            return 0;
-        }
-        p.tx.vout
-            .iter()
-            .enumerate()
-            .filter(|(n, o)| {
-                self.book.owns_script(&o.script_pubkey).is_some()
-                    && !self.spent_at(txid, *n as u32, asof)
-            })
-            .map(|(_, o)| o.value)
-            .sum()
+        self.available_credit_split(txid, asof).0
     }
 
-    /// [`Self::available_credit`] and its post-quantum part by scheme (index = scheme byte):
-    /// the `TX_PQPKH` outputs among the counted ones (ycashd's `GetWalletBalanceSplit`, beta2
+    /// `GetAvailableCredit` of one wallet transaction and its post-quantum part by scheme (index
+    /// = scheme byte): the `TX_PQPKH` outputs among the counted ones (ycashd's `GetWalletBalanceSplit`, beta2
     /// item 15).
     fn available_credit_split(&self, txid: &str, asof: Option<u32>) -> (i64, [i64; 3]) {
         let mut pq = [0i64; 3];
