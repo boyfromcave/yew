@@ -307,7 +307,10 @@ fn build_pq_sweep(
 
 /// The key of an own post-quantum id: a vault owner (SLH-DSA, through its paired external key)
 /// or a Falcon YED holder.
-fn own_pq_key(wallet: &Wallet, id: &PqKeyId) -> Result<Option<crate::pq::PqKey>, WalletError> {
+pub(crate) fn own_pq_key(
+    wallet: &Wallet,
+    id: &PqKeyId,
+) -> Result<Option<crate::pq::PqKey>, WalletError> {
     if let Some(paired) = wallet.own_pq_owners()?.get(id).copied() {
         return wallet.pq_key_for_owner(id, &paired);
     }

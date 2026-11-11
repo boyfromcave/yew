@@ -102,6 +102,9 @@ pub struct Balances {
     pub yec_pq_zat: i64,
     /// Those coins (unlocked), oldest first.
     pub pq_coins: Vec<crate::tx::OutPoint>,
+    /// [`Balances::yec_pq_zat`] split by scheme (beta2 D-8; `TypeSplit`, the split yewd answers
+    /// `z_gettotalbalance` with).
+    pub yec_pq_by_scheme: crate::build::any_to_any::TypeSplit,
 }
 
 /// An open wallet.
@@ -191,6 +194,26 @@ impl Wallet {
             });
         keys::wipe(&mut seed);
         w
+    }
+
+    /// The has-held-YED marker (beta2 item 32; yewd's `yed_held`, the C++ lines' `yedheld`):
+    /// written once, never cleared. True once the wallet saw a token of its own at a sync, held a
+    /// pending token, or started a mint ([`Wallet::mark_held_yed`]), and for a wallet whose token
+    /// history shows one (a wallet synced before the marker existed). A marked wallet refuses a
+    /// plain YEC spend of transparent coins on a server without Yellowback
+    /// ([`crate::gate::refuse_held_absent`]).
+    pub fn has_held_yed(&self) -> Result<bool, WalletError> {
+        Ok(self.store.meta("yed_held")?.as_deref() == Some("1")
+            || self.store.ever_held_token()?
+            || !self.store.mints()?.is_empty())
+    }
+
+    /// Set the has-held-YED marker ([`Wallet::has_held_yed`]); idempotent.
+    pub fn mark_held_yed(&self) -> Result<(), WalletError> {
+        if self.store.meta("yed_held")?.as_deref() != Some("1") {
+            self.store.set_meta("yed_held", "1")?;
+        }
+        Ok(())
     }
 
     /// The vault upgrade's activation height recorded by the last sync (`GetChainInfo`; regtest
@@ -614,6 +637,12 @@ impl Wallet {
         *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Set the post-quantum terms directly (unit tests of the builders).
+    #[cfg(test)]
+    pub(crate) fn set_pq_terms_for_test(&self, t: crate::build::terms::PqTerms) {
+        *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner()) = t;
+    }
+
     /// TOK-PQ is in force for the next block as far as this wallet knows (the last synced tip
     /// and the server's terms): its YED receive address is then its Falcon holder address.
     pub fn falcon_now(&self) -> bool {
@@ -757,7 +786,12 @@ impl Wallet {
             .filter(|u| u.class == coins::UtxoClass::PqOwned)
             .collect();
         pq.sort_by_key(|u| (u.height, u.outpoint.txid, u.outpoint.n));
+        let mut yec_pq_by_scheme = crate::build::any_to_any::TypeSplit::default();
+        for u in &pq {
+            yec_pq_by_scheme.add(&u.script, u.value);
+        }
         Ok(Balances {
+            yec_pq_by_scheme,
             yec_pq_zat: coins::pq_yec_balance(&spendable),
             pq_coins: pq.iter().map(|u| u.outpoint).collect(),
             yec_zat,
@@ -1264,5 +1298,28 @@ mod tests {
         let b = w.balances().unwrap();
         assert_eq!((b.yed_cents, b.yed_pending_cents), (2_500, 6_000));
         assert_eq!(w.spendable_balances().unwrap().1, (2_500, 6_000));
+    }
+
+    /// The has-held-YED marker (beta2 item 32): unset on a fresh wallet; set by a token in the
+    /// wallet's token history or by `mark_held_yed`, and never cleared.
+    #[test]
+    fn held_yed_marker() {
+        let w = wallet();
+        assert!(!w.has_held_yed().unwrap());
+        w.store
+            .insert_own_token(
+                &crate::tx::OutPoint {
+                    txid: [5; 32],
+                    n: 1,
+                },
+                100,
+            )
+            .unwrap();
+        assert!(w.has_held_yed().unwrap());
+        let w2 = wallet();
+        w2.mark_held_yed().unwrap();
+        w2.mark_held_yed().unwrap();
+        assert!(w2.has_held_yed().unwrap());
+        assert_eq!(w2.store.meta("yed_held").unwrap().as_deref(), Some("1"));
     }
 }

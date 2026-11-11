@@ -148,6 +148,9 @@ pub async fn broadcast(
     validator: &mut Validator,
     preview: &YecSendPreview,
 ) -> Result<String, WalletError> {
+    // the has-held-YED guard (beta2 item 32): a wallet that held YED spends transparent YEC
+    // only where Yellowback tells its YED outputs apart
+    gate::refuse_held_absent(validator, gate::Path::Yec, wallet.has_held_yed()?)?;
     gate::confirm(validator, gate::Path::Yec, &preview.raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
     })

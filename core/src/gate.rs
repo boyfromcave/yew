@@ -92,6 +92,14 @@ pub enum GateError {
     /// The server offers no Yellowback service, so nothing YED can be validated or sent.
     #[error("gate: the server offers no Yellowback service; YED cannot be sent through it")]
     YellowbackAbsent,
+    /// A plain YEC spend of transparent coins by a wallet that has held YED, on a server without
+    /// Yellowback: its YED outputs cannot be told apart from plain YEC (yewd's and the C++
+    /// lines' has-held-YED guard, beta2 item 32).
+    #[error("This wallet has held YED, but Yellowback is not live on the connected server, so its YED outputs cannot be told apart from plain YEC. Connect to a server with Yellowback to send YEC from public addresses.")]
+    HeldYedNotLive,
+    /// A post-quantum spend pays an output of exactly `TOKEN_VALUE` (it would look like a token).
+    #[error("gate: output {0} is exactly TOKEN_VALUE; a plain YEC output must not look like a YED token")]
+    TokenValuedOutput(usize),
     /// `ValidateRawTransaction` could not be reached or answered with an error.
     #[error("gate: ValidateRawTransaction failed: {0}")]
     Validate(String),
@@ -145,6 +153,12 @@ pub enum Path {
     /// A shield (S4, `build::yec_move`): transparent `YEC` inputs only (never the fee reserve,
     /// never anything YED) into Sapling outputs; no Sapling spend.
     Shield,
+    /// A plain YEC send from the wallet's own post-quantum coins (beta2 D-2, D-8;
+    /// `build::pq_send`): `PQ_OWNED` inputs only (never a token, a held output, the fee reserve,
+    /// a P2PKH coin or anything YED), transparent-only, no payload, no output of exactly
+    /// `TOKEN_VALUE`. The remote layer is mandatory: a server without Yellowback lists no
+    /// post-quantum coin and validates nothing, so the path is refused there.
+    PqSpend,
 }
 
 impl Path {
@@ -162,6 +176,7 @@ impl Path {
             Path::PqSweep(_) => "post-quantum coin move",
             Path::Shielded => "shielded",
             Path::Shield => "shield",
+            Path::PqSpend => "post-quantum send",
         }
     }
 
@@ -178,6 +193,7 @@ impl Path {
             Path::PqSweep(_) => false,
             Path::Shielded => false,
             Path::Shield => c == UtxoClass::Yec,
+            Path::PqSpend => c == UtxoClass::PqOwned,
         }
     }
 
@@ -315,6 +331,16 @@ pub fn check(
             }
         }
         Path::Sweep | Path::Shield | Path::IntentRelease(_) => no_payload(&tx)?,
+        Path::PqSpend => {
+            no_payload(&tx)?;
+            if let Some(i) = tx
+                .vout
+                .iter()
+                .position(|o| o.value == crate::params::TOKEN_VALUE)
+            {
+                return Err(GateError::TokenValuedOutput(i));
+            }
+        }
         Path::PqSweep(named) => {
             no_payload(&tx)?;
             if tx.vin.len() != 1 {
@@ -428,6 +454,26 @@ impl Validator {
             Validator::Absent => None,
         }
     }
+}
+
+/// The has-held-YED guard (beta2 item 32, as yewd's and the C++ lines'): a plain YEC spend of
+/// transparent coins ([`Path::Yec`], [`Path::Shield`]) by a wallet that has held YED is refused
+/// when the server offers no Yellowback ([`Validator::Absent`]): without the token set an own
+/// output carrying YED at a value other than `TOKEN_VALUE` would classify as plain YEC, and the
+/// local layer alone could not stop its burn. Every other path is unaffected (the YED paths and
+/// [`Path::PqSpend`] already need the service; [`Path::Shielded`] spends no transparent input).
+pub fn refuse_held_absent(
+    validator: &Validator,
+    path: Path,
+    has_held_yed: bool,
+) -> Result<(), GateError> {
+    if has_held_yed
+        && matches!(validator, Validator::Absent)
+        && matches!(path, Path::Yec | Path::Shield)
+    {
+        return Err(GateError::HeldYedNotLive);
+    }
+    Ok(())
 }
 
 /// `confirm`: both layers on `raw`, no burn planned. Returns the parsed transaction and the
@@ -581,6 +627,18 @@ mod tests {
                 yec_ok && !op_return,
                 "YEC {inputs:?} {:?}",
                 yec.err()
+            );
+
+            // beta2 D-8: the post-quantum send spends PQ_OWNED coins and nothing else
+            let pqs = check(Path::PqSpend, &raw, class);
+            let pqs_ok = inputs
+                .iter()
+                .all(|op| class(op) == Some(UtxoClass::PqOwned));
+            assert_eq!(
+                pqs.is_ok(),
+                pqs_ok && !op_return,
+                "PQ send {inputs:?} {:?}",
+                pqs.err()
             );
 
             let yed = check(Path::YedTransfer, &raw, class);
@@ -1159,5 +1217,86 @@ mod tests {
         assert!(ALL
             .iter()
             .all(|c| Path::Shield.allows(*c) == (*c == UtxoClass::Yec)));
+    }
+
+    /// beta2 D-8: the post-quantum send path. Every class but `PQ_OWNED` is refused as an input
+    /// (Token, PendingToken, Vault, Carrier, Held, FeeReserve, Yec, UnknownP2sh, Foreign), as are
+    /// an unknown input, a payload, a shielded part and an output of exactly `TOKEN_VALUE`; a
+    /// server without Yellowback refuses the path outright, and the held-YED guard refuses the
+    /// transparent YEC paths there for a wallet that has held YED.
+    #[test]
+    fn pq_spend_path_and_held_yed_guard() {
+        let pq = OutPoint {
+            txid: [1; 32],
+            n: 0,
+        };
+        let other = OutPoint {
+            txid: [2; 32],
+            n: 0,
+        };
+        for c in ALL {
+            let class = |op: &OutPoint| {
+                if *op == pq {
+                    Some(UtxoClass::PqOwned)
+                } else {
+                    Some(c)
+                }
+            };
+            let r = check(Path::PqSpend, &raw_spending(&[pq, other], false), class);
+            assert_eq!(r.is_ok(), c == UtxoClass::PqOwned, "{c:?}: {r:?}");
+            if c != UtxoClass::PqOwned {
+                assert!(matches!(r, Err(GateError::ForbiddenInput { .. })), "{c:?}");
+            }
+        }
+        let only_pq = |op: &OutPoint| (*op == pq).then_some(UtxoClass::PqOwned);
+        assert!(check(Path::PqSpend, &raw_spending(&[pq], false), only_pq).is_ok());
+        assert!(matches!(
+            check(Path::PqSpend, &raw_spending(&[pq, other], false), only_pq),
+            Err(GateError::UnknownInput(_))
+        ));
+        assert!(matches!(
+            check(Path::PqSpend, &raw_spending(&[pq], true), only_pq),
+            Err(GateError::PayloadOnYecPath(1))
+        ));
+        let mut t = Transaction::new_v4();
+        t.vin.push(TxIn::new(pq));
+        t.vout.push(TxOut {
+            value: crate::params::TOKEN_VALUE,
+            script_pubkey: script::p2pkh_script(&[3; 20]),
+        });
+        assert_eq!(
+            check(Path::PqSpend, &t.serialize().unwrap(), only_pq).unwrap_err(),
+            GateError::TokenValuedOutput(0)
+        );
+        assert!(Path::PqSpend.needs_yellowback());
+        // the held-YED guard
+        let absent = Validator::Absent;
+        assert_eq!(
+            refuse_held_absent(&absent, Path::Yec, true),
+            Err(GateError::HeldYedNotLive)
+        );
+        assert_eq!(
+            refuse_held_absent(&absent, Path::Shield, true),
+            Err(GateError::HeldYedNotLive)
+        );
+        assert_eq!(refuse_held_absent(&absent, Path::Yec, false), Ok(()));
+        assert_eq!(refuse_held_absent(&absent, Path::Shielded, true), Ok(()));
+    }
+
+    /// Without the remote layer (a server answering `UNIMPLEMENTED`), the post-quantum send is
+    /// refused even when its local layer passes; the plain YEC path proceeds on the local layer
+    /// alone (and the held-YED guard decides before it, [`refuse_held_absent`]).
+    #[tokio::test]
+    async fn pq_spend_needs_the_remote_layer() {
+        let pq = OutPoint {
+            txid: [1; 32],
+            n: 0,
+        };
+        let raw = raw_spending(&[pq], false);
+        let mut v = Validator::Absent;
+        let r = confirm(&mut v, Path::PqSpend, &raw, |_| Some(UtxoClass::PqOwned)).await;
+        assert_eq!(r.unwrap_err(), GateError::YellowbackAbsent);
+        let r = confirm(&mut v, Path::Yec, &raw, |_| Some(UtxoClass::Yec)).await;
+        assert!(matches!(r, Ok((_, None))));
     }
 }

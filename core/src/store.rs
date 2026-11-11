@@ -1221,6 +1221,14 @@ impl Store {
         Ok(())
     }
 
+    /// True when the wallet ever held a token (`own_tokens` is not empty).
+    pub fn ever_held_token(&self) -> Result<bool, StoreError> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM own_tokens", [], |r| r.get(0))?;
+        Ok(n > 0)
+    }
+
     /// The cents of a token the wallet ever held, if known.
     pub fn own_token_cents(&self, op: &OutPoint) -> Result<Option<u64>, StoreError> {
         let c: Option<i64> = self

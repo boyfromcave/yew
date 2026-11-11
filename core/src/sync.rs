@@ -610,6 +610,16 @@ pub async fn sync(
 
     wallet.store.replace_utxos(&utxos)?;
     report.utxos = utxos.len();
+    // The has-held-YED marker (beta2 item 32): a token of this wallet, listed or pending, at any
+    // of its keys (P2PKH, Falcon holder, vault owner) marks the wallet once and for good.
+    if !tokens.is_empty()
+        || !pq_tokens.is_empty()
+        || utxos
+            .iter()
+            .any(|u| matches!(u.class, UtxoClass::Token | UtxoClass::PendingToken))
+    {
+        wallet.mark_held_yed()?;
+    }
 
     let present: HashSet<OutPoint> = utxos.iter().map(|u| u.outpoint).collect();
     for l in wallet.store.locks()? {

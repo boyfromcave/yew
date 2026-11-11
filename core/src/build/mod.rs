@@ -2,7 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
-//! Transaction builders: `any_to_any` (the shape planning shared with yewd, beta2 D-8),
+//! Transaction builders: `any_to_any` (the shape planning shared with yewd, beta2 D-8), `pq_send`,
 //! `yec_send`, `yec_private` (privacy-first funding, S2), `yec_move` (shield / unshield, S4), `yed_transfer`, `mint`, `redeem`, `claim` (one file each,
 //! added by phase). Each produces the `preview` the screen renders and then signs the same bytes.
 //!
@@ -14,6 +14,7 @@
 pub mod any_to_any;
 pub mod claim;
 pub mod mint;
+pub mod pq_send;
 pub mod redeem;
 pub mod release;
 pub mod terms;

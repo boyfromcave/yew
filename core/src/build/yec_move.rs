@@ -302,6 +302,9 @@ pub async fn confirm_shield(
             built.fee_zat, plan.fee
         )));
     }
+    // the has-held-YED guard (beta2 item 32): a wallet that held YED spends transparent YEC
+    // only where Yellowback tells its YED outputs apart
+    gate::refuse_held_absent(validator, GatePath::Shield, wallet.has_held_yed()?)?;
     gate::confirm(validator, GatePath::Shield, &built.raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
     })

@@ -344,6 +344,11 @@ pub struct Balances {
     pub yec_pq_zat: i64,
     /// The `PQ_OWNED` coins not already being moved, `txid:n`, oldest first.
     pub pq_coins: Vec<String>,
+    /// [`Balances::yec_pq_zat`] at SLH-DSA-SHA2-128s keys (`sqs…`, the vault owners), zat
+    /// (beta2 D-8: balances by type; the split of `build::any_to_any::TypeSplit`).
+    pub yec_pq_slh_zat: i64,
+    /// [`Balances::yec_pq_zat`] at FN-DSA-512 keys (`sqf…`, the Falcon holders), zat.
+    pub yec_pq_falcon_zat: i64,
 }
 
 /// Which receive address [`receive_address`] returns.
@@ -355,6 +360,13 @@ pub enum ReceiveKind {
     Shielded,
     /// The Yellowback `yb…` form of the transparent address (YED, mint).
     Yed,
+    /// The post-quantum FN-DSA-512 address paired with the transparent receive key (`sqf…` /
+    /// `tqf…` / `rqf…`, the Falcon holder's plain-YEC form; beta2 D-8, D-9). Plain YEC only.
+    PqFalcon,
+    /// The post-quantum SLH-DSA-SHA2-128s address paired with the transparent receive key
+    /// (`sqs…` / `tqs…` / `rqs…`, the key's vault owner; beta2 D-8, D-9). Plain YEC only; each
+    /// spend from it carries a ~7.9 KB signature, so its fees are the largest.
+    PqSlh,
 }
 
 /// A receive address: `address` is the one of `kind`; for the transparent kinds `ye` and `s`
@@ -1199,6 +1211,7 @@ enum Preview {
     Yed(yed_transfer::YedTransferPreview),
     Redeem(crate::build::redeem::RedeemBuild),
     Release(crate::build::release::ReleaseBuild),
+    Pq(Box<crate::build::pq_send::PqSendPreview>),
 }
 
 /// The open wallet.
@@ -1787,6 +1800,10 @@ pub fn balances() -> Result<Balances, YewError> {
                 .iter()
                 .map(|op| format!("{}:{}", txid_hex(&op.txid), op.n))
                 .collect(),
+            yec_pq_slh_zat: b
+                .yec_pq_by_scheme
+                .scheme(crate::pq::SCHEME_SLH_DSA_SHA2_128S),
+            yec_pq_falcon_zat: b.yec_pq_by_scheme.scheme(crate::pq::SCHEME_FN_DSA_512),
         })
     })
 }
@@ -1804,6 +1821,30 @@ pub fn receive_address(kind: ReceiveKind, fresh: bool) -> Result<AddressPair, Ye
                 .meta_u64("sapling_diversifier")
                 .map_err(store_err)?;
             shielded_pair(o, index)
+        }
+        ReceiveKind::PqFalcon | ReceiveKind::PqSlh => {
+            let row = o.wallet.receive_address(fresh)?;
+            let (id, name) = if kind == ReceiveKind::PqFalcon {
+                (
+                    o.wallet.falcon_holder_id(&row).ok_or_else(|| {
+                        YewError::new(ErrorKind::Other, "this key has no post-quantum pair")
+                    })?,
+                    "FN-DSA-512",
+                )
+            } else {
+                (o.wallet.pq_owner_id(row.index), "SLH-DSA-SHA2-128s")
+            };
+            let address = keys::encode_pq_yec(o.wallet.network, &id).ok_or_else(|| {
+                YewError::new(ErrorKind::Other, "the scheme has no address version")
+            })?;
+            Ok(AddressPair {
+                ye: String::new(),
+                s: row.address_s.clone(),
+                path: format!("m/44'/347'/0'/{}/{} ({name})", row.chain, row.index),
+                covered_by_seed: true,
+                address,
+                kind,
+            })
         }
         _ => {
             let row = o.wallet.receive_address(fresh)?;
@@ -2169,6 +2210,157 @@ pub fn move_preview(
 /// Broadcast a [`move_preview`] (the same gate and bookkeeping as [`send_yec_confirm`]).
 pub fn move_confirm(preview_id: String) -> Result<SendResult, YewError> {
     send_yec_confirm(preview_id)
+}
+
+/// One of the wallet's own post-quantum addresses holding plain YEC (a send source, beta2 D-8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PqSource {
+    /// The address (`sqf…`/`sqs…`, `tqf…`/`tqs…`, `rqf…`/`rqs…`).
+    pub address: String,
+    /// The scheme number (1 SLH-DSA-SHA2-128s, 2 FN-DSA-512).
+    pub scheme: u8,
+    /// The scheme's name, as the node lists it.
+    pub scheme_name: String,
+    /// Its spendable `PQ_OWNED` YEC, zat (confirmed, not being moved).
+    pub balance_zat: i64,
+}
+
+/// The wallet's post-quantum addresses that hold spendable plain YEC, largest first (the send
+/// screen's source chooser). Empty on a server without Yellowback: it lists no PQ coin.
+pub fn pq_sources() -> Result<Vec<PqSource>, YewError> {
+    with_open(|o| {
+        let mut by: HashMap<Vec<u8>, i64> = HashMap::new();
+        for u in o.wallet.spendable_utxos()? {
+            if u.class == UtxoClass::PqOwned && u.height > 0 {
+                *by.entry(u.script.clone()).or_default() += u.value;
+            }
+        }
+        let mut out: Vec<PqSource> = by
+            .into_iter()
+            .filter_map(|(script, balance_zat)| {
+                let id = crate::pq::pqpkh_of(&script)?;
+                Some(PqSource {
+                    address: keys::encode_pq_yec(o.wallet.network, &id)?,
+                    scheme: id.scheme,
+                    scheme_name: keys::pq_scheme_name(id.scheme)
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    balance_zat,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            b.balance_zat
+                .cmp(&a.balance_zat)
+                .then(a.address.cmp(&b.address))
+        });
+        Ok(out)
+    })
+}
+
+/// A send from a post-quantum address, before confirmation (beta2 D-8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PqSendPreviewInfo {
+    /// Pass to [`pq_send_confirm`].
+    pub preview_id: String,
+    /// The source address.
+    pub from: String,
+    /// The source's scheme name (`SLH-DSA-SHA2-128s`, `FN-DSA-512`).
+    pub scheme_name: String,
+    /// The recipient as given.
+    pub to: String,
+    /// The amount actually sent, zat.
+    pub amount_zat: i64,
+    /// The amount was raised by one zat off `TOKEN_VALUE`.
+    pub amount_bumped: bool,
+    /// The fee, zat: priced on the transaction's size (an SLH-DSA input carries a ~7.9 KB
+    /// signature, a Falcon one ~1.6 KB).
+    pub fee_zat: i64,
+    /// The change back to the source address, zat (D-4).
+    pub change_zat: i64,
+    /// Number of post-quantum inputs.
+    pub inputs: u32,
+    /// The signed transaction's size, bytes.
+    pub size_bytes: u32,
+    /// Milliseconds the signatures took on this device.
+    pub sign_millis: u64,
+    /// `nExpiryHeight`.
+    pub expiry_height: u32,
+    /// The txid the transaction will have.
+    pub txid: String,
+}
+
+/// Plan and sign a send of `zat` from the own post-quantum address `from` to the transparent
+/// address `to` (ECC `s…` or post-quantum), after a sync (`build::pq_send`, the planner yewd's
+/// `z_sendmany` uses). Nothing is broadcast. Refusals carry the node's text.
+pub fn pq_send_preview(from: String, to: String, zat: i64) -> Result<PqSendPreviewInfo, YewError> {
+    with_open_async(|o| {
+        Box::pin(async move {
+            let r = o.sync().await?;
+            let p = crate::build::pq_send::build_pq_send(
+                &o.wallet,
+                &from,
+                &to,
+                zat,
+                r.tip,
+                r.branch_id,
+            )?;
+            let txid = txid_hex(&p.txid);
+            let out = PqSendPreviewInfo {
+                preview_id: format!("q{txid}"),
+                from: p.from.clone(),
+                scheme_name: keys::pq_scheme_name(p.scheme)
+                    .unwrap_or("unknown")
+                    .to_string(),
+                to: p.to.clone(),
+                amount_zat: p.amount,
+                amount_bumped: p.amount_bumped,
+                fee_zat: p.fee,
+                change_zat: p.change,
+                inputs: p.inputs.len() as u32,
+                size_bytes: p.raw.len() as u32,
+                sign_millis: p.sign_millis,
+                expiry_height: p.expiry_height,
+                txid,
+            };
+            o.previews
+                .insert(out.preview_id.clone(), Preview::Pq(Box::new(p)));
+            Ok(out)
+        })
+    })
+}
+
+/// Broadcast a [`pq_send_preview`] through both gate layers (the node's dry run must say `ok,
+/// burned 0`; a server without Yellowback refuses it). A send whose outcome is unknown says
+/// `…; status unknown, txid <txid>: check before sending again`.
+pub fn pq_send_confirm(preview_id: String) -> Result<SendResult, YewError> {
+    with_open_async(|o| {
+        Box::pin(async move {
+            let p = match o.previews.remove(&preview_id) {
+                Some(Preview::Pq(p)) => p,
+                _ => {
+                    return Err(YewError::new(
+                        ErrorKind::PreviewExpired,
+                        "This preview is no longer valid. Start the send again.",
+                    ))
+                }
+            };
+            ensure_conn(o).await?;
+            let Open { wallet, conn, .. } = o;
+            let conn = conn.as_mut().expect("connected");
+            let (txid, v) = crate::build::pq_send::broadcast(
+                wallet,
+                &mut conn.compact,
+                &mut conn.validator,
+                &p,
+            )
+            .await?;
+            Ok(SendResult {
+                txid,
+                verdict: v.verdict,
+            })
+        })
+    })
 }
 
 /// Broadcast a YEC preview through the gate (D-W-5). A private send is proved and signed

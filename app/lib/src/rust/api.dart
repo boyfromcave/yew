@@ -9,7 +9,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `claim_intent_of`, `connect`, `download_params_inner`, `download_params_to`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `height_time`, `hex_or_empty`, `history_item`, `locked`, `merge_shielded`, `mint_status_of`, `new`, `now_secs`, `open_wallet`, `params_dir_of`, `params_status_of`, `parse_outpoint`, `parse_server`, `parse_txid`, `renew_lock_blocks`, `row_status`, `runtime`, `shielded_pair`, `store_err`, `sync_shielded`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `with_pending_spend`, `yec_preview_of`, `yellowback_refusal`, `yellowback_status`, `yellowback_usable`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Conn`, `Open`, `Preview`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
 
 /// The core's version.
 String coreVersion() => RustLib.instance.api.crateApiCoreVersion();
@@ -172,6 +172,25 @@ Future<YecPreview> movePreview({
 /// Broadcast a [`move_preview`] (the same gate and bookkeeping as [`send_yec_confirm`]).
 Future<SendResult> moveConfirm({required String previewId}) =>
     RustLib.instance.api.crateApiMoveConfirm(previewId: previewId);
+
+/// The wallet's post-quantum addresses that hold spendable plain YEC, largest first (the send
+/// screen's source chooser). Empty on a server without Yellowback: it lists no PQ coin.
+Future<List<PqSource>> pqSources() => RustLib.instance.api.crateApiPqSources();
+
+/// Plan and sign a send of `zat` from the own post-quantum address `from` to the transparent
+/// address `to` (ECC `s…` or post-quantum), after a sync (`build::pq_send`, the planner yewd's
+/// `z_sendmany` uses). Nothing is broadcast. Refusals carry the node's text.
+Future<PqSendPreviewInfo> pqSendPreview({
+  required String from,
+  required String to,
+  required PlatformInt64 zat,
+}) => RustLib.instance.api.crateApiPqSendPreview(from: from, to: to, zat: zat);
+
+/// Broadcast a [`pq_send_preview`] through both gate layers (the node's dry run must say `ok,
+/// burned 0`; a server without Yellowback refuses it). A send whose outcome is unknown says
+/// `…; status unknown, txid <txid>: check before sending again`.
+Future<SendResult> pqSendConfirm({required String previewId}) =>
+    RustLib.instance.api.crateApiPqSendConfirm(previewId: previewId);
 
 /// Broadcast a YEC preview through the gate (D-W-5). A private send is proved and signed
 /// here (seconds), with the proving parameters verified first ([`ErrorKind::ParamsMissing`]
@@ -467,6 +486,13 @@ class Balances {
   /// The `PQ_OWNED` coins not already being moved, `txid:n`, oldest first.
   final List<String> pqCoins;
 
+  /// [`Balances::yec_pq_zat`] at SLH-DSA-SHA2-128s keys (`sqs…`, the vault owners), zat
+  /// (beta2 D-8: balances by type; the split of `build::any_to_any::TypeSplit`).
+  final PlatformInt64 yecPqSlhZat;
+
+  /// [`Balances::yec_pq_zat`] at FN-DSA-512 keys (`sqf…`, the Falcon holders), zat.
+  final PlatformInt64 yecPqFalconZat;
+
   const Balances({
     required this.yecZat,
     required this.yecReservedZat,
@@ -484,6 +510,8 @@ class Balances {
     required this.shieldedSendable,
     required this.yecPqZat,
     required this.pqCoins,
+    required this.yecPqSlhZat,
+    required this.yecPqFalconZat,
   });
 
   static Future<Balances> default_() =>
@@ -506,7 +534,9 @@ class Balances {
       shieldedScannedHeight.hashCode ^
       shieldedSendable.hashCode ^
       yecPqZat.hashCode ^
-      pqCoins.hashCode;
+      pqCoins.hashCode ^
+      yecPqSlhZat.hashCode ^
+      yecPqFalconZat.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -528,7 +558,9 @@ class Balances {
           shieldedScannedHeight == other.shieldedScannedHeight &&
           shieldedSendable == other.shieldedSendable &&
           yecPqZat == other.yecPqZat &&
-          pqCoins == other.pqCoins;
+          pqCoins == other.pqCoins &&
+          yecPqSlhZat == other.yecPqSlhZat &&
+          yecPqFalconZat == other.yecPqFalconZat;
 }
 
 /// A claim intent paying this wallet (the vault upgrade, U-15, U-23, U-24): the claimant's
@@ -1676,6 +1708,139 @@ class ParamsStatus {
           totalBytes == other.totalBytes;
 }
 
+/// A send from a post-quantum address, before confirmation (beta2 D-8).
+class PqSendPreviewInfo {
+  /// Pass to [`pq_send_confirm`].
+  final String previewId;
+
+  /// The source address.
+  final String from;
+
+  /// The source's scheme name (`SLH-DSA-SHA2-128s`, `FN-DSA-512`).
+  final String schemeName;
+
+  /// The recipient as given.
+  final String to;
+
+  /// The amount actually sent, zat.
+  final PlatformInt64 amountZat;
+
+  /// The amount was raised by one zat off `TOKEN_VALUE`.
+  final bool amountBumped;
+
+  /// The fee, zat: priced on the transaction's size (an SLH-DSA input carries a ~7.9 KB
+  /// signature, a Falcon one ~1.6 KB).
+  final PlatformInt64 feeZat;
+
+  /// The change back to the source address, zat (D-4).
+  final PlatformInt64 changeZat;
+
+  /// Number of post-quantum inputs.
+  final int inputs;
+
+  /// The signed transaction's size, bytes.
+  final int sizeBytes;
+
+  /// Milliseconds the signatures took on this device.
+  final BigInt signMillis;
+
+  /// `nExpiryHeight`.
+  final int expiryHeight;
+
+  /// The txid the transaction will have.
+  final String txid;
+
+  const PqSendPreviewInfo({
+    required this.previewId,
+    required this.from,
+    required this.schemeName,
+    required this.to,
+    required this.amountZat,
+    required this.amountBumped,
+    required this.feeZat,
+    required this.changeZat,
+    required this.inputs,
+    required this.sizeBytes,
+    required this.signMillis,
+    required this.expiryHeight,
+    required this.txid,
+  });
+
+  @override
+  int get hashCode =>
+      previewId.hashCode ^
+      from.hashCode ^
+      schemeName.hashCode ^
+      to.hashCode ^
+      amountZat.hashCode ^
+      amountBumped.hashCode ^
+      feeZat.hashCode ^
+      changeZat.hashCode ^
+      inputs.hashCode ^
+      sizeBytes.hashCode ^
+      signMillis.hashCode ^
+      expiryHeight.hashCode ^
+      txid.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PqSendPreviewInfo &&
+          runtimeType == other.runtimeType &&
+          previewId == other.previewId &&
+          from == other.from &&
+          schemeName == other.schemeName &&
+          to == other.to &&
+          amountZat == other.amountZat &&
+          amountBumped == other.amountBumped &&
+          feeZat == other.feeZat &&
+          changeZat == other.changeZat &&
+          inputs == other.inputs &&
+          sizeBytes == other.sizeBytes &&
+          signMillis == other.signMillis &&
+          expiryHeight == other.expiryHeight &&
+          txid == other.txid;
+}
+
+/// One of the wallet's own post-quantum addresses holding plain YEC (a send source, beta2 D-8).
+class PqSource {
+  /// The address (`sqf…`/`sqs…`, `tqf…`/`tqs…`, `rqf…`/`rqs…`).
+  final String address;
+
+  /// The scheme number (1 SLH-DSA-SHA2-128s, 2 FN-DSA-512).
+  final int scheme;
+
+  /// The scheme's name, as the node lists it.
+  final String schemeName;
+
+  /// Its spendable `PQ_OWNED` YEC, zat (confirmed, not being moved).
+  final PlatformInt64 balanceZat;
+
+  const PqSource({
+    required this.address,
+    required this.scheme,
+    required this.schemeName,
+    required this.balanceZat,
+  });
+
+  @override
+  int get hashCode =>
+      address.hashCode ^
+      scheme.hashCode ^
+      schemeName.hashCode ^
+      balanceZat.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PqSource &&
+          runtimeType == other.runtimeType &&
+          address == other.address &&
+          scheme == other.scheme &&
+          schemeName == other.schemeName &&
+          balanceZat == other.balanceZat;
+}
+
 /// Which receive address [`receive_address`] returns.
 enum ReceiveKind {
   /// The transparent `s…` form (YEC from any wallet).
@@ -1686,6 +1851,15 @@ enum ReceiveKind {
 
   /// The Yellowback `yb…` form of the transparent address (YED, mint).
   yed,
+
+  /// The post-quantum FN-DSA-512 address paired with the transparent receive key (`sqf…` /
+  /// `tqf…` / `rqf…`, the Falcon holder's plain-YEC form; beta2 D-8, D-9). Plain YEC only.
+  pqFalcon,
+
+  /// The post-quantum SLH-DSA-SHA2-128s address paired with the transparent receive key
+  /// (`sqs…` / `tqs…` / `rqs…`, the key's vault owner; beta2 D-8, D-9). Plain YEC only; each
+  /// spend from it carries a ~7.9 KB signature, so its fees are the largest.
+  pqSlh,
 }
 
 /// One recipient of a YED send.
