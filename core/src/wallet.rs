@@ -740,6 +740,46 @@ impl Wallet {
         }
     }
 
+    /// Step 2c's retry state (review YEW-REVIEW-5 L1): per creating transaction that could not be
+    /// fetched, the failures so far and the Unix time it is asked for again.
+    pub(crate) fn provenance_backoff(&self) -> std::collections::HashMap<[u8; 32], (u32, i64)> {
+        let mut m = std::collections::HashMap::new();
+        if let Ok(Some(v)) = self.store.meta(PROVENANCE_BACKOFF_KEY) {
+            for e in v.split(',').filter(|e| !e.is_empty()) {
+                let mut f = e.split(':');
+                if let (Some(t), Some(n), Some(at)) = (f.next(), f.next(), f.next()) {
+                    if let (Ok(t), Ok(n), Ok(at)) =
+                        (crate::tx::txid_from_hex(t), n.parse(), at.parse())
+                    {
+                        m.insert(t, (n, at));
+                    }
+                }
+            }
+        }
+        m
+    }
+
+    /// Store step 2c's retry state.
+    pub(crate) fn set_provenance_backoff(
+        &self,
+        m: &std::collections::HashMap<[u8; 32], (u32, i64)>,
+    ) -> Result<(), WalletError> {
+        let mut v: Vec<String> = m
+            .iter()
+            .map(|(t, (n, at))| format!("{}:{n}:{at}", crate::tx::txid_hex(t)))
+            .collect();
+        v.sort();
+        self.store.set_meta(PROVENANCE_BACKOFF_KEY, &v.join(","))?;
+        Ok(())
+    }
+
+    /// Forget step 2c's retry state, so the next sync asks for every held coin's creating
+    /// transaction at once (on a server change: another server may answer).
+    pub fn reset_provenance_backoff(&self) -> Result<(), WalletError> {
+        self.store.set_meta(PROVENANCE_BACKOFF_KEY, "")?;
+        Ok(())
+    }
+
     /// The fee guard's reference today: the median of the window's reports and how many days
     /// reported (0 = none yet).
     pub fn fee_reference(&self) -> crate::build::terms::FeeReference {
@@ -1132,6 +1172,24 @@ impl Wallet {
 /// The meta key of [`crate::build::terms::PriceObservations`] (the old
 /// `fee_price_high_water` is no longer read: a reference it poisoned is dropped on upgrade).
 const FEE_PRICES_KEY: &str = "fee_prices";
+
+/// The meta key of step 2c's retry state ([`Wallet::provenance_backoff`]).
+const PROVENANCE_BACKOFF_KEY: &str = "provenance_backoff";
+
+/// Seconds since the Unix epoch on this device's clock (the browser's on wasm32).
+pub(crate) fn unix_secs() -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        (js_sys::Date::now() / 1000.0).floor() as i64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    }
+}
 
 /// Days since the Unix epoch on this device's clock (the browser's on wasm32, where
 /// `SystemTime::now` is not available).

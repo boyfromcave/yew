@@ -1405,15 +1405,24 @@ impl Open {
     /// Sync (the CLI's `synced`): connect if needed, run the §3.2 loop; on a network error
     /// drop the connection so the next call reconnects.
     async fn sync(&mut self) -> Result<sync::SyncReport, YewError> {
+        self.sync_with(None).await
+    }
+
+    /// [`Open::sync`], reporting the provenance checks' progress (review YEW-REVIEW-5 L1).
+    async fn sync_with(
+        &mut self,
+        progress: Option<sync::CheckProgress>,
+    ) -> Result<sync::SyncReport, YewError> {
         let network = self.wallet.network;
         if self.conn.is_none() {
             self.conn = Some(connect(&self.server, network).await?);
         }
         let conn = self.conn.as_mut().expect("set above");
-        let r = sync::sync(
+        let r = sync::sync_with_progress(
             &mut self.wallet,
             &mut conn.compact,
             conn.validator.client_mut(),
+            progress,
         )
         .await;
         match r {
@@ -1753,6 +1762,8 @@ pub fn is_unlocked() -> bool {
 pub fn set_server(server: String, plain: bool, ca_pem: Option<String>) -> Result<(), YewError> {
     with_open(|o| {
         o.server = parse_server(&server, plain, ca_pem, o.wallet.network)?;
+        // review YEW-REVIEW-5 L1: another server may answer what this one did not
+        o.wallet.reset_provenance_backoff()?;
         o.conn = None;
         o.previews.clear();
         if let Some(sh) = o.wallet.shielded.as_mut() {
@@ -2815,7 +2826,23 @@ pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
                 yellowback_usable: usable,
                 ..event(SyncStage::Scanning, "Scanning addresses".into(), tip, 5)
             });
-            let r = o.sync().await?;
+            // review YEW-REVIEW-5 L1: the provenance checks (one GetTransaction per creating
+            // transaction, four at a time) report through the same stream
+            let check_sink = inner.clone();
+            let checking: sync::CheckProgress = Arc::new(move |done: usize, total: usize| {
+                let _ = check_sink.add(SyncEvent {
+                    stage: SyncStage::Scanning,
+                    message: format!("Checking where your coins came from: {done} of {total}"),
+                    tip,
+                    sync_height: 0,
+                    yellowback_usable: usable,
+                    percent: 5 + (done * 4 / total.max(1)) as i32,
+                    shielded_height: 0,
+                    shielded_sendable: false,
+                    shielded_message: String::new(),
+                });
+            });
+            let r = o.sync_with(Some(checking)).await?;
             emit(SyncEvent {
                 yellowback_usable: r.yellowback,
                 ..event(

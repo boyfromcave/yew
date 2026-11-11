@@ -97,13 +97,26 @@ pub struct SyncReport {
     pub yellowback_refused: Option<String>,
 }
 
+/// Progress of step 2c (review YEW-REVIEW-5 L1): `(fetched, to_fetch)` creating transactions.
+pub type CheckProgress = std::sync::Arc<dyn Fn(usize, usize) + Send + Sync>;
+
 /// Run one sync of `wallet` against `client`, and against `yellowback` for the YED steps when
 /// the server offers the service (`None` = contract rule 1 said absent: every own
 /// `TOKEN_VALUE` output stays `HELD`, no labels, no price).
 pub async fn sync(
     wallet: &mut Wallet,
     client: &mut CompactClient,
+    yellowback: Option<&mut YellowbackClient>,
+) -> Result<SyncReport, WalletError> {
+    sync_with_progress(wallet, client, yellowback, None).await
+}
+
+/// [`sync`], reporting step 2c's fetches through `progress`.
+pub async fn sync_with_progress(
+    wallet: &mut Wallet,
+    client: &mut CompactClient,
     mut yellowback: Option<&mut YellowbackClient>,
+    progress: Option<CheckProgress>,
 ) -> Result<SyncReport, WalletError> {
     let info = client.lightd_info_for(wallet.network).await?;
     let tip = client.latest_height().await?.max(info.block_height);
@@ -460,8 +473,8 @@ pub async fn sync(
     // creating transaction assigns it YED, or cannot be fetched and verified, is HELD: out of the
     // balance and of every selection, so it can neither burn YED nor block a send other coins
     // can fund. The broadcast gate checks again (`gate::confirm_provenance`).
-    report.provenance_held = hold_unproven(wallet, client, &mut utxos).await?
-        + hold_unproven(wallet, client, &mut pq_rows).await?;
+    report.provenance_held = hold_unproven(wallet, client, &mut utxos, progress.as_ref()).await?
+        + hold_unproven(wallet, client, &mut pq_rows, progress.as_ref()).await?;
     utxos.extend(falcon_rows);
     coins::apply_fee_reserve(&mut utxos);
     for u in &utxos {
@@ -652,18 +665,114 @@ pub async fn sync(
     Ok(report)
 }
 
+/// Step 2c's bounds (review YEW-REVIEW-5 L1): at most this many `GetTransaction` calls at once,
+const CHECK_CONCURRENCY: usize = 4;
+/// each given this long,
+const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// and a creating transaction that could not be fetched is asked for again only after
+/// `CHECK_BACKOFF_SECS × 2^(failures − 1)`, at most [`CHECK_BACKOFF_MAX_SECS`] (the coin stays held
+/// meanwhile); [`Wallet::reset_provenance_backoff`] (a server change) clears it.
+const CHECK_BACKOFF_SECS: i64 = 60;
+/// The longest wait between two attempts.
+const CHECK_BACKOFF_MAX_SECS: i64 = 86_400;
+
+/// The wait after `failures` failed fetches of one creating transaction.
+pub(crate) fn check_backoff_secs(failures: u32) -> i64 {
+    CHECK_BACKOFF_SECS
+        .saturating_mul(1i64 << failures.saturating_sub(1).min(20))
+        .min(CHECK_BACKOFF_MAX_SECS)
+}
+
+/// Whether the creating transaction `id` may be asked for at `now` (no failure recorded, or its
+/// wait is over).
+pub(crate) fn is_due(backoff: &HashMap<[u8; 32], (u32, i64)>, id: &[u8; 32], now: i64) -> bool {
+    backoff.get(id).is_none_or(|(_, next)| *next <= now)
+}
+
+/// Record one fetch of `id`: a verified answer clears its retry state, a failure doubles the wait.
+pub(crate) fn note_fetch(
+    backoff: &mut HashMap<[u8; 32], (u32, i64)>,
+    id: &[u8; 32],
+    ok: bool,
+    now: i64,
+) {
+    if ok {
+        backoff.remove(id);
+    } else {
+        let failures = backoff.get(id).map_or(0, |(f, _)| *f) + 1;
+        backoff.insert(*id, (failures, now + check_backoff_secs(failures)));
+    }
+}
+
+/// Poll every future to completion together (no runtime needed: the browser has none of
+/// tokio's); the outputs in order.
+async fn join_all<F: std::future::Future>(futs: Vec<F>) -> Vec<F::Output> {
+    let mut futs: Vec<std::pin::Pin<Box<F>>> = futs.into_iter().map(Box::pin).collect();
+    let mut out: Vec<Option<F::Output>> = futs.iter().map(|_| None).collect();
+    std::future::poll_fn(|cx| {
+        let mut pending = false;
+        for (f, o) in futs.iter_mut().zip(out.iter_mut()) {
+            if o.is_none() {
+                match f.as_mut().poll(cx) {
+                    std::task::Poll::Ready(v) => *o = Some(v),
+                    std::task::Poll::Pending => pending = true,
+                }
+            }
+        }
+        if pending {
+            std::task::Poll::Pending
+        } else {
+            std::task::Poll::Ready(())
+        }
+    })
+    .await;
+    out.into_iter().map(|o| o.expect("ready")).collect()
+}
+
+/// `f`, or `None` once `d` has passed.
+async fn within<F: std::future::Future>(d: std::time::Duration, f: F) -> Option<F::Output> {
+    use std::future::Future as _;
+    let mut f = Box::pin(f);
+    let mut t = Box::pin(crate::net::yellowback::pause(d));
+    std::future::poll_fn(|cx| {
+        if let std::task::Poll::Ready(v) = f.as_mut().poll(cx) {
+            return std::task::Poll::Ready(Some(v));
+        }
+        if t.as_mut().poll(cx).is_ready() {
+            return std::task::Poll::Ready(None);
+        }
+        std::task::Poll::Pending
+    })
+    .await
+}
+
+/// One creating transaction's bytes from the server: `None` on an error, a transaction the
+/// server does not know, or no answer within [`CHECK_TIMEOUT`].
+async fn fetch_parent(mut client: CompactClient, id: [u8; 32]) -> Option<Vec<u8>> {
+    match within(CHECK_TIMEOUT, client.get_transaction(&id)).await {
+        Some(Ok(Some((bytes, _)))) => Some(bytes),
+        _ => None,
+    }
+}
+
 /// Step 2c: classify `HELD` every row of class `YEC` or `PQ_OWNED` that layer 3 does not prove
 /// plain YEC ([`gate::output_provenance`]). A verdict reached on bytes whose txid matches the
 /// outpoint is final and stored (the bytes are the transaction); a fetch error or a server that
-/// returns other bytes holds the coin for this sync only, and the next sync asks again. Returns
-/// how many rows are held.
+/// returns other bytes holds the coin, and it is asked for again after a growing wait
+/// ([`check_backoff_secs`]). The fetches run [`CHECK_CONCURRENCY`] at a time, each bounded by
+/// [`CHECK_TIMEOUT`], and report `(fetched, to_fetch)` to `progress` (review YEW-REVIEW-5 L1).
+/// Returns how many rows are held.
 async fn hold_unproven(
     wallet: &Wallet,
     client: &mut CompactClient,
     rows: &mut [Utxo],
+    progress: Option<&CheckProgress>,
 ) -> Result<usize, WalletError> {
-    let mut fetched: HashMap<[u8; 32], Option<Vec<u8>>> = HashMap::new();
+    let now = crate::wallet::unix_secs();
+    let mut backoff = wallet.provenance_backoff();
     let mut verdicts: HashMap<OutPoint, bool> = HashMap::new();
+    // the creating transactions to ask for (distinct, in row order), the rest decided already
+    let mut want: Vec<[u8; 32]> = Vec::new();
     for u in rows.iter() {
         if !matches!(u.class, UtxoClass::Yec | UtxoClass::PqOwned) {
             continue;
@@ -676,12 +785,41 @@ async fn hold_unproven(
             continue;
         }
         let id = u.outpoint.txid;
-        if let std::collections::hash_map::Entry::Vacant(e) = fetched.entry(id) {
-            e.insert(match client.get_transaction(&id).await {
-                Ok(Some((bytes, _))) => Some(bytes),
-                Ok(None) | Err(_) => None,
-            });
+        if is_due(&backoff, &id, now) && !want.contains(&id) {
+            want.push(id);
         }
+    }
+    let mut fetched: HashMap<[u8; 32], Option<Vec<u8>>> = HashMap::new();
+    let total = want.len();
+    for chunk in want.chunks(CHECK_CONCURRENCY) {
+        let got = join_all(
+            chunk
+                .iter()
+                .map(|id| fetch_parent(client.clone(), *id))
+                .collect(),
+        )
+        .await;
+        for (id, bytes) in chunk.iter().zip(got) {
+            let ok = bytes
+                .as_deref()
+                .and_then(|r| Transaction::parse(r).ok())
+                .is_some_and(|(_, txid)| txid == *id);
+            note_fetch(&mut backoff, id, ok, now);
+            fetched.insert(*id, bytes);
+        }
+        if let Some(p) = progress {
+            p(fetched.len(), total);
+        }
+    }
+    wallet.set_provenance_backoff(&backoff)?;
+    for u in rows.iter() {
+        if !matches!(u.class, UtxoClass::Yec | UtxoClass::PqOwned)
+            || verdicts.contains_key(&u.outpoint)
+        {
+            continue;
+        }
+        let id = u.outpoint.txid;
+        // not due (backing off): held for this sync, not fetched
         let raw = fetched.get(&id).and_then(|r| r.as_deref());
         let verdict = gate::output_provenance(&u.outpoint, raw, None);
         let is_final = raw
@@ -2031,5 +2169,73 @@ mod tests {
             .unwrap();
         note_pending_spend(&w, &op, &v).unwrap();
         assert_eq!(lock_of(&w), Some(format!("spent-by:{}", txid_hex(&own))));
+    }
+
+    // ---- review YEW-REVIEW-5 L1: step 2c's bounds
+
+    /// A failed fetch is not asked for again until its wait is over; the wait doubles per
+    /// failure up to a day; a verified answer clears it; the state persists in the store and a
+    /// server change (the reset) clears it.
+    #[test]
+    fn provenance_fetch_backoff() {
+        assert_eq!(check_backoff_secs(1), 60);
+        assert_eq!(check_backoff_secs(2), 120);
+        assert_eq!(check_backoff_secs(5), 960);
+        assert_eq!(check_backoff_secs(40), CHECK_BACKOFF_MAX_SECS);
+        let (a, b) = ([1u8; 32], [2u8; 32]);
+        let mut m = HashMap::new();
+        assert!(is_due(&m, &a, 1_000));
+        note_fetch(&mut m, &a, false, 1_000);
+        assert!(!is_due(&m, &a, 1_059) && is_due(&m, &a, 1_060));
+        note_fetch(&mut m, &a, false, 1_060);
+        assert!(!is_due(&m, &a, 1_179) && is_due(&m, &a, 1_180));
+        assert!(is_due(&m, &b, 1_000), "another parent is not affected");
+        note_fetch(&mut m, &b, false, 1_000);
+        note_fetch(&mut m, &a, true, 1_180);
+        assert!(is_due(&m, &a, 0), "cleared by a verified answer");
+        let seed = keys::seed_from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "",
+        )
+        .unwrap();
+        let w = Wallet::from_parts(
+            crate::store::Store::open_in_memory().unwrap(),
+            crate::params::Network::Regtest,
+            &seed,
+            None,
+        )
+        .unwrap();
+        w.set_provenance_backoff(&m).unwrap();
+        assert_eq!(w.provenance_backoff(), m);
+        w.reset_provenance_backoff().unwrap();
+        assert!(w.provenance_backoff().is_empty());
+    }
+
+    /// join_all completes every future whatever order they finish in; within gives up after its
+    /// duration (a server that never answers holds one fetch at most that long).
+    #[tokio::test]
+    async fn provenance_fetch_join_and_timeout() {
+        let futs: Vec<_> = [30u64, 5, 15, 0]
+            .into_iter()
+            .map(|ms| async move {
+                crate::net::yellowback::pause(std::time::Duration::from_millis(ms)).await;
+                ms
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        assert_eq!(join_all(futs).await, vec![30, 5, 15, 0]);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(45),
+            "run together"
+        );
+        let never = std::future::pending::<()>();
+        assert_eq!(
+            within(std::time::Duration::from_millis(10), never).await,
+            None
+        );
+        assert_eq!(
+            within(std::time::Duration::from_secs(5), async { 7 }).await,
+            Some(7)
+        );
     }
 }

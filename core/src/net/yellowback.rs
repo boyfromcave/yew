@@ -206,12 +206,12 @@ where
 /// The retry's wait: tokio's timer natively; the browser has no tokio timer (core/Cargo.toml's
 /// wasm32 table), so there it is the global scope's `setTimeout` (a worker or a window).
 #[cfg(not(target_arch = "wasm32"))]
-async fn pause(d: std::time::Duration) {
+pub(crate) async fn pause(d: std::time::Duration) {
     tokio::time::sleep(d).await;
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn pause(d: std::time::Duration) {
+pub(crate) async fn pause(d: std::time::Duration) {
     use wasm_bindgen::JsCast;
     let ms = d.as_millis().min(i32::MAX as u128) as i32;
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
