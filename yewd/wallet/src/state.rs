@@ -108,6 +108,20 @@ pub struct State {
     /// Redeem scripts this wallet knows (`addmultisigaddress`): P2SH address → script hex.
     #[serde(default)]
     pub scripts: BTreeMap<String, String>,
+    /// A submission whose answer was lost (review M1): until the wallet learns whether the node
+    /// has it, its inputs stay locked and the next submission is refused once with the outcome.
+    #[serde(default)]
+    pub unknown: Option<UnknownSubmit>,
+}
+
+/// A transaction handed to `sendrawtransaction` whose answer never came (a transport error or a
+/// timeout), so the wallet cannot say whether it was accepted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnknownSubmit {
+    pub txid: String,
+    /// The locks (`txid:n`) placed on its inputs when the answer was lost, released if the
+    /// node turns out not to have it.
+    pub locked: Vec<String>,
 }
 
 /// A carrier (`CarrierRecord`): its key (external chain index), the bundle it commits to, its
@@ -146,6 +160,7 @@ impl State {
             expired: BTreeMap::new(),
             evicted: BTreeMap::new(),
             scripts: BTreeMap::new(),
+            unknown: None,
         }
     }
 

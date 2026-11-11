@@ -372,3 +372,103 @@ async fn reads_and_locks_fail_closed() {
     let v: Value = serde_json::from_str(&f.call("z_gettotalbalance", &[]).await.unwrap()).unwrap();
     assert_eq!(v["transparent"], json!("14.00"));
 }
+
+// ------------------------------------------------------------------ submission status (M1)
+
+const UNKNOWN_TAIL: &str = ": check before sending again";
+
+fn pay_to() -> String {
+    yew_core::keys::encode_p2pkh(Network::Regtest, &[0x39; 20])
+}
+
+/// The node accepted, then the wallet's sync failed: the txid is returned, never an error.
+#[tokio::test]
+async fn accepted_then_sync_fails_returns_the_txid() {
+    let mut f = fixture("m1-syncfail").await;
+    f.node.0.lock().unwrap().fail_syncs_after_send = 3;
+    let txid = f
+        .call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+        .await
+        .unwrap();
+    let txid = txid.trim_matches('"').to_string();
+    let c = f.node.0.lock().unwrap();
+    assert_eq!(c.sent.len(), 1);
+    assert!(c.mempool.iter().any(|(id, _)| *id == txid));
+}
+
+/// The answer to sendrawtransaction is lost but the node has the transaction: the txid.
+#[tokio::test]
+async fn lost_answer_with_the_tx_in_the_mempool_returns_the_txid() {
+    let mut f = fixture("m1-lost-in").await;
+    f.node.0.lock().unwrap().lose_answer = Some(true);
+    let opid_txid = f.zsend(&f.ecc.clone(), &pay_to(), COIN).await.unwrap();
+    let c = f.node.0.lock().unwrap();
+    assert_eq!(c.sent.len(), 1);
+    assert!(c.mempool.iter().any(|(id, _)| *id == opid_txid));
+}
+
+/// The answer is lost and the node does not have it: "status unknown" with the txid; nothing is
+/// submitted again; the next send is refused once with the outcome, which releases the coins when
+/// the node still does not have it, and the send after that goes ahead.
+#[tokio::test]
+async fn lost_answer_with_the_tx_absent_is_status_unknown() {
+    let mut f = fixture("m1-lost-out").await;
+    f.node.0.lock().unwrap().lose_answer = Some(false);
+    let (code, msg) = f
+        .call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+        .await
+        .unwrap_err();
+    assert_eq!(code, -4);
+    let sent = f.node.0.lock().unwrap().sent[0].clone();
+    let txid = rev_hex(&Transaction::parse(&hex::decode(&sent).unwrap()).unwrap().1);
+    assert!(
+        msg.starts_with("the node did not answer the submission (")
+            && msg.ends_with(&format!("; status unknown, txid {txid}{UNKNOWN_TAIL}")),
+        "{msg}"
+    );
+    f.node.0.lock().unwrap().lose_answer = None;
+    // the node unreachable while it is resolved: still unknown, nothing sent
+    f.node.0.lock().unwrap().fail_syncs = 1;
+    assert_eq!(
+        f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+            .await
+            .unwrap_err(),
+        (-4, format!("an earlier transaction's status is still unknown, txid {txid}{UNKNOWN_TAIL}; nothing was sent"))
+    );
+    assert_eq!(
+        f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+            .await
+            .unwrap_err(),
+        (-4, format!("the earlier transaction {txid}, whose status was unknown, is not known to the node and its coins are released; nothing was sent now: send again"))
+    );
+    assert_eq!(f.sent(), 1, "nothing submitted again");
+    f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+        .await
+        .unwrap();
+    assert_eq!(f.sent(), 2);
+}
+
+/// The lost transaction reaches the node late: the next send is refused once, saying so.
+#[tokio::test]
+async fn a_late_arrival_is_reported_before_any_new_send() {
+    let mut f = fixture("m1-late").await;
+    f.node.0.lock().unwrap().lose_answer = Some(false);
+    f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+        .await
+        .unwrap_err();
+    let sent = f.node.0.lock().unwrap().sent[0].clone();
+    let raw = hex::decode(&sent).unwrap();
+    let txid = rev_hex(&Transaction::parse(&raw).unwrap().1);
+    {
+        let mut c = f.node.0.lock().unwrap();
+        c.lose_answer = None;
+        c.mempool.push((txid.clone(), raw));
+    }
+    assert_eq!(
+        f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+            .await
+            .unwrap_err(),
+        (-4, format!("the earlier transaction {txid}, whose status was unknown, reached the node; nothing was sent now: send again only if this is a new payment"))
+    );
+    assert_eq!(f.sent(), 1);
+}

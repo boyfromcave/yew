@@ -656,20 +656,124 @@ impl Wallet {
     /// `sendrawtransaction` of a whole transaction's hex (one with a Sapling part), then the
     /// barrier: the wallet sees it before the call returns.
     pub async fn broadcast_hex(&mut self, node: &dyn Node, hexs: &str) -> Result<String, RpcError> {
-        let txid =
-            match node::call(node, "sendrawtransaction", serde_json::json!([hexs, true])).await {
-                Ok(v) => v.as_str().unwrap_or_default().to_string(),
-                Err(NodeError::Rpc { code, message }) => return Err(RpcError::new(code, message)),
-                Err(e) => return Err(e.into()),
-            };
-        if let Some(t) = hex::decode(hexs)
+        self.submit(node, hexs, serde_json::json!([hexs, true]), RpcError::new)
+            .await
+    }
+
+    /// The one submission path (review M1: never report a payment the node may have accepted as
+    /// failed). A transaction still of unknown status from an earlier call is resolved first and
+    /// this call refused once with its outcome ([`Wallet::resolve_unknown`]). Then
+    /// `sendrawtransaction`: a node refusal (a JSON-RPC error) is `refused(code, message)`;
+    /// an accepted transaction always returns its txid, and the barrier sync after it is a
+    /// logged warning only; a lost answer (transport error, timeout) is settled by asking the
+    /// node for the txid computed from the bytes, a few times over about a second, and is
+    /// either the txid (the node has it) or "status unknown, txid …: check before sending
+    /// again", with the inputs kept locked. Nothing is ever submitted again automatically.
+    pub(crate) async fn submit(
+        &mut self,
+        node: &dyn Node,
+        hexs: &str,
+        params: Value,
+        refused: impl Fn(i64, String) -> RpcError,
+    ) -> Result<String, RpcError> {
+        self.resolve_unknown(node).await?;
+        // the txid parse computes over the bytes (Transaction::txid re-serializes, which a
+        // Sapling part does not allow)
+        let (tx, txid_bytes) = hex::decode(hexs)
             .ok()
             .and_then(|b| Transaction::parse(&b).ok())
-        {
-            self.lock_own_yed(&t.0, &txid);
+            .ok_or_else(|| {
+                RpcError::new(code::INTERNAL_ERROR, "submit: unparseable transaction")
+            })?;
+        let local = txid_hex(&txid_bytes);
+        let txid = match node::call(node, "sendrawtransaction", params).await {
+            Ok(v) => v.as_str().map_or(local.clone(), str::to_string),
+            Err(NodeError::Rpc { code, message }) => return Err(refused(code, message)),
+            Err(e) => {
+                let mut found = false;
+                for wait_ms in [0u64, 300, 700] {
+                    tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+                    if self.node_has(node, &local).await == Some(true) {
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    let mut locked = Vec::new();
+                    for i in &tx.vin {
+                        let k = op_str(&i.prevout);
+                        if self.st.locks.insert(k.clone()) {
+                            locked.push(k);
+                        }
+                    }
+                    self.st.unknown = Some(crate::state::UnknownSubmit {
+                        txid: local.clone(),
+                        locked,
+                    });
+                    self.persist_state()?;
+                    eprintln!("yewd: sendrawtransaction of {local} got no answer ({e}); its status is unknown, its inputs stay locked");
+                    return Err(RpcError::new(
+                        code::WALLET_ERROR,
+                        format!("the node did not answer the submission ({e}); status unknown, txid {local}: check before sending again"),
+                    ));
+                }
+                local
+            }
+        };
+        self.lock_own_yed(&tx, &txid);
+        if let Err(e) = self.sync(node).await {
+            eprintln!(
+                "yewd: {txid} was accepted by the node; the sync after it failed ({}), the next sync picks it up",
+                e.message
+            );
         }
-        self.sync(node).await?;
         Ok(txid)
+    }
+
+    /// Whether the node (or the wallet's synced view of it) has `txid`: `Some(false)` only on the
+    /// node's definite "no such transaction" (`-5`) after a successful sync, `None` when it
+    /// cannot be told.
+    async fn node_has(&mut self, node: &dyn Node, txid: &str) -> Option<bool> {
+        self.sync(node).await.ok()?;
+        if self.st.wtx.contains_key(txid) {
+            return Some(true);
+        }
+        match node::call(node, "getrawtransaction", serde_json::json!([txid, 0])).await {
+            Ok(_) => Some(true),
+            Err(NodeError::Rpc { code: -5, .. }) => Some(false),
+            Err(_) => None,
+        }
+    }
+
+    /// A submission of unknown status (review M1) blocks the next one: resolved here, it is
+    /// cleared and the caller's submission refused once with the outcome (nothing is sent), so
+    /// a re-send is a decision taken knowing whether the first payment went out. If the node
+    /// does not have it, the inputs it locked are released.
+    pub(crate) async fn resolve_unknown(&mut self, node: &dyn Node) -> Result<(), RpcError> {
+        let Some(u) = self.st.unknown.clone() else {
+            return Ok(());
+        };
+        let Some(present) = self.node_has(node, &u.txid).await else {
+            return Err(RpcError::new(
+                code::WALLET_ERROR,
+                format!("an earlier transaction's status is still unknown, txid {}: check before sending again; nothing was sent", u.txid),
+            ));
+        };
+        self.st.unknown = None;
+        if !present {
+            for k in &u.locked {
+                self.st.locks.remove(k);
+            }
+        }
+        self.persist_state()?;
+        Err(RpcError::new(
+            code::WALLET_ERROR,
+            if present {
+                format!("the earlier transaction {}, whose status was unknown, reached the node; nothing was sent now: send again only if this is a new payment", u.txid)
+            } else {
+                format!("the earlier transaction {}, whose status was unknown, is not known to the node and its coins are released; nothing was sent now: send again", u.txid)
+            },
+        ))
     }
 
     /// `SignWalletInputs` for a transaction this wallet built: every input whose coin this wallet
@@ -758,20 +862,9 @@ impl Wallet {
                 }
             }
         }
-        let txid = match node::call(
-            node,
-            "sendrawtransaction",
-            serde_json::json!([hex::encode(&raw), true]),
-        )
-        .await
-        {
-            Ok(v) => v.as_str().unwrap_or_default().to_string(),
-            Err(NodeError::Rpc { code, message }) => return Err(RpcError::new(code, message)),
-            Err(e) => return Err(e.into()),
-        };
-        self.lock_own_yed(tx, &txid);
-        self.sync(node).await?;
-        Ok(txid)
+        let hexs = hex::encode(&raw);
+        self.submit(node, &hexs, serde_json::json!([hexs, true]), RpcError::new)
+            .await
     }
 
     /// `LockOwn` (H5): the YED outputs of a transaction this wallet just committed that pay it

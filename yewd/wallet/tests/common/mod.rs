@@ -85,6 +85,13 @@ pub struct Chain {
     pub tokens_error: Option<(i64, String)>,
     /// What `yed_getinfo` answers (`-32601` when unset: Yellowback not live).
     pub yed_info: Option<Value>,
+    /// When set, `sendrawtransaction`'s answer is lost (a transport error): `true` after the
+    /// transaction entered the mempool, `false` without it.
+    pub lose_answer: Option<bool>,
+    /// The next this many `getbestblockhash` calls fail (the node unreachable: a sync fails).
+    pub fail_syncs: u32,
+    /// Copied into `fail_syncs` when `sendrawtransaction` accepts (a sync failing right after).
+    pub fail_syncs_after_send: u32,
 }
 
 #[derive(Clone, Default)]
@@ -168,10 +175,14 @@ impl MockNode {
 impl Node for MockNode {
     fn call<'a>(&'a self, method: &'a str, params: Value) -> NodeFuture<'a> {
         Box::pin(async move {
-            let c = self.0.lock().unwrap();
+            let mut c = self.0.lock().unwrap();
             let p = params.as_array().cloned().unwrap_or_default();
             let tip = c.blocks.len() - 1;
             Ok(match method {
+                "getbestblockhash" if c.fail_syncs > 0 => {
+                    c.fail_syncs -= 1;
+                    return Err(NodeError::Unreachable("mock: connection refused".into()));
+                }
                 "getbestblockhash" => json!(c.blocks[tip].0),
                 "getblockcount" => json!(tip),
                 "getblockhash" => {
@@ -228,7 +239,18 @@ impl Node for MockNode {
                     }
                     let raw = hex::decode(&hexs).unwrap();
                     let id = rev_hex(&Transaction::parse(&raw).unwrap().1);
-                    c.mempool.push((id.clone(), raw));
+                    match c.lose_answer {
+                        Some(accepted) => {
+                            if accepted {
+                                c.mempool.push((id, raw));
+                            }
+                            return Err(NodeError::Unreachable("mock: timed out".into()));
+                        }
+                        None => {
+                            c.mempool.push((id.clone(), raw));
+                            c.fail_syncs = c.fail_syncs_after_send;
+                        }
+                    }
                     return Ok(json!(id));
                 }
                 "z_gettreestate" => json!({"sapling": {}}),

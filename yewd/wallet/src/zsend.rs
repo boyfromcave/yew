@@ -841,18 +841,13 @@ impl Wallet {
     /// is never recorded: the wallet learns its transactions from the node's mempool and chain
     /// only, so nothing it was told failed is broadcast again later (audit H1's class).
     async fn commit_z(&mut self, node: &dyn Node, hexs: &str) -> Result<String, RpcError> {
-        let txid = match node::call(node, "sendrawtransaction", serde_json::json!([hexs])).await {
-            Ok(v) => v.as_str().unwrap_or_default().to_string(),
-            Err(crate::node::NodeError::Rpc { code, message }) => {
-                return Err(RpcError::new(
-                    code::WALLET_ERROR,
-                    format!("SendTransaction: Transaction commit failed:: {message} ({code})"),
-                ))
-            }
-            Err(e) => return Err(e.into()),
-        };
-        self.sync(node).await?;
-        Ok(txid)
+        self.submit(node, hexs, serde_json::json!([hexs]), |code, message| {
+            RpcError::new(
+                code::WALLET_ERROR,
+                format!("SendTransaction: Transaction commit failed:: {message} ({code})"),
+            )
+        })
+        .await
     }
 
     /// The Sapling parameters' directory: `-paramsdir`, else ycashd's default.
