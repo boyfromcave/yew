@@ -400,6 +400,8 @@ impl Wallet {
             "z_listunspent" => self.z_listunspent(p),
             "vault_getnewowner" => self.vault_getnewowner(p),
             "set_listsigned" => self.set_listsigned(p),
+            // yewd's own (review YEW-REVIEW-3 L1); the façade routes it without the barrier
+            "clearunknownsubmission" => self.clear_unknown_submission(p),
             "yed_getnewaddress" => self.yed_getnewaddress(node, p).await,
             "yed_validateaddress" => self.yed_validateaddress(node, p).await,
             "yed_getbalance" => self.yed_getbalance(node, p).await,
@@ -1248,7 +1250,14 @@ impl Wallet {
                 serde_json::json!([chunk, 0, 1_000_000, 0]),
             )
             .await?;
-            out.extend(v.as_array().cloned().unwrap_or_default());
+            // review YEW-REVIEW-3 L3: an answer that is not a list is an error, never "no tokens"
+            let Some(a) = v.as_array() else {
+                return Err(RpcError::new(
+                    code::MISC_ERROR,
+                    format!("yed_listtokens answered something that is not a list: {v}"),
+                ));
+            };
+            out.extend(a.iter().cloned());
         }
         Ok(out)
     }

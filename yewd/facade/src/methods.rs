@@ -246,8 +246,12 @@ pub const AUGMENTED: &[&str] = &[
     "yed_getinfo",
 ];
 
-/// Answered by the façade itself.
-pub const OWN: &[&str] = &["help", "stop"];
+/// Answered by the façade itself: `help`, `stop`, and yewd's own wallet RPC
+/// `clearunknownsubmission` (not a ycashd method; review YEW-REVIEW-3 L1).
+pub const OWN: &[&str] = &["help", "stop", CLEAR_UNKNOWN];
+
+/// The operator's release of a submission of unknown status (`yewd_wallet::build`).
+pub const CLEAR_UNKNOWN: &str = "clearunknownsubmission";
 
 /// Every wallet RPC the façade serves, with its group and stage, in table order:
 /// R5 (22), R6 (25), R7 (1), the K-25 stock set (30 + 4), S5's gate reads (5) and the beta2
@@ -358,6 +362,9 @@ mod tests {
             assert_eq!(classify(m), None, "{m}");
         }
         assert!(answered_locally("decoderawtransaction"));
+        // yewd's own: never forwarded (review YEW-REVIEW-3 L1)
+        assert_eq!(classify(CLEAR_UNKNOWN), Some(Class::Own));
+        assert!(answered_locally(CLEAR_UNKNOWN));
         assert!(!answered_locally("validateaddress"));
     }
 }

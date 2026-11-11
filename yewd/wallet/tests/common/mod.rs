@@ -79,10 +79,14 @@ pub struct Chain {
     pub txs: Vec<Vec<Vec<u8>>>,
     /// Every transaction `sendrawtransaction` was handed, accepted or not (hex).
     pub sent: Vec<String>,
-    /// When set, `sendrawtransaction` refuses with this message (`-26`).
+    /// When set, `sendrawtransaction` refuses with this message (`-26`, or `reject_code`).
     pub reject: Option<String>,
+    /// The code of that refusal when not `-26` (a proxy's `-32603`, …).
+    pub reject_code: Option<i64>,
     /// When set, `yed_listtokens` fails with this (code, message).
     pub tokens_error: Option<(i64, String)>,
+    /// When set, `yed_listtokens` answers this instead of the token list (a malformed answer).
+    pub tokens_raw: Option<Value>,
     /// What `yed_getinfo` answers (`-32601` when unset: Yellowback not live).
     pub yed_info: Option<Value>,
     /// When set, `sendrawtransaction`'s answer is lost (a transport error): `true` after the
@@ -233,7 +237,7 @@ impl Node for MockNode {
                     c.sent.push(hexs.clone());
                     if let Some(m) = c.reject.clone() {
                         return Err(NodeError::Rpc {
-                            code: -26,
+                            code: c.reject_code.unwrap_or(-26),
                             message: m,
                         });
                     }
@@ -326,7 +330,7 @@ impl Node for MockNode {
                             message: message.clone(),
                         })
                     }
-                    None => json!(c.tokens),
+                    None => c.tokens_raw.clone().unwrap_or_else(|| json!(c.tokens)),
                 },
                 "getrawmempool" => json!(c
                     .mempool

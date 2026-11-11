@@ -373,6 +373,91 @@ async fn reads_and_locks_fail_closed() {
     assert_eq!(v["transparent"], json!("14.00"));
 }
 
+/// Review YEW-REVIEW-3 L3: a `yed_listtokens` answer that is not a list is an error (fail
+/// closed), never "no tokens".
+#[tokio::test]
+async fn a_malformed_token_list_is_refused() {
+    let mut f = fixture("l3-malformed").await;
+    {
+        let mut c = f.node.0.lock().unwrap();
+        c.yed_info = Some(json!({"healthy": true, "unhealthyReason": ""}));
+        c.tokens_raw = Some(json!({"tokens": []}));
+    }
+    let (code, msg) = f
+        .call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+        .await
+        .unwrap_err();
+    assert_eq!(code, -4);
+    assert!(
+        msg.starts_with("refusing to spend as plain YEC while the Yellowback index is unhealthy (yed_listtokens answered something that is not a list: "),
+        "{msg}"
+    );
+    assert_eq!(f.sent(), 0);
+}
+
+/// `z_sendmany` with these params, run to its end: the operation's result object.
+async fn zsend_policy(f: &mut Fix, p: &[Value]) -> Value {
+    let opid = f.call("z_sendmany", p).await.unwrap();
+    let r = call_json(
+        &mut f.w,
+        &f.node,
+        "z_getoperationresult",
+        &[json!([opid.trim_matches('"')])],
+    )
+    .await;
+    r[0].clone()
+}
+
+/// Review YEW-REVIEW-3 L3: Yellowback judged not live (`-32601`, also what an RPC-filtering
+/// proxy answers): an own output of exactly TOKEN_VALUE stays reserved, as the app's classifier
+/// keeps it HELD; with `-yellowback=0` it is spendable.
+#[tokio::test]
+async fn not_live_still_reserves_token_value_outputs() {
+    let mut f = fixture("l3-notlive").await;
+    let addr = f
+        .call("getnewaddress", &[])
+        .await
+        .unwrap()
+        .trim_matches('"')
+        .to_string();
+    let foreign = |n: u32| OutPoint { txid: [9; 32], n };
+    f.node.mine(
+        vec![
+            payment(
+                foreign(0),
+                addr_script(&addr),
+                yew_core::params::TOKEN_VALUE,
+            ),
+            payment(foreign(1), addr_script(&addr), COIN / 2),
+        ],
+        3,
+    );
+    f.w.sync(&f.node).await.unwrap();
+    f.set(State::NotLive);
+    // 0.50005 YEC plus the fee needs the 0.0001 coin
+    let p = [
+        json!(addr),
+        json!([{"address": pay_to(), "amount": 0.50005}]),
+        json!(1),
+        Value::Null,
+        json!("AllowFullyTransparent"),
+    ];
+    let r = zsend_policy(&mut f, &p).await;
+    assert_eq!(r["status"], json!("failed"), "{r}");
+    assert!(
+        r["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Insufficient funds: have 0.50"),
+        "{r}"
+    );
+    assert_eq!(f.sent(), 0);
+    f.w.opts.yellowback_ack = true;
+    let r = zsend_policy(&mut f, &p).await;
+    assert_eq!(r["status"], json!("success"), "{r}");
+    assert_eq!(f.sent(), 1);
+}
+
 // ------------------------------------------------------------------ submission status (M1)
 
 const UNKNOWN_TAIL: &str = ": check before sending again";
@@ -407,45 +492,216 @@ async fn lost_answer_with_the_tx_in_the_mempool_returns_the_txid() {
     assert!(c.mempool.iter().any(|(id, _)| *id == opid_txid));
 }
 
-/// The answer is lost and the node does not have it: "status unknown" with the txid; nothing is
-/// submitted again; the next send is refused once with the outcome, which releases the coins when
-/// the node still does not have it, and the send after that goes ahead.
-#[tokio::test]
-async fn lost_answer_with_the_tx_absent_is_status_unknown() {
-    let mut f = fixture("m1-lost-out").await;
+/// Mine `n` empty blocks.
+fn mine_empty(node: &MockNode, n: u32) {
+    for _ in 0..n {
+        let h = node.0.lock().unwrap().blocks.len() as u32;
+        node.mine(vec![coinbase(h, vec![0x51], 0)], 0);
+    }
+}
+
+/// A lost answer with the transaction absent; returns its txid, its expiry height and its inputs.
+async fn lose_one(f: &mut Fix) -> (String, u32, Vec<OutPoint>) {
     f.node.0.lock().unwrap().lose_answer = Some(false);
     let (code, msg) = f
         .call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
         .await
         .unwrap_err();
     assert_eq!(code, -4);
-    let sent = f.node.0.lock().unwrap().sent[0].clone();
-    let txid = rev_hex(&Transaction::parse(&hex::decode(&sent).unwrap()).unwrap().1);
+    f.node.0.lock().unwrap().lose_answer = None;
+    let sent = f.node.0.lock().unwrap().sent.last().unwrap().clone();
+    let (tx, id) = Transaction::parse(&hex::decode(&sent).unwrap()).unwrap();
+    let txid = rev_hex(&id);
     assert!(
         msg.starts_with("the node did not answer the submission (")
             && msg.ends_with(&format!("; status unknown, txid {txid}{UNKNOWN_TAIL}")),
         "{msg}"
     );
-    f.node.0.lock().unwrap().lose_answer = None;
-    // the node unreachable while it is resolved: still unknown, nothing sent
+    (
+        txid,
+        tx.expiry_height,
+        tx.vin.iter().map(|i| i.prevout).collect(),
+    )
+}
+
+fn still_unknown(txid: &str, clears: u32, expiry: u32, tip: u32) -> (i64, String) {
+    (
+        -4,
+        format!("an earlier transaction's status is still unknown, txid {txid}: its coins stay locked until the chain reaches height {clears} (10 blocks past its expiry height {expiry}; the chain is at {tip}); nothing was sent. Check before sending again; clearunknownsubmission {txid} releases them now if you are sure it reached no node"),
+    )
+}
+
+fn tip(f: &Fix) -> u32 {
+    f.node.0.lock().unwrap().blocks.len() as u32 - 1
+}
+
+/// The answer is lost and the node does not have it: "status unknown" with the txid; nothing is
+/// submitted again. Review YEW-REVIEW-3 L1: the node's "not found" alone releases nothing (a
+/// late arrival or another node could still mine it): every send is refused, naming the height
+/// at which the coins clear, also while the node cannot sync; once the chain is 10 blocks past
+/// the expiry height the coins are released, and the send after that goes ahead.
+#[tokio::test]
+async fn lost_answer_with_the_tx_absent_is_status_unknown() {
+    let mut f = fixture("m1-lost-out").await;
+    let (txid, expiry, _) = lose_one(&mut f).await;
+    let clears = expiry + 10;
+    // the node says "not found": still locked
+    assert_eq!(
+        f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+            .await
+            .unwrap_err(),
+        still_unknown(&txid, clears, expiry, tip(&f))
+    );
+    // just short of the clearing height, the node unable to sync: still locked
+    mine_empty(&f.node, clears - 1 - tip(&f));
     f.node.0.lock().unwrap().fail_syncs = 1;
     assert_eq!(
         f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
             .await
             .unwrap_err(),
-        (-4, format!("an earlier transaction's status is still unknown, txid {txid}{UNKNOWN_TAIL}; nothing was sent"))
+        still_unknown(&txid, clears, expiry, clears - 1)
     );
+    // at the clearing height, the node still unable to sync: released all the same
+    mine_empty(&f.node, 1);
+    f.node.0.lock().unwrap().fail_syncs = 1;
     assert_eq!(
         f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
             .await
             .unwrap_err(),
-        (-4, format!("the earlier transaction {txid}, whose status was unknown, is not known to the node and its coins are released; nothing was sent now: send again"))
+        (-4, format!("the earlier transaction {txid}, whose status was unknown, expired at height {expiry} without reaching the chain (the chain is at {clears}); its coins are released; nothing was sent now: send again"))
     );
     assert_eq!(f.sent(), 1, "nothing submitted again");
     f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
         .await
         .unwrap();
     assert_eq!(f.sent(), 2);
+}
+
+/// Review YEW-REVIEW-3 L1: one of the inputs spent by another transaction, 10 blocks deep: the
+/// lost one can never be mined, its coins are released; one block shallower they stay locked.
+#[tokio::test]
+async fn lost_answer_released_by_a_conflicting_spend() {
+    let mut f = fixture("m1-conflict").await;
+    let (txid, expiry, inputs) = lose_one(&mut f).await;
+    f.node.mine(vec![payment(inputs[0], vec![0x51], 1000)], 9);
+    mine_empty(&f.node, 8);
+    assert_eq!(
+        f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+            .await
+            .unwrap_err(),
+        still_unknown(&txid, expiry + 10, expiry, tip(&f))
+    );
+    mine_empty(&f.node, 1);
+    let op = format!("{}:{}", rev_hex(&inputs[0].txid), inputs[0].n);
+    assert_eq!(
+        f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+            .await
+            .unwrap_err(),
+        (-4, format!("the earlier transaction {txid}, whose status was unknown, can no longer be mined (its input {op} is spent by another transaction); its coins are released; nothing was sent now: send again"))
+    );
+}
+
+/// Review YEW-REVIEW-3 L1: the operator's `clearunknownsubmission` needs the outstanding txid,
+/// works while the node is down, and releases the coins at once.
+#[tokio::test]
+async fn clearunknownsubmission_releases_the_named_submission() {
+    let mut f = fixture("m1-clear").await;
+    assert_eq!(
+        f.call("clearunknownsubmission", &[json!("00".repeat(32))])
+            .await
+            .unwrap_err(),
+        (
+            -8,
+            "no submission of unknown status is outstanding".to_string()
+        )
+    );
+    let (txid, expiry, inputs) = lose_one(&mut f).await;
+    assert_eq!(
+        f.call("clearunknownsubmission", &[json!("11".repeat(32))])
+            .await
+            .unwrap_err(),
+        (
+            -8,
+            format!(
+                "the submission of unknown status is {txid}, not {}",
+                "11".repeat(32)
+            )
+        )
+    );
+    assert_eq!(
+        f.call("clearunknownsubmission", &[]).await.unwrap_err().0,
+        -1
+    );
+    f.node.0.lock().unwrap().fail_syncs = 5;
+    let v: Value = serde_json::from_str(
+        &f.call("clearunknownsubmission", &[json!(txid)])
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(v["txid"], json!(txid));
+    assert_eq!(v["expiryheight"], json!(expiry));
+    let released: Vec<String> = inputs
+        .iter()
+        .map(|o| format!("{}:{}", rev_hex(&o.txid), o.n))
+        .collect();
+    assert_eq!(v["released"], json!(released));
+    f.node.0.lock().unwrap().fail_syncs = 0;
+    f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+        .await
+        .unwrap();
+    assert_eq!(f.sent(), 2);
+}
+
+/// Review YEW-REVIEW-3 L2: only -25, -26 and -27 are refusals. A proxy's -32603 or -1 is a lost
+/// answer: status unknown, coins locked; a -26 is a refusal, nothing recorded.
+#[tokio::test]
+async fn only_node_rejections_are_refusals() {
+    for (code, unknown) in [
+        (-32603, true),
+        (-1, true),
+        (-26, false),
+        (-25, false),
+        (-27, false),
+    ] {
+        let mut f = fixture(&format!("l2-{}", -code)).await;
+        {
+            let mut c = f.node.0.lock().unwrap();
+            c.reject = Some("upstream: request timed out".into());
+            c.reject_code = Some(code);
+        }
+        let (got, msg) = f
+            .call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+            .await
+            .unwrap_err();
+        {
+            let mut c = f.node.0.lock().unwrap();
+            c.reject = None;
+            c.reject_code = None;
+        }
+        if unknown {
+            assert_eq!(got, -4, "{code}");
+            assert!(msg.contains("; status unknown, txid "), "{code}: {msg}");
+            let again = f
+                .call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+                .await
+                .unwrap_err();
+            assert!(
+                again
+                    .1
+                    .starts_with("an earlier transaction's status is still unknown"),
+                "{code}: {again:?}"
+            );
+        } else {
+            assert!(
+                msg.contains("upstream: request timed out") && !msg.contains("status unknown"),
+                "{code} {got}: {msg}"
+            );
+            f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+                .await
+                .unwrap();
+        }
+    }
 }
 
 /// The lost transaction reaches the node late: the next send is refused once, saying so.

@@ -125,9 +125,16 @@ pub struct State {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnknownSubmit {
     pub txid: String,
-    /// The locks (`txid:n`) placed on its inputs when the answer was lost, released if the
-    /// node turns out not to have it.
+    /// The locks (`txid:n`) placed on its inputs when the answer was lost, released only once
+    /// the transaction is certainly dead (review YEW-REVIEW-3 L1).
     pub locked: Vec<String>,
+    /// Its `nExpiryHeight` (0: never expires; also what a record written before this field
+    /// reads as). Dead once the chain's tip reaches it: no later block may include it.
+    #[serde(default)]
+    pub expiry_height: u32,
+    /// All its inputs (`txid:n`), locked or not: dead once one is spent by another transaction.
+    #[serde(default)]
+    pub inputs: Vec<String>,
 }
 
 /// A carrier (`CarrierRecord`): its key (external chain index), the bundle it commits to, its

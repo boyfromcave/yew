@@ -687,6 +687,8 @@ impl WalletService {
         let w = slot.as_mut().expect("opened");
         match method {
             "z_validateaddress" => Ok(w.z_validateaddress(params)?.text()),
+            // yewd's own (review YEW-REVIEW-3 L1): no barrier, so it works while the node is down
+            "clearunknownsubmission" => Ok(w.clear_unknown_submission(params)?.text()),
             _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
         }
     }

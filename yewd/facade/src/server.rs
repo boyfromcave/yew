@@ -257,6 +257,9 @@ impl Facade {
                 Some(Class::Own) if method == "help" => {
                     self.help(path, body.clone(), env.params, id).await
                 }
+                Some(Class::Own) if method == methods::CLEAR_UNKNOWN => {
+                    error_reply(code::METHOD_NOT_FOUND, "Method not found", id)
+                }
                 Some(Class::Own) => self.stop(path, id).await,
                 _ => self.forward(path, body.clone(), id).await,
             };
@@ -317,6 +320,16 @@ impl Facade {
             ),
             Some(Class::Own) if method == "help" => {
                 self.help(path, body.clone(), env.params, id).await
+            }
+            Some(Class::Own) if method == methods::CLEAR_UNKNOWN => {
+                let params = match params_of(env.params) {
+                    Ok(p) => p,
+                    Err(m) => return error_reply(code::INVALID_REQUEST, m, id),
+                };
+                match self.wallet.local(&method, &params).await {
+                    Ok(text) => raw_result_reply(&text, id),
+                    Err(e) => error_reply(e.code, &e.message, id),
+                }
             }
             Some(Class::Own) => self.stop(path, id).await,
             // the augmented reads: forwarded, then the wallet adds its fields (S1)
@@ -478,6 +491,10 @@ impl Facade {
                         "{m}\n\n{}\n",
                         methods::out_of_scope_message(&m)
                     )),
+                    id,
+                ),
+                Some(Class::Own) if m == methods::CLEAR_UNKNOWN => result_reply(
+                    &serde_json::Value::String(yewd_wallet::build::CLEAR_UNKNOWN_HELP.into()),
                     id,
                 ),
                 Some(Class::Own) if m == "stop" => result_reply(

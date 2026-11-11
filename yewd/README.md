@@ -94,7 +94,7 @@ the node's decimal text).
 | Out of scope | the rest of ycashd's wallet table (33: `z_shieldcoinbase`, …) | `-32601` "yewd: not served" |
 | Local | `createrawtransaction`, `decoderawtransaction`, `decodescript` | answered by the façade (`wallet/src/raw.rs`: ycashd's `TxToJSON`, `ScriptToAsmStr`, `Solver`); a refusal takes the backend's words when it has the helper (the C++ deserializer's texts), ours when it lacks it (kogany) |
 | Augmented | `getinfo`, `validateaddress`, `z_validateaddress`, `set_getinfo`, `vault_list`, `yed_gettxinfo`, `yed_getinfo` | forwarded, then the wallet adds its fields (`balance`, `paytxfee`, `unlocked_until`…, `ismine`…, a known redeem script's `script`/`hex`/`addresses`/`sigsrequired`, `memberlist[].wallet`, the `wallet` column and the `mine` filter of `vault_list`, `yed_getinfo`'s `lockedOutputs`/`protectedByIndex`). `z_validateaddress` is answered by yewd itself: a ycash6 `-disablewallet` backend before `eac62c942` stops on it |
-| Own | `help` (the backend's listing with ycashd's lines for the façade's methods merged in), `stop` | served |
+| Own | `help` (the backend's listing with ycashd's lines for the façade's methods merged in), `stop`, and yewd's own `clearunknownsubmission "txid"` (not a ycashd method; see "A submission's answer lost") | served |
 | everything else | node RPCs | forwarded |
 
 Arity: every wallet and local method is checked as ycash6's RPC table checks it, before the handler
@@ -181,11 +181,14 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
 - **YED outputs are never spent as plain YEC (beta2).** Every path that selects transparent or
   post-quantum coins for a plain YEC spend takes the YED outpoint set from the node's index, and
   only when the node can answer for it: `yed_getinfo` must say `healthy: true` and
-  `yed_listtokens` must answer, else the spend is refused with the C++ lines' string
+  `yed_listtokens` must answer with a list (any other shape is an error, review YEW-REVIEW-3 L3),
+  else the spend is refused with the C++ lines' string
   ("refusing to spend as plain YEC while the Yellowback index is unhealthy (…)…") and the node's
   error is logged. "Yellowback not live" is the node's `-32601` on `yed_getinfo` (the yed_*
   commands exist exactly where the vault upgrade and a YED attestor set are configured); then no
-  token can exist and sends proceed, **unless the wallet has held YED**: the write-once
+  token can exist and sends proceed, every own output of exactly `TOKEN_VALUE` (0.0001 YEC) still
+  reserved unless `-yellowback=0` (an RPC-filtering proxy answers `-32601` too; the YEW app's
+  classifier keeps such outputs HELD the same way, review L3), **unless the wallet has held YED**: the write-once
   `yed_held` marker in `wallet.json` (set when the wallet first sees a YED token of its own,
   commits a transaction whose payload assigns it YED, or issues a holder key with
   `yed_getnewaddress` p2pkh/pq) makes every such spend refuse ("This wallet has held YED, but
@@ -195,8 +198,19 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
 - **A submission's answer lost (review M1).** A transaction the node accepted always returns its
   txid (a failing sync after it is a warning). When `sendrawtransaction`'s answer is lost, the
   wallet asks the node for the txid of the bytes; not found, the call answers "…status unknown,
-  txid <txid>: check before sending again", the inputs stay locked, and the next submission is
-  refused once, nothing sent, with the outcome. Nothing is submitted again automatically.
+  txid <txid>: check before sending again", the inputs stay locked, and every submission is
+  refused, nothing sent, until the outcome is certain (review YEW-REVIEW-3 L1): the node has it
+  (refused once, "reached the node"), or it is dead and its coins are released, either because
+  the chain is 10 blocks past its `nExpiryHeight` (the node's tip, or the wallet's last synced tip
+  while the node cannot answer, so it always clears) or because one of its inputs is spent by
+  another transaction 10 blocks deep. One "not found" from the node is not final: a timed-out
+  submission can be processed late, and yewd can be pointed at another node. Until then the
+  refusal names the height at which the coins clear. The operator can release them sooner with
+  `clearunknownsubmission "txid"` (the outstanding txid only; it needs no node): **if that
+  transaction reached any node it can still be mined until its expiry height, and a payment sent
+  again from the released coins can go out twice.** Only the node's rejections `-25`, `-26`,
+  `-27` count as a refusal; any other JSON-RPC error (a proxy's `-32603` or `-1`) or transport
+  failure is "status unknown" (review L2). Nothing is submitted again automatically.
 - **Coinbase (H8).** A new wallet's first external address is its coinbase address. ycash6
   `-disablewallet` mines only with `-mineraddress=<it> -minetolocalwallet=0`; kogany takes it as its
   `miner_address`.

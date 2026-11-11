@@ -16,6 +16,7 @@ use yewd_proto::{
     refuse, GatePath, KeyRef, OwnOutput, Prevout, Request, Response, SignInput, SignRequest,
 };
 
+use crate::json::J;
 use crate::keys::{Owner, INTERNAL};
 use crate::node::{self, Node, NodeError};
 use crate::{code, txid_hex, RpcError, Wallet};
@@ -30,6 +31,20 @@ pub const TX_EXPIRY_DELTA: u32 = 20;
 pub const DEFAULT_MAX_TX_FEE: i64 = 10_000_000;
 /// `MAX_MONEY`.
 pub const MAX_MONEY: i64 = 21_000_000 * 100_000_000;
+
+/// The node rejections `sendrawtransaction` answers when it certainly did not take the
+/// transaction: `RPC_VERIFY_ERROR` (-25), `RPC_VERIFY_REJECTED` (-26),
+/// `RPC_VERIFY_ALREADY_IN_CHAIN` (-27). Any other error is "status unknown" (review
+/// YEW-REVIEW-3 L2).
+pub const DEFINITE_REFUSALS: [i64; 3] = [-25, -26, -27];
+
+/// How far past its `nExpiryHeight` (or below a conflicting spend) the tip must be before a
+/// submission of unknown status is judged dead and its inputs released: a reorganization of
+/// fewer blocks cannot bring it back (review YEW-REVIEW-3 L1).
+pub const UNKNOWN_REORG_MARGIN: u32 = 10;
+
+/// `clearunknownsubmission`'s help (yewd's own RPC; not a ycashd method).
+pub const CLEAR_UNKNOWN_HELP: &str = "clearunknownsubmission \"txid\"\n\nRelease the coins of a submission whose status is unknown (sendrawtransaction's answer was lost), before yewd judges it dead.\nyewd releases them by itself once the chain is 10 blocks past the transaction's expiry height, or once one of its inputs is spent by another transaction 10 blocks deep; until then every send is refused.\n\nRISK: if the transaction reached any node it can still be mined until its expiry height. A payment sent again from the released coins can then go out twice. Use this only when you know it reached no node.\n\nArguments:\n1. \"txid\"    (string, required) the txid of the submission of unknown status (the one named in the refusal)\n\nResult:\n{\n  \"txid\": \"txid\",          (string) the cleared submission\n  \"released\": [\"txid:n\"],  (array) the coins released\n  \"expiryheight\": n        (numeric) its expiry height: it may be mined until then\n}\n";
 
 /// The block the next transaction is judged in.
 #[derive(Clone, Copy, Debug)]
@@ -398,7 +413,9 @@ impl Wallet {
     /// what the node reports, by JSON-RPC code, not by message text: `yed_getinfo` answers
     /// `-32601` (ycashd's and kogany's `EnsureIndex`: the yed_* commands exist only while the
     /// vault upgrade and a YED attestor set are configured; lightwalletd-dd's `ProbeYellowback`
-    /// reads the same code the same way), and then no token can exist, so the send proceeds.
+    /// reads the same code the same way), and then no token can exist, so the send proceeds,
+    /// with every own output of exactly `TOKEN_VALUE` still reserved unless `-yellowback=0`
+    /// (a proxy that filters the yed_* commands answers the same code; review YEW-REVIEW-3 L3).
     /// Every other answer is "live": `healthy` must be `true` and `yed_listtokens` must answer;
     /// an unhealthy index, any `yed_getinfo` failure other than `-32601` (node unreachable,
     /// warming up, malformed) or any `yed_listtokens` failure while live refuses with the C++
@@ -452,8 +469,20 @@ impl Wallet {
                     }
                 }
             }
-            // not live: the node has no yed_* command at all, so it holds no token
-            Err(e) if !live && e.code == code::METHOD_NOT_FOUND => {}
+            // not live: the node has no yed_* command at all, so it lists no token; but a node
+            // that hides them (an RPC-filtering proxy answers -32601 too) cannot be told apart,
+            // so every own output of exactly TOKEN_VALUE stays reserved, as the app's classifier
+            // keeps it HELD, unless the operator acknowledged with -yellowback=0 (review
+            // YEW-REVIEW-3 L3)
+            Err(e) if !live && e.code == code::METHOD_NOT_FOUND => {
+                if !self.opts.yellowback_ack {
+                    for c in &self.coins {
+                        if c.value == yew_core::params::TOKEN_VALUE {
+                            r.insert((c.txid.clone(), c.vout));
+                        }
+                    }
+                }
+            }
             Err(e) => {
                 let reason = e
                     .message
@@ -705,7 +734,12 @@ impl Wallet {
         let local = txid_hex(&txid_bytes);
         let txid = match node::call(node, "sendrawtransaction", params).await {
             Ok(v) => v.as_str().map_or(local.clone(), str::to_string),
-            Err(NodeError::Rpc { code, message }) => return Err(refused(code, message)),
+            // review YEW-REVIEW-3 L2: only the node's own rejections are a refusal
+            // (RPC_VERIFY_ERROR, RPC_VERIFY_REJECTED, RPC_VERIFY_ALREADY_IN_CHAIN); any other
+            // JSON-RPC error (-32603 or -1 from a proxy that timed out, …) is a lost answer
+            Err(NodeError::Rpc { code, message }) if DEFINITE_REFUSALS.contains(&code) => {
+                return Err(refused(code, message))
+            }
             Err(e) => {
                 let mut found = false;
                 for wait_ms in [0u64, 300, 700] {
@@ -726,6 +760,8 @@ impl Wallet {
                     self.st.unknown = Some(crate::state::UnknownSubmit {
                         txid: local.clone(),
                         locked,
+                        expiry_height: tx.expiry_height,
+                        inputs: tx.vin.iter().map(|i| op_str(&i.prevout)).collect(),
                     });
                     self.persist_state()?;
                     eprintln!("yewd: sendrawtransaction of {local} got no answer ({e}); its status is unknown, its inputs stay locked");
@@ -762,35 +798,150 @@ impl Wallet {
         }
     }
 
-    /// A submission of unknown status (review M1) blocks the next one: resolved here, it is
-    /// cleared and the caller's submission refused once with the outcome (nothing is sent), so
-    /// a re-send is a decision taken knowing whether the first payment went out. If the node
-    /// does not have it, the inputs it locked are released.
+    /// A submission of unknown status (review M1) blocks the next one: resolved here, the
+    /// caller's submission is refused with the outcome (nothing is sent), so a re-send is a
+    /// decision taken knowing whether the first payment went out.
+    ///
+    /// Review YEW-REVIEW-3 L1: one "not found" (`-5`) is not final (a timed-out submission can
+    /// still be processed late, and yewd can be re-pointed at another node), so the locked
+    /// inputs are released only when the transaction is certainly dead:
+    /// - its `nExpiryHeight` is at least [`UNKNOWN_REORG_MARGIN`] blocks behind the chain's tip
+    ///   (no later block may include it; the margin covers a reorganization), the tip being the
+    ///   node's or, when the node cannot answer, the wallet's last synced tip (so a node that
+    ///   keeps failing still lets it clear); or
+    /// - one of its inputs is spent by another transaction the wallet has seen confirmed at
+    ///   least [`UNKNOWN_REORG_MARGIN`] blocks deep (and the node does not have this one).
+    ///
+    /// Until then every submission is refused with the status and the height at which it clears.
+    /// The operator can clear it sooner with [`Wallet::clear_unknown_submission`] (the
+    /// `clearunknownsubmission` RPC). Reaching the node clears the record and keeps the locks
+    /// (the wallet then tracks the transaction itself).
     pub(crate) async fn resolve_unknown(&mut self, node: &dyn Node) -> Result<(), RpcError> {
         let Some(u) = self.st.unknown.clone() else {
             return Ok(());
         };
-        let Some(present) = self.node_has(node, &u.txid).await else {
+        let present = self.node_has(node, &u.txid).await;
+        if present == Some(true) {
+            self.st.unknown = None;
+            self.persist_state()?;
             return Err(RpcError::new(
                 code::WALLET_ERROR,
-                format!("an earlier transaction's status is still unknown, txid {}: check before sending again; nothing was sent", u.txid),
+                format!("the earlier transaction {}, whose status was unknown, reached the node; nothing was sent now: send again only if this is a new payment", u.txid),
+            ));
+        }
+        let tip = match node::block_count(node).await {
+            Ok(h) => h,
+            Err(_) => self.st.tip.as_ref().map_or(0, |t| t.height),
+        };
+        let clears_at =
+            (u.expiry_height != 0).then(|| u.expiry_height.saturating_add(UNKNOWN_REORG_MARGIN));
+        let dead = if clears_at.is_some_and(|h| tip >= h) {
+            Some(format!(
+                "expired at height {} without reaching the chain (the chain is at {tip})",
+                u.expiry_height
+            ))
+        } else if present == Some(false) {
+            self.conflicting_input(&u, tip).map(|op| {
+                format!("can no longer be mined (its input {op} is spent by another transaction)")
+            })
+        } else {
+            None
+        };
+        let Some(why) = dead else {
+            let when = match clears_at {
+                Some(h) => format!(
+                    "until the chain reaches height {h} ({} blocks past its expiry height {}; the chain is at {tip})",
+                    UNKNOWN_REORG_MARGIN, u.expiry_height
+                ),
+                None => "until one of its inputs is spent by another transaction (it has no expiry height)".to_string(),
+            };
+            return Err(RpcError::new(
+                code::WALLET_ERROR,
+                format!("an earlier transaction's status is still unknown, txid {}: its coins stay locked {when}; nothing was sent. Check before sending again; clearunknownsubmission {} releases them now if you are sure it reached no node", u.txid, u.txid),
             ));
         };
-        self.st.unknown = None;
-        if !present {
-            for k in &u.locked {
-                self.st.locks.remove(k);
-            }
-        }
-        self.persist_state()?;
+        self.release_unknown(&u)?;
         Err(RpcError::new(
             code::WALLET_ERROR,
-            if present {
-                format!("the earlier transaction {}, whose status was unknown, reached the node; nothing was sent now: send again only if this is a new payment", u.txid)
-            } else {
-                format!("the earlier transaction {}, whose status was unknown, is not known to the node and its coins are released; nothing was sent now: send again", u.txid)
-            },
+            format!("the earlier transaction {}, whose status was unknown, {why}; its coins are released; nothing was sent now: send again", u.txid),
         ))
+    }
+
+    /// An input of `u` spent by another transaction the wallet has seen confirmed at least
+    /// [`UNKNOWN_REORG_MARGIN`] blocks below `tip`.
+    fn conflicting_input(&self, u: &crate::state::UnknownSubmit, tip: u32) -> Option<String> {
+        for (id, w) in &self.st.wtx {
+            if *id == u.txid {
+                continue;
+            }
+            let Some(b) = &w.block else { continue };
+            if tip.saturating_sub(b.height) + 1 < UNKNOWN_REORG_MARGIN {
+                continue;
+            }
+            let Some((tx, _)) = hex::decode(&w.hex)
+                .ok()
+                .and_then(|raw| Transaction::parse(&raw).ok())
+            else {
+                continue;
+            };
+            if let Some(op) = tx
+                .vin
+                .iter()
+                .map(|i| op_str(&i.prevout))
+                .find(|op| u.inputs.contains(op))
+            {
+                return Some(op);
+            }
+        }
+        None
+    }
+
+    fn release_unknown(&mut self, u: &crate::state::UnknownSubmit) -> Result<(), RpcError> {
+        self.st.unknown = None;
+        for k in &u.locked {
+            self.st.locks.remove(k);
+        }
+        self.persist_state()
+    }
+
+    /// `clearunknownsubmission "txid"` (yewd's own RPC, review YEW-REVIEW-3 L1): the operator
+    /// releases the inputs of a submission whose status is unknown before it is certainly dead.
+    /// The txid must be the outstanding one's. **Risk:** if the transaction reached any node, it
+    /// can still be mined until its expiry height; a payment sent again from the released coins
+    /// may then go out twice. Needs no node.
+    pub fn clear_unknown_submission(&mut self, p: &[Value]) -> Result<J, RpcError> {
+        if p.len() != 1 {
+            return Err(RpcError::new(code::MISC_ERROR, CLEAR_UNKNOWN_HELP));
+        }
+        let txid = p[0]
+            .as_str()
+            .ok_or_else(|| RpcError::new(code::INVALID_PARAMETER, "txid must be a string"))?;
+        let Some(u) = self.st.unknown.clone() else {
+            return Err(RpcError::new(
+                code::INVALID_PARAMETER,
+                "no submission of unknown status is outstanding",
+            ));
+        };
+        if u.txid != txid {
+            return Err(RpcError::new(
+                code::INVALID_PARAMETER,
+                format!("the submission of unknown status is {}, not {txid}", u.txid),
+            ));
+        }
+        self.release_unknown(&u)?;
+        eprintln!(
+            "yewd: clearunknownsubmission released the inputs of {} ({} locks); it may still be mined until height {}",
+            u.txid,
+            u.locked.len(),
+            u.expiry_height
+        );
+        Ok(J::obj()
+            .with("txid", J::Str(u.txid.clone()))
+            .with(
+                "released",
+                J::Arr(u.locked.iter().map(|k| J::Str(k.clone())).collect()),
+            )
+            .with("expiryheight", J::Int(u.expiry_height as i64)))
     }
 
     /// `SignWalletInputs` for a transaction this wallet built: every input whose coin this wallet
