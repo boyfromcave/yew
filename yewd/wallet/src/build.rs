@@ -807,8 +807,9 @@ impl Wallet {
     /// inputs are released only when the transaction is certainly dead:
     /// - its `nExpiryHeight` is at least [`UNKNOWN_REORG_MARGIN`] blocks behind the chain's tip
     ///   (no later block may include it; the margin covers a reorganization), the tip being the
-    ///   node's or, when the node cannot answer, the wallet's last synced tip (so a node that
-    ///   keeps failing still lets it clear); or
+    ///   lower of the node's and the wallet's last synced tip (review YEW-REVIEW-4 L1: a block
+    ///   the wallet has not scanned may hold it), or the wallet's alone when the node cannot
+    ///   answer; or
     /// - one of its inputs is spent by another transaction the wallet has seen confirmed at
     ///   least [`UNKNOWN_REORG_MARGIN`] blocks deep (and the node does not have this one).
     ///
@@ -829,9 +830,14 @@ impl Wallet {
                 format!("the earlier transaction {}, whose status was unknown, reached the node; nothing was sent now: send again only if this is a new payment", u.txid),
             ));
         }
+        // Review YEW-REVIEW-4 L1: the lower of the node's tip and the wallet's own synced tip.
+        // A node that answers getblockcount while the sync fails is ahead of what the wallet
+        // has scanned, and the transaction may have been mined in that gap: its expiry (or a
+        // conflicting spend) counts only up to the height the wallet has seen.
+        let synced = self.st.tip.as_ref().map_or(0, |t| t.height);
         let tip = match node::block_count(node).await {
-            Ok(h) => h,
-            Err(_) => self.st.tip.as_ref().map_or(0, |t| t.height),
+            Ok(h) => h.min(synced),
+            Err(_) => synced,
         };
         let clears_at =
             (u.expiry_height != 0).then(|| u.expiry_height.saturating_add(UNKNOWN_REORG_MARGIN));

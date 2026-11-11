@@ -539,18 +539,21 @@ fn tip(f: &Fix) -> u32 {
 /// submitted again. Review YEW-REVIEW-3 L1: the node's "not found" alone releases nothing (a
 /// late arrival or another node could still mine it): every send is refused, naming the height
 /// at which the coins clear, also while the node cannot sync; once the chain is 10 blocks past
-/// the expiry height the coins are released, and the send after that goes ahead.
+/// the expiry height the coins are released, and the send after that goes ahead. Review
+/// YEW-REVIEW-4 L1: while the wallet cannot sync, "the chain" is the wallet's own synced tip,
+/// not the node's block count, so a failing sync never releases the coins.
 #[tokio::test]
 async fn lost_answer_with_the_tx_absent_is_status_unknown() {
     let mut f = fixture("m1-lost-out").await;
     let (txid, expiry, _) = lose_one(&mut f).await;
     let clears = expiry + 10;
     // the node says "not found": still locked
+    let synced = tip(&f);
     assert_eq!(
         f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
             .await
             .unwrap_err(),
-        still_unknown(&txid, clears, expiry, tip(&f))
+        still_unknown(&txid, clears, expiry, synced)
     );
     // just short of the clearing height, the node unable to sync: still locked
     mine_empty(&f.node, clears - 1 - tip(&f));
@@ -559,11 +562,19 @@ async fn lost_answer_with_the_tx_absent_is_status_unknown() {
         f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
             .await
             .unwrap_err(),
-        still_unknown(&txid, clears, expiry, clears - 1)
+        still_unknown(&txid, clears, expiry, synced)
     );
-    // at the clearing height, the node still unable to sync: released all the same
+    // at the clearing height, the wallet still unable to sync: still locked (it has not seen
+    // the blocks between its tip and the node's)
     mine_empty(&f.node, 1);
     f.node.0.lock().unwrap().fail_syncs = 1;
+    assert_eq!(
+        f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+            .await
+            .unwrap_err(),
+        still_unknown(&txid, clears, expiry, synced)
+    );
+    // the wallet syncs to the clearing height: released
     assert_eq!(
         f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
             .await
@@ -575,6 +586,38 @@ async fn lost_answer_with_the_tx_absent_is_status_unknown() {
         .await
         .unwrap();
     assert_eq!(f.sent(), 2);
+}
+
+/// Review YEW-REVIEW-4 L1: the lost transaction is mined in a block the wallet has not scanned
+/// (its sync keeps failing while the node still answers getblockcount, far past the clearing
+/// height). The release counts only up to the wallet's own synced tip, so the coins stay locked
+/// (no "expired without reaching the chain", no second payment); once the wallet syncs past the
+/// block, the submission resolves as having reached the chain.
+#[tokio::test]
+async fn lost_answer_mined_in_the_unscanned_gap_is_not_released() {
+    let mut f = fixture("l1-gap").await;
+    let (txid, expiry, _) = lose_one(&mut f).await;
+    let raw = hex::decode(f.node.0.lock().unwrap().sent.last().unwrap()).unwrap();
+    let synced = tip(&f);
+    f.node.mine(vec![raw], 7);
+    mine_empty(&f.node, expiry + 10 + 5 - tip(&f));
+    assert!(tip(&f) > expiry + 10);
+    f.node.0.lock().unwrap().fail_syncs = 1000;
+    assert_eq!(
+        f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+            .await
+            .unwrap_err(),
+        still_unknown(&txid, expiry + 10, expiry, synced)
+    );
+    assert_eq!(f.sent(), 1, "nothing submitted again");
+    f.node.0.lock().unwrap().fail_syncs = 0;
+    assert_eq!(
+        f.call("sendtoaddress", &[json!(pay_to()), json!(1.0)])
+            .await
+            .unwrap_err(),
+        (-4, format!("the earlier transaction {txid}, whose status was unknown, reached the node; nothing was sent now: send again only if this is a new payment"))
+    );
+    assert_eq!(f.sent(), 1, "nothing submitted again");
 }
 
 /// Review YEW-REVIEW-3 L1: one of the inputs spent by another transaction, 10 blocks deep: the
