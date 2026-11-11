@@ -7,6 +7,13 @@
 //! (moved from `yewd/signer/src/sapling.rs`, review YEW-PORT-5 R3, a pure move: the bodies are
 //! byte-identical; the lines that are not are listed in that commit). Native only: the prover
 //! (`zcash_proofs`) is not part of the browser build.
+//!
+//! **Not an app API** (review YEW-REVIEW-6 L3). These are signing and proving primitives: they
+//! build and sign whatever they are given. They are `pub` only because yewd-signer, another
+//! crate, calls them; every caller must pass the finished transaction through
+//! [`crate::gate::check`] (and the remote layer, [`crate::gate::confirm`]) before it is shown or
+//! broadcast. Nothing in [`crate::api`] (the app bridge's only input) or in `web/core-wasm`
+//! names this module; `tests::not_exported_to_the_apps` holds that.
 
 use crate as yew_core;
 use crate::params::Network;
@@ -62,7 +69,8 @@ pub fn taddr_of(script: &[u8]) -> Option<TransparentAddress> {
 }
 
 /// The account's extended spending key from its seed phrase (review YEW-PORT-5 R2: the body of
-/// [`SignerCore::sapling_extsk`] after the lock check, `self.network` as a parameter).
+/// yewd-signer's `SignerCore::sapling_extsk` after the lock check, `self.network` as a
+/// parameter).
 pub fn sapling_extsk(phrase: &str, network: Network) -> Result<ExtendedSpendingKey, Refused> {
     let acct = SaplingAccount::from_mnemonic(phrase, "", network)
         .map_err(|e| (refuse::FAILED, e.to_string()))?;
@@ -300,7 +308,7 @@ pub fn sapling_prepare(
     })
 }
 
-/// A spend's note, path and full viewing key, checked as [`SignerCore::sapling_build`] does.
+/// A spend's note, path and full viewing key, checked as yewd-signer's `sapling_build` does.
 fn spend_parts(
     dfvk: &sapling_crypto::zip32::DiversifiableFullViewingKey,
     s: &crate::sapling_part::SaplingSpend,
@@ -362,4 +370,41 @@ fn spend_parts(
         dfvk.fvk().clone()
     };
     Ok((note, path, fvk))
+}
+
+#[cfg(test)]
+mod tests {
+    /// Review YEW-REVIEW-6 L3: the app bridge's only input (`crate::api`, flutter_rust_bridge.yaml
+    /// `rust_input`) and the browser build's exports (`web/core-wasm`) name nothing from this
+    /// module, so no app call reaches these primitives except through a gated builder.
+    #[test]
+    fn not_exported_to_the_apps() {
+        let sources = [
+            ("core/src/api.rs", include_str!("../api.rs")),
+            (
+                "web/core-wasm/src/lib.rs",
+                include_str!("../../../web/core-wasm/src/lib.rs"),
+            ),
+            (
+                "web/core-wasm/src/dto.rs",
+                include_str!("../../../web/core-wasm/src/dto.rs"),
+            ),
+        ];
+        let names = [
+            "hybrid",
+            "sapling_prepare",
+            "sapling_extsk",
+            "script_of",
+            "taddr_of",
+            "hex32",
+        ];
+        for (file, text) in sources {
+            let lower = text.to_lowercase();
+            for n in names {
+                assert!(!lower.contains(n), "{file} names `{n}` (build::hybrid)");
+            }
+        }
+        let bridge = include_str!("../../../flutter_rust_bridge.yaml");
+        assert!(bridge.contains("rust_input: crate::api"), "{bridge}");
+    }
 }

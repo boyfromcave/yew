@@ -13,7 +13,9 @@
 
 pub mod any_to_any;
 pub mod claim;
-// review YEW-PORT-5 R3: the hybrid builder (native only: the prover is not in the browser build)
+// review YEW-PORT-5 R3: the hybrid builder (native only: the prover is not in the browser build).
+// Not an app API (review YEW-REVIEW-6 L3): `pub` for yewd-signer only; every caller passes the
+// result through `gate::check`; `crate::api` and `web/core-wasm` name nothing from it.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hybrid;
 pub mod mint;

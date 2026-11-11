@@ -107,6 +107,11 @@ pub enum GateError {
     /// The server offers no Yellowback service, so nothing YED can be validated or sent.
     #[error("gate: the server offers no Yellowback service; YED cannot be sent through it")]
     YellowbackAbsent,
+    /// A YEC send to a post-quantum address ([`Path::YecToPq`]) on a server without Yellowback:
+    /// its dry run is mandatory and the server cannot run it (review YEW-REVIEW-6 L1: the
+    /// generic [`GateError::YellowbackAbsent`] text names YED, which this send is not).
+    #[error("gate: the server cannot check this transaction (it offers no Yellowback dry run), and a YEC send to a post-quantum address is only sent after that check. Nothing was sent; connect to a server that offers the Yellowback service and try again.")]
+    NoDryRunForPqSend,
     /// A plain YEC spend of transparent coins by a wallet that has held YED, on a server without
     /// Yellowback: its YED outputs cannot be told apart from plain YEC (yewd's and the C++
     /// lines' has-held-YED guard, beta2 item 32).
@@ -590,7 +595,9 @@ pub async fn confirm_burning(
     let client = match validator {
         Validator::Remote(c) => c,
         Validator::Absent => {
-            return if path.needs_yellowback() {
+            return if let Path::YecToPq(_) = path {
+                Err(GateError::NoDryRunForPqSend)
+            } else if path.needs_yellowback() {
                 Err(GateError::YellowbackAbsent)
             } else {
                 Ok((tx, None))
@@ -1771,8 +1778,13 @@ mod tests {
             confirm(&mut v, Path::YecToPq(id), &raw, class)
                 .await
                 .unwrap_err(),
-            GateError::YellowbackAbsent
+            GateError::NoDryRunForPqSend
         );
+        // review YEW-REVIEW-6 L1: the refusal names the check and the remedy, never YED
+        let m = GateError::NoDryRunForPqSend.to_string();
+        assert!(!m.contains("YED"), "{m}");
+        assert!(m.contains("cannot check this transaction") && m.contains("Nothing was sent"));
+        assert!(m.contains("connect to a server that offers the Yellowback service"));
         assert_eq!(
             refuse_held_absent(&Validator::Absent, Path::YecToPq(id), true),
             Err(GateError::HeldYedNotLive)

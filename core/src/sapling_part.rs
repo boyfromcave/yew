@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The Sapling part of a [`SignRequest`].
+/// The Sapling part of a yewd `SignRequest`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SaplingPart {
     pub target_height: u32,
