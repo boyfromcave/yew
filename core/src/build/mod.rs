@@ -13,6 +13,9 @@
 
 pub mod any_to_any;
 pub mod claim;
+// review YEW-PORT-5 R3: the hybrid builder (native only: the prover is not in the browser build)
+#[cfg(not(target_arch = "wasm32"))]
+pub mod hybrid;
 pub mod mint;
 pub mod pq_send;
 pub mod redeem;
