@@ -107,9 +107,47 @@ pub const MAX_PQ_INPUTS_PER_TX: usize = 100;
 const MAX_STANDARD_TX_SIGOPS: usize = 20_000 / 5;
 /// `pq::SIGOP_COST`: the policy sigops of one `OP_CHECKPQSIG` (`crypto/pq/scheme.h`).
 const PQ_SIGOP_COST: usize = 20;
-/// `LEGACY_DEFAULT_FEE`: the base of the post-quantum fee rule without an explicit fee (the
-/// -feepolicy default, peroutput, of a send with at most 50 Sapling outputs).
+/// `LEGACY_DEFAULT_FEE`: the floor of `PQSizeFee` (`PQSizeFee(LEGACY_DEFAULT_FEE, bytes)`).
 const LEGACY_DEFAULT_FEE: i64 = 1000;
+/// `DEFAULT_EXEMPT_SAPLING_OUTPUTS` / `DEFAULT_PER_SAPLING_OUTPUT_FEE` (ycash6 -feepolicy=peroutput).
+const EXEMPT_SAPLING_OUTPUTS: usize = 50;
+const PER_SAPLING_OUTPUT_FEE: i64 = 1000;
+/// ycash6 `WalletTxBuilder::DefaultDustThreshold`: a P2PKH output's dust threshold at the fixed
+/// `ONE_THIRD_DUST_THRESHOLD_RATE` (100 zat/kB): 3 × (34 + 148) × 100 / 1000.
+const CHANGE_DUST_THRESHOLD: i64 = 54;
+/// `MAX_MONEY` (`amount.h`).
+const MAX_MONEY: i64 = 21_000_000 * 100_000_000;
+
+/// ycash6 `CalcZIP317Fee` under `-feepolicy=peroutput` (the default): the base of the
+/// post-quantum fee rule without an explicit fee, over the padded Sapling output count:
+/// max(1000, (n − 50) × 1000 above 50 outputs, else 1000).
+fn peroutput_fee(padded_sapling_outputs: usize) -> i64 {
+    let per = if padded_sapling_outputs > EXEMPT_SAPLING_OUTPUTS {
+        (padded_sapling_outputs - EXEMPT_SAPLING_OUTPUTS) as i64 * PER_SAPLING_OUTPUT_FEE
+    } else {
+        PER_SAPLING_OUTPUT_FEE
+    };
+    PER_SAPLING_OUTPUT_FEE.max(per)
+}
+
+/// The recipients' total, checked: no overflow, within `MAX_MONEY` (review L2; ycash6 has no
+/// such check, a total out of range reaching its insufficient-funds answer instead).
+fn checked_total(amounts: impl Iterator<Item = i64>) -> Result<i64, RpcError> {
+    let mut t = 0i64;
+    for a in amounts {
+        t = t
+            .checked_add(a)
+            .filter(|t| (0..=MAX_MONEY).contains(t))
+            .ok_or_else(|| {
+                op_error(
+                    code::INVALID_PARAMETER,
+                    "Invalid parameter, the recipients' total amount is out of range",
+                )
+            })?;
+    }
+    Ok(t)
+}
+
 /// A v4 Sapling spend and output description, and the binding signature (ZIP-243 sizes).
 const SAPLING_SPEND_BYTES: usize = 384;
 const SAPLING_OUTPUT_BYTES: usize = 948;
@@ -571,7 +609,7 @@ impl Wallet {
         if has_t && !reveal_recipients {
             return Err(op_error(code::INVALID_PARAMETER, "This transaction would have transparent recipients, which is not enabled by default because it will publicly reveal transaction recipients and amounts. THIS MAY AFFECT YOUR PRIVACY. Resubmit with the `privacyPolicy` parameter set to `AllowRevealedRecipients` or weaker if you wish to allow this transaction to proceed anyway."));
         }
-        let total: i64 = recipients.iter().map(|r| r.1).sum();
+        let total = checked_total(recipients.iter().map(|r| r.1))?;
         let n_t_out = recipients
             .iter()
             .filter(|r| matches!(r.0, Dest::T(_)))
@@ -671,10 +709,12 @@ impl Wallet {
             sel_t.clear();
             sel_z.clear();
             let need = total + need_fee;
+            // SpendableInputs::LimitToAmount: enough is exact, or change above the dust threshold
+            let enough = |got: i64| got == need || got - need > CHANGE_DUST_THRESHOLD;
             let mut got = 0i64;
             if z_source {
                 for n in &z_notes {
-                    if got >= need {
+                    if enough(got) {
                         break;
                     }
                     got += n.value as i64;
@@ -682,7 +722,7 @@ impl Wallet {
                 }
             } else {
                 for c in &t_coins {
-                    if got >= need {
+                    if enough(got) {
                         break;
                     }
                     got += c.1;
@@ -694,6 +734,22 @@ impl Wallet {
                     "Insufficient funds: have {}, need {}",
                     money(available),
                     money(need)
+                );
+                if !z_source && !coinbase_ok {
+                    msg.push_str("; note that coinbase outputs will not be selected if you specify ANY_TADDR, any transparent recipients are included, or if the `privacyPolicy` parameter is not set to `AllowRevealedSenders` or weaker");
+                }
+                msg.push('.');
+                return Err(op_error(code::INVALID_PARAMETER, msg));
+            }
+            if !enough(got) {
+                // ReportInvalidFunds' DustThresholdError (ycash6 ThrowInputSelectionError)
+                let change = got - need;
+                let mut msg = format!(
+                    "Insufficient funds: have {}, need {} more to avoid creating invalid change output {} (dust threshold is {})",
+                    money(available),
+                    money(CHANGE_DUST_THRESHOLD - change),
+                    money(change),
+                    money(CHANGE_DUST_THRESHOLD)
                 );
                 if !z_source && !coinbase_ok {
                     msg.push_str("; note that coinbase outputs will not be selected if you specify ANY_TADDR, any transparent recipients are included, or if the `privacyPolicy` parameter is not set to `AllowRevealedSenders` or weaker");
@@ -1055,7 +1111,7 @@ impl Wallet {
                 ));
             }
         }
-        let send: i64 = recipients.iter().map(|r| r.1).sum();
+        let send = checked_total(recipients.iter().map(|r| r.1))?;
         // the source's own coins: unspent, unlocked, mature, at depth >= minconf, not spent by a
         // mempool transaction of this wallet, and never an output YED holds
         let reserved = self.yed_reserved(node).await?;
@@ -1111,7 +1167,7 @@ impl Wallet {
             .filter(|r| matches!(r.0, Dest::Z(_)))
             .count();
         let z_outs = padded(n_z);
-        let mut cur_fee = fee.unwrap_or(LEGACY_DEFAULT_FEE);
+        let mut cur_fee = fee.unwrap_or_else(|| peroutput_fee(z_outs));
         let mut selected: Vec<(yew_core::tx::OutPoint, i64, Vec<u8>, KeyRef)> = Vec::new();
         let mut change;
         let mut round = 0;
@@ -1172,10 +1228,18 @@ impl Wallet {
                 )));
             }
             let (bytes, conventional) = shape_size(&selected, &outs, 0, z_outs);
-            let base = fee.unwrap_or(LEGACY_DEFAULT_FEE);
+            let base = fee.unwrap_or_else(|| peroutput_fee(z_outs));
             let needed = pq_builder_fee(base, bytes, conventional, rate, cap);
             if needed <= cur_fee {
                 cur_fee += dust_to_fee;
+                // review L3: the fee paid, folded change included, within the cap
+                if cur_fee > cap {
+                    return Err(op_error(code::INVALID_PARAMETER, format!(
+                        "Fee {} is above the {} cap on a post-quantum spend (-maxtxfee, or $2 at the attested price, at most -yellowbackmaxtxfee)",
+                        money(cur_fee),
+                        money(cap)
+                    )));
+                }
                 break;
             }
             if let Some(f) = fee {
@@ -1265,13 +1329,8 @@ impl Wallet {
         let conventional = signed
             .zip317_conventional_fee(&sizes)
             .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
-        let needed = pq_builder_fee(
-            fee.unwrap_or(LEGACY_DEFAULT_FEE),
-            raw.len(),
-            conventional,
-            rate,
-            cap,
-        );
+        // ycash6 PQBuilderFee(fee, signedTx): the base is the fee the estimate settled on
+        let needed = pq_builder_fee(cur_fee, raw.len(), conventional, rate, cap);
         if needed > cur_fee {
             return Err(op_error(
                 code::WALLET_ERROR,
@@ -1426,5 +1485,43 @@ mod tests {
         assert_eq!(conventional_fee(1, 0, 0, 1), 1500);
         let id = opid();
         assert!(id.starts_with("opid-") && id.len() == 41, "{id}");
+    }
+
+    /// Review L4: yewd's fee base and dust constants equal ycash6's computed defaults
+    /// (-feepolicy=peroutput, -minrelaytxfee 100 zat/kB = DEFAULT_MIN_RELAY_TX_FEE and
+    /// ONE_THIRD_DUST_THRESHOLD_RATE). A node run with another -minrelaytxfee prices the PQ dust
+    /// threshold differently; yewd cannot read that setting.
+    #[test]
+    fn fee_base_and_dust_pins() {
+        // CalcZIP317Fee, peroutput: flat 1000 up to 50 padded Sapling outputs, then 1000 each above
+        assert_eq!(peroutput_fee(0), 1000);
+        assert_eq!(peroutput_fee(2), 1000);
+        assert_eq!(peroutput_fee(50), 1000);
+        assert_eq!(peroutput_fee(51), 1000);
+        assert_eq!(peroutput_fee(52), 2000);
+        assert_eq!(peroutput_fee(60), 10_000);
+        // DefaultDustThreshold: a P2PKH output, 3 x (34 + 148) x 100 / 1000
+        let p2pkh = [&[0x76, 0xa9, 0x14][..], &[0u8; 20], &[0x88, 0xac]].concat();
+        assert_eq!(CHANGE_DUST_THRESHOLD, 54);
+        assert_eq!(crate::send::dust_threshold(&p2pkh), CHANGE_DUST_THRESHOLD);
+        // GetPQDustThreshold at 100 zat/kB: 3 x fee(44-byte output + PQSpendInputSize(scheme))
+        // SLH-DSA: scriptSig 7,938 (sig 7,857 in 520-byte chunks + pk 32 + 2), input 7,981, + 44 = 8,025 bytes;
+        // FN-DSA-512: scriptSig 1,577 (sig 667 + pk 897, chunked, + 2), input 1,620, + 44 = 1,664 bytes
+        for (scheme, want) in [(1u8, 2406), (2u8, 498)] {
+            let id = yew_core::pq::PqKeyId {
+                scheme,
+                hash: [0; 32],
+            };
+            let script = yew_core::pq::pqpkh_script(&id).unwrap();
+            assert_eq!(
+                crate::send::dust_threshold(&script),
+                want,
+                "scheme {scheme}"
+            );
+        }
+        // L2
+        assert_eq!(checked_total([MAX_MONEY].into_iter()).unwrap(), MAX_MONEY);
+        assert!(checked_total([MAX_MONEY, 1].into_iter()).is_err());
+        assert!(checked_total([i64::MAX, i64::MAX].into_iter()).is_err());
     }
 }

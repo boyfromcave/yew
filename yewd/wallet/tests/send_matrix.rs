@@ -464,9 +464,9 @@ async fn pq_source_never_spends_a_yellowback_output() {
     )
     .await;
     let msg = r[0]["error"]["message"].as_str().unwrap().to_string();
-    assert!(
-        msg.starts_with("Insufficient transparent funds, have 5.00, need 6.0"),
-        "{msg}"
+    assert_eq!(
+        msg,
+        "Insufficient transparent funds, have 5.00, need 6.00001"
     );
     // the index cannot answer: nothing is spent as plain YEC
     f.node.0.lock().unwrap().tokens_error = Some((
@@ -565,23 +565,16 @@ async fn pq_refusals_fees_and_privacy() {
         .await
         .unwrap_err();
     assert_eq!(e.0, -8);
-    assert!(
-        e.1.starts_with("Invalid parameter, amount 0.0000")
-            && e.1.ends_with(" of a post-quantum output"),
-        "{}",
-        e.1
-    );
+    assert_eq!(e.1, "Invalid parameter, amount 0.00000497 is below the dust threshold 0.00000498 of a post-quantum output");
     // an explicit fee below what the PQ spend needs, and one above the cap
     let e = f
         .send(&slh, &[(&to, COIN)], Some(1_000), None)
         .await
         .unwrap_err();
     assert_eq!(e.0, -8);
-    assert!(
-        e.1.starts_with("Fee 0.00001 is below the 0.00")
-            && e.1.ends_with(" this post-quantum spend needs"),
-        "{}",
-        e.1
+    assert_eq!(
+        e.1,
+        "Fee 0.00001 is below the 0.00027 this post-quantum spend needs"
     );
     let e = f
         .send(&slh, &[(&to, COIN)], Some(20_000_000), None)
@@ -614,17 +607,13 @@ async fn pq_refusals_fees_and_privacy() {
         .await
         .unwrap_err();
     assert_eq!(e.0, -8);
-    assert!(e.1.starts_with(
-        "Could not send to the Sapling shielded pool without spending non-Sapling funds"
-    ));
+    assert_eq!(e.1, "Could not send to the Sapling shielded pool without spending non-Sapling funds, which would reveal transaction amounts. THIS MAY AFFECT YOUR PRIVACY. Resubmit with the `privacyPolicy` parameter set to `AllowRevealedAmounts` or weaker if you wish to allow this transaction to proceed anyway.");
     let e = f
         .send(&fn_, &[(&to, COIN)], None, Some("AllowRevealedAmounts"))
         .await
         .unwrap_err();
     assert_eq!(e.0, -8);
-    assert!(e
-        .1
-        .starts_with("This transaction would have transparent recipients"));
+    assert_eq!(e.1, "This transaction would have transparent recipients, which is not enabled by default because it will publicly reveal transaction recipients and amounts. THIS MAY AFFECT YOUR PRIVACY. Resubmit with the `privacyPolicy` parameter set to `AllowRevealedRecipients` or weaker if you wish to allow this transaction to proceed anyway.");
     let txid = f
         .send(&fn_, &[(&zaddr, exact)], None, Some("AllowRevealedSenders"))
         .await
@@ -794,7 +783,8 @@ async fn vault_lock_from_refusals_and_tokens() {
             )
         )
     );
-    // a token is never spent as plain YEC: the FN-DSA address's only coin
+    // a token is never spent as plain YEC: the FN-DSA address's only coin, named when the address
+    // cannot fund the lock without it (ycash-dd 97338f107 vault.cpp:1816)
     let fn_ = f.fn_.clone();
     let coin =
         f.w.coins
@@ -807,8 +797,8 @@ async fn vault_lock_from_refusals_and_tokens() {
     assert_eq!(
         e,
         (
-            -6,
-            format!("insufficient confirmed funds at {fn_}: need 1.0001 more")
+            -4,
+            format!("from: refusing to spend a Yellowback outpoint as plain YEC: {}:{} (its YED would burn; lock it again with yed_lockcoins or lockunspent true)", coin.txid, coin.vout)
         )
     );
     // the index cannot answer: nothing is spent from a transparent or PQ from
@@ -820,4 +810,171 @@ async fn vault_lock_from_refusals_and_tokens() {
     let e = f.lock(Some(json!(slh))).await.unwrap_err();
     assert_eq!(e, (-4, "from: refusing to spend as plain YEC while the Yellowback index is unhealthy (a test reason): the wallet's YED coin locks cannot be trusted; restart with -reindex-yellowback".into()));
     assert!(f.node.0.lock().unwrap().sent.is_empty());
+}
+
+/// The digest `check_pq_signatures` verifies against (yew-core's ZIP-243 `sighash`) is the node's:
+/// it reproduces every `sighashPerInput` of the node-generated `transparent.json` (ycash-dd
+/// `gen` vectors, branch 0x6d5b7a31, `core/tests/vectors/PIN`), a digest produced outside the
+/// signer's code path. There is no node-generated vector for a transaction with both a
+/// post-quantum input and a Sapling part; `check_pq_signature_with_sapling` rests on
+/// librustzcash's `v4_signature_hash` (the same algorithm the signer runs, over the re-parsed
+/// broadcast bytes).
+#[test]
+fn node_zip243_vectors_anchor_the_digest_checks() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../core/tests/vectors/transparent.json"
+    );
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let txs = v["transactions"].as_array().unwrap();
+    assert!(txs.len() >= 10);
+    let mut checked = 0;
+    for (n, t) in txs.iter().enumerate() {
+        let raw = hex::decode(t["unsignedHex"].as_str().unwrap()).unwrap();
+        let (tx, _) = Transaction::parse(&raw).unwrap();
+        let branch = u32::from_str_radix(t["branchId"].as_str().unwrap(), 16).unwrap();
+        assert_eq!(branch, VAULT_BRANCH);
+        for (i, p) in t["prevouts"].as_array().unwrap().iter().enumerate() {
+            let spk = hex::decode(p["scriptPubKeyHex"].as_str().unwrap()).unwrap();
+            let amount = p["valueZat"].as_i64().unwrap();
+            let digest = tx.sighash(i, &spk, amount, 1, branch).unwrap();
+            assert_eq!(
+                hex::encode(digest),
+                t["sighashPerInput"][i].as_str().unwrap(),
+                "tx {n} input {i}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= txs.len());
+}
+
+/// Exact fees for an ECC and a Sapling source; ANY_TADDR as the source; several recipient types
+/// in one send.
+#[tokio::test]
+async fn exact_fees_any_taddr_and_mixed_recipients() {
+    let mut f = fixture("exact").await;
+    let r_ecc = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x61; 20]);
+    let r_slh = yew_core::keys::encode_pq_yec(
+        Network::Regtest,
+        &PqKeyId {
+            scheme: 1,
+            hash: [0x62; 32],
+        },
+    )
+    .unwrap();
+    let fee_of = |f: &Fix, tx: &Transaction| -> i64 {
+        let ins: i64 = tx
+            .vin
+            .iter()
+            .map(|i| f.prevout(&i.prevout.txid, i.prevout.n).1)
+            .sum();
+        ins - tx.output_total()
+    };
+    // ECC -> ECC: one input, the payment and the change (ZIP-317: 2 logical actions)
+    let ecc = f.ecc.clone();
+    f.send(&ecc, &[(&r_ecc, COIN)], None, Some("AllowFullyTransparent"))
+        .await
+        .unwrap();
+    // yewd prices a send with no PQ party at the ZIP-317 conventional fee (500 zat a logical
+    // action, two at least), where ycash6's default -feepolicy=peroutput charges a flat 1,000 zat:
+    // a pre-existing difference, recorded in the stage-5 notes
+    let (tx, _) = f.last_sent();
+    assert_eq!((tx.vin.len(), tx.vout.len()), (1, 2));
+    assert_eq!(fee_of(&f, &tx), 1_000, "2 logical actions");
+    f.mine_sync().await;
+    // ANY_TADDR -> ECC + SLH-DSA + Sapling in one send
+    let zaddr = f.zaddr.clone();
+    let r = f
+        .send(
+            "ANY_TADDR",
+            &[(&r_ecc, COIN / 10), (&r_slh, COIN / 10), (&zaddr, 2 * COIN)],
+            None,
+            Some("AllowFullyTransparent"),
+        )
+        .await;
+    r.unwrap();
+    let (tx, _) = f.last_sent();
+    // one 5 YEC input; the ECC and PQ payments and the ECC change (34 + 44 + 34 bytes: 4 transparent
+    // actions) and two Sapling outputs: 6 actions
+    assert_eq!(
+        (tx.vin.len(), tx.vout.len(), tx.shielded.outputs),
+        (1, 3, 2)
+    );
+    assert_eq!(fee_of(&f, &tx) - 2 * COIN, 3_000);
+    for (a, v) in [(&r_ecc, COIN / 10), (&r_slh, COIN / 10)] {
+        let s = addr_script(a);
+        assert!(
+            tx.vout.iter().any(|o| o.script_pubkey == s && o.value == v),
+            "{a}"
+        );
+    }
+    let (s, _) = f.prevout(&tx.vin[0].prevout.txid, tx.vin[0].prevout.n);
+    assert!(
+        yew_core::script::p2pkh_hash(&s).is_some(),
+        "ANY_TADDR spends ECC coins"
+    );
+    f.mine_sync().await;
+    // Sapling -> ECC: one spend, the payment, the change note (padded outputs)
+    let before = f.zbalance(&zaddr).await;
+    f.send(
+        &zaddr,
+        &[(&r_ecc, COIN / 10)],
+        None,
+        Some("AllowRevealedRecipients"),
+    )
+    .await
+    .unwrap();
+    f.mine_sync().await;
+    // one spend, two (padded) outputs, one transparent output: 3 actions
+    assert_eq!(before - f.zbalance(&zaddr).await - COIN / 10, 1_500);
+}
+
+/// Review L3: the fee a post-quantum send pays, its folded dust change included, stays within the
+/// cap. Change below the dust threshold on an ECC source: another coin is taken (ycash6
+/// `LimitToAmount`), and when none is left the send is refused (`DustThresholdError`).
+#[tokio::test]
+async fn folded_fee_cap_and_change_dust() {
+    let mut f = fixture("dustcap").await;
+    let slh = f.slh.clone();
+    let to = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x71; 20]);
+    // without a live Yellowback the cap is -maxtxfee's 0.1 YEC; SLH change dust is 2,406 zat
+    let fee = 9_999_000;
+    let e = f
+        .send(&slh, &[(&to, 5 * COIN - fee - 2_000)], Some(fee), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e, (-8, "Fee 0.10001 is above the 0.10 cap on a post-quantum spend (-maxtxfee, or $2 at the attested price, at most -yellowbackmaxtxfee)".into()));
+    assert!(f.node.0.lock().unwrap().sent.is_empty());
+    // ECC: 30 zat of change on the 5 YEC coin: a 1 YEC coin is added instead
+    let ecc = f.ecc.clone();
+    f.send(&ecc, &[(&to, 5 * COIN - 1_000 - 30)], None, None)
+        .await
+        .unwrap();
+    let (tx, _) = f.last_sent();
+    assert_eq!(tx.vin.len(), 2, "no dust change");
+    f.mine_sync().await;
+    // every ECC coin and still 30 zat of change: refused
+    let have: i64 =
+        f.w.coins
+            .iter()
+            .filter(|c| !c.spent && c.script == addr_script(&ecc))
+            .map(|c| c.value)
+            .sum();
+    let n =
+        f.w.coins
+            .iter()
+            .filter(|c| !c.spent && c.script == addr_script(&ecc))
+            .count();
+    let e = f
+        .send(
+            &ecc,
+            &[(&to, have - 500 * n.max(2) as i64 - 30)],
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!((n, have), (3, 3 * COIN));
+    assert_eq!(e, (-8, "Insufficient funds: have 3.00, need 0.00000024 more to avoid creating invalid change output 0.0000003 (dust threshold is 0.00000054); note that coinbase outputs will not be selected if you specify ANY_TADDR, any transparent recipients are included, or if the `privacyPolicy` parameter is not set to `AllowRevealedSenders` or weaker.".into()));
 }

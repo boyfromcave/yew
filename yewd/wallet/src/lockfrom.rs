@@ -135,12 +135,15 @@ impl Wallet {
         let spent = self.mempool_spent();
         let mut eligible: Vec<(OutPoint, i64)> = Vec::new();
         let mut coinbase_value = 0i64;
+        // the coins at the address left out because YED holds them, named if the address cannot
+        // fund the lock without them (vault.cpp FundFromAddress, review L6)
+        let mut refused: Vec<String> = Vec::new();
         for (c, d) in self.available_coins(None) {
-            if c.script != only
-                || d < 1
-                || spent.contains(&(c.txid.clone(), c.vout))
-                || reserved.contains(&(c.txid.clone(), c.vout))
-            {
+            if c.script != only || d < 1 || spent.contains(&(c.txid.clone(), c.vout)) {
+                continue;
+            }
+            if reserved.contains(&(c.txid.clone(), c.vout)) {
+                refused.push(format!("{}:{}", c.txid, c.vout));
                 continue;
             }
             let op = OutPoint {
@@ -197,6 +200,12 @@ impl Wallet {
                 got += v;
             }
             if got < needed {
+                if !refused.is_empty() {
+                    return Err(RpcError::new(code::WALLET_ERROR, format!(
+                        "from: refusing to spend a Yellowback outpoint as plain YEC: {} (its YED would burn; lock it again with yed_lockcoins or lockunspent true)",
+                        refused.join(", ")
+                    )));
+                }
                 let shielded = if coinbase_value > 0 {
                     format!(
                         " (its {} of coinbase outputs must be shielded first: z_shieldcoinbase)",
@@ -283,7 +292,13 @@ impl Wallet {
             }
             pass += 1;
             let (spends, anchor, sum) = self
-                .z_select(node, zaddr, out + fee, "transaction")
+                .z_select(
+                    node,
+                    zaddr,
+                    out + fee,
+                    "transaction",
+                    MAX_LOCK_SAPLING_SPENDS,
+                )
                 .await
                 .map_err(|e| {
                     let c = if e.message.starts_with("insufficient-yec")

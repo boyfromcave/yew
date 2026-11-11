@@ -32,6 +32,7 @@ impl Wallet {
         zaddr: &str,
         needed: i64,
         what: &str,
+        limit: usize,
     ) -> Result<(Vec<SaplingSpend>, String, i64), RpcError> {
         if self.view.owns_address(zaddr).is_none() {
             return Err(crate::mint::build_error(format!(
@@ -64,9 +65,9 @@ impl Wallet {
                 crate::rpc::format_money(available)
             )));
         }
-        if sel.len() > MAX_SAPLING_SPENDS {
+        if sel.len() > limit {
             return Err(crate::mint::build_error(format!(
-                "too-many-notes: the {what} would spend {} Sapling notes (limit {MAX_SAPLING_SPENDS}); consolidate with z_mergetoaddress first",
+                "too-many-notes: the {what} would spend {} Sapling notes (limit {limit}); consolidate with z_mergetoaddress first",
                 sel.len()
             )));
         }
@@ -258,7 +259,9 @@ impl Wallet {
         let mut fee = flat;
         for _ in 0..6 {
             let need = base.output_total() + fee - input_value;
-            let (spends, anchor, sum) = self.z_select(node, zaddr, need.max(0), what).await?;
+            let (spends, anchor, sum) = self
+                .z_select(node, zaddr, need.max(0), what, MAX_SAPLING_SPENDS)
+                .await?;
             let change = sum - need.max(0);
             let outputs = if change > 0 {
                 vec![self.sapling_out(zaddr, change)]
