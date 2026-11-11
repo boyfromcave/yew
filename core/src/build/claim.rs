@@ -928,6 +928,11 @@ pub async fn finish(
     )
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
+    // layer 3 on the YEC fee inputs (not the named vault, the TOKENs or the carrier): no input spent as plain YEC carries YED by its creating transaction
+    gate::confirm_provenance(client, gate::Path::Claim(vault_out), &raw, |op| {
+        wallet.store.utxo_class(op).ok().flatten()
+    })
+    .await?;
     let mut locked = yed_inputs.clone();
     locked.extend(funding.iter().cloned());
     locked.push(Utxo {

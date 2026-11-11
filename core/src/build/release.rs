@@ -452,6 +452,11 @@ async fn broadcast_pq_sweep(
     })
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
+    // layer 3 on the named coin, moved as plain YEC
+    gate::confirm_provenance(client, gate::Path::PqSweep(coin), &p.raw, |op| {
+        wallet.store.utxo_class(op).ok().flatten()
+    })
+    .await?;
     let original = row.clone();
     let persist = || -> Result<(), WalletError> {
         if let Some(h) = tx
@@ -530,6 +535,11 @@ async fn broadcast_pq_coin_move(
     })
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
+    // layer 3 on the named coin, moved as plain YEC
+    gate::confirm_provenance(client, gate::Path::PqSweep(coin), &p.raw, |op| {
+        wallet.store.utxo_class(op).ok().flatten()
+    })
+    .await?;
     let persist = || -> Result<(), WalletError> {
         if let Some(h) = tx
             .vout
@@ -604,6 +614,11 @@ pub async fn broadcast(
     )
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
+    // layer 3 on the YEC fee inputs (not the named intent at vin[0]): no input spent as plain YEC carries YED by its creating transaction
+    gate::confirm_provenance(client, gate::Path::IntentRelease(p.intent), &p.raw, |op| {
+        wallet.store.utxo_class(op).ok().flatten()
+    })
+    .await?;
     let original = row.clone();
     let persist = || -> Result<(), WalletError> {
         // vout[0] pays the intent's own recipient; vout[1] (if any) is the change key peeked at build.

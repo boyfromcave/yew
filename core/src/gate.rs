@@ -31,7 +31,11 @@
 //!    [`Validator`] is built only by probing the server ([`Validator::detect`]); nothing else
 //!    constructs an `Absent`.
 //! 3. **Provenance** ([`confirm_provenance`], the plain-YEC paths [`Path::Yec`], [`Path::Shield`],
-//!    [`Path::PqSpend`]; review YEW-REVIEW-3, the structural finding): consensus does not pin a
+//!    [`Path::PqSpend`], and the YEC fee inputs of the YED builders' paths [`Path::Carrier`],
+//!    [`Path::Mint`], [`Path::YedTransfer`], [`Path::Redeem`] / [`Path::Release`],
+//!    [`Path::Claim`], [`Path::IntentRelease`], and the coins of [`Path::Sweep`] and
+//!    [`Path::PqSweep`] ([`spent_as_yec`] names the inputs checked);
+//!    review YEW-REVIEW-3, the structural finding): consensus does not pin a
 //!    YED output's value, so "listed by `GetAddressTokens`, or exactly `TOKEN_VALUE`" is not
 //!    enough against a server that omits a token and answers the dry run "burned 0". For every
 //!    plain-YEC input the creating transaction is fetched (`GetTransaction`), its txid
@@ -589,21 +593,57 @@ pub fn check_provenance(
     Ok(())
 }
 
-/// Layer 3 ([`check_provenance`]) for a plain-YEC spend: fetch the creating transaction of every
-/// input whose class is a plain-YEC one (`YEC`, `FEE_RESERVE`, `PQ_OWNED`) with `GetTransaction`;
-/// a fetch error or a transaction the server does not know refuses (fail closed).
+/// The inputs of `tx` that `path` spends as plain YEC, which layer 3 checks:
+/// - every input of a plain-YEC class (`YEC`, `FEE_RESERVE`, `PQ_OWNED`), on every path. On the
+///   YED paths these are the YEC fee inputs (a token smuggled in as a fee coin by a server that
+///   omitted it from `GetAddressTokens` classifies `YEC`, so it is checked);
+/// - every `CARRIER` (the mint and the claim spend it into fees, the sweep back to YEC; its
+///   creating transaction is the wallet's own payload-free carrier funding, so an honest server
+///   always passes it);
+/// - the named coin at `vin[0]` of [`Path::PqSweep`] (a released residual, or any `PQ_OWNED` row
+///   the sync found: it is moved as plain YEC).
+///
+/// Not checked, because they are not spent as plain YEC: `TOKEN` inputs (spent as YED: their
+/// creating payload assigns them, which is the point), the own `VAULT`, and the named `vin[0]` of
+/// [`Path::Claim`] (another wallet's vault) and [`Path::IntentRelease`] (a template output).
+pub fn spent_as_yec(
+    path: Path,
+    tx: &Transaction,
+    class_of: impl Fn(&OutPoint) -> Option<UtxoClass>,
+) -> std::collections::HashSet<OutPoint> {
+    tx.vin
+        .iter()
+        .enumerate()
+        .filter(|(n, i)| match path {
+            Path::Claim(_) | Path::IntentRelease(_) if *n == 0 => false,
+            Path::PqSweep(_) if *n == 0 => true,
+            _ => matches!(
+                class_of(&i.prevout),
+                Some(
+                    UtxoClass::Yec
+                        | UtxoClass::FeeReserve
+                        | UtxoClass::PqOwned
+                        | UtxoClass::Carrier
+                )
+            ),
+        })
+        .map(|(_, i)| i.prevout)
+        .collect()
+}
+
+/// Layer 3 ([`check_provenance`]) on `path`: fetch the creating transaction of every input the
+/// path spends as plain YEC ([`spent_as_yec`]) with `GetTransaction`; a fetch error or a
+/// transaction the server does not know refuses (fail closed). Run after [`confirm`] on the
+/// plain-YEC paths and on the YED builders' YEC fee inputs.
 pub async fn confirm_provenance(
     client: &mut CompactClient,
+    path: Path,
     raw: &[u8],
     class_of: impl Fn(&OutPoint) -> Option<UtxoClass>,
 ) -> Result<(), GateError> {
     let (tx, _) = Transaction::parse(raw).map_err(GateError::Parse)?;
-    let checked = |op: &OutPoint| {
-        matches!(
-            class_of(op),
-            Some(UtxoClass::Yec | UtxoClass::FeeReserve | UtxoClass::PqOwned)
-        )
-    };
+    let yec_inputs = spent_as_yec(path, &tx, class_of);
+    let checked = |op: &OutPoint| yec_inputs.contains(op);
     let mut created = std::collections::HashMap::new();
     for i in &tx.vin {
         let id = i.prevout.txid;
@@ -1574,6 +1614,336 @@ mod tests {
         };
         let e = check_provenance(&spend(&[past]), &served(&[&plain]), all).unwrap_err();
         assert!(e.to_string().contains("no such output"), "{e}");
+    }
+
+    /// Layer 3 as each builder runs it, minus the fetch: the local layer on `path`, then
+    /// [`check_provenance`] over exactly the inputs [`spent_as_yec`] names, with `served` as the
+    /// server's `GetTransaction` answers (what [`confirm_provenance`] collects).
+    fn layer3(
+        path: Path,
+        raw: &[u8],
+        class_of: impl Fn(&OutPoint) -> Option<UtxoClass> + Copy,
+        served: &HashMap<[u8; 32], Vec<u8>>,
+    ) -> Result<(), GateError> {
+        let tx = check(path, raw, class_of)?;
+        let yec_inputs = spent_as_yec(path, &tx, class_of);
+        check_provenance(&tx, served, |op| yec_inputs.contains(op))
+    }
+
+    /// The YED builders' YEC fee inputs (YEW-PORT-6 item 1), against a lying server that omitted
+    /// a token from `GetAddressTokens` so that it classifies `YEC`, and answers the dry run
+    /// "burned 0". For each builder's path: its legitimate YED inputs (TOKENs whose creating
+    /// TRANSFER or MINT assigns them, the own vault, the carrier, a named vault or intent) are
+    /// accepted without being fetched as plain YEC; a token smuggled in as a fee coin is refused
+    /// (`InputCarriesYed`); a fee coin whose creating transaction is withheld is refused
+    /// (`InputProvenance`).
+    #[test]
+    fn provenance_on_every_yed_builder_fee_input() {
+        // parents: a TRANSFER assigning vout 0 (a token) with plain change at vout 1; a MINT
+        // (vout 1 the token); a TRANSFER assigning a 50,000-zat vout 0 (the smuggled coin); a
+        // plain parent (an honest fee coin)
+        let transfer = |v0: i64| {
+            parent(
+                &[v0, 3_000_000],
+                Some(Payload::Transfer {
+                    assignments: vec![Assignment {
+                        vout: 0,
+                        cents: 250,
+                    }],
+                }),
+            )
+        };
+        let tp = transfer(crate::params::TOKEN_VALUE);
+        let mp = parent(
+            &[1_000_000, crate::params::TOKEN_VALUE, 5_000],
+            Some(Payload::Mint {
+                term_class: 0,
+                cents: 10_000,
+                lock_height: 100,
+                ref_height: 90,
+                owner: crate::pq::PqKeyId {
+                    scheme: crate::pq::SCHEME_SLH_DSA_SHA2_128S,
+                    hash: [3; 32],
+                },
+                fee_vout: 2,
+                attest_fee_vout: payload::FEE_VOUT_NONE,
+            }),
+        );
+        let sp = transfer(50_000);
+        let hp = parent(&[2_000_000], None);
+        let token_t = OutPoint { txid: tp.1, n: 0 };
+        let token_m = OutPoint { txid: mp.1, n: 1 };
+        let smuggled = OutPoint { txid: sp.1, n: 0 };
+        let honest = OutPoint { txid: hp.1, n: 0 };
+        let tchange = OutPoint { txid: tp.1, n: 1 }; // plain change of a TRANSFER: a fine fee coin
+        let vault = OutPoint {
+            txid: [0x11; 32],
+            n: 0,
+        };
+        // the carrier: created by the wallet's own payload-free carrier funding
+        let cp = parent(&[crate::params::CARRIER_VALUE, 900_000], None);
+        let carrier = OutPoint { txid: cp.1, n: 0 };
+        let named = OutPoint {
+            txid: [0x55; 32],
+            n: 0,
+        };
+        let classes: HashMap<OutPoint, UtxoClass> = [
+            (token_t, UtxoClass::Token),
+            (token_m, UtxoClass::Token),
+            (smuggled, UtxoClass::Yec), // the server left it out of GetAddressTokens
+            (honest, UtxoClass::Yec),
+            (tchange, UtxoClass::FeeReserve),
+            (vault, UtxoClass::Vault),
+            (carrier, UtxoClass::Carrier),
+            // a named vin[0] the store happens to know as YEC: still never checked as plain YEC
+            (named, UtxoClass::Yec),
+        ]
+        .into_iter()
+        .collect();
+        let class = |op: &OutPoint| classes.get(op).copied();
+        // the honest server: every parent; the lying one withholds the honest fee coin's parent
+        let all = served(&[&tp, &mp, &sp, &hp, &cp]);
+        let withheld = served(&[&tp, &mp, &sp, &cp]);
+        let build = |inputs: &[OutPoint], first: TxOut, p: Option<Payload>| {
+            let mut t = Transaction::new_v4();
+            for op in inputs {
+                t.vin.push(TxIn::new(*op));
+            }
+            t.vout.push(first);
+            if let Some(p) = p {
+                t.vout.push(TxOut {
+                    value: 0,
+                    script_pubkey: payload::payload_script(&encode(&p).unwrap()),
+                });
+            }
+            t.serialize().unwrap()
+        };
+        let p2pkh = TxOut {
+            value: 1,
+            script_pubkey: script::p2pkh_script(&[3; 20]),
+        };
+        let p2sh = TxOut {
+            value: crate::params::CARRIER_VALUE,
+            script_pubkey: script::p2sh_script(&[9; 20]),
+        };
+        let mint_p = Payload::Mint {
+            term_class: 0,
+            cents: 10_000,
+            lock_height: 10,
+            ref_height: 5,
+            owner: crate::pq::PqKeyId {
+                scheme: 1,
+                hash: [2; 32],
+            },
+            fee_vout: 0xff,
+            attest_fee_vout: 0xff,
+        };
+        let transfer_p = Payload::Transfer {
+            assignments: vec![Assignment {
+                vout: 0,
+                cents: 250,
+            }],
+        };
+        let redeem_p = Payload::Redeem {
+            ref_height: 5,
+            fee_vout: 0xff,
+            attest_fee_vout: 0xff,
+            assignments: vec![],
+        };
+        // (path, the legitimate inputs before the fee coin, after it, first output, payload)
+        type Case = (Path, Vec<OutPoint>, Vec<OutPoint>, TxOut, Option<Payload>);
+        let cases: Vec<Case> = vec![
+            (Path::Carrier, vec![], vec![], p2sh, None),
+            (
+                Path::Mint,
+                vec![],
+                vec![carrier],
+                p2pkh.clone(),
+                Some(mint_p),
+            ),
+            (
+                Path::YedTransfer,
+                vec![token_t, token_m],
+                vec![],
+                p2pkh.clone(),
+                Some(transfer_p),
+            ),
+            (
+                Path::Claim(named),
+                vec![named, token_t, token_m],
+                vec![carrier],
+                p2pkh.clone(),
+                Some(redeem_p.clone()),
+            ),
+            (
+                Path::IntentRelease(named),
+                vec![named],
+                vec![],
+                p2pkh.clone(),
+                None,
+            ),
+        ];
+        for (path, before, after, first, p) in cases {
+            let with = |fee: &[OutPoint]| {
+                let ins: Vec<OutPoint> = before
+                    .iter()
+                    .chain(fee.iter())
+                    .chain(after.iter())
+                    .copied()
+                    .collect();
+                build(&ins, first.clone(), p.clone())
+            };
+            let name = path.name();
+            // the legitimate YED inputs with honest fee coins: accepted, and only the fee coins
+            // are checked as plain YEC
+            let raw = with(&[honest, tchange]);
+            assert_eq!(layer3(path, &raw, class, &all), Ok(()), "{name}");
+            let (tx, _) = Transaction::parse(&raw).unwrap();
+            let mut checked: Vec<OutPoint> = spent_as_yec(path, &tx, class).into_iter().collect();
+            checked.sort_by_key(|o| (o.txid, o.n));
+            let mut want = vec![honest, tchange];
+            want.extend(after.iter().copied()); // the carrier, spent into fees
+            want.sort_by_key(|o| (o.txid, o.n));
+            assert_eq!(checked, want, "{name}: the inputs checked as plain YEC");
+            // a token smuggled in as a fee coin: refused, whatever the dry run says
+            let raw = with(&[honest, smuggled]);
+            assert_eq!(
+                layer3(path, &raw, class, &all),
+                Err(GateError::InputCarriesYed {
+                    outpoint: format!("{}:0", crate::tx::txid_hex(&sp.1)),
+                    payload: "transfer",
+                }),
+                "{name}"
+            );
+            // a fee coin whose creating transaction the server withholds: refused (fail closed)
+            let raw = with(&[honest]);
+            assert!(
+                matches!(
+                    layer3(path, &raw, class, &withheld),
+                    Err(GateError::InputProvenance { .. })
+                ),
+                "{name}"
+            );
+        }
+        // Redeem and release: the own vault and tokens only (the fee comes from the vault), so no
+        // input is spent as plain YEC and nothing needs fetching; a YEC input is refused by the
+        // local layer before layer 3.
+        let none = HashMap::new();
+        let raw = build(
+            &[vault, token_t, token_m],
+            p2pkh.clone(),
+            Some(redeem_p.clone()),
+        );
+        assert_eq!(layer3(Path::Redeem, &raw, class, &none), Ok(()));
+        let (tx, _) = Transaction::parse(&raw).unwrap();
+        assert!(spent_as_yec(Path::Redeem, &tx, class).is_empty());
+        let raw = build(&[vault, token_t, smuggled], p2pkh.clone(), Some(redeem_p));
+        assert!(matches!(
+            layer3(Path::Redeem, &raw, class, &all),
+            Err(GateError::ForbiddenInput { class: "YEC", .. })
+        ));
+        let raw = build(&[vault], p2pkh.clone(), None);
+        assert_eq!(layer3(Path::Release, &raw, class, &none), Ok(()));
+        // Sweep: the carrier, back to plain YEC; checked, so a withheld funding refuses, and a
+        // carrier a payload assigns YED (possible before the Falcon height) is refused.
+        let raw = build(&[carrier], p2pkh.clone(), None);
+        assert_eq!(layer3(Path::Sweep, &raw, class, &all), Ok(()));
+        assert!(matches!(
+            layer3(Path::Sweep, &raw, class, &none),
+            Err(GateError::InputProvenance { .. })
+        ));
+        let assigned_carrier = OutPoint { txid: tp.1, n: 0 };
+        let as_carrier = |op: &OutPoint| (*op == assigned_carrier).then_some(UtxoClass::Carrier);
+        let raw = build(&[assigned_carrier], p2pkh.clone(), None);
+        assert!(matches!(
+            layer3(Path::Sweep, &raw, as_carrier, &all),
+            Err(GateError::InputCarriesYed { .. })
+        ));
+        // PqSweep: the named coin (never classified) is checked: a payload-free parent passes,
+        // a coin a TRANSFER assigns (an FN-DSA holder's YED the server left unlisted) is refused.
+        let raw = build(&[honest], p2pkh.clone(), None);
+        assert_eq!(layer3(Path::PqSweep(honest), &raw, |_| None, &all), Ok(()));
+        let raw = build(&[smuggled], p2pkh, None);
+        assert!(matches!(
+            layer3(Path::PqSweep(smuggled), &raw, |_| None, &all),
+            Err(GateError::InputCarriesYed { .. })
+        ));
+    }
+
+    /// Property: on every path, [`spent_as_yec`] is exactly the inputs of class `YEC`,
+    /// `FEE_RESERVE`, `PQ_OWNED` or `CARRIER`, less the named `vin[0]` of the claim and intent
+    /// release paths, plus the named coin of the post-quantum move; never a TOKEN, VAULT or any
+    /// other class.
+    #[test]
+    fn spent_as_yec_property() {
+        let mut rng = Rng(0x00c0_ffee_1234);
+        let named = OutPoint {
+            txid: [0xaa; 32],
+            n: 0,
+        };
+        for _ in 0..500 {
+            let n = 1 + rng.below(8) as usize;
+            let mut classes: HashMap<OutPoint, UtxoClass> = HashMap::new();
+            let mut t = Transaction::new_v4();
+            for i in 0..n {
+                let op = if i == 0 && rng.below(2) == 0 {
+                    named
+                } else {
+                    OutPoint {
+                        txid: [i as u8 + 1; 32],
+                        n: rng.below(3) as u32,
+                    }
+                };
+                if rng.below(8) != 0 {
+                    classes.insert(op, ALL[rng.below(ALL.len() as u64) as usize]);
+                }
+                t.vin.push(TxIn::new(op));
+            }
+            let class = |op: &OutPoint| classes.get(op).copied();
+            for path in [
+                Path::Yec,
+                Path::YedTransfer,
+                Path::Carrier,
+                Path::Mint,
+                Path::Redeem,
+                Path::Release,
+                Path::Claim(named),
+                Path::Sweep,
+                Path::IntentRelease(named),
+                Path::PqSweep(named),
+                Path::Shield,
+                Path::PqSpend,
+            ] {
+                let got = spent_as_yec(path, &t, class);
+                let skips_named = matches!(path, Path::Claim(_) | Path::IntentRelease(_));
+                let takes_named = matches!(path, Path::PqSweep(_));
+                for (k, i) in t.vin.iter().enumerate() {
+                    let plain = matches!(
+                        class(&i.prevout),
+                        Some(
+                            UtxoClass::Yec
+                                | UtxoClass::FeeReserve
+                                | UtxoClass::PqOwned
+                                | UtxoClass::Carrier
+                        )
+                    );
+                    let want = if k == 0 && skips_named {
+                        false
+                    } else {
+                        plain || (k == 0 && takes_named)
+                    };
+                    if want {
+                        assert!(got.contains(&i.prevout), "{path:?} {k}");
+                    }
+                    // TOKEN, VAULT, HELD, PENDING_TOKEN, UNKNOWN_P2SH, FOREIGN, unknown: never
+                    // (each outpoint appears once in these transactions)
+                    if !want {
+                        assert!(!got.contains(&i.prevout), "{path:?} {k}");
+                    }
+                }
+                assert!(got.iter().all(|op| t.vin.iter().any(|i| i.prevout == *op)));
+            }
+        }
     }
 
     /// Property: over random parents (plain, TRANSFER with random assignments, MINT, REDEEM) and

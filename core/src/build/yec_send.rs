@@ -156,7 +156,7 @@ pub async fn broadcast(
     })
     .await?;
     // layer 3: no input carries YED by its creating transaction (review YEW-REVIEW-3)
-    gate::confirm_provenance(client, &preview.raw, |op| {
+    gate::confirm_provenance(client, gate::Path::Yec, &preview.raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
     })
     .await?;

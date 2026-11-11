@@ -412,6 +412,11 @@ pub async fn broadcast(
     })
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
+    // layer 3 on the YEC fee inputs (not the TOKEN inputs, spent as YED): no input spent as plain YEC carries YED by its creating transaction
+    gate::confirm_provenance(client, gate::Path::YedTransfer, &preview.raw, |op| {
+        wallet.store.utxo_class(op).ok().flatten()
+    })
+    .await?;
     let reply = client.send_transaction(preview.raw.clone()).await?;
     let txid_str = txid_hex(&preview.txid);
     if !reply.is_empty() && reply != txid_str {

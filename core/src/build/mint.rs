@@ -589,6 +589,11 @@ where
     })
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
+    // layer 3 on the YEC inputs (every input of the carrier funding): no input spent as plain YEC carries YED by its creating transaction
+    gate::confirm_provenance(client, gate::Path::Carrier, &raw, |op| {
+        wallet.store.utxo_class(op).ok().flatten()
+    })
+    .await?;
     let step = CarrierStep {
         txid,
         carrier_hash160: carrier_row.hash160,
@@ -1223,6 +1228,11 @@ pub async fn finish(
     })
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
+    // layer 3 on the YEC fee inputs (not the carrier at vin[last]): no input spent as plain YEC carries YED by its creating transaction
+    gate::confirm_provenance(client, gate::Path::Mint, &raw, |op| {
+        wallet.store.utxo_class(op).ok().flatten()
+    })
+    .await?;
     let mut locked = inputs.clone();
     locked.push(Utxo {
         outpoint: carrier_op,
@@ -1333,6 +1343,11 @@ pub async fn sweep(
     })
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
+    // layer 3 on the carrier, swept back to plain YEC
+    gate::confirm_provenance(client, gate::Path::Sweep, &raw, |op| {
+        wallet.store.utxo_class(op).ok().flatten()
+    })
+    .await?;
     let carrier = Utxo {
         outpoint: carrier_op,
         address: String::new(),

@@ -323,7 +323,7 @@ pub async fn broadcast(
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
     // layer 3: no input carries YED by its creating transaction (review YEW-REVIEW-3)
-    gate::confirm_provenance(client, &p.raw, |op| {
+    gate::confirm_provenance(client, gate::Path::PqSpend, &p.raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
     })
     .await?;
