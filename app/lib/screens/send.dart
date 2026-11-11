@@ -205,6 +205,16 @@ class _SendScreenState extends State<SendScreen> {
     final hasPreview = _yed != null || _yec != null || _pq != null;
     final private = _asset == Asset.yec && _from == null && _toPrivate(app);
     final sources = app.pqSources;
+    // review YEW-REVIEW-3 L5: the chosen source can drop out of the list (spent, a refresh);
+    // the dropdown then falls back to Automatic instead of asserting on a missing value
+    final listed = _from != null && sources.any((s) => s.address == _from);
+    if (_from != null && !listed && _pq == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _from != null && !AppScope.of(context).pqSources.any((s) => s.address == _from)) {
+          setState(() => _from = null);
+        }
+      });
+    }
     final b = app.balances;
     if (_result != null) return SendResultView(result: _result!, accent: accent);
     return Scaffold(
@@ -238,29 +248,33 @@ class _SendScreenState extends State<SendScreen> {
             ),
             if (_asset == Asset.yec && sources.isNotEmpty) ...[
               const SizedBox(height: 12),
-              DropdownButtonFormField<String?>(
-                key: const Key('from'),
-                initialValue: _from,
-                isExpanded: true,
-                decoration: const InputDecoration(labelText: 'From'),
-                items: [
-                  const DropdownMenuItem<String?>(value: null, child: Text('Automatic: private first, then public')),
-                  for (final s in sources)
-                    DropdownMenuItem<String?>(
-                      value: s.address,
-                      child: Text(
-                        'Post-quantum ${s.schemeName} · ${shorten(s.address, head: 6, tail: 4)} · ${formatYec(s.balanceZat)} YEC',
-                        overflow: TextOverflow.ellipsis,
+              // keyed by the listed addresses: a changed list rebuilds the field with a listed value
+              KeyedSubtree(
+                key: ValueKey('from-${sources.map((s) => s.address).join(',')}'),
+                child: DropdownButtonFormField<String?>(
+                  key: const Key('from'),
+                  initialValue: listed ? _from : null,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'From'),
+                  items: [
+                    const DropdownMenuItem<String?>(value: null, child: Text('Automatic: private first, then public')),
+                    for (final s in sources)
+                      DropdownMenuItem<String?>(
+                        value: s.address,
+                        child: Text(
+                          'Post-quantum ${s.schemeName} · ${shorten(s.address, head: 6, tail: 4)} · ${formatYec(s.balanceZat)} YEC',
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
-                    ),
-                ],
-                onChanged: hasPreview
-                    ? null
-                    : (v) => setState(() {
-                        _from = v;
-                        _everything = false;
-                        _error = null;
-                      }),
+                  ],
+                  onChanged: hasPreview
+                      ? null
+                      : (v) => setState(() {
+                          _from = v;
+                          _everything = false;
+                          _error = null;
+                        }),
+                ),
               ),
             ],
             const SizedBox(height: 12),

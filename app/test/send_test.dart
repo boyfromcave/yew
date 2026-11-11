@@ -167,6 +167,7 @@ void main() {
   // beta2 D-8: a send from an own post-quantum address: the source chooser, the fee with the
   // size and signing time before the slider, the core's messages verbatim.
   const slhSource = PqSource(address: fakePqSlh, scheme: 1, schemeName: 'SLH-DSA-SHA2-128s', balanceZat: 300000000);
+  const falconSource = PqSource(address: fakePqFalcon, scheme: 2, schemeName: 'FN-DSA-512', balanceZat: 100000000);
 
   Future<void> choosePqSource(WidgetTester tester) async {
     await tester.tap(find.text('YEC'));
@@ -241,6 +242,21 @@ void main() {
     expect(find.text(note), findsOneWidget);
     expect(find.text('not measured on this device'), findsOneWidget);
     expect(find.textContaining('0.00 s'), findsNothing);
+  });
+
+  testWidgets('a chosen post-quantum source that drops out of the list falls back to Automatic', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.pqSourcesAnswer = const [slhSource, falconSource];
+    await openSend(tester, h);
+    await choosePqSource(tester);
+    expect(find.text('s…, sqf… or sqs… address'), findsOneWidget);
+    // the SLH-DSA address is spent elsewhere: the next refresh no longer lists it
+    h.api.pqSourcesAnswer = const [falconSource];
+    await h.state.refresh();
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('Automatic: private first, then public'), findsOneWidget);
+    expect(find.text('ys1…, s…, sqf… or sqs… address'), findsOneWidget);
   });
 
   testWidgets('without post-quantum coins there is no source chooser', (tester) async {
