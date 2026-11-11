@@ -347,6 +347,33 @@ impl Wallet {
             .sum()
     }
 
+    /// The part of [`Wallet::balance`] that is `reserved` outputs: each one an own, unspent
+    /// output of a transaction `balance` counts (trusted, depth >= `min_depth`, mature).
+    pub(crate) fn reserved_credit(
+        &self,
+        reserved: &BTreeSet<(String, u32)>,
+        asof: Option<u32>,
+        min_depth: i64,
+    ) -> i64 {
+        reserved
+            .iter()
+            .filter(|(t, n)| {
+                self.st.wtx.contains_key(t)
+                    && self.trusted(t, asof)
+                    && self.tx_depth(t, asof) >= min_depth
+                    && !self.spent_at(t, *n, asof)
+            })
+            .filter_map(|(t, n)| {
+                let p = self.parsed(t)?;
+                if self.immature(p.coinbase, self.tx_depth(t, asof)) {
+                    return None;
+                }
+                let o = p.tx.vout.get(*n as usize)?;
+                self.book.owns_script(&o.script_pubkey).map(|_| o.value)
+            })
+            .sum()
+    }
+
     /// The coins `AvailableCoins` lists: unspent, not locked, mature, in the view.
     pub fn available_coins(&self, asof: Option<u32>) -> Vec<(&Coin, i64)> {
         self.coins
@@ -388,13 +415,13 @@ impl Wallet {
             self.ensure_unlocked()?;
         }
         match method {
-            "getbalance" => self.getbalance(p),
+            "getbalance" => self.getbalance(node, p).await,
             "getnewaddress" => self.getnewaddress(p),
             "getreceivedbyaddress" => self.getreceivedbyaddress(p),
             "gettransaction" => self.gettransaction(p),
             "getwalletinfo" => self.getwalletinfo(p),
             "listlockunspent" => self.listlockunspent(p),
-            "listunspent" => self.listunspent(p),
+            "listunspent" => self.listunspent(node, p).await,
             "z_getbalance" => self.z_getbalance(p),
             "z_getnewaddress" => self.z_getnewaddress(p),
             "z_listunspent" => self.z_listunspent(p),
@@ -425,8 +452,12 @@ impl Wallet {
 
     // ------------------------------------------------------------------ stock reads
 
-    /// `getbalance ( "(dummy)" minconf includeWatchonly inZat asOfHeight )`.
-    fn getbalance(&self, p: &[Value]) -> Result<J, RpcError> {
+    /// `getbalance ( "(dummy)" minconf includeWatchonly inZat asOfHeight )`. Review YEW-REVIEW-4
+    /// L3: the outputs [`Wallet::yed_reserved`] holds back from plain YEC spends (the listed YED
+    /// tokens, and every own output of exactly `TOKEN_VALUE` while Yellowback is not live) are
+    /// left out, as `z_gettotalbalance` leaves them out, and an index that cannot be read fails
+    /// the call as it fails that one: no balance promises coins the wallet will refuse to spend.
+    async fn getbalance(&self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
         arity("getbalance", p, 5)?;
         if let Some(d) = p_str(p, 0)? {
             if d != "*" && !d.is_empty() {
@@ -438,16 +469,16 @@ impl Wallet {
         let asof = as_of(p, 4)?;
         let min_depth = minconf(p, 1, 0)?;
         let _watch = p_bool(p, 2, false)?;
-        let b = self.balance(asof, min_depth);
-        Ok(if p_bool(p, 3, false)? {
-            J::Int(b)
-        } else {
-            J::Amount(b)
-        })
+        let in_zat = p_bool(p, 3, false)?;
+        let reserved = self.yed_reserved(node).await?;
+        let b = self.balance(asof, min_depth) - self.reserved_credit(&reserved, asof, min_depth);
+        Ok(if in_zat { J::Int(b) } else { J::Amount(b) })
     }
 
     /// `listunspent ( minconf maxconf ["address",...] includeUnsafe queryOptions asOfHeight )`.
-    fn listunspent(&self, p: &[Value]) -> Result<J, RpcError> {
+    /// Review YEW-REVIEW-4 L3: the outputs [`Wallet::yed_reserved`] holds back are not listed
+    /// (as `z_gettotalbalance` does not count them).
+    async fn listunspent(&self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
         arity("listunspent", p, 6)?;
         let asof = as_of(p, 5)?;
         let min = minconf(p, 0, 1)?;
@@ -482,11 +513,16 @@ impl Wallet {
                 return Err(invalid("queryOptions must be set to {}"));
             }
         }
+        let reserved = self.yed_reserved(node).await?;
         let mut rows = Vec::new();
         let mut coins = self.available_coins(asof);
         coins.sort_by(|a, b| (&a.0.txid, a.0.vout).cmp(&(&b.0.txid, b.0.vout)));
         for (c, d) in coins {
-            if d < min || d > max || (!filter.is_empty() && !filter.contains(&c.script)) {
+            if d < min
+                || d > max
+                || (!filter.is_empty() && !filter.contains(&c.script))
+                || reserved.contains(&(c.txid.clone(), c.vout))
+            {
                 continue;
             }
             let mut o = J::obj()

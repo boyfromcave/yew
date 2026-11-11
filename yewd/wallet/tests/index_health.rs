@@ -347,6 +347,8 @@ async fn reads_and_locks_fail_closed() {
         f.set(s);
         for (m, p) in [
             ("z_gettotalbalance", vec![]),
+            ("getbalance", vec![]),
+            ("listunspent", vec![]),
             ("lockunspent", vec![json!(true)]),
             (
                 "lockunspent",
@@ -456,6 +458,79 @@ async fn not_live_still_reserves_token_value_outputs() {
     let r = zsend_policy(&mut f, &p).await;
     assert_eq!(r["status"], json!("success"), "{r}");
     assert_eq!(f.sent(), 1);
+}
+
+/// z_gettotalbalance's transparent, getbalance (minconf 1, in zat), the sum of listunspent, and
+/// whether listunspent lists a TOKEN_VALUE output.
+async fn l3_reads(f: &mut Fix) -> (i64, i64, i64, bool) {
+    let total: Value =
+        serde_json::from_str(&f.call("z_gettotalbalance", &[]).await.unwrap()).unwrap();
+    let total = (total["transparent"]
+        .as_str()
+        .unwrap()
+        .parse::<f64>()
+        .unwrap()
+        * COIN as f64)
+        .round() as i64;
+    let bal: i64 = f
+        .call(
+            "getbalance",
+            &[json!("*"), json!(1), json!(false), json!(true)],
+        )
+        .await
+        .unwrap()
+        .parse()
+        .unwrap();
+    let rows: Value = serde_json::from_str(&f.call("listunspent", &[]).await.unwrap()).unwrap();
+    let rows = rows.as_array().unwrap().clone();
+    let listed: i64 = rows.iter().map(|r| r["amountZat"].as_i64().unwrap()).sum();
+    let token_listed = rows
+        .iter()
+        .any(|r| r["amountZat"].as_i64() == Some(yew_core::params::TOKEN_VALUE));
+    (total, bal, listed, token_listed)
+}
+
+/// Review YEW-REVIEW-4 L3: `getbalance` and `listunspent` leave out what the wallet holds back
+/// from plain YEC spends exactly as `z_gettotalbalance` does: with Yellowback not live, an own
+/// output of exactly TOKEN_VALUE is neither counted nor listed; with `-yellowback=0` it is.
+#[tokio::test]
+async fn balances_and_listings_leave_out_reserved_outputs() {
+    let mut f = fixture("l3-reads").await;
+    let addr = f
+        .call("getnewaddress", &[])
+        .await
+        .unwrap()
+        .trim_matches('"')
+        .to_string();
+    let foreign = |n: u32| OutPoint { txid: [9; 32], n };
+    f.node.mine(
+        vec![
+            payment(
+                foreign(0),
+                addr_script(&addr),
+                yew_core::params::TOKEN_VALUE,
+            ),
+            payment(foreign(1), addr_script(&addr), COIN / 2),
+        ],
+        3,
+    );
+    f.w.sync(&f.node).await.unwrap();
+    f.set(State::NotLive);
+    let (total, bal, listed, token_listed) = l3_reads(&mut f).await;
+    assert_eq!(bal, total, "getbalance = z_gettotalbalance transparent");
+    assert_eq!(
+        listed, total,
+        "listunspent sums to z_gettotalbalance transparent"
+    );
+    assert!(
+        !token_listed,
+        "the reserved TOKEN_VALUE output is not listed"
+    );
+    f.w.opts.yellowback_ack = true;
+    let (total2, bal2, listed2, token_listed2) = l3_reads(&mut f).await;
+    assert_eq!(total2, total + yew_core::params::TOKEN_VALUE);
+    assert_eq!((bal2, listed2), (total2, total2));
+    assert!(token_listed2);
 }
 
 // ------------------------------------------------------------------ submission status (M1)
