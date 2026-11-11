@@ -2,7 +2,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
-//! Transaction builders: `yec_send`, `yec_private` (privacy-first funding, S2), `yec_move` (shield / unshield, S4), `yed_transfer`, `mint`, `redeem`, `claim` (one file each,
+//! Transaction builders: `any_to_any` (the shape planning shared with yewd, beta2 D-8),
+//! `yec_send`, `yec_private` (privacy-first funding, S2), `yec_move` (shield / unshield, S4), `yed_transfer`, `mint`, `redeem`, `claim` (one file each,
 //! added by phase). Each produces the `preview` the screen renders and then signs the same bytes.
 //!
 //! Translation source (plan §3.6): `ycash-dd/src/yellowback/txbuilder.cpp` (MINT, TRANSFER,
@@ -10,6 +11,7 @@
 //! `mint` holds the carrier step and the sweep that `claim` shares, `redeem` the vault-spend
 //! plan that `claim` shares.
 
+pub mod any_to_any;
 pub mod claim;
 pub mod mint;
 pub mod redeem;

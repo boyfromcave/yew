@@ -42,21 +42,13 @@ const DUST: i64 = 54;
 /// plus the input that spends it, the input a post-quantum spend for `TX_PQPKH`, 148 bytes otherwise
 /// (`CTxOut::GetDustThreshold`: 54 zat for P2PKH).
 pub(crate) fn dust_threshold(script: &[u8]) -> i64 {
-    let out = 8 + if script.len() > 252 { 3 } else { 1 } + script.len();
-    let input = match yew_core::pq::pqpkh_of(script) {
-        Some(id) => crate::yed::pq_input_size(id.scheme),
-        None => 148,
-    };
-    3 * (100 * (out + input) as i64 / 1000)
+    yew_core::build::any_to_any::dust_threshold(script)
 }
 
 /// The scriptSig a wallet coin's input will carry: a post-quantum signature's pushes for
-/// `TX_PQPKH`, the P2PKH maximum otherwise.
+/// `TX_PQPKH`, the P2PKH maximum otherwise (the YEW core's, one implementation with the app).
 pub(crate) fn script_sig_size(script: &[u8]) -> usize {
-    match yew_core::pq::pqpkh_of(script) {
-        Some(id) => yew_core::pq::pq_sig_pushes_size(id.scheme).unwrap_or(MAX_P2PKH_SCRIPT_SIG),
-        None => MAX_P2PKH_SCRIPT_SIG,
-    }
+    yew_core::build::any_to_any::script_sig_size(script)
 }
 
 /// ycashd's fee of a transaction with a post-quantum input (`CWallet::CreateTransaction`,
