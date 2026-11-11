@@ -432,3 +432,125 @@ async fn read_rpcs_over_the_mock_chain() {
         .text();
     assert_eq!(zb, "0.00000000");
 }
+
+/// Beta2 item 15 (ycash6 e2a8bdace, ycash-dd 322be29c5): getwalletinfo's split by address type
+/// and scheme (ECC = the figure minus its PQ part; both schemes always listed, SLH-DSA first),
+/// z_getbalance of an own PQ address and the refusal of a foreign transparent one, and the
+/// listreceivedbyaddress rows of PQ keys that received coins without an address-book entry.
+#[tokio::test]
+async fn balances_by_type_over_the_mock_chain() {
+    let node = MockNode::default();
+    genesis(&node);
+    let d = dir("bytype");
+    let mut w = Wallet::open(&d, Network::Regtest, signer(), 0).unwrap();
+    let ecc = yew_core::script::p2pkh_script(&w.book.key(0, 0).unwrap().hash);
+    let slh = w.book.pq_key(1, 0).unwrap().id;
+    let fn_ = w.book.pq_key(2, 0).unwrap().id;
+    let script = |id| yew_core::pq::pqpkh_script(&id).unwrap();
+    let foreign = |n: u32| OutPoint { txid: [9; 32], n };
+    node.mine(
+        vec![
+            coinbase(1, vec![0x51], 1_000_000_000),
+            payment(foreign(0), script(fn_), 300_000_000),
+            payment(foreign(1), script(slh), 100_000_000),
+            payment(foreign(2), ecc.clone(), 50_000_000),
+        ],
+        0,
+    );
+    node.to_mempool(payment(foreign(3), script(fn_), 20_000_000));
+    w.sync(&node).await.unwrap();
+    let info: Value =
+        serde_json::from_str(&w.call(&node, "getwalletinfo", &[]).await.unwrap().text()).unwrap();
+    let amt = |v: &Value| (v.as_f64().unwrap() * 1e8).round() as i64;
+    assert_eq!(amt(&info["balance"]), 450_000_000);
+    assert_eq!(amt(&info["balance_ecc"]), 50_000_000);
+    assert_eq!(amt(&info["balance_pq"]), 400_000_000);
+    assert_eq!(amt(&info["unconfirmed_balance"]), 20_000_000);
+    assert_eq!(amt(&info["unconfirmed_balance_ecc"]), 0);
+    assert_eq!(amt(&info["unconfirmed_balance_pq"]), 20_000_000);
+    let by = info["pq_by_scheme"].as_array().unwrap();
+    assert_eq!(by.len(), 2);
+    assert_eq!(
+        (by[0]["pqscheme"].as_i64(), by[0]["pqschemename"].as_str()),
+        (Some(1), Some("SLH-DSA-SHA2-128s"))
+    );
+    assert_eq!(
+        (by[1]["pqscheme"].as_i64(), by[1]["pqschemename"].as_str()),
+        (Some(2), Some("FN-DSA-512"))
+    );
+    assert_eq!(
+        (
+            amt(&by[0]["balance_pq"]),
+            amt(&by[0]["unconfirmed_balance_pq"])
+        ),
+        (100_000_000, 0)
+    );
+    assert_eq!(
+        (
+            amt(&by[1]["balance_pq"]),
+            amt(&by[1]["unconfirmed_balance_pq"])
+        ),
+        (300_000_000, 20_000_000)
+    );
+    // z_getbalance of an own PQ address (finding L-3), by depth
+    let fn_addr = yew_core::keys::encode_pq_yec(Network::Regtest, &fn_).unwrap();
+    for (minconf, want) in [(1, "3.00000000"), (0, "3.20000000")] {
+        let b = w
+            .call(&node, "z_getbalance", &[json!(fn_addr), json!(minconf)])
+            .await
+            .unwrap()
+            .text();
+        assert_eq!(b, want, "minconf {minconf}");
+    }
+    // a transparent address the wallet does not hold, ECC or PQ, is refused
+    let other_pq = yew_core::pq::PqKeyId {
+        scheme: 2,
+        hash: [0x77; 32],
+    };
+    for a in [
+        yew_core::keys::encode_pq_yec(Network::Regtest, &other_pq).unwrap(),
+        yew_core::keys::encode_p2pkh(Network::Regtest, &[0x77; 20]),
+    ] {
+        let e = w
+            .call(&node, "z_getbalance", &[json!(a)])
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (e.code, e.message.as_str()),
+            (
+                -5,
+                "From address does not belong to this node, transparent or post-quantum key or watch-only script not found."
+            )
+        );
+    }
+    // listreceivedbyaddress: the PQ keys that received, with their scheme, though not in the book
+    let rows: Value = serde_json::from_str(
+        &w.call(&node, "listreceivedbyaddress", &[json!(0)])
+            .await
+            .unwrap()
+            .text(),
+    )
+    .unwrap();
+    let row = |a: &str| {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["address"] == a)
+            .cloned()
+            .unwrap_or_else(|| panic!("{a} not listed: {rows}"))
+    };
+    let f = row(&fn_addr);
+    assert_eq!(
+        (f["pqscheme"].as_i64(), f["pqschemename"].as_str()),
+        (Some(2), Some("FN-DSA-512"))
+    );
+    assert_eq!(amt(&f["amount"]), 320_000_000);
+    assert!(f.get("yed_holder").is_none());
+    let s = row(&yew_core::keys::encode_pq_yec(Network::Regtest, &slh).unwrap());
+    assert_eq!(s["pqschemename"].as_str(), Some("SLH-DSA-SHA2-128s"));
+    let e = row(&yew_core::keys::encode_p2pkh(
+        Network::Regtest,
+        &w.book.key(0, 0).unwrap().hash,
+    ));
+    assert!(e.get("pqscheme").is_none());
+}
