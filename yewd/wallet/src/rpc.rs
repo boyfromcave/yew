@@ -2102,15 +2102,21 @@ impl Wallet {
             }
             "yed_getinfo" => {
                 // the wallet half of yed_getinfo (ENABLE_WALLET): the overlay's lock count (H10)
+                // yed_getinfo never refuses while the index is unhealthy (its `healthy` says so);
+                // when the YED outpoint set cannot be read, protectedByIndex is false: the count
+                // below is then not a statement that nothing is held
                 let mut o = raw_obj(result).map_err(bad)?;
-                let locked = self
-                    .yed_reserved_view(node)
-                    .await
-                    .into_iter()
-                    .filter(|(t, n)| self.st.locks.contains(&format!("{t}:{n}")))
-                    .count();
+                let (locked, protected) = match self.yed_reserved(node).await {
+                    Ok(r) => (
+                        r.into_iter()
+                            .filter(|(t, n)| self.st.locks.contains(&format!("{t}:{n}")))
+                            .count(),
+                        true,
+                    ),
+                    Err(_) => (0, false),
+                };
                 o.insert("lockedOutputs".into(), locked.to_string());
-                o.insert("protectedByIndex".into(), "true".into());
+                o.insert("protectedByIndex".into(), protected.to_string());
                 Ok(write_raw_obj(&o))
             }
             "validateaddress" => {

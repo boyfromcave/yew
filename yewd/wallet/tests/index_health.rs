@@ -305,3 +305,70 @@ async fn a_live_answer_without_healthy_true_is_refused() {
     assert_eq!(e, (-4, REFUSAL.replace("a test reason", "")));
     assert_eq!(f.sent(), 0);
 }
+
+/// M2: an ECC source paying a post-quantum recipient (the hybrid path of beta2 D-2).
+#[tokio::test]
+async fn z_sendmany_from_ecc_to_post_quantum_fails_closed() {
+    each_state("zsend-t-pq", "", |f| {
+        let (from, to) = (f.ecc.clone(), f.slh.clone());
+        Box::pin(async move { f.zsend(&from, &to, COIN).await })
+    })
+    .await;
+}
+
+/// `ANY_TADDR` as the source, to an ECC, a post-quantum and a Sapling recipient.
+#[tokio::test]
+async fn z_sendmany_from_any_taddr_fails_closed() {
+    let to = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x38; 20]);
+    each_state("zsend-any", "", |f| {
+        let to = to.clone();
+        Box::pin(async move { f.zsend("ANY_TADDR", &to, COIN).await })
+    })
+    .await;
+    each_state("zsend-any-pq", "", |f| {
+        let to = f.slh.clone();
+        Box::pin(async move { f.zsend("ANY_TADDR", &to, COIN).await })
+    })
+    .await;
+    each_state("zsend-any-z", "", |f| {
+        let to = f.zaddr.clone();
+        Box::pin(async move { f.zsend("ANY_TADDR", &to, COIN).await })
+    })
+    .await;
+}
+
+/// The reads and lock RPCs that rest on the YED outpoint set: an error, never an answer as if
+/// nothing were held (z_gettotalbalance would count YED as YEC; lockunspent would drop or release a
+/// YED lock; yed_lockcoins would lock nothing); yed_getinfo answers with protectedByIndex false.
+#[tokio::test]
+async fn reads_and_locks_fail_closed() {
+    for s in [State::Unhealthy, State::ReadFails] {
+        let mut f = fixture(&format!("reads-{s:?}")).await;
+        f.set(s);
+        for (m, p) in [
+            ("z_gettotalbalance", vec![]),
+            ("lockunspent", vec![json!(true)]),
+            (
+                "lockunspent",
+                vec![json!(true), json!([{"txid": "00".repeat(32), "vout": 0}])],
+            ),
+            ("yed_lockcoins", vec![]),
+        ] {
+            assert_eq!(
+                f.call(m, &p).await.unwrap_err(),
+                (-4, REFUSAL.to_string()),
+                "{m} {s:?}"
+            );
+        }
+        let info =
+            f.w.augment(&f.node, "yed_getinfo", &[], r#"{"healthy":false}"#)
+                .await
+                .unwrap();
+        let v: Value = serde_json::from_str(&info).unwrap();
+        assert_eq!(v["protectedByIndex"], json!(false), "{s:?}");
+    }
+    let mut f = fixture("reads-notlive").await;
+    f.set(State::NotLive);
+    let v: Value = serde_json::from_str(&f.call("z_gettotalbalance", &[]).await.unwrap()).unwrap();
+    assert_eq!(v["transparent"], json!("14.00"));
+}

@@ -396,7 +396,11 @@ impl Wallet {
     /// warming up, malformed) or any `yed_listtokens` failure while live refuses with the C++
     /// lines' string (ycash-dd 8e67b2a35 `YellowbackInputRefusal`). yewd is a sidecar, so the
     /// "restart with -reindex-yellowback" in that string is advice for the node; the node's own
-    /// error is logged here.
+    /// error is logged here. On the vault line `-yellowback` is accepted and ignored (ycash6
+    /// `init.cpp`): the yed_* commands exist exactly where the vault upgrade and a YED attestor set
+    /// are configured, consensus-wide, so a `-32601` node is on a chain where no token can exist.
+    /// This is the only reservation: the reads that depend on it (`z_gettotalbalance`, the lock
+    /// RPCs, `yed_getinfo.lockedOutputs`) fail or say so too, never answer as if nothing were held.
     pub async fn yed_reserved(&self, node: &dyn Node) -> Result<BTreeSet<(String, u32)>, RpcError> {
         let refuse = |reason: String, logged: String| {
             eprintln!("yewd: refusing plain YEC spends: the node's Yellowback index cannot be read ({logged})");
@@ -447,21 +451,6 @@ impl Wallet {
         }
         r.extend(self.payload_reserved());
         Ok(r)
-    }
-
-    /// [`Wallet::yed_reserved`] for a read that spends nothing (a balance, a count): the index's
-    /// tokens when it answers, else only the mempool payload outputs.
-    pub async fn yed_reserved_view(&self, node: &dyn Node) -> BTreeSet<(String, u32)> {
-        let mut r = BTreeSet::new();
-        if let Ok(tokens) = self.tokens(node).await {
-            for t in tokens {
-                if let (Some(txid), Some(vout)) = (t["txid"].as_str(), t["vout"].as_u64()) {
-                    r.insert((txid.to_string(), vout as u32));
-                }
-            }
-        }
-        r.extend(self.payload_reserved());
-        r
     }
 
     /// Every output of a mempool wallet transaction that carries a Yellowback payload.
