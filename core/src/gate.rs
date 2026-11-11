@@ -277,11 +277,25 @@ impl Path {
 }
 
 /// The local layer: check `raw` for `path`, classifying inputs with `class_of` (the store's
-/// UTXO table). Returns the parsed transaction on success.
+/// UTXO table). Returns the parsed transaction on success. A path that spends one named source
+/// address ([`Path::PqToSapling`]) needs each input's stored script too: it is refused here, and
+/// passes [`check_with_scripts`] only.
 pub fn check(
     path: Path,
     raw: &[u8],
     class_of: impl Fn(&OutPoint) -> Option<UtxoClass>,
+) -> Result<Transaction, GateError> {
+    check_with_scripts(path, raw, class_of, |_| None)
+}
+
+/// [`check`] with `script_of`, each input's stored scriptPubKey (the store's UTXO table): on
+/// [`Path::PqToSapling`]`(source)` every input's must be exactly the source's `TX_PQPKH` script
+/// (D-4: one source address; review YEW-REVIEW-7 L1), unknown refused.
+pub fn check_with_scripts(
+    path: Path,
+    raw: &[u8],
+    class_of: impl Fn(&OutPoint) -> Option<UtxoClass>,
+    script_of: impl Fn(&OutPoint) -> Option<Vec<u8>>,
 ) -> Result<Transaction, GateError> {
     let (tx, _) = Transaction::parse(raw).map_err(GateError::Parse)?;
     if path == Path::Shielded {
@@ -471,6 +485,12 @@ pub fn check(
         }
         Path::PqToSapling(source) => {
             no_payload(&tx)?;
+            let want = crate::pq::pqpkh_script(&source);
+            if want.is_none() || tx.vin.iter().any(|i| script_of(&i.prevout) != want) {
+                return Err(GateError::SaplingPqShape(
+                    "from a post-quantum address spends only that address's coins",
+                ));
+            }
             if tx.vout.len() > 1 {
                 return Err(GateError::SaplingPqShape(
                     "from a post-quantum address has at most one transparent output, the change to the source",
@@ -696,7 +716,29 @@ pub async fn confirm_burning(
     class_of: impl Fn(&OutPoint) -> Option<UtxoClass>,
     planned_burn: i64,
 ) -> Result<(Transaction, Option<Validation>), GateError> {
-    let tx = check(path, raw, class_of)?;
+    confirm_full(validator, path, raw, class_of, |_| None, planned_burn).await
+}
+
+/// [`confirm`] with each input's stored script ([`check_with_scripts`]).
+pub async fn confirm_with_scripts(
+    validator: &mut Validator,
+    path: Path,
+    raw: &[u8],
+    class_of: impl Fn(&OutPoint) -> Option<UtxoClass>,
+    script_of: impl Fn(&OutPoint) -> Option<Vec<u8>>,
+) -> Result<(Transaction, Option<Validation>), GateError> {
+    confirm_full(validator, path, raw, class_of, script_of, 0).await
+}
+
+async fn confirm_full(
+    validator: &mut Validator,
+    path: Path,
+    raw: &[u8],
+    class_of: impl Fn(&OutPoint) -> Option<UtxoClass>,
+    script_of: impl Fn(&OutPoint) -> Option<Vec<u8>>,
+    planned_burn: i64,
+) -> Result<(Transaction, Option<Validation>), GateError> {
+    let tx = check_with_scripts(path, raw, class_of, script_of)?;
     let client = match validator {
         Validator::Remote(c) => c,
         Validator::Absent => {
@@ -1828,7 +1870,9 @@ mod tests {
     ///   exactly one transparent output, paying `id`, not of TOKEN_VALUE;
     /// - `Path::PqToSapling(src)` passes exactly: at least one input, every input PQ_OWNED, no
     ///   Sapling spend, at least one Sapling output, at most one transparent output and it pays
-    ///   `src`, not of TOKEN_VALUE;
+    ///   `src`, not of TOKEN_VALUE, and every input's stored script is `src`'s (review YEW-REVIEW-7
+    ///   L1: another post-quantum address's coin, a P2PKH coin or an unknown script is refused;
+    ///   without the scripts, `check`, the path is refused);
     /// - `Path::Shielded` passes nothing that pays a post-quantum key (it was its rule minus
     ///   those outputs);
     /// - neither new path admits any class but PQ_OWNED (`allows`), and both need the dry run.
@@ -1868,6 +1912,7 @@ mod tests {
         for _ in 0..4000 {
             let n_coins = 1 + rng.below(6) as usize;
             let mut coins: HashMap<OutPoint, UtxoClass> = HashMap::new();
+            let mut stored: HashMap<OutPoint, Vec<u8>> = HashMap::new();
             let mut list = Vec::new();
             for i in 0..n_coins {
                 let mut txid = [0u8; 32];
@@ -1881,6 +1926,19 @@ mod tests {
                     ALL[rng.below(ALL.len() as u64) as usize]
                 };
                 coins.insert(op, c);
+                // the source's script mostly, else another PQ address's, a P2PKH one or none
+                match rng.below(8) {
+                    0 => {
+                        stored.insert(op, other_pq.clone());
+                    }
+                    1 => {
+                        stored.insert(op, p2pkh.clone());
+                    }
+                    2 => {}
+                    _ => {
+                        stored.insert(op, to_src.clone());
+                    }
+                }
                 list.push(op);
             }
             let n_in = rng.below(list.len() as u64 + 1) as usize;
@@ -1918,14 +1976,17 @@ mod tests {
             let inputs_ok = !inputs.is_empty()
                 && inputs
                     .iter()
-                    .all(|op| class(op) == Some(UtxoClass::PqOwned));
+                    .all(|op| class(op) == Some(UtxoClass::PqOwned))
+                && inputs.iter().all(|op| stored.get(op) == Some(&to_src));
             let want = inputs_ok
                 && spends == 0
                 && sap_outs >= 1
                 && outs.len() <= 1
                 && outs.iter().all(|(_, s)| *s == to_src)
                 && no_token_value;
-            let r = check(Path::PqToSapling(src), &raw, class);
+            let scripts = |op: &OutPoint| stored.get(op).cloned();
+            let r = check_with_scripts(Path::PqToSapling(src), &raw, class, scripts);
+            assert!(check(Path::PqToSapling(src), &raw, class).is_err());
             assert_eq!(
                 r.is_ok(),
                 want,
@@ -1972,9 +2033,10 @@ mod tests {
             1,
         );
         let class = |_: &OutPoint| Some(UtxoClass::PqOwned);
-        assert!(check(Path::PqToSapling(id), &raw, class).is_ok());
+        let scripts = |_: &OutPoint| crate::pq::pqpkh_script(&id);
+        assert!(check_with_scripts(Path::PqToSapling(id), &raw, class, scripts).is_ok());
         assert_eq!(
-            confirm(&mut v, Path::PqToSapling(id), &raw, class)
+            confirm_with_scripts(&mut v, Path::PqToSapling(id), &raw, class, scripts)
                 .await
                 .unwrap_err(),
             GateError::NoDryRunForPqSend

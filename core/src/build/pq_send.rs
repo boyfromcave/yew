@@ -431,7 +431,12 @@ fn finish_to_sapling(
     )?;
     let fee_note = fee_guard.note.clone();
     let path = gate::Path::PqToSapling(*id);
-    gate::check(path, &raw, |op| wallet.store.utxo_class(op).ok().flatten())?;
+    gate::check_with_scripts(
+        path,
+        &raw,
+        |op| wallet.store.utxo_class(op).ok().flatten(),
+        |op| script_of(wallet, op),
+    )?;
     Ok(PqSendPreview {
         from: from.to_string(),
         scheme: id.scheme,
@@ -469,6 +474,16 @@ fn finish_to_sapling(
     Err(other(
         "Sending from a post-quantum address to a private (ys1…) address is not available in this app yet.",
     ))
+}
+
+/// A coin's stored scriptPubKey (the gate's source rule, [`gate::check_with_scripts`]).
+fn script_of(wallet: &Wallet, op: &crate::tx::OutPoint) -> Option<Vec<u8>> {
+    wallet
+        .store
+        .utxo_txout(op)
+        .ok()
+        .flatten()
+        .map(|o| o.script_pubkey)
 }
 
 /// The refusal of a fee above [`params::pq_send_fee_limit`], naming the quoted rate and the limit.
@@ -546,9 +561,13 @@ pub async fn broadcast(
 ) -> Result<(String, Validation), WalletError> {
     // YEW-PORT-6 item 2: a flagged fee is never confirmed by the normal button
     terms::require_ack(&p.fee_guard, accept_unusual_fee)?;
-    let (_, validation) = gate::confirm(validator, p.path, &p.raw, |op| {
-        wallet.store.utxo_class(op).ok().flatten()
-    })
+    let (_, validation) = gate::confirm_with_scripts(
+        validator,
+        p.path,
+        &p.raw,
+        |op| wallet.store.utxo_class(op).ok().flatten(),
+        |op| script_of(wallet, op),
+    )
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
     // layer 3: no input carries YED by its creating transaction (review YEW-REVIEW-3)
@@ -804,13 +823,21 @@ mod tests {
         ));
         // both gate layers' local rule
         let class = |op: &OutPoint| w.store.utxo_class(op).ok().flatten();
-        assert!(gate::check(gate::Path::PqToSapling(id), &p.raw, class).is_ok());
+        let scripts = |op: &OutPoint| script_of(&w, op);
+        assert!(
+            gate::check_with_scripts(gate::Path::PqToSapling(id), &p.raw, class, scripts).is_ok()
+        );
+        // without the stored scripts the source rule cannot be checked: refused
+        assert!(gate::check(gate::Path::PqToSapling(id), &p.raw, class).is_err());
         assert!(gate::check(gate::Path::PqSpend, &p.raw, class).is_err());
         let other = crate::pq::PqKeyId {
             scheme: id.scheme,
             hash: [0x77; 32],
         };
-        assert!(gate::check(gate::Path::PqToSapling(other), &p.raw, class).is_err());
+        assert!(
+            gate::check_with_scripts(gate::Path::PqToSapling(other), &p.raw, class, scripts)
+                .is_err()
+        );
     }
 
     /// The HELD and TOKEN rows of the same address are never selected: with only those, the
