@@ -31,7 +31,9 @@ pub mod payload;
 pub mod pq;
 #[cfg(target_arch = "wasm32")]
 mod pq_wasm_libc;
+pub mod refuse;
 pub mod sapling_params;
+pub mod sapling_part;
 pub mod script;
 pub mod shielded;
 pub mod shielded_keys;

@@ -51,11 +51,8 @@ use crate::Keystore;
 pub const MAX_MONEY: i64 = 21_000_000 * 100_000_000;
 const ANYONECANPAY: u32 = 0x80;
 
-pub(crate) type Refused = (&'static str, String);
-
-pub(crate) fn no<T>(code: &'static str, reason: impl Into<String>) -> Result<T, Refused> {
-    Err((code, reason.into()))
-}
+// review YEW-PORT-5 R1: moved to yew-core, re-exported (no logic change)
+pub(crate) use yew_core::refuse::{no, Refused};
 
 fn no_guard<T>() -> Result<T, Refused> {
     no(refuse::LOCKED, crate::LOCKED)
