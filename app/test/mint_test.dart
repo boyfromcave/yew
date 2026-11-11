@@ -188,6 +188,29 @@ void main() {
     expect(h.api.calls, contains('mintStart from $fakePqSlh carrier 18000'));
   });
 
+  testWidgets('beta2 D-3: the mint is funded from the private balance; the notice and the carrier fee are shown and passed back', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.balancesAnswer = const Balances(yecZat: 150105000, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0, priceMicroUsd: 520000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 400000000, yecShieldedSpendableZat: 400000000, yecShieldedPendingZat: 0, shieldedScannedHeight: 484, shieldedSendable: true, yecPqZat: 0, yecPqSlhZat: 0, yecPqFalconZat: 0, pqCoins: []);
+    await openMint(tester, h);
+    // the chooser appears for the private balance alone
+    await tester.tap(find.byKey(const Key('mint-from')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Private · 4.00').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('amount')), '25');
+    await tester.tap(find.byKey(const Key('estimate')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('mintEstimate 2500 48 from private'));
+    await tester.scrollUntilVisible(find.byKey(const Key('mint-private-notice')), 200, scrollable: find.byType(Scrollable).first);
+    expect(find.text('your private balance'), findsOneWidget);
+    expect(find.textContaining('spends private notes'), findsOneWidget);
+    await tester.scrollUntilVisible(find.byKey(const Key('start')), 200, scrollable: find.byType(Scrollable).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('start')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('mintStart from private carrier 18000'));
+  });
+
   testWidgets('without post-quantum coins there is no funding chooser and the public balance funds the mint', (tester) async {
     final h = Harness(withWallet: true);
     await openMint(tester, h);

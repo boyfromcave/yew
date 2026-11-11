@@ -42,6 +42,9 @@ class MintScreen extends StatefulWidget {
   State<MintScreen> createState() => _MintScreenState();
 }
 
+/// The mint's "Fund from" value naming the private (Sapling) balance (the core's `private`).
+const String mintFromPrivate = 'private';
+
 class _MintScreenState extends State<MintScreen> {
   final _amount = TextEditingController();
   late final TextEditingController _lock;
@@ -284,14 +287,14 @@ class _MintScreenState extends State<MintScreen> {
               },
               decoration: const InputDecoration(labelText: 'Lock, in blocks', helperText: 'Redeem at any time after the lock; a liquidator may claim once the grace period after it has passed'),
             ),
-            // beta2 D-3: fund the mint from the public balance or a post-quantum address
-            if (app.pqSources.isNotEmpty) ...[
+            // beta2 D-3: fund the mint from the public balance, the private balance or a post-quantum address
+            if (app.pqSources.isNotEmpty || app.balances.yecShieldedSpendableZat > 0) ...[
               const SizedBox(height: 12),
               KeyedSubtree(
-                key: ValueKey('mint-from-${app.pqSources.map((s) => s.address).join(',')}'),
+                key: ValueKey('mint-from-${app.pqSources.map((s) => s.address).join(',')}-${app.balances.yecShieldedSpendableZat > 0}'),
                 child: DropdownButtonFormField<String>(
                   key: const Key('mint-from'),
-                  initialValue: app.pqSources.any((s) => s.address == _from) ? _from : '',
+                  initialValue: app.pqSources.any((s) => s.address == _from) || (_from == mintFromPrivate && app.balances.yecShieldedSpendableZat > 0) ? _from : '',
                   isExpanded: true,
                   decoration: const InputDecoration(labelText: 'Fund from'),
                   items: [
@@ -299,6 +302,11 @@ class _MintScreenState extends State<MintScreen> {
                       value: '',
                       child: Text('Public · ${formatYec(app.balances.yecZat + app.balances.yecReservedZat)} YEC', overflow: TextOverflow.ellipsis),
                     ),
+                    if (app.balances.yecShieldedSpendableZat > 0)
+                      DropdownMenuItem<String>(
+                        value: mintFromPrivate,
+                        child: Text('Private · ${formatYec(app.balances.yecShieldedSpendableZat)} YEC', overflow: TextOverflow.ellipsis),
+                      ),
                     for (final s in app.pqSources)
                       DropdownMenuItem<String>(
                         value: s.address,
@@ -459,8 +467,16 @@ class MintEstimateCard extends StatelessWidget {
             PreviewRow('Carrier + token', '${formatYec(e.carrierZat + e.tokenZat)} YEC'),
             PreviewRow('Network fees', '${formatYec(e.networkFeeZat)} YEC (two transactions)', key: const Key('network-fees')),
             if (e.from.isNotEmpty) ...[
-              PreviewRow('Funded from', 'post-quantum · ${shorten(e.from, head: 6, tail: 4)}', key: const Key('mint-funded-from')),
-              PreviewRow('Carrier fee', '${formatYec(e.carrierFeeZat)} YEC (priced on its signature size)', key: const Key('carrier-fee')),
+              PreviewRow('Funded from', e.from == mintFromPrivate ? 'your private balance' : 'post-quantum · ${shorten(e.from, head: 6, tail: 4)}', key: const Key('mint-funded-from')),
+              PreviewRow('Carrier fee', e.from == mintFromPrivate ? '${formatYec(e.carrierFeeZat)} YEC (spends private notes)' : '${formatYec(e.carrierFeeZat)} YEC (priced on its signature size)', key: const Key('carrier-fee')),
+              if (e.from == mintFromPrivate)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    'This mint leaves your private balance: the carrier funding pays the carrier and the YEC the mint needs to a public key of this wallet, visible on the chain. The change stays private.',
+                    key: Key('mint-private-notice'),
+                  ),
+                ),
               if (e.carrierFeeNote != null)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8),

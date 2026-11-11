@@ -1325,22 +1325,43 @@ impl Shielded {
             .unwrap_or(1)
     }
 
-    /// Spendable notes covering `amount_zat` plus the fee `fee_of(number of notes)`, each with
-    /// its Merkle path at the anchor, for a transaction the hybrid builder makes
-    /// (`build::sapling_pq`: a Sapling -> post-quantum send). Not a new witness store: the
-    /// notes come from the store's own selection (`select_spendable_notes`, what
-    /// [`Shielded::plan`]'s proposal calls) at the store's target and anchor heights
-    /// (`get_target_and_anchor_heights` under the same confirmation policy), and the paths from
-    /// the store's commitment tree exactly as `create_proposed_transactions` takes them
-    /// (`root_at_checkpoint_id` and `witness_at_checkpoint_id_caching` at the anchor height).
-    /// Refuses before the scan reaches the tip. Nothing is locked or stored.
+    /// How many notes [`Shielded::select_spends`] would select for `amount_zat` plus
+    /// `fee_of(notes)`, the fee settled and the notes' total, without their paths (read-only: a
+    /// quote, e.g. a mint estimate's carrier fee from the private balance). Nothing is locked.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn select_spends(
-        &mut self,
+    pub fn quote_spends(
+        &self,
         amount_zat: u64,
         fee_of: impl Fn(usize) -> u64,
-    ) -> Result<NoteSpends, ShieldedError> {
-        use zcash_client_backend::data_api::{InputSource, TargetValue, WalletCommitmentTrees};
+    ) -> Result<(usize, u64, u64), ShieldedError> {
+        let (notes, total, fee, _, _) = self.pick_notes(amount_zat, fee_of)?;
+        Ok((notes.len(), fee, total))
+    }
+
+    /// The selection half of [`Shielded::select_spends`] (the store's own selection, the fee
+    /// settled in a few rounds).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::type_complexity)]
+    fn pick_notes(
+        &self,
+        amount_zat: u64,
+        fee_of: impl Fn(usize) -> u64,
+    ) -> Result<
+        (
+            Vec<
+                zcash_client_backend::wallet::ReceivedNote<
+                    zcash_client_sqlite::ReceivedNoteId,
+                    sapling_crypto::Note,
+                >,
+            >,
+            u64,
+            u64,
+            BlockHeight,
+            BlockHeight,
+        ),
+        ShieldedError,
+    > {
+        use zcash_client_backend::data_api::{InputSource, TargetValue};
         let id = self
             .account_id()?
             .ok_or(ShieldedError::NotSynced { scanned: 0, tip: 0 })?;
@@ -1392,6 +1413,26 @@ impl Shielded {
         }
         let (notes, total_zat) =
             chosen.ok_or_else(|| ShieldedError::Propose("the fee did not settle".into()))?;
+        Ok((notes, total_zat, fee, target.into(), anchor_height))
+    }
+
+    /// Spendable notes covering `amount_zat` plus the fee `fee_of(number of notes)`, each with
+    /// its Merkle path at the anchor, for a transaction the hybrid builder makes
+    /// (`build::sapling_pq`: a Sapling -> post-quantum send). Not a new witness store: the
+    /// notes come from the store's own selection (`select_spendable_notes`, what
+    /// [`Shielded::plan`]'s proposal calls) at the store's target and anchor heights
+    /// (`get_target_and_anchor_heights` under the same confirmation policy), and the paths from
+    /// the store's commitment tree exactly as `create_proposed_transactions` takes them
+    /// (`root_at_checkpoint_id` and `witness_at_checkpoint_id_caching` at the anchor height).
+    /// Refuses before the scan reaches the tip. Nothing is locked or stored.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn select_spends(
+        &mut self,
+        amount_zat: u64,
+        fee_of: impl Fn(usize) -> u64,
+    ) -> Result<NoteSpends, ShieldedError> {
+        use zcash_client_backend::data_api::WalletCommitmentTrees;
+        let (notes, total_zat, fee, target, anchor_height) = self.pick_notes(amount_zat, fee_of)?;
         type TreeErr<T> = zcash_client_backend::data_api::error::Error<
             std::convert::Infallible,
             T,
@@ -1443,7 +1484,7 @@ impl Shielded {
             anchor: hex::encode(anchor.to_bytes()),
             total_zat,
             fee_zat: fee,
-            target_height: u32::from(BlockHeight::from(target)),
+            target_height: u32::from(target),
         })
     }
 

@@ -1378,8 +1378,8 @@ class MintEstimate {
   /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported).
   final PlatformInt64? feePriceMicroUsd;
 
-  /// Where the YEC comes from (beta2 D-3): empty = the public (ECC) balance, else the own
-  /// post-quantum address the mint is funded from.
+  /// Where the YEC comes from (beta2 D-3): empty = the public (ECC) balance, `private` = the
+  /// private (Sapling) balance, else the own post-quantum address the mint is funded from.
   final String from;
 
   /// The carrier funding transaction's fee, zat (in `network_fee_zat`): the flat fee from the
@@ -1707,7 +1707,8 @@ class MintTerms {
   /// `MintEstimate::unusual_fee_ack` when the user confirmed the unusual fee separately.
   final String? acceptUnusualFee;
 
-  /// `MintEstimate::from` (beta2 D-3): empty = the public balance.
+  /// `MintEstimate::from` (beta2 D-3): empty = the public balance, `private` = the private
+  /// balance (proven at start: [`ErrorKind::ParamsMissing`] without the parameters).
   final String from;
 
   /// `MintEstimate::carrier_fee_zat`: the carrier funding may not pay more.

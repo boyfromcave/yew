@@ -202,6 +202,12 @@ pub enum MintSource {
     /// back to the source (D-4). The MINT then spends the staged output first, as a plain `YEC`
     /// input, with the carrier.
     Pq(crate::pq::PqKeyId),
+    /// The wallet's private (Sapling) balance: the carrier funding spends Sapling notes through
+    /// the hybrid builder ([`gate::Path::CarrierFromSapling`]: no transparent input) and pays the
+    /// carrier and the staged MINT funding to a fresh own P2PKH key, the change back to the
+    /// private balance as a Sapling note. Native only (the browser has no prover); started with
+    /// `start_from_sapling`.
+    Sapling,
 }
 
 /// What the Mint screen shows before anything is signed (plan §5.3).
@@ -482,6 +488,16 @@ pub async fn estimate(
             )?;
             (f.plan.fee, Some(guard), f.available)
         }
+        MintSource::Sapling => {
+            let staged = staged_value(
+                wallet,
+                collateral_zat,
+                if payee.is_empty() { 0 } else { fee_zat },
+                attest_fee_zat,
+            );
+            let q = sapling_funding_quote(wallet, staged)?;
+            (q.fee, Some(q.guard), q.available)
+        }
     };
     let network_fee_zat = carrier_fee_zat + mint_fee;
     let total_zat =
@@ -515,8 +531,93 @@ pub async fn estimate(
 
 /// The MINT's YEC need at one P2PKH funding input (`BuildMint`: outputs + fee − `CARRIER_VALUE`):
 /// what a carrier funded from another source stages for it.
+///
+/// Never exactly `TOKEN_VALUE` (it would look like a YED token): such a need is raised by one
+/// zat, which the MINT's change or fee takes. It cannot happen while the collateral is positive.
 pub fn staged_value(wallet: &Wallet, collateral: i64, protocol_fee: i64, attest_fee: i64) -> i64 {
-    collateral + TOKEN_VALUE + protocol_fee + attest_fee + wallet.pq_terms().yed_network_fee(1, &[])
+    let v = collateral
+        + TOKEN_VALUE
+        + protocol_fee
+        + attest_fee
+        + wallet.pq_terms().yed_network_fee(1, &[]);
+    if v == TOKEN_VALUE {
+        v + 1
+    } else {
+        v
+    }
+}
+
+/// The fee of a carrier funding from the private balance spending `notes` Sapling notes: the
+/// ZIP-317 conventional fee of the shape (two transparent outputs, the carrier's P2SH and the
+/// staged P2PKH, both within the standard output size; `notes` spends; the Sapling change, padded
+/// to two outputs), at least the server's flat Yellowback fee (`BuildCarrier`'s floor, as the
+/// post-quantum source takes it), capped at [`crate::params::MAX_FLAT_ZAT`] for that floor.
+pub fn sapling_carrier_fee(flat_zat: i64, notes: usize) -> i64 {
+    super::any_to_any::conventional_fee_bytes(0, 2, 0, notes, 1)
+        .max(flat_zat.min(crate::params::MAX_FLAT_ZAT))
+}
+
+/// The size, in bytes, of a carrier funding from the private balance spending `notes` notes
+/// (v4 header and transparent part ~150, 384 per spend, 948 per output padded to two, the
+/// binding signature): what the fee guard compares the fee with before the transaction exists.
+pub fn sapling_carrier_size(notes: usize) -> usize {
+    150 + 384 * notes + 2 * 948 + 64
+}
+
+/// The estimate's quote of a carrier funding from the private balance.
+pub struct SaplingFundingQuote {
+    /// The fee, zat.
+    pub fee: i64,
+    /// Its guard (the server's flat fee enters it).
+    pub guard: terms::FeeGuard,
+    /// The private balance's spendable YEC, zat.
+    pub available: i64,
+    /// The notes it would spend.
+    pub notes: usize,
+}
+
+/// Quote the carrier funding of `staged` zat from the private balance (read-only: the store's
+/// selection without the paths, [`crate::shielded::Shielded::quote_spends`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn sapling_funding_quote(
+    wallet: &Wallet,
+    staged: i64,
+) -> Result<SaplingFundingQuote, WalletError> {
+    if let Some(why) = wallet.terms_refused() {
+        return Err(WalletError::Other(format!(
+            "The server's fee terms were refused, so nothing is sent: {why}"
+        )));
+    }
+    let flat = wallet.pq_terms().flat_zat;
+    let sh = wallet.shielded()?;
+    let available = sh.balance()?.spendable_zat as i64;
+    let (notes, fee, _) = sh.quote_spends((CARRIER_VALUE + staged) as u64, |n| {
+        sapling_carrier_fee(flat, n) as u64
+    })?;
+    let fee = fee as i64;
+    let conventional = super::any_to_any::conventional_fee_bytes(0, 2, 0, notes, 1);
+    let guard = wallet.guard_fee(
+        terms::FeeKind::Plain,
+        fee,
+        sapling_carrier_size(notes),
+        conventional,
+        "mint carrier",
+    )?;
+    Ok(SaplingFundingQuote {
+        fee,
+        guard,
+        available,
+        notes,
+    })
+}
+
+/// The browser has no prover: a mint is not funded from the private balance there.
+#[cfg(target_arch = "wasm32")]
+pub fn sapling_funding_quote(_: &Wallet, _: i64) -> Result<SaplingFundingQuote, WalletError> {
+    Err(WalletError::Other(
+        "a mint is funded from the private balance only in the app (the browser has no prover)"
+            .into(),
+    ))
 }
 
 /// A planned carrier funding from a post-quantum source.
@@ -881,12 +982,7 @@ where
         }
         .into());
     }
-    let carrier_row = fresh_change(wallet)?;
-    let carrier_key = wallet
-        .key_for_hash(&carrier_row.hash160)?
-        .ok_or_else(|| WalletError::Other("carrier key".into()))?;
-    let redeem = script::carrier_script(&carrier_key.pubkey, &bundle::bundle_hash(bundle))
-        .map_err(MintError::Script)?;
+    let (carrier_row, redeem) = carrier_key(wallet, bundle)?;
     if let CarrierFunding::Pq {
         id,
         staged,
@@ -999,6 +1095,21 @@ where
     Ok((step, id))
 }
 
+/// A fresh carrier key (change chain, marked used) and the carrier redeem script it signs for,
+/// committing to `bundle` (`BuildCarrier`).
+pub(crate) fn carrier_key(
+    wallet: &Wallet,
+    bundle: &[u8],
+) -> Result<(AddressRow, Vec<u8>), WalletError> {
+    let carrier_row = fresh_change(wallet)?;
+    let carrier_key = wallet
+        .key_for_hash(&carrier_row.hash160)?
+        .ok_or_else(|| WalletError::Other("carrier key".into()))?;
+    let redeem = script::carrier_script(&carrier_key.pubkey, &bundle::bundle_hash(bundle))
+        .map_err(MintError::Script)?;
+    Ok((carrier_row, redeem))
+}
+
 /// How [`carrier_step`] funds the carrier (beta2 D-3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CarrierFunding {
@@ -1033,7 +1144,10 @@ pub(crate) fn staging_record_key(carrier_key: &[u8; 20]) -> String {
 
 /// Derive a fresh change key for a mint's staged funding and record it under the carrier's key
 /// before anything is built (review YEW-REVIEW-8 M2).
-fn record_stage_key(wallet: &Wallet, carrier_key: &[u8; 20]) -> Result<AddressRow, WalletError> {
+pub(crate) fn record_stage_key(
+    wallet: &Wallet,
+    carrier_key: &[u8; 20],
+) -> Result<AddressRow, WalletError> {
     let row = fresh_change(wallet)?;
     wallet
         .store
@@ -1080,7 +1194,7 @@ pub(crate) fn recorded_carrier_outputs(
 
 /// Record mint row `id`'s staged funding output (`txid:1`) and lock it to the row (review
 /// YEW-REVIEW-8 L2): no other coin selection takes it and it is not counted spendable.
-fn record_staged_output(
+pub(crate) fn record_staged_output(
     wallet: &Wallet,
     id: i64,
     txid: &[u8; 32],
@@ -1098,7 +1212,7 @@ fn record_staged_output(
 }
 
 /// The undo of [`record_staged_output`] and the row, for a carrier funding the server refused.
-fn undo_staged_output(
+pub(crate) fn undo_staged_output(
     wallet: &Wallet,
     id: Option<i64>,
     txid: &[u8; 32],
@@ -1324,6 +1438,144 @@ pub async fn start(
     branch_id: u32,
     source: MintSource,
 ) -> Result<i64, WalletError> {
+    if source == MintSource::Sapling {
+        return Err(WalletError::Other(
+            "a mint funded from the private balance is started with start_from_sapling (it needs the proving parameters)".into(),
+        ));
+    }
+    let p = prepare_start(
+        wallet,
+        client,
+        validator,
+        cents,
+        lock_blocks,
+        confirmed,
+        tip,
+        source,
+    )
+    .await?;
+    let funding = match source {
+        MintSource::Pq(id) => CarrierFunding::Pq {
+            id,
+            staged: p.staged(wallet),
+            max_fee: p.carrier_quote,
+        },
+        _ => CarrierFunding::Ecc,
+    };
+    let (_, id) = carrier_step(
+        wallet,
+        client,
+        validator,
+        &p.bundle_bytes,
+        p.est.ref_height,
+        tip,
+        branch_id,
+        funding,
+        |step: &CarrierStep| p.persist_row(wallet, cents, lock_blocks, tip, step),
+    )
+    .await?;
+    note_fee_ack(wallet, id, &p.est.fee_guard)?;
+    Ok(id)
+}
+
+/// What [`start`] settles before the carrier funding: the estimate re-checked against the
+/// confirmed terms and its acknowledgements, the verified bundle, the owner key (taken), the
+/// attestor payee and fee.
+pub(crate) struct Prepared {
+    pub(crate) est: MintEstimate,
+    /// The carrier funding fee the user confirmed (the stored-quote rule).
+    pub(crate) carrier_quote: i64,
+    pub(crate) bundle_bytes: Vec<u8>,
+    seqs: Vec<u16>,
+    owner_row: AddressRow,
+    owner: crate::pq::PqKeyId,
+    fee_zat: i64,
+    payee: String,
+    attest_payee_addr: String,
+    attest_fee_zat: i64,
+}
+
+impl Prepared {
+    /// The MINT's YEC need a carrier funded from another source stages ([`staged_value`]).
+    pub(crate) fn staged(&self, wallet: &Wallet) -> i64 {
+        staged_value(
+            wallet,
+            self.est.collateral_zat,
+            if self.payee.is_empty() {
+                0
+            } else {
+                self.fee_zat
+            },
+            self.attest_fee_zat,
+        )
+    }
+
+    /// Record the `mints` row for the carrier `step` (state `CarrierSent`).
+    pub(crate) fn persist_row(
+        &self,
+        wallet: &Wallet,
+        cents: u64,
+        lock_blocks: u32,
+        tip: u64,
+        step: &CarrierStep,
+    ) -> Result<i64, WalletError> {
+        let (est, r, seqs) = (&self.est, self.est.ref_height, &self.seqs);
+        let (fee_zat, payee) = (self.fee_zat, self.payee.clone());
+        let (attest_fee_zat, attest_payee_addr) =
+            (self.attest_fee_zat, self.attest_payee_addr.clone());
+        let (owner_row, owner) = (&self.owner_row, self.owner);
+        let bundle_bytes = &self.bundle_bytes;
+        let row = MintRow {
+            id: 0,
+            kind: MintKind::Mint,
+            state: MintState::CarrierSent,
+            created_height: tip,
+            cents,
+            lock_blocks,
+            term_class: est.term_class.clone(),
+            ref_height: r,
+            lock_height: est.lock_height,
+            claim_height: est.claim_height,
+            collateral_zat: est.collateral_zat,
+            fee_zat,
+            payee,
+            attest_fee_zat,
+            attest_payee: attest_payee_addr,
+            residual_zat: 0,
+            bundle: bundle_bytes.clone(),
+            bundle_seqs: seqs
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            carrier_hash160: step.carrier_hash160,
+            owner_hash160: owner_row.hash160,
+            carrier_txid: step.txid,
+            carrier_vout: 0,
+            main_txid: [0; 32],
+            sweep_txid: [0; 32],
+            expiry_height: step.expiry_height,
+            vault_txid: [0; 32],
+            owner: Some(owner),
+            note: String::new(),
+        };
+        Ok(wallet.store.insert_mint(&row)?)
+    }
+}
+
+/// The part of [`start`] before the carrier funding (moved out unchanged so the private-balance
+/// source, which needs `&mut Wallet` for its note selection between the two, shares it).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn prepare_start(
+    wallet: &Wallet,
+    client: &mut CompactClient,
+    validator: &mut Validator,
+    cents: u64,
+    lock_blocks: u32,
+    confirmed: Option<&ConfirmedTerms>,
+    tip: u64,
+    source: MintSource,
+) -> Result<Prepared, WalletError> {
     let yb = validator
         .client_mut()
         .ok_or(gate::GateError::YellowbackAbsent)?;
@@ -1388,70 +1640,18 @@ pub async fn start(
     let (fee_zat, payee) = (est.fee_zat, est.payee.clone());
     let (attest_payee_addr, attest_fee_zat) =
         attest_payee(wallet.network, client, yb, r, &[], &seqs, fee_zat).await?;
-    let persist_row = |step: &CarrierStep| -> Result<i64, WalletError> {
-        let row = MintRow {
-            id: 0,
-            kind: MintKind::Mint,
-            state: MintState::CarrierSent,
-            created_height: tip,
-            cents,
-            lock_blocks,
-            term_class: est.term_class,
-            ref_height: r,
-            lock_height: est.lock_height,
-            claim_height: est.claim_height,
-            collateral_zat: est.collateral_zat,
-            fee_zat,
-            payee,
-            attest_fee_zat,
-            attest_payee: attest_payee_addr,
-            residual_zat: 0,
-            bundle: bundle_bytes.clone(),
-            bundle_seqs: seqs
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>()
-                .join(","),
-            carrier_hash160: step.carrier_hash160,
-            owner_hash160: owner_row.hash160,
-            carrier_txid: step.txid,
-            carrier_vout: 0,
-            main_txid: [0; 32],
-            sweep_txid: [0; 32],
-            expiry_height: step.expiry_height,
-            vault_txid: [0; 32],
-            owner: Some(owner),
-            note: String::new(),
-        };
-        Ok(wallet.store.insert_mint(&row)?)
-    };
-    let funding = match source {
-        MintSource::Ecc => CarrierFunding::Ecc,
-        MintSource::Pq(id) => CarrierFunding::Pq {
-            id,
-            staged: staged_value(
-                wallet,
-                est.collateral_zat,
-                if est.payee.is_empty() { 0 } else { fee_zat },
-                attest_fee_zat,
-            ),
-            max_fee: carrier_quote,
-        },
-    };
-    let (_, id) = carrier_step(
-        wallet,
-        client,
-        validator,
-        &bundle_bytes,
-        r,
-        tip,
-        branch_id,
-        funding,
-        persist_row,
-    )
-    .await?;
-    note_fee_ack(wallet, id, &est.fee_guard)?;
-    Ok(id)
+    Ok(Prepared {
+        est,
+        carrier_quote,
+        bundle_bytes,
+        seqs,
+        owner_row,
+        owner,
+        fee_zat,
+        payee,
+        attest_payee_addr,
+        attest_fee_zat,
+    })
 }
 
 /// The estimate at `start` against the one the user confirmed (audit G-2).

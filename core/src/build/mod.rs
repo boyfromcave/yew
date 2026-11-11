@@ -19,6 +19,9 @@ pub mod claim;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hybrid;
 pub mod mint;
+// A mint funded from the private balance (beta2 D-3): the hybrid builder, so native only.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod mint_sapling;
 pub mod pq_send;
 pub mod redeem;
 pub mod release;

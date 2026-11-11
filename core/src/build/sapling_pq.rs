@@ -104,10 +104,7 @@ pub struct SaplingPqPlan {
 impl SaplingPqPlan {
     /// The transactions that created the selected notes (internal order), to fetch.
     pub fn note_txids(&self) -> Vec<[u8; 32]> {
-        let mut v: Vec<[u8; 32]> = self.picked.notes.iter().map(|n| n.txid).collect();
-        v.sort();
-        v.dedup();
-        v
+        note_txids(&self.picked.notes)
     }
 }
 
@@ -172,8 +169,24 @@ pub async fn fetch_note_txs(
     client: &mut CompactClient,
     plan: &SaplingPqPlan,
 ) -> Result<std::collections::HashMap<[u8; 32], Vec<u8>>, WalletError> {
+    fetch_txs(client, plan.note_txids()).await
+}
+
+/// The transactions that created `notes` (internal order, each once).
+pub fn note_txids(notes: &[crate::shielded::SelectedNote]) -> Vec<[u8; 32]> {
+    let mut v: Vec<[u8; 32]> = notes.iter().map(|n| n.txid).collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// Fetch `txids` (`GetTransaction`).
+pub async fn fetch_txs(
+    client: &mut CompactClient,
+    txids: Vec<[u8; 32]>,
+) -> Result<std::collections::HashMap<[u8; 32], Vec<u8>>, WalletError> {
     let mut out = std::collections::HashMap::new();
-    for txid in plan.note_txids() {
+    for txid in txids {
         let (raw, _) = client.get_transaction(&txid).await?.ok_or_else(|| {
             other(format!(
                 "the server does not know transaction {}, which created a note being spent",

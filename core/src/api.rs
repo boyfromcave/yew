@@ -740,8 +740,8 @@ pub struct MintEstimate {
     pub unusual_fee_ack: Option<String>,
     /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported).
     pub fee_price_micro_usd: Option<i64>,
-    /// Where the YEC comes from (beta2 D-3): empty = the public (ECC) balance, else the own
-    /// post-quantum address the mint is funded from.
+    /// Where the YEC comes from (beta2 D-3): empty = the public (ECC) balance, `private` = the
+    /// private (Sapling) balance, else the own post-quantum address the mint is funded from.
     pub from: String,
     /// The carrier funding transaction's fee, zat (in `network_fee_zat`): the flat fee from the
     /// public balance; from a post-quantum address the size fee of its signatures.
@@ -1160,7 +1160,8 @@ pub struct MintTerms {
     pub term_class: String,
     /// `MintEstimate::unusual_fee_ack` when the user confirmed the unusual fee separately.
     pub accept_unusual_fee: Option<String>,
-    /// `MintEstimate::from` (beta2 D-3): empty = the public balance.
+    /// `MintEstimate::from` (beta2 D-3): empty = the public balance, `private` = the private
+    /// balance (proven at start: [`ErrorKind::ParamsMissing`] without the parameters).
     pub from: String,
     /// `MintEstimate::carrier_fee_zat`: the carrier funding may not pay more.
     pub carrier_fee_zat: i64,
@@ -1168,8 +1169,12 @@ pub struct MintTerms {
     pub accept_unusual_carrier_fee: Option<String>,
 }
 
-/// The mint source an estimate or a start names: empty = the public (ECC) balance, else one
-/// of the wallet's post-quantum addresses holding plain YEC.
+/// [`MintEstimate::from`] / [`MintTerms::from`] naming the private (Sapling) balance.
+pub(crate) const MINT_FROM_PRIVATE: &str = "private";
+
+/// The mint source an estimate or a start names: empty = the public (ECC) balance,
+/// [`MINT_FROM_PRIVATE`] = the private (Sapling) balance, else one of the wallet's post-quantum
+/// addresses holding plain YEC.
 fn mint_source_of(
     network: params::Network,
     from: &str,
@@ -1178,12 +1183,15 @@ fn mint_source_of(
     if from.is_empty() {
         return Ok(crate::build::mint::MintSource::Ecc);
     }
+    if from == MINT_FROM_PRIVATE {
+        return Ok(crate::build::mint::MintSource::Sapling);
+    }
     keys::parse_pq_yec_address(network, from)
         .map(crate::build::mint::MintSource::Pq)
         .map_err(|_| {
             YewError::new(
                 ErrorKind::Input,
-                "Fund the mint from your public balance or from one of your post-quantum (sqf…/sqs…) addresses.",
+                "Fund the mint from your public balance, your private balance or one of your post-quantum (sqf…/sqs…) addresses.",
             )
         })
 }
@@ -3427,6 +3435,9 @@ pub fn mint_estimate(cents: i64, lock_blocks: u32, from: String) -> Result<MintE
             }
             let r = o.sync().await?;
             let source = mint_source_of(o.wallet.network, &from)?;
+            if source == crate::build::mint::MintSource::Sapling {
+                o.sync_shielded(yec_private::no_progress()).await?;
+            }
             let Open { wallet, conn, .. } = o;
             let conn = conn.as_mut().expect("connected");
             let e = wallet
@@ -3502,6 +3513,35 @@ pub fn mint_start(
                 carrier_fee_zat: Some(confirmed.carrier_fee_zat),
                 accept_unusual_carrier_fee: confirmed.accept_unusual_carrier_fee,
             };
+            if source == crate::build::mint::MintSource::Sapling {
+                if !sapling_params::status(&o.params_dir).present() {
+                    return Err(YewError::new(
+                        ErrorKind::ParamsMissing,
+                        "Funding a mint from the private balance needs a one-time download of 52 MB (the Sapling proving parameters).",
+                    ));
+                }
+                o.sync_shielded(yec_private::no_progress()).await?;
+                let Open {
+                    wallet,
+                    conn,
+                    params_dir,
+                    ..
+                } = &mut *o;
+                let conn = conn.as_mut().expect("connected");
+                let id = crate::build::mint_sapling::start_from_sapling(
+                    wallet,
+                    &mut conn.compact,
+                    &mut conn.validator,
+                    cents as u64,
+                    lock_blocks,
+                    Some(&terms),
+                    r.tip,
+                    r.branch_id,
+                    params_dir,
+                )
+                .await?;
+                return row_status(o, id);
+            }
             let id = {
                 let Open { wallet, conn, .. } = &mut *o;
                 let conn = conn.as_mut().expect("connected");
