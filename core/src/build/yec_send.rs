@@ -54,6 +54,17 @@ pub struct YecSendPreview {
     pub txid: [u8; 32],
 }
 
+/// The gate path of a YEC send to `to` (beta2 item 3): [`gate::Path::YecToPq`] for a decoded
+/// plain-YEC post-quantum address of this network, [`gate::Path::Yec`] for a P2PKH / P2SH one.
+/// A post-quantum YED (`ybf…`) or vault-owner address is refused with the reason
+/// (`keys::parse_yec_destination`).
+pub fn send_path(network: crate::params::Network, to: &str) -> Result<gate::Path, WalletError> {
+    Ok(match keys::parse_yec_destination(network, to)? {
+        keys::YecDestination::Pq(id) => gate::Path::YecToPq(id),
+        _ => gate::Path::Yec,
+    })
+}
+
 /// Build and sign a YEC send of `amount` zat to `to`.
 pub fn build_yec_send(
     wallet: &Wallet,
@@ -69,6 +80,7 @@ pub fn build_yec_send(
     // A post-quantum `sq…`/`tq…`/`rq…` is paid a `TX_PQPKH` (D-Q-20): the inputs stay the
     // wallet's P2PKH keys, so the transaction's size and fee are those of any YEC send.
     let dest_script = keys::parse_yec_destination(wallet.network, to)?.script();
+    let path = send_path(wallet.network, to)?;
     let (amount, amount_bumped) = if amount == TOKEN_VALUE {
         (amount + 1, true)
     } else {
@@ -119,9 +131,7 @@ pub fn build_yec_send(
     let raw = tx.serialize()?;
     let txid = tx.txid()?;
     // The gate sees the bytes that will be sent (D-W-5); `broadcast` runs it again.
-    gate::check(gate::Path::Yec, &raw, |op| {
-        wallet.store.utxo_class(op).ok().flatten()
-    })?;
+    gate::check(path, &raw, |op| wallet.store.utxo_class(op).ok().flatten())?;
     Ok(YecSendPreview {
         to: to.to_string(),
         amount,
@@ -150,15 +160,17 @@ pub async fn broadcast(
 ) -> Result<String, WalletError> {
     // the has-held-YED guard (beta2 item 32): a wallet that held YED spends transparent YEC
     // only where Yellowback tells its YED outputs apart
-    gate::refuse_held_absent(validator, gate::Path::Yec, wallet.has_held_yed()?)?;
-    gate::confirm(validator, gate::Path::Yec, &preview.raw, |op| {
+    // beta2 item 3: a post-quantum recipient is its own path, whose dry run is mandatory
+    let path = send_path(wallet.network, &preview.to)?;
+    gate::refuse_held_absent(validator, path, wallet.has_held_yed()?)?;
+    gate::confirm(validator, path, &preview.raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
     })
     .await?;
     // layer 3: no input carries YED by its creating transaction (review YEW-REVIEW-3)
     gate::confirm_provenance(
         client,
-        gate::Path::Yec,
+        path,
         &preview.raw,
         |op| wallet.store.utxo_class(op).ok().flatten(),
         |op| wallet.store.utxo_txout(op).ok().flatten(),
@@ -317,6 +329,26 @@ mod tests {
         assert_eq!(tx.vout[0].value, 20_000);
         assert_eq!((p.fee, p.change), (FEE_ZAT, 50_000 - 20_000 - FEE_ZAT));
         assert_eq!(p.to, to);
+        // beta2 item 3: its own gate path; the plain YEC path refuses the same bytes
+        assert_eq!(
+            send_path(Network::Regtest, to).unwrap(),
+            gate::Path::YecToPq(id)
+        );
+        let class = |op: &OutPoint| w.store.utxo_class(op).ok().flatten();
+        assert!(gate::check(gate::Path::YecToPq(id), &p.raw, class).is_ok());
+        assert_eq!(
+            gate::check(gate::Path::Yec, &p.raw, class).unwrap_err(),
+            gate::GateError::PqOutputOnYecPath(0)
+        );
+        let ecc = keys::encode_p2pkh(Network::Regtest, &[0x42; 20]);
+        assert_eq!(send_path(Network::Regtest, &ecc).unwrap(), gate::Path::Yec);
+        let q = build_yec_send(&w, &ecc, 20_000, false, 100, 1).unwrap();
+        assert!(gate::check(gate::Path::Yec, &q.raw, class).is_ok());
+        assert!(send_path(
+            Network::Regtest,
+            "yrf1yW8ubn3p8Wf9XWuksXcZs562YHJTTjqdnLuWym3qJQ8SeGH2b"
+        )
+        .is_err());
         for refused in [
             "yrf1yW8ubn3p8Wf9XWuksXcZs562YHJTTjqdnLuWym3qJQ8SeGH2b",
             "yrs2wCox3ZNcy8vFFh8wejMoNVDfSRKfdjwrp3q4fipDxaJRZPzW3",

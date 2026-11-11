@@ -124,6 +124,29 @@ void main() {
     await tester.pumpAndSettle();
     expect(h.api.calls, contains('yecPreview $pqYec 50000000 false'));
     expect(find.byKey(const Key('slide-to-confirm')), findsOneWidget);
+    // beta2 item 3: from the ECC (Automatic) source, not a post-quantum source: the core's YEC
+    // send, whose gate path for a post-quantum recipient is its own (Path::YecToPq)
+    expect(h.api.calls.where((c) => c.startsWith('pqPreview')), isEmpty);
+    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls.where((c) => c.startsWith('yecConfirm')), hasLength(1));
+    expect(find.text('Sent'), findsWidgets);
+  });
+
+  testWidgets('YEC to a post-quantum address on a server without Yellowback: the core\'s refusal is shown, nothing is sent', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.yecConfirmError = const YewError(kind: ErrorKind.gate, message: 'gate: the server offers no Yellowback service');
+    await openSend(tester, h);
+    await tester.tap(find.text('YEC'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('address')), pqYec);
+    await tester.enterText(find.byKey(const Key('amount')), '0.5');
+    await tester.tap(find.byKey(const Key('preview')));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('offers no Yellowback service'), findsOneWidget);
+    expect(find.text('Sent'), findsNothing);
   });
 
   testWidgets('YEC to a post-quantum YED (yr…) or vault-owner address is refused before the core', (tester) async {

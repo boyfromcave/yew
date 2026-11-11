@@ -30,7 +30,8 @@
 //!    every `TOKEN_VALUE` output is `HELD`, and the local layer already refuses all of them.
 //!    [`Validator`] is built only by probing the server ([`Validator::detect`]); nothing else
 //!    constructs an `Absent`.
-//! 3. **Provenance** ([`confirm_provenance`], the plain-YEC paths [`Path::Yec`], [`Path::Shield`],
+//! 3. **Provenance** ([`confirm_provenance`], the plain-YEC paths [`Path::Yec`],
+//!    [`Path::YecToPq`], [`Path::Shield`],
 //!    [`Path::PqSpend`], and the YEC fee inputs of the YED builders' paths [`Path::Carrier`],
 //!    [`Path::Mint`], [`Path::YedTransfer`], [`Path::Redeem`] / [`Path::Release`],
 //!    [`Path::Claim`], [`Path::IntentRelease`], and the coins of [`Path::Sweep`] and
@@ -111,6 +112,13 @@ pub enum GateError {
     /// lines' has-held-YED guard, beta2 item 32).
     #[error("This wallet has held YED, but Yellowback is not live on the connected server, so its YED outputs cannot be told apart from plain YEC. Connect to a server with Yellowback to send YEC from public addresses.")]
     HeldYedNotLive,
+    /// The plain YEC path pays a post-quantum key (beta2 item 3: that is [`Path::YecToPq`]'s, with
+    /// its mandatory dry run).
+    #[error("gate: output {0} pays a post-quantum key; a YEC send to a post-quantum address goes through its own path")]
+    PqOutputOnYecPath(usize),
+    /// The ECC → post-quantum path's output rule was broken.
+    #[error("gate: a YEC send to a post-quantum address {0}")]
+    YecToPqShape(&'static str),
     /// A post-quantum spend pays an output of exactly `TOKEN_VALUE` (it would look like a token).
     #[error("gate: output {0} is exactly TOKEN_VALUE; a plain YEC output must not look like a YED token")]
     TokenValuedOutput(usize),
@@ -152,8 +160,16 @@ pub enum GateError {
 /// Which builder produced the transaction; selects the local rule set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Path {
-    /// A plain YEC send (`build::yec_send`).
+    /// A plain YEC send (`build::yec_send`) to a P2PKH or P2SH address: never a payload, never a
+    /// `TX_PQPKH` output (beta2 item 3: paying a post-quantum key is [`Path::YecToPq`]).
     Yec,
+    /// A plain YEC send from the wallet's ECC coins to a post-quantum key (beta2 item 3, D-2;
+    /// `build::yec_send` with a decoded plain-YEC post-quantum address of this network): the
+    /// inputs [`Path::Yec`] admits and no other; outputs exactly one `TX_PQPKH` paying the named
+    /// key and at most one other, a P2PKH (the change); no payload; no output of exactly
+    /// `TOKEN_VALUE`. The remote layer is mandatory (the node's dry run must see a transaction
+    /// that pays a post-quantum key), so a server without Yellowback refuses it.
+    YecToPq(crate::pq::PqKeyId),
     /// A YED transfer (`build::yed_transfer`).
     YedTransfer,
     /// The carrier funding transaction of a mint or claim (`build::mint::carrier_step`).
@@ -195,6 +211,7 @@ impl Path {
     fn name(self) -> &'static str {
         match self {
             Path::Yec => "YEC",
+            Path::YecToPq(_) => "YEC to post-quantum",
             Path::YedTransfer => "YED transfer",
             Path::Carrier => "carrier",
             Path::Mint => "mint",
@@ -212,7 +229,7 @@ impl Path {
 
     fn allows(self, c: UtxoClass) -> bool {
         match self {
-            Path::Yec | Path::Carrier => c.yec_spendable(),
+            Path::Yec | Path::YecToPq(_) | Path::Carrier => c.yec_spendable(),
             Path::YedTransfer => c.transfer_spendable(),
             Path::Mint => c.mint_spendable(),
             Path::Redeem => c.redeem_spendable(),
@@ -304,7 +321,51 @@ pub fn check(
         Ok(())
     };
     match path {
-        Path::Yec => no_payload(&tx)?,
+        Path::Yec => {
+            no_payload(&tx)?;
+            if let Some(i) = tx
+                .vout
+                .iter()
+                .position(|o| crate::pq::pqpkh_of(&o.script_pubkey).is_some())
+            {
+                return Err(GateError::PqOutputOnYecPath(i));
+            }
+        }
+        Path::YecToPq(id) => {
+            no_payload(&tx)?;
+            let mut paid = 0;
+            for o in &tx.vout {
+                match crate::pq::pqpkh_of(&o.script_pubkey) {
+                    Some(k) if k == id => paid += 1,
+                    Some(_) => {
+                        return Err(GateError::YecToPqShape(
+                            "must not pay a post-quantum key other than the recipient",
+                        ))
+                    }
+                    None if script::p2pkh_hash(&o.script_pubkey).is_some() => {}
+                    None => {
+                        return Err(GateError::YecToPqShape(
+                            "must pay only the recipient and P2PKH change",
+                        ))
+                    }
+                }
+                if o.value == crate::params::TOKEN_VALUE {
+                    return Err(GateError::YecToPqShape(
+                        "must not pay an output of exactly TOKEN_VALUE (it would look like a YED token)",
+                    ));
+                }
+            }
+            if paid != 1 {
+                return Err(GateError::YecToPqShape(
+                    "must pay the recipient exactly once",
+                ));
+            }
+            if tx.vout.len() > 2 {
+                return Err(GateError::YecToPqShape(
+                    "must have at most one change output",
+                ));
+            }
+        }
         Path::Carrier => {
             no_payload(&tx)?;
             let ok = tx
@@ -499,7 +560,7 @@ pub fn refuse_held_absent(
 ) -> Result<(), GateError> {
     if has_held_yed
         && matches!(validator, Validator::Absent)
-        && matches!(path, Path::Yec | Path::Shield)
+        && matches!(path, Path::Yec | Path::YecToPq(_) | Path::Shield)
     {
         return Err(GateError::HeldYedNotLive);
     }
@@ -1499,6 +1560,226 @@ mod tests {
         );
         assert_eq!(refuse_held_absent(&absent, Path::Yec, false), Ok(()));
         assert_eq!(refuse_held_absent(&absent, Path::Shielded, true), Ok(()));
+    }
+
+    // ---- beta2 item 3: ECC -> post-quantum through its own path
+
+    fn pq_id(b: u8) -> crate::pq::PqKeyId {
+        crate::pq::PqKeyId {
+            scheme: crate::pq::SCHEME_FN_DSA_512,
+            hash: [b; 32],
+        }
+    }
+
+    fn raw_paying(inputs: &[OutPoint], outs: &[(i64, Vec<u8>)]) -> Vec<u8> {
+        let mut t = Transaction::new_v4();
+        for op in inputs {
+            t.vin.push(TxIn::new(*op));
+        }
+        for (v, spk) in outs {
+            t.vout.push(TxOut {
+                value: *v,
+                script_pubkey: spk.clone(),
+            });
+        }
+        t.serialize().unwrap()
+    }
+
+    /// Property, beta2 item 3: on random coin sets and random output shapes,
+    /// - `Path::YecToPq` admits exactly the input classes `Path::Yec` admits;
+    /// - `Path::Yec` passes exactly what it passed before (YEC-spendable inputs, no payload) minus
+    ///   the shapes paying a `TX_PQPKH`: every ECC -> ECC shape is unchanged, and only post-quantum
+    ///   outputs moved;
+    /// - `Path::YecToPq(id)` passes exactly: YEC-spendable inputs, no payload, one output paying
+    ///   `id`, at most one other output and it P2PKH, no output of exactly TOKEN_VALUE.
+    #[test]
+    fn yec_to_pq_property_over_every_class_and_shape() {
+        for c in ALL {
+            assert_eq!(
+                Path::YecToPq(pq_id(1)).allows(c),
+                Path::Yec.allows(c),
+                "{c:?}"
+            );
+        }
+        let id = pq_id(7);
+        let to_pq = crate::pq::pqpkh_script(&id).unwrap();
+        let other_pq = crate::pq::pqpkh_script(&pq_id(8)).unwrap();
+        let slh = crate::pq::pqpkh_script(&crate::pq::PqKeyId {
+            scheme: crate::pq::SCHEME_SLH_DSA_SHA2_128S,
+            hash: [7; 32],
+        })
+        .unwrap();
+        let p2pkh = script::p2pkh_script(&[3; 20]);
+        let p2sh = script::p2sh_script(&[4; 20]);
+        let op_ret = transfer_payload_script();
+        let kinds = [
+            to_pq.clone(),
+            other_pq.clone(),
+            slh.clone(),
+            p2pkh.clone(),
+            p2sh.clone(),
+            op_ret.clone(),
+        ];
+        let mut rng = Rng(0x5eed_1234_abcd_ef01);
+        for _ in 0..3000 {
+            let n_coins = 1 + rng.below(6) as usize;
+            let mut coins: HashMap<OutPoint, UtxoClass> = HashMap::new();
+            let mut list = Vec::new();
+            for i in 0..n_coins {
+                let mut txid = [0u8; 32];
+                txid[0] = i as u8;
+                txid[1] = rng.below(256) as u8;
+                let op = OutPoint { txid, n: 0 };
+                coins.insert(op, ALL[rng.below(ALL.len() as u64) as usize]);
+                list.push(op);
+            }
+            let n_in = 1 + rng.below(list.len() as u64) as usize;
+            let inputs: Vec<OutPoint> = list[..n_in].to_vec();
+            let n_out = 1 + rng.below(3) as usize;
+            let outs: Vec<(i64, Vec<u8>)> = (0..n_out)
+                .map(|_| {
+                    let v = if rng.below(8) == 0 {
+                        crate::params::TOKEN_VALUE
+                    } else {
+                        1_000 + rng.below(1_000_000) as i64
+                    };
+                    (v, kinds[rng.below(kinds.len() as u64) as usize].clone())
+                })
+                .collect();
+            let raw = raw_paying(&inputs, &outs);
+            let class = |op: &OutPoint| coins.get(op).copied();
+            let inputs_ok = inputs
+                .iter()
+                .all(|op| class(op).is_some_and(|c| c.yec_spendable()));
+            let has_payload = outs.iter().any(|(_, s)| script::is_op_return(s));
+            let has_pq = outs.iter().any(|(_, s)| crate::pq::pqpkh_of(s).is_some());
+            // Path::Yec: the old rule, minus the post-quantum outputs
+            let old_rule = inputs_ok && !has_payload;
+            let yec = check(Path::Yec, &raw, class);
+            assert_eq!(yec.is_ok(), old_rule && !has_pq, "Yec {outs:?}: {yec:?}");
+            if old_rule && has_pq {
+                assert!(
+                    matches!(yec, Err(GateError::PqOutputOnYecPath(_))),
+                    "{yec:?}"
+                );
+            }
+            // Path::YecToPq
+            let paid = outs.iter().filter(|(_, s)| *s == to_pq).count();
+            let others_p2pkh = outs
+                .iter()
+                .filter(|(_, s)| *s != to_pq)
+                .all(|(_, s)| script::p2pkh_hash(s).is_some());
+            let no_token_value = outs.iter().all(|(v, _)| *v != crate::params::TOKEN_VALUE);
+            let want = inputs_ok
+                && !has_payload
+                && paid == 1
+                && others_p2pkh
+                && outs.len() <= 2
+                && no_token_value;
+            let r = check(Path::YecToPq(id), &raw, class);
+            assert_eq!(r.is_ok(), want, "YecToPq {inputs:?} {outs:?}: {r:?}");
+        }
+    }
+
+    /// Beta2 item 3: every previously valid ECC -> ECC shape (P2PKH or P2SH recipient, with or
+    /// without P2PKH change, from YEC or FEE_RESERVE coins) and ECC -> Sapling shape (`Path::Shield`)
+    /// still passes; the same shapes paying a post-quantum key pass only on `Path::YecToPq`; the
+    /// new path's dry run is mandatory and the held-YED guard covers it.
+    #[tokio::test]
+    async fn yec_path_tightening_keeps_every_ecc_shape() {
+        let a = OutPoint {
+            txid: [1; 32],
+            n: 0,
+        };
+        let b = OutPoint {
+            txid: [2; 32],
+            n: 1,
+        };
+        let id = pq_id(9);
+        let p2pkh = script::p2pkh_script(&[3; 20]);
+        let change = script::p2pkh_script(&[5; 20]);
+        let p2sh = script::p2sh_script(&[4; 20]);
+        let to_pq = crate::pq::pqpkh_script(&id).unwrap();
+        for classes in [
+            [UtxoClass::Yec, UtxoClass::Yec],
+            [UtxoClass::Yec, UtxoClass::FeeReserve],
+            [UtxoClass::FeeReserve, UtxoClass::FeeReserve],
+        ] {
+            let class = |op: &OutPoint| Some(if *op == a { classes[0] } else { classes[1] });
+            for dest in [&p2pkh, &p2sh] {
+                for outs in [
+                    vec![(50_000, dest.clone())],
+                    vec![(50_000, dest.clone()), (7_000, change.clone())],
+                ] {
+                    let raw = raw_paying(&[a, b], &outs);
+                    assert!(check(Path::Yec, &raw, class).is_ok(), "{outs:?}");
+                    assert!(check(Path::YecToPq(id), &raw, class).is_err());
+                }
+            }
+            for outs in [
+                vec![(50_000, to_pq.clone())],
+                vec![(50_000, to_pq.clone()), (7_000, change.clone())],
+            ] {
+                let raw = raw_paying(&[a, b], &outs);
+                assert_eq!(
+                    check(Path::Yec, &raw, class).unwrap_err(),
+                    GateError::PqOutputOnYecPath(0)
+                );
+                assert!(check(Path::YecToPq(id), &raw, class).is_ok(), "{outs:?}");
+                // the named key only
+                assert!(check(Path::YecToPq(pq_id(10)), &raw, class).is_err());
+            }
+            // ECC -> Sapling (a shield) is its own path, unchanged
+            let shield = raw_shielded(&[a], &[(7_000, change.clone())], 0);
+            // (a shield spends YEC only, never the fee reserve: as before)
+            assert_eq!(
+                check(Path::Shield, &shield, class).is_ok(),
+                classes[0] == UtxoClass::Yec
+            );
+            assert_eq!(
+                check(Path::Yec, &shield, class).unwrap_err(),
+                GateError::Shielded
+            );
+            assert_eq!(
+                check(Path::YecToPq(id), &shield, class).unwrap_err(),
+                GateError::Shielded
+            );
+        }
+        // the shape errors name the rule
+        let class = |_: &OutPoint| Some(UtxoClass::Yec);
+        let e = check(
+            Path::YecToPq(id),
+            &raw_paying(&[a], &[(50_000, to_pq.clone()), (7_000, p2sh.clone())]),
+            class,
+        )
+        .unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "gate: a YEC send to a post-quantum address must pay only the recipient and P2PKH change"
+        );
+        assert!(check(
+            Path::YecToPq(id),
+            &raw_paying(&[a], &[(crate::params::TOKEN_VALUE, to_pq.clone())]),
+            class
+        )
+        .is_err());
+        // the dry run is mandatory; the held-YED guard covers the path
+        assert!(Path::YecToPq(id).needs_yellowback() && !Path::Yec.needs_yellowback());
+        let raw = raw_paying(&[a], &[(50_000, to_pq.clone())]);
+        let mut v = Validator::Absent;
+        assert_eq!(
+            confirm(&mut v, Path::YecToPq(id), &raw, class)
+                .await
+                .unwrap_err(),
+            GateError::YellowbackAbsent
+        );
+        assert_eq!(
+            refuse_held_absent(&Validator::Absent, Path::YecToPq(id), true),
+            Err(GateError::HeldYedNotLive)
+        );
+        // layer 3 checks its inputs as plain YEC
+        let (tx, _) = Transaction::parse(&raw).unwrap();
+        assert!(spent_as_yec(Path::YecToPq(id), &tx, class).contains(&a));
     }
 
     /// Without the remote layer (a server answering `UNIMPLEMENTED`), the post-quantum send is
