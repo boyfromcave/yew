@@ -226,10 +226,7 @@ fn hash_hex(b: &[u8]) -> String {
 
 /// The schemes a balance split reports, always both and in this order (beta2 item 15; ycashd's
 /// `PQ_BALANCE_SCHEMES`): SLH-DSA-SHA2-128s, then FN-DSA-512.
-pub(crate) const PQ_BALANCE_SCHEMES: [u8; 2] = [
-    yew_core::pq::SCHEME_SLH_DSA_SHA2_128S,
-    yew_core::pq::SCHEME_FN_DSA_512,
-];
+pub(crate) use yew_core::build::any_to_any::PQ_BALANCE_SCHEMES;
 
 /// ycashd's `PQSchemeName`: the registry's names, `"unknown"` for anything else.
 pub(crate) fn pq_scheme_name(scheme: u8) -> &'static str {
@@ -321,28 +318,23 @@ impl Wallet {
     /// = scheme byte): the `TX_PQPKH` outputs among the counted ones (ycashd's `GetWalletBalanceSplit`, beta2
     /// item 15).
     fn available_credit_split(&self, txid: &str, asof: Option<u32>) -> (i64, [i64; 3]) {
-        let mut pq = [0i64; 3];
         let Some(p) = self.parsed(txid) else {
-            return (0, pq);
+            return (0, [0; 3]);
         };
         if self.immature(p.coinbase, self.tx_depth(txid, asof)) {
-            return (0, pq);
+            return (0, [0; 3]);
         }
-        let mut total = 0;
+        // the split by type: the YEW core's (one implementation with the app, beta2 D-8)
+        let mut split = yew_core::build::any_to_any::TypeSplit::default();
         for (n, o) in p.tx.vout.iter().enumerate() {
             if self.book.owns_script(&o.script_pubkey).is_none()
                 || self.spent_at(txid, n as u32, asof)
             {
                 continue;
             }
-            total += o.value;
-            if let Some(id) = yew_core::pq::pqpkh_of(&o.script_pubkey) {
-                if let Some(slot) = pq.get_mut(id.scheme as usize) {
-                    *slot += o.value;
-                }
-            }
+            split.add(&o.script_pubkey, o.value);
         }
-        (total, pq)
+        (split.transparent, split.pq)
     }
 
     /// `GetBalance(asOfHeight, ISMINE_SPENDABLE, min_depth)`.

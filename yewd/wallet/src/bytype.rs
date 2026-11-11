@@ -69,19 +69,15 @@ impl Wallet {
         }
         let _watch = p_bool(p, 1, false)?;
         let reserved = self.yed_reserved(node).await?;
-        let mut transparent = 0i64;
-        let mut pq = [0i64; 3];
+        // the split by type: the YEW core's (one implementation with the app, beta2 D-8)
+        let mut split = yew_core::build::any_to_any::TypeSplit::default();
         for (c, d) in self.available_coins(None) {
             if d < min || reserved.contains(&(c.txid.clone(), c.vout)) {
                 continue;
             }
-            transparent += c.value;
-            if let Some(id) = yew_core::pq::pqpkh_of(&c.script) {
-                if let Some(slot) = pq.get_mut(id.scheme as usize) {
-                    *slot += c.value;
-                }
-            }
+            split.add(&c.script, c.value);
         }
+        let (transparent, pq) = (split.transparent, split.pq);
         let private: i64 = self
             .notes
             .iter()
