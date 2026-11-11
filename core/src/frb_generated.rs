@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1627574949;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -386881473;
 
 // Section: executor
 
@@ -1105,6 +1105,40 @@ fn wire__crate__api__pq_sources_impl(
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
                     let output_ok = crate::api::pq_sources()?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__private_pq_send_preview_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "private_pq_send_preview",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_to = <String>::sse_decode(&mut deserializer);
+            let api_zat = <i64>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::YewError>((move || {
+                    let output_ok = crate::api::private_pq_send_preview(api_to, api_zat)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -2497,6 +2531,7 @@ impl SseDecode for crate::api::PqSendPreviewInfo {
         let mut var_feePriceMicroUsd = <Option<i64>>::sse_decode(deserializer);
         let mut var_expiryHeight = <u32>::sse_decode(deserializer);
         let mut var_txid = <String>::sse_decode(deserializer);
+        let mut var_fromPrivate = <bool>::sse_decode(deserializer);
         return crate::api::PqSendPreviewInfo {
             preview_id: var_previewId,
             from: var_from,
@@ -2514,6 +2549,7 @@ impl SseDecode for crate::api::PqSendPreviewInfo {
             fee_price_micro_usd: var_feePriceMicroUsd,
             expiry_height: var_expiryHeight,
             txid: var_txid,
+            from_private: var_fromPrivate,
         };
     }
 }
@@ -3102,22 +3138,23 @@ fn pde_ffi_dispatcher_primary_impl(
         30 => wire__crate__api__pq_send_confirm_impl(port, ptr, rust_vec_len, data_len),
         31 => wire__crate__api__pq_send_preview_impl(port, ptr, rust_vec_len, data_len),
         32 => wire__crate__api__pq_sources_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__probe_server_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__receive_address_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__redeem_confirm_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__api__redeem_preview_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__api__release_confirm_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__crate__api__release_preview_impl(port, ptr, rust_vec_len, data_len),
-        39 => wire__crate__api__reset_fee_reference_impl(port, ptr, rust_vec_len, data_len),
-        40 => wire__crate__api__send_yec_confirm_impl(port, ptr, rust_vec_len, data_len),
-        41 => wire__crate__api__send_yec_preview_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__crate__api__send_yed_confirm_impl(port, ptr, rust_vec_len, data_len),
-        43 => wire__crate__api__send_yed_preview_impl(port, ptr, rust_vec_len, data_len),
-        44 => wire__crate__api__set_server_impl(port, ptr, rust_vec_len, data_len),
-        45 => wire__crate__api__status_impl(port, ptr, rust_vec_len, data_len),
-        46 => wire__crate__api__sync_now_impl(port, ptr, rust_vec_len, data_len),
-        47 => wire__crate__api__unlock_impl(port, ptr, rust_vec_len, data_len),
-        49 => wire__crate__api__vaults_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__private_pq_send_preview_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__probe_server_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__receive_address_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__redeem_confirm_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__redeem_preview_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__api__release_confirm_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__release_preview_impl(port, ptr, rust_vec_len, data_len),
+        40 => wire__crate__api__reset_fee_reference_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__send_yec_confirm_impl(port, ptr, rust_vec_len, data_len),
+        42 => wire__crate__api__send_yec_preview_impl(port, ptr, rust_vec_len, data_len),
+        43 => wire__crate__api__send_yed_confirm_impl(port, ptr, rust_vec_len, data_len),
+        44 => wire__crate__api__send_yed_preview_impl(port, ptr, rust_vec_len, data_len),
+        45 => wire__crate__api__set_server_impl(port, ptr, rust_vec_len, data_len),
+        46 => wire__crate__api__status_impl(port, ptr, rust_vec_len, data_len),
+        47 => wire__crate__api__sync_now_impl(port, ptr, rust_vec_len, data_len),
+        48 => wire__crate__api__unlock_impl(port, ptr, rust_vec_len, data_len),
+        50 => wire__crate__api__vaults_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -3135,7 +3172,7 @@ fn pde_ffi_dispatcher_sync_impl(
         10 => wire__crate__api__default_servers_impl(ptr, rust_vec_len, data_len),
         13 => wire__crate__api__generate_seed_words_impl(ptr, rust_vec_len, data_len),
         17 => wire__crate__api__is_unlocked_impl(ptr, rust_vec_len, data_len),
-        48 => wire__crate__api__validate_address_impl(ptr, rust_vec_len, data_len),
+        49 => wire__crate__api__validate_address_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -3642,6 +3679,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::PqSendPreviewInfo {
             self.fee_price_micro_usd.into_into_dart().into_dart(),
             self.expiry_height.into_into_dart().into_dart(),
             self.txid.into_into_dart().into_dart(),
+            self.from_private.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4672,6 +4710,7 @@ impl SseEncode for crate::api::PqSendPreviewInfo {
         <Option<i64>>::sse_encode(self.fee_price_micro_usd, serializer);
         <u32>::sse_encode(self.expiry_height, serializer);
         <String>::sse_encode(self.txid, serializer);
+        <bool>::sse_encode(self.from_private, serializer);
     }
 }
 

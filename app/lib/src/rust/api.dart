@@ -193,7 +193,17 @@ Future<PqSendPreviewInfo> pqSendPreview({
   required PlatformInt64 zat,
 }) => RustLib.instance.api.crateApiPqSendPreview(from: from, to: to, zat: zat);
 
-/// Broadcast a [`pq_send_preview`] through both gate layers (the node's dry run must say `ok,
+/// Plan, prove and authorize a send of `zat` from the private (Sapling) balance to the
+/// post-quantum address `to` (`sqf…`/`sqs…` of this network), after a sync of both pools
+/// (`build::sapling_pq`; beta2 D-2, D-8). Proven here, so it needs the Sapling parameters
+/// ([`ErrorKind::ParamsMissing`] otherwise). The amount and the recipient become visible on the
+/// chain (`from_private` set: D-5). Confirm with [`pq_send_confirm`]. Nothing is broadcast.
+Future<PqSendPreviewInfo> privatePqSendPreview({
+  required String to,
+  required PlatformInt64 zat,
+}) => RustLib.instance.api.crateApiPrivatePqSendPreview(to: to, zat: zat);
+
+/// Broadcast a [`pq_send_preview`] (or a [`private_pq_send_preview`]) through both gate layers (the node's dry run must say `ok,
 /// burned 0`; a server without Yellowback refuses it). A send whose outcome is unknown says
 /// `…; status unknown, txid <txid>: check before sending again`. A flagged fee
 /// ([`PqSendPreviewInfo::unusual_fee_ack`]) needs that acknowledgement as `accept_unusual_fee`;
@@ -1858,6 +1868,13 @@ class PqSendPreviewInfo {
   /// The txid the transaction will have.
   final String txid;
 
+  /// The send is from the private (Sapling) balance to a post-quantum address
+  /// ([`private_pq_send_preview`]): `from` is empty, `scheme_name` is the recipient's,
+  /// `inputs` counts the notes spent, `change_zat` goes back to the private balance, and the
+  /// amount and the recipient become visible on the chain (beta2 D-5: show the private ->
+  /// public notice).
+  final bool fromPrivate;
+
   const PqSendPreviewInfo({
     required this.previewId,
     required this.from,
@@ -1875,6 +1892,7 @@ class PqSendPreviewInfo {
     this.feePriceMicroUsd,
     required this.expiryHeight,
     required this.txid,
+    required this.fromPrivate,
   });
 
   @override
@@ -1894,7 +1912,8 @@ class PqSendPreviewInfo {
       unusualFeeAck.hashCode ^
       feePriceMicroUsd.hashCode ^
       expiryHeight.hashCode ^
-      txid.hashCode;
+      txid.hashCode ^
+      fromPrivate.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1916,7 +1935,8 @@ class PqSendPreviewInfo {
           unusualFeeAck == other.unusualFeeAck &&
           feePriceMicroUsd == other.feePriceMicroUsd &&
           expiryHeight == other.expiryHeight &&
-          txid == other.txid;
+          txid == other.txid &&
+          fromPrivate == other.fromPrivate;
 }
 
 /// One of the wallet's own post-quantum addresses holding plain YEC (a send source, beta2 D-8).

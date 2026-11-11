@@ -23,8 +23,7 @@
 //! binding signature) and the gate's [`gate::Path::PqToSapling`] (PQ_OWNED inputs only, the
 //! change only to the source, D-4). The browser build refuses it (no prover there).
 //!
-//! Not here: a post-quantum recipient paid from Sapling notes (needs the notes' witnesses from
-//! the light client's store; the gate's [`gate::Path::SaplingToPq`] is ready for it).
+//! A post-quantum recipient paid from Sapling notes is [`super::sapling_pq`]'s.
 
 use crate::build::any_to_any::{self as plan, PlanRecipient, PqCoin};
 use crate::coins::{Utxo, UtxoClass};

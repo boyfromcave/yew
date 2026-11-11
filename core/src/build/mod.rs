@@ -22,6 +22,9 @@ pub mod mint;
 pub mod pq_send;
 pub mod redeem;
 pub mod release;
+// Sapling -> post-quantum (beta2 D-2, D-8): the hybrid builder, so native only.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod sapling_pq;
 pub mod terms;
 pub mod yec_move;
 pub mod yec_private;

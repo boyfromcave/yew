@@ -1256,6 +1256,8 @@ enum Preview {
     Redeem(crate::build::redeem::RedeemBuild),
     Release(crate::build::release::ReleaseBuild),
     Pq(Box<crate::build::pq_send::PqSendPreview>),
+    /// A send from the private balance to a post-quantum address (`build::sapling_pq`).
+    SaplingPq(Box<crate::build::sapling_pq::SaplingPqPreview>),
 }
 
 /// The open wallet.
@@ -2365,6 +2367,12 @@ pub struct PqSendPreviewInfo {
     pub expiry_height: u32,
     /// The txid the transaction will have.
     pub txid: String,
+    /// The send is from the private (Sapling) balance to a post-quantum address
+    /// ([`private_pq_send_preview`]): `from` is empty, `scheme_name` is the recipient's,
+    /// `inputs` counts the notes spent, `change_zat` goes back to the private balance, and the
+    /// amount and the recipient become visible on the chain (beta2 D-5: show the private ->
+    /// public notice).
+    pub from_private: bool,
 }
 
 /// Plan and sign a send of `zat` from the own post-quantum address `from` to `to` (ECC `s…`,
@@ -2424,6 +2432,7 @@ pub fn pq_send_preview(from: String, to: String, zat: i64) -> Result<PqSendPrevi
                 fee_price_micro_usd: price_opt(p.fee_guard.reported_price_micro_usd),
                 expiry_height: p.expiry_height,
                 txid,
+                from_private: false,
             };
             o.previews
                 .insert(out.preview_id.clone(), Preview::Pq(Box::new(p)));
@@ -2432,7 +2441,70 @@ pub fn pq_send_preview(from: String, to: String, zat: i64) -> Result<PqSendPrevi
     })
 }
 
-/// Broadcast a [`pq_send_preview`] through both gate layers (the node's dry run must say `ok,
+/// Plan, prove and authorize a send of `zat` from the private (Sapling) balance to the
+/// post-quantum address `to` (`sqf…`/`sqs…` of this network), after a sync of both pools
+/// (`build::sapling_pq`; beta2 D-2, D-8). Proven here, so it needs the Sapling parameters
+/// ([`ErrorKind::ParamsMissing`] otherwise). The amount and the recipient become visible on the
+/// chain (`from_private` set: D-5). Confirm with [`pq_send_confirm`]. Nothing is broadcast.
+pub fn private_pq_send_preview(to: String, zat: i64) -> Result<PqSendPreviewInfo, YewError> {
+    with_open_async(|o| {
+        Box::pin(async move {
+            let r = o.sync().await?;
+            o.sync_shielded(yec_private::no_progress()).await?;
+            if !sapling_params::status(&o.params_dir).present() {
+                return Err(YewError::new(
+                    ErrorKind::ParamsMissing,
+                    "Private sending needs a one-time download of 52 MB (the Sapling proving parameters).",
+                ));
+            }
+            let plan = crate::build::sapling_pq::plan_sapling_to_pq(
+                &mut o.wallet,
+                &to,
+                zat,
+                r.tip,
+                r.branch_id,
+            )?;
+            // the notes' plaintexts are decrypted again from their transactions (the store keeps
+            // `rcm` only, the builder spends ZIP-212 notes by their `rseed`)
+            ensure_conn(o).await?;
+            let fetched = crate::build::sapling_pq::fetch_note_txs(
+                &mut o.conn.as_mut().expect("connected").compact,
+                &plan,
+            )
+            .await?;
+            let side = crate::build::pq_send::SaplingSide::of(&o.wallet, &o.params_dir)?;
+            let p =
+                crate::build::sapling_pq::build_sapling_to_pq(&o.wallet, &side, plan, &fetched)?;
+            let txid = txid_hex(&p.txid);
+            let out = PqSendPreviewInfo {
+                preview_id: format!("zq{txid}"),
+                from: String::new(),
+                scheme_name: keys::pq_scheme_name(p.id.scheme)
+                    .unwrap_or("unknown")
+                    .to_string(),
+                to: p.to.clone(),
+                amount_zat: p.amount,
+                amount_bumped: p.amount_bumped,
+                fee_zat: p.fee,
+                change_zat: p.change,
+                inputs: p.notes,
+                size_bytes: p.raw.len() as u32,
+                sign_millis: p.prove_millis,
+                fee_note: p.fee_note.clone(),
+                unusual_fee_ack: p.fee_guard.ack.clone(),
+                fee_price_micro_usd: price_opt(p.fee_guard.reported_price_micro_usd),
+                expiry_height: p.expiry_height,
+                txid,
+                from_private: true,
+            };
+            o.previews
+                .insert(out.preview_id.clone(), Preview::SaplingPq(Box::new(p)));
+            Ok(out)
+        })
+    })
+}
+
+/// Broadcast a [`pq_send_preview`] (or a [`private_pq_send_preview`]) through both gate layers (the node's dry run must say `ok,
 /// burned 0`; a server without Yellowback refuses it). A send whose outcome is unknown says
 /// `…; status unknown, txid <txid>: check before sending again`. A flagged fee
 /// ([`PqSendPreviewInfo::unusual_fee_ack`]) needs that acknowledgement as `accept_unusual_fee`;
@@ -2443,8 +2515,34 @@ pub fn pq_send_confirm(
 ) -> Result<SendResult, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
-            if let Some(Preview::Pq(p)) = o.previews.get(&preview_id) {
-                crate::build::terms::require_ack(&p.fee_guard, accept_unusual_fee.as_deref())?;
+            match o.previews.get(&preview_id) {
+                Some(Preview::Pq(p)) => {
+                    crate::build::terms::require_ack(&p.fee_guard, accept_unusual_fee.as_deref())?
+                }
+                Some(Preview::SaplingPq(p)) => {
+                    crate::build::terms::require_ack(&p.fee_guard, accept_unusual_fee.as_deref())?
+                }
+                _ => {}
+            }
+            if let Some(Preview::SaplingPq(_)) = o.previews.get(&preview_id) {
+                let Some(Preview::SaplingPq(p)) = o.previews.remove(&preview_id) else {
+                    unreachable!("matched above")
+                };
+                ensure_conn(o).await?;
+                let Open { wallet, conn, .. } = o;
+                let conn = conn.as_mut().expect("connected");
+                let (txid, v) = crate::build::sapling_pq::broadcast(
+                    wallet,
+                    &mut conn.compact,
+                    &mut conn.validator,
+                    &p,
+                    accept_unusual_fee.as_deref(),
+                )
+                .await?;
+                return Ok(SendResult {
+                    txid,
+                    verdict: v.verdict,
+                });
             }
             let p = match o.previews.remove(&preview_id) {
                 Some(Preview::Pq(p)) => p,
