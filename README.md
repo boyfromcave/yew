@@ -107,7 +107,12 @@ Three rules explain most of the design:
    every input is a class the transaction may spend, then asks the server's node to validate
    the exact bytes (`ValidateRawTransaction`) and refuses unless the verdict is `ok`, the burn
    equals what was planned and the node would accept it. There is no override, flag or test
-   hook that skips it. This is what stands between a client bug and burned YED.
+   hook that skips it. This is what stands between a client bug and burned YED. A plain YEC
+   spend (public, shielding, or from a post-quantum address) adds a third check that does not
+   rest on the server's word: the transaction that created each input is fetched, its txid
+   recomputed from the bytes, and its Yellowback payload parsed on the device; an input that a
+   MINT, TRANSFER or REDEEM assigns YED to, or whose creating transaction cannot be fetched and
+   verified, is refused (`gate::confirm_provenance`).
 3. **Every UTXO has one class.** On Ycash a YED holding is a 10,000-zat transparent output whose
    dollars live in a payload; spending it as plain YEC burns it. So `coins.rs` classifies every
    output (`YEC`, `FEE_RESERVE`, `TOKEN`, `PENDING_TOKEN`, `VAULT`, `CARRIER`, `HELD`,

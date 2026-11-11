@@ -309,6 +309,11 @@ pub async fn confirm_shield(
         wallet.store.utxo_class(op).ok().flatten()
     })
     .await?;
+    // layer 3: no input carries YED by its creating transaction (review YEW-REVIEW-3)
+    gate::confirm_provenance(client, &built.raw, |op| {
+        wallet.store.utxo_class(op).ok().flatten()
+    })
+    .await?;
     let reply = client.send_transaction(built.raw.clone()).await?;
     let txid = txid_hex(&built.txid);
     if !reply.is_empty() && reply != txid {

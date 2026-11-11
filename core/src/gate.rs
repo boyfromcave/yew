@@ -30,11 +30,21 @@
 //!    every `TOKEN_VALUE` output is `HELD`, and the local layer already refuses all of them.
 //!    [`Validator`] is built only by probing the server ([`Validator::detect`]); nothing else
 //!    constructs an `Absent`.
+//! 3. **Provenance** ([`confirm_provenance`], the plain-YEC paths [`Path::Yec`], [`Path::Shield`],
+//!    [`Path::PqSpend`]; review YEW-REVIEW-3, the structural finding): consensus does not pin a
+//!    YED output's value, so "listed by `GetAddressTokens`, or exactly `TOKEN_VALUE`" is not
+//!    enough against a server that omits a token and answers the dry run "burned 0". For every
+//!    plain-YEC input the creating transaction is fetched (`GetTransaction`), its txid
+//!    recomputed from the bytes, and its payload parsed here ([`payload::find_payload`], the
+//!    node's `FindPayload`): an input a MINT (`vout[1]`, the token) or a TRANSFER / REDEEM
+//!    assignment names is refused, and so is one whose creating transaction cannot be fetched or
+//!    does not match (fail closed). Whether that assignment was valid needs chain state the
+//!    light client does not have; it is judged as if it were (the safe direction).
 
 use thiserror::Error;
 
 use crate::coins::UtxoClass;
-use crate::net::{Availability, NetError, Validation, YellowbackClient};
+use crate::net::{Availability, CompactClient, NetError, Validation, YellowbackClient};
 use crate::payload::{self, Payload};
 use crate::script;
 use crate::tx::{OutPoint, Transaction, TxError};
@@ -100,6 +110,22 @@ pub enum GateError {
     /// A post-quantum spend pays an output of exactly `TOKEN_VALUE` (it would look like a token).
     #[error("gate: output {0} is exactly TOKEN_VALUE; a plain YEC output must not look like a YED token")]
     TokenValuedOutput(usize),
+    /// A plain-YEC input that the payload of its creating transaction assigns YED to (layer 3).
+    #[error("gate: input {outpoint} carries YED (the {payload} payload of the transaction that created it assigns it); spending it as plain YEC would burn the YED")]
+    InputCarriesYed {
+        /// The input.
+        outpoint: String,
+        /// The creating payload's type name.
+        payload: &'static str,
+    },
+    /// A plain-YEC input whose creating transaction could not be fetched or verified (layer 3).
+    #[error("gate: input {outpoint}: {why}; whether it carries YED cannot be checked, so it is not spent as plain YEC")]
+    InputProvenance {
+        /// The input.
+        outpoint: String,
+        /// What failed.
+        why: String,
+    },
     /// `ValidateRawTransaction` could not be reached or answered with an error.
     #[error("gate: ValidateRawTransaction failed: {0}")]
     Validate(String),
@@ -512,6 +538,92 @@ pub async fn confirm_burning(
         .map_err(|e| GateError::Validate(e.to_string()))?;
     accept(&v, planned_burn)?;
     Ok((tx, Some(v)))
+}
+
+/// Layer 3 on fetched data (pure; [`confirm_provenance`] fetches): every input of `tx` that
+/// `checked` selects (the plain-YEC classes) must have its creating transaction in `created`
+/// (raw bytes as the server returned them, by txid), whose txid recomputed from the bytes is
+/// the input's, which has the output, and whose Yellowback payload (if any) assigns it no YED:
+/// not `vout[1]` of a MINT, not an assignment of a TRANSFER or REDEEM.
+pub fn check_provenance(
+    tx: &Transaction,
+    created: &std::collections::HashMap<[u8; 32], Vec<u8>>,
+    checked: impl Fn(&OutPoint) -> bool,
+) -> Result<(), GateError> {
+    for i in &tx.vin {
+        let op = i.prevout;
+        if !checked(&op) {
+            continue;
+        }
+        let name = || format!("{}:{}", crate::tx::txid_hex(&op.txid), op.n);
+        let bad = |why: &str| GateError::InputProvenance {
+            outpoint: name(),
+            why: why.to_string(),
+        };
+        let raw = created
+            .get(&op.txid)
+            .ok_or_else(|| bad("the server did not return the transaction that created it"))?;
+        let (parent, txid) = Transaction::parse(raw)
+            .map_err(|_| bad("the transaction the server returned for it does not parse"))?;
+        if txid != op.txid {
+            return Err(bad(
+                "the server returned another transaction than the one that created it",
+            ));
+        }
+        if op.n as usize >= parent.vout.len() {
+            return Err(bad("its creating transaction has no such output"));
+        }
+        if let Some(found) = payload::find_payload(&parent) {
+            let assigned = match &found.payload {
+                Payload::Mint { .. } => op.n == 1,
+                p => p.assignments().iter().any(|a| a.vout as u32 == op.n),
+            };
+            if assigned {
+                return Err(GateError::InputCarriesYed {
+                    outpoint: name(),
+                    payload: found.payload.payload_type().name(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Layer 3 ([`check_provenance`]) for a plain-YEC spend: fetch the creating transaction of every
+/// input whose class is a plain-YEC one (`YEC`, `FEE_RESERVE`, `PQ_OWNED`) with `GetTransaction`;
+/// a fetch error or a transaction the server does not know refuses (fail closed).
+pub async fn confirm_provenance(
+    client: &mut CompactClient,
+    raw: &[u8],
+    class_of: impl Fn(&OutPoint) -> Option<UtxoClass>,
+) -> Result<(), GateError> {
+    let (tx, _) = Transaction::parse(raw).map_err(GateError::Parse)?;
+    let checked = |op: &OutPoint| {
+        matches!(
+            class_of(op),
+            Some(UtxoClass::Yec | UtxoClass::FeeReserve | UtxoClass::PqOwned)
+        )
+    };
+    let mut created = std::collections::HashMap::new();
+    for i in &tx.vin {
+        let id = i.prevout.txid;
+        if !checked(&i.prevout) || created.contains_key(&id) {
+            continue;
+        }
+        match client.get_transaction(&id).await {
+            Ok(Some((bytes, _))) => {
+                created.insert(id, bytes);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return Err(GateError::InputProvenance {
+                    outpoint: format!("{}:{}", crate::tx::txid_hex(&id), i.prevout.n),
+                    why: format!("GetTransaction failed ({e})"),
+                })
+            }
+        }
+    }
+    check_provenance(&tx, &created, checked)
 }
 
 #[cfg(test)]
@@ -1298,5 +1410,245 @@ mod tests {
         assert_eq!(r.unwrap_err(), GateError::YellowbackAbsent);
         let r = confirm(&mut v, Path::Yec, &raw, |_| Some(UtxoClass::Yec)).await;
         assert!(matches!(r, Ok((_, None))));
+    }
+
+    // ---- layer 3: provenance against a lying server (review YEW-REVIEW-3, structural)
+
+    /// A parent transaction with `outs` plain outputs and, when given, `payload` as an OP_RETURN
+    /// appended last; returns its bytes and txid.
+    fn parent(outs: &[i64], p: Option<Payload>) -> (Vec<u8>, [u8; 32]) {
+        let mut t = Transaction::new_v4();
+        t.vin.push(TxIn::new(OutPoint {
+            txid: [0xee; 32],
+            n: 0,
+        }));
+        for v in outs {
+            t.vout.push(TxOut {
+                value: *v,
+                script_pubkey: crate::script::p2pkh_script(&[0x11; 20]),
+            });
+        }
+        if let Some(p) = p {
+            t.vout.push(TxOut {
+                value: 0,
+                script_pubkey: payload::payload_script(&encode(&p).unwrap()),
+            });
+        }
+        let raw = t.serialize().unwrap();
+        let (_, id) = Transaction::parse(&raw).unwrap();
+        (raw, id)
+    }
+
+    fn spend(ops: &[OutPoint]) -> Transaction {
+        let mut t = Transaction::new_v4();
+        for o in ops {
+            t.vin.push(TxIn::new(*o));
+        }
+        t.vout.push(TxOut {
+            value: 1,
+            script_pubkey: crate::script::p2pkh_script(&[0x22; 20]),
+        });
+        t
+    }
+
+    fn served(parents: &[&(Vec<u8>, [u8; 32])]) -> HashMap<[u8; 32], Vec<u8>> {
+        parents.iter().map(|(r, id)| (*id, r.clone())).collect()
+    }
+
+    /// A server that omits a token from `GetAddressTokens` (and would answer the dry run "burned
+    /// 0") cannot get a YED output spent as YEC: the TRANSFER that created it names it, at any
+    /// value; the other outputs of the same transaction stay spendable.
+    #[test]
+    fn provenance_refuses_an_output_a_transfer_assigns() {
+        let p = parent(
+            &[50_000, 3_000_000],
+            Some(Payload::Transfer {
+                assignments: vec![Assignment {
+                    vout: 0,
+                    cents: 500,
+                }],
+            }),
+        );
+        let yed = OutPoint { txid: p.1, n: 0 };
+        let change = OutPoint { txid: p.1, n: 1 };
+        let all = |_: &OutPoint| true;
+        assert_eq!(
+            check_provenance(&spend(&[yed]), &served(&[&p]), all),
+            Err(GateError::InputCarriesYed {
+                outpoint: format!("{}:0", crate::tx::txid_hex(&p.1)),
+                payload: "transfer",
+            })
+        );
+        assert_eq!(
+            check_provenance(&spend(&[change]), &served(&[&p]), all),
+            Ok(())
+        );
+        // only the plain-YEC classes are checked: a TOKEN input (the YED paths) is not
+        assert_eq!(
+            check_provenance(&spend(&[yed]), &served(&[&p]), |_| false),
+            Ok(())
+        );
+    }
+
+    /// MINT: `vout[1]` is the token; the other outputs are not YED. REDEEM: its change
+    /// assignments are.
+    #[test]
+    fn provenance_mint_token_and_redeem_change() {
+        let mint = parent(
+            &[1_000_000, 70_000, 5_000],
+            Some(Payload::Mint {
+                term_class: 0,
+                cents: 10_000,
+                lock_height: 100,
+                ref_height: 90,
+                owner: crate::pq::PqKeyId {
+                    scheme: crate::pq::SCHEME_SLH_DSA_SHA2_128S,
+                    hash: [3; 32],
+                },
+                fee_vout: 2,
+                attest_fee_vout: payload::FEE_VOUT_NONE,
+            }),
+        );
+        let all = |_: &OutPoint| true;
+        let at = |id: [u8; 32], n: u32| spend(&[OutPoint { txid: id, n }]);
+        assert!(matches!(
+            check_provenance(&at(mint.1, 1), &served(&[&mint]), all),
+            Err(GateError::InputCarriesYed {
+                payload: "mint",
+                ..
+            })
+        ));
+        assert_eq!(
+            check_provenance(&at(mint.1, 2), &served(&[&mint]), all),
+            Ok(())
+        );
+        let redeem = parent(
+            &[40_000, 900_000],
+            Some(Payload::Redeem {
+                ref_height: 90,
+                fee_vout: payload::FEE_VOUT_NONE,
+                attest_fee_vout: payload::FEE_VOUT_NONE,
+                assignments: vec![Assignment { vout: 0, cents: 7 }],
+            }),
+        );
+        assert!(matches!(
+            check_provenance(&at(redeem.1, 0), &served(&[&redeem]), all),
+            Err(GateError::InputCarriesYed {
+                payload: "redeem",
+                ..
+            })
+        ));
+        assert_eq!(
+            check_provenance(&at(redeem.1, 1), &served(&[&redeem]), all),
+            Ok(())
+        );
+    }
+
+    /// Fail closed: the creating transaction withheld, replaced by other bytes (the txid does not
+    /// match), or lacking the output: refused. A plain parent: spendable.
+    #[test]
+    fn provenance_fails_closed_on_a_lying_server() {
+        let plain = parent(&[3_000_000], None);
+        let other = parent(&[3_000_001], None);
+        let op = OutPoint {
+            txid: plain.1,
+            n: 0,
+        };
+        let all = |_: &OutPoint| true;
+        assert_eq!(
+            check_provenance(&spend(&[op]), &served(&[&plain]), all),
+            Ok(())
+        );
+        let e = check_provenance(&spend(&[op]), &HashMap::new(), all).unwrap_err();
+        assert!(e.to_string().contains("did not return"), "{e}");
+        let mut lie = HashMap::new();
+        lie.insert(plain.1, other.0.clone());
+        let e = check_provenance(&spend(&[op]), &lie, all).unwrap_err();
+        assert!(e.to_string().contains("another transaction"), "{e}");
+        lie.insert(plain.1, vec![1, 2, 3]);
+        let e = check_provenance(&spend(&[op]), &lie, all).unwrap_err();
+        assert!(e.to_string().contains("does not parse"), "{e}");
+        let past = OutPoint {
+            txid: plain.1,
+            n: 5,
+        };
+        let e = check_provenance(&spend(&[past]), &served(&[&plain]), all).unwrap_err();
+        assert!(e.to_string().contains("no such output"), "{e}");
+    }
+
+    /// Property: over random parents (plain, TRANSFER with random assignments, MINT, REDEEM) and
+    /// every output, an input is refused exactly when the node's `FindPayload` reading assigns it
+    /// YED; nothing assigned is ever let through.
+    #[test]
+    fn provenance_property_over_random_parents() {
+        let mut rng = Rng(0x5eed_1234_abcd);
+        for _ in 0..300 {
+            let n_out = 1 + rng.below(6) as usize;
+            let outs: Vec<i64> = (0..n_out)
+                .map(|_| 1 + rng.below(5_000_000) as i64)
+                .collect();
+            let kind = rng.below(4);
+            let p = match kind {
+                0 => None,
+                1 | 3 => {
+                    let mut a: Vec<Assignment> = Vec::new();
+                    for v in 0..n_out as u8 {
+                        if rng.below(2) == 0 {
+                            a.push(Assignment {
+                                vout: v,
+                                cents: 1 + rng.below(1000) as u32,
+                            });
+                        }
+                    }
+                    if a.is_empty() && kind == 1 {
+                        a.push(Assignment { vout: 0, cents: 1 });
+                    }
+                    Some(if kind == 1 {
+                        Payload::Transfer { assignments: a }
+                    } else {
+                        Payload::Redeem {
+                            ref_height: 1,
+                            fee_vout: payload::FEE_VOUT_NONE,
+                            attest_fee_vout: payload::FEE_VOUT_NONE,
+                            assignments: a,
+                        }
+                    })
+                }
+                _ if n_out >= 2 => Some(Payload::Mint {
+                    term_class: 0,
+                    cents: 100,
+                    lock_height: 1,
+                    ref_height: 1,
+                    owner: crate::pq::PqKeyId {
+                        scheme: crate::pq::SCHEME_SLH_DSA_SHA2_128S,
+                        hash: [1; 32],
+                    },
+                    fee_vout: payload::FEE_VOUT_NONE,
+                    attest_fee_vout: payload::FEE_VOUT_NONE,
+                }),
+                _ => None,
+            };
+            let par = parent(&outs, p.clone());
+            for n in 0..n_out as u32 {
+                let want_yed = match &p {
+                    Some(Payload::Mint { .. }) => n == 1,
+                    Some(q) => q.assignments().iter().any(|a| a.vout as u32 == n),
+                    None => false,
+                };
+                let r = check_provenance(
+                    &spend(&[OutPoint { txid: par.1, n }]),
+                    &served(&[&par]),
+                    |_| true,
+                );
+                assert_eq!(
+                    matches!(r, Err(GateError::InputCarriesYed { .. })),
+                    want_yed,
+                    "{p:?} vout {n}: {r:?}"
+                );
+                if !want_yed {
+                    assert_eq!(r, Ok(()));
+                }
+            }
+        }
     }
 }
