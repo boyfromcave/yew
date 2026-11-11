@@ -322,7 +322,9 @@ pub struct Balances {
     pub yed_pending_cents: i64,
     /// `GetPrice.pMint` at the last sync, micro-USD per YEC; `None` when undefined.
     pub price_micro_usd: Option<i64>,
-    /// Outputs of `TOKEN_VALUE` the server does not list (class `HELD`): count.
+    /// Outputs held (class `HELD`): of `TOKEN_VALUE` and not listed by the server, or plain coins
+    /// whose creating transaction assigns them YED or could not be verified (layer 3 at sync):
+    /// count. In no balance and in no selection.
     pub held_count: i64,
     /// The height the wallet last synced to (0 = never).
     pub sync_height: i64,

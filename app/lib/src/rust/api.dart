@@ -454,7 +454,9 @@ class Balances {
   /// `GetPrice.pMint` at the last sync, micro-USD per YEC; `None` when undefined.
   final PlatformInt64? priceMicroUsd;
 
-  /// Outputs of `TOKEN_VALUE` the server does not list (class `HELD`): count.
+  /// Outputs held (class `HELD`): of `TOKEN_VALUE` and not listed by the server, or plain coins
+  /// whose creating transaction assigns them YED or could not be verified (layer 3 at sync):
+  /// count. In no balance and in no selection.
   final PlatformInt64 heldCount;
 
   /// The height the wallet last synced to (0 = never).

@@ -281,7 +281,7 @@ class _YecSplit extends StatelessWidget {
           ),
         if (b.heldCount > 0)
           note(
-            '${b.heldCount} output${b.heldCount == 1 ? '' : 's'} held until the server classifies ${b.heldCount == 1 ? 'it' : 'them'}',
+            '${b.heldCount} output${b.heldCount == 1 ? '' : 's'} held: not spent as YEC until ${b.heldCount == 1 ? 'it is' : 'they are'} shown to carry no YED',
           ),
       ],
     );

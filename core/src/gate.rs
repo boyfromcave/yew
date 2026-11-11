@@ -561,47 +561,56 @@ pub fn check_provenance(
         if !checked(&op) {
             continue;
         }
-        let name = || format!("{}:{}", crate::tx::txid_hex(&op.txid), op.n);
-        let bad = |why: &str| GateError::InputProvenance {
-            outpoint: name(),
-            why: why.to_string(),
+        output_provenance(&op, created.get(&op.txid).map(Vec::as_slice))?;
+    }
+    Ok(())
+}
+
+/// Layer 3's verdict on one output, from the bytes the server returned for the transaction that
+/// created it (`None`: not returned). `Ok` only when those bytes are that transaction (txid
+/// recomputed), it has the output, its payload is of a known type and version, and the payload
+/// assigns the output no YED. Used at broadcast ([`check_provenance`]) and at sync, where an
+/// own coin that fails is classified `HELD` (review YEW-REVIEW-4 M3).
+pub fn output_provenance(op: &OutPoint, raw: Option<&[u8]>) -> Result<(), GateError> {
+    let name = || format!("{}:{}", crate::tx::txid_hex(&op.txid), op.n);
+    let bad = |why: &str| GateError::InputProvenance {
+        outpoint: name(),
+        why: why.to_string(),
+    };
+    let raw =
+        raw.ok_or_else(|| bad("the server did not return the transaction that created it"))?;
+    let (parent, txid) = Transaction::parse(raw)
+        .map_err(|_| bad("the transaction the server returned for it does not parse"))?;
+    if txid != op.txid {
+        return Err(bad(
+            "the server returned another transaction than the one that created it",
+        ));
+    }
+    if op.n as usize >= parent.vout.len() {
+        return Err(bad("its creating transaction has no such output"));
+    }
+    if payload::unknown_yellowback(&parent) {
+        return Err(bad(
+            "its creating transaction carries a Yellowback payload of a type or version this app does not know",
+        ));
+    }
+    if let Some(found) = payload::find_payload(&parent) {
+        // every way an output comes to hold YED (ycash-dd state.cpp, the four TokenRecord
+        // writes): a MINT's vout[1] (ApplyMint), a TRANSFER's assignments (ApplyTransfer), a
+        // REDEEM's assignments on a vault spend (ApplyVaultSpend), and CAN-1's refund on a
+        // claim cancel, which carries CANCEL_COSIGN (ApplyIntentSpend: the lowest output at
+        // index >= 1 paying the claimant's refund script, at any non-zero value, from vault
+        // state; over-approximated here as every output at index >= 1)
+        let assigned = match &found.payload {
+            Payload::Mint { .. } => op.n == 1,
+            Payload::CancelCosign => op.n >= 1,
+            p => p.assignments().iter().any(|a| a.vout as u32 == op.n),
         };
-        let raw = created
-            .get(&op.txid)
-            .ok_or_else(|| bad("the server did not return the transaction that created it"))?;
-        let (parent, txid) = Transaction::parse(raw)
-            .map_err(|_| bad("the transaction the server returned for it does not parse"))?;
-        if txid != op.txid {
-            return Err(bad(
-                "the server returned another transaction than the one that created it",
-            ));
-        }
-        if op.n as usize >= parent.vout.len() {
-            return Err(bad("its creating transaction has no such output"));
-        }
-        if payload::unknown_yellowback(&parent) {
-            return Err(bad(
-                "its creating transaction carries a Yellowback payload of a type or version this app does not know",
-            ));
-        }
-        if let Some(found) = payload::find_payload(&parent) {
-            // every way an output comes to hold YED (ycash-dd state.cpp, the four TokenRecord
-            // writes): a MINT's vout[1] (ApplyMint), a TRANSFER's assignments (ApplyTransfer), a
-            // REDEEM's assignments on a vault spend (ApplyVaultSpend), and CAN-1's refund on a
-            // claim cancel, which carries CANCEL_COSIGN (ApplyIntentSpend: the lowest output at
-            // index >= 1 paying the claimant's refund script, at any non-zero value, from vault
-            // state; over-approximated here as every output at index >= 1)
-            let assigned = match &found.payload {
-                Payload::Mint { .. } => op.n == 1,
-                Payload::CancelCosign => op.n >= 1,
-                p => p.assignments().iter().any(|a| a.vout as u32 == op.n),
-            };
-            if assigned {
-                return Err(GateError::InputCarriesYed {
-                    outpoint: name(),
-                    payload: found.payload.payload_type().name(),
-                });
-            }
+        if assigned {
+            return Err(GateError::InputCarriesYed {
+                outpoint: name(),
+                payload: found.payload.payload_type().name(),
+            });
         }
     }
     Ok(())

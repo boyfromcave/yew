@@ -35,6 +35,7 @@ use crate::build::mint::window_open;
 use crate::build::terms;
 use crate::bundle;
 use crate::coins::{self, Utxo, UtxoClass};
+use crate::gate;
 use crate::keys;
 use crate::net::rpc::YedTxInfo;
 use crate::net::{CompactClient, NetError, YellowbackClient};
@@ -87,6 +88,9 @@ pub struct SyncReport {
     /// The server refused a post-quantum address in the taddr methods (`INVALID_ARGUMENT`: a
     /// lightwalletd before q/pqaddr): its `TX_PQPKH` outputs were not looked up this run.
     pub pq_unindexed: bool,
+    /// Own plain coins held because layer 3 did not prove them plain YEC (a creating
+    /// transaction that assigns them YED, or one that could not be fetched and verified).
+    pub provenance_held: usize,
     /// The server's Yellowback service was refused for this run, and why: on mainnet and testnet
     /// its Falcon activation is not this build's (`terms::check_falcon_activation`). The YED steps
     /// did not run (`yellowback` is false) and the wallet kept its own terms.
@@ -452,6 +456,12 @@ pub async fn sync(
             Err(e) => return Err(e.into()),
         }
     }
+    // 2c. Layer 3 at sync (review YEW-REVIEW-4 M3): an own plain coin (YEC or PQ_OWNED) whose
+    // creating transaction assigns it YED, or cannot be fetched and verified, is HELD: out of the
+    // balance and of every selection, so it can neither burn YED nor block a send other coins
+    // can fund. The broadcast gate checks again (`gate::confirm_provenance`).
+    report.provenance_held = hold_unproven(wallet, client, &mut utxos).await?
+        + hold_unproven(wallet, client, &mut pq_rows).await?;
     utxos.extend(falcon_rows);
     coins::apply_fee_reserve(&mut utxos);
     for u in &utxos {
@@ -640,6 +650,67 @@ pub async fn sync(
         .store
         .set_meta("last_synced_height", &tip.to_string())?;
     Ok(report)
+}
+
+/// Step 2c: classify `HELD` every row of class `YEC` or `PQ_OWNED` that layer 3 does not prove
+/// plain YEC ([`gate::output_provenance`]). A verdict reached on bytes whose txid matches the
+/// outpoint is final and stored (the bytes are the transaction); a fetch error or a server that
+/// returns other bytes holds the coin for this sync only, and the next sync asks again. Returns
+/// how many rows are held.
+async fn hold_unproven(
+    wallet: &Wallet,
+    client: &mut CompactClient,
+    rows: &mut [Utxo],
+) -> Result<usize, WalletError> {
+    let mut fetched: HashMap<[u8; 32], Option<Vec<u8>>> = HashMap::new();
+    let mut verdicts: HashMap<OutPoint, bool> = HashMap::new();
+    for u in rows.iter() {
+        if !matches!(u.class, UtxoClass::Yec | UtxoClass::PqOwned) {
+            continue;
+        }
+        if let Some(v) = wallet.store.provenance(&u.outpoint)? {
+            verdicts.insert(u.outpoint, v.is_empty());
+            continue;
+        }
+        let id = u.outpoint.txid;
+        if let std::collections::hash_map::Entry::Vacant(e) = fetched.entry(id) {
+            e.insert(match client.get_transaction(&id).await {
+                Ok(Some((bytes, _))) => Some(bytes),
+                Ok(None) | Err(_) => None,
+            });
+        }
+        let raw = fetched.get(&id).and_then(|r| r.as_deref());
+        let verdict = gate::output_provenance(&u.outpoint, raw);
+        let is_final = raw
+            .and_then(|r| Transaction::parse(r).ok())
+            .is_some_and(|(_, txid)| txid == id);
+        if is_final {
+            let why = verdict
+                .as_ref()
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default();
+            wallet.store.set_provenance(&u.outpoint, &why)?;
+        }
+        verdicts.insert(u.outpoint, verdict.is_ok());
+    }
+    Ok(hold_by_provenance(rows, |op| {
+        verdicts.get(op).copied().unwrap_or(false)
+    }))
+}
+
+/// The pure half of step 2c: every `YEC` / `PQ_OWNED` row that `proven` does not prove plain YEC
+/// becomes `HELD` (no other class is touched). Returns the count.
+pub(crate) fn hold_by_provenance(rows: &mut [Utxo], proven: impl Fn(&OutPoint) -> bool) -> usize {
+    let mut held = 0;
+    for u in rows.iter_mut() {
+        if matches!(u.class, UtxoClass::Yec | UtxoClass::PqOwned) && !proven(&u.outpoint) {
+            u.class = UtxoClass::Held;
+            u.cents = 0;
+            held += 1;
+        }
+    }
+    held
 }
 
 /// The wallet's own post-quantum key ids with the key hash each is paired with: the Falcon
@@ -1551,6 +1622,161 @@ pub fn label_for(info: &YedTxInfo, own_in: u64, own_out: u64) -> (String, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review YEW-REVIEW-4 M3. Property: over random own coin sets, some of them poisoned (a third
+    /// party paid the address an output its own TRANSFER, MINT or CANCEL_COSIGN "assigns" YED, or
+    /// a server that withholds the parent), step 2c holds exactly the coins layer 3 refuses; a
+    /// send that the clean coins can fund always selects, and never selects a held coin, so the
+    /// selection always passes layer 3 at broadcast. Post-quantum rows: the clean ones stay
+    /// `PQ_OWNED` (the post-quantum send's only candidates), the poisoned ones are `HELD`.
+    #[test]
+    fn a_poisoned_coin_never_blocks_a_send_other_coins_fund() {
+        use crate::payload::{encode, payload_script, Assignment, Payload};
+        use crate::tx::{TxIn, TxOut};
+        let mut seed: u64 = 0x0b5e_55ed_7a11;
+        let mut next = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        for round in 0..300u32 {
+            let n = 1 + next(10) as usize;
+            let mut served: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+            let mut rows: Vec<Utxo> = Vec::new();
+            let mut poisoned: HashSet<OutPoint> = HashSet::new();
+            for i in 0..n {
+                let value = 1_000 + next(2_000_000) as i64;
+                let kind = next(5); // 0, 1 clean; 2 TRANSFER; 3 MINT (vout 1); 4 withheld
+                let mut t = Transaction::new_v4();
+                t.vin.push(TxIn::new(OutPoint {
+                    txid: [round as u8; 32],
+                    n: i as u32,
+                }));
+                t.vout.push(TxOut {
+                    value: 7,
+                    script_pubkey: script::p2pkh_script(&[9; 20]),
+                });
+                t.vout.push(TxOut {
+                    value,
+                    script_pubkey: script::p2pkh_script(&[1; 20]),
+                });
+                let p = match kind {
+                    2 => Some(Payload::Transfer {
+                        assignments: vec![Assignment { vout: 1, cents: 5 }],
+                    }),
+                    3 => Some(Payload::Mint {
+                        term_class: 0,
+                        cents: 5,
+                        lock_height: 1,
+                        ref_height: 1,
+                        owner: crate::pq::PqKeyId {
+                            scheme: 1,
+                            hash: [0; 32],
+                        },
+                        fee_vout: 0xff,
+                        attest_fee_vout: 0xff,
+                    }),
+                    _ => None,
+                };
+                if let Some(p) = p {
+                    t.vout.push(TxOut {
+                        value: 0,
+                        script_pubkey: payload_script(&encode(&p).unwrap()),
+                    });
+                }
+                let raw = t.serialize().unwrap();
+                let (_, txid) = Transaction::parse(&raw).unwrap();
+                if kind != 4 {
+                    served.insert(txid, raw);
+                }
+                let outpoint = OutPoint { txid, n: 1 };
+                if kind >= 2 {
+                    poisoned.insert(outpoint);
+                }
+                rows.push(Utxo {
+                    outpoint,
+                    address: String::new(),
+                    script: script::p2pkh_script(&[1; 20]),
+                    value,
+                    height: 5,
+                    class: if next(2) == 0 {
+                        UtxoClass::Yec
+                    } else {
+                        UtxoClass::PqOwned
+                    },
+                    cents: 0,
+                });
+            }
+            let proven = |op: &OutPoint| {
+                gate::output_provenance(op, served.get(&op.txid).map(Vec::as_slice)).is_ok()
+            };
+            let before = rows.clone();
+            let held = hold_by_provenance(&mut rows, proven);
+            assert_eq!(held, poisoned.len(), "round {round}");
+            for (a, b) in before.iter().zip(&rows) {
+                let want = if poisoned.contains(&a.outpoint) {
+                    UtxoClass::Held
+                } else {
+                    a.class
+                };
+                assert_eq!(b.class, want, "round {round}");
+            }
+            let clean: i64 = rows
+                .iter()
+                .filter(|u| u.class == UtxoClass::Yec)
+                .map(|u| u.value)
+                .sum();
+            if clean > 0 {
+                let needed = 1 + next(clean as u64) as i64;
+                let sel = coins::select_yec(&rows, needed, false).expect("the clean coins fund it");
+                assert!(sel.iter().map(|u| u.value).sum::<i64>() >= needed);
+                for u in &sel {
+                    assert!(!poisoned.contains(&u.outpoint), "round {round}");
+                    assert!(proven(&u.outpoint));
+                }
+            }
+            assert!(rows
+                .iter()
+                .filter(|u| u.class == UtxoClass::PqOwned)
+                .all(|u| !poisoned.contains(&u.outpoint)));
+        }
+    }
+
+    /// Step 2c touches no class but YEC and PQ_OWNED (tokens, vaults, carriers, held, the fee
+    /// reserve keep theirs).
+    #[test]
+    fn hold_by_provenance_touches_only_plain_classes() {
+        for c in [
+            UtxoClass::Yec,
+            UtxoClass::FeeReserve,
+            UtxoClass::Token,
+            UtxoClass::PendingToken,
+            UtxoClass::Vault,
+            UtxoClass::Carrier,
+            UtxoClass::UnknownP2sh,
+            UtxoClass::Held,
+            UtxoClass::PqOwned,
+            UtxoClass::Foreign,
+        ] {
+            let mut rows = vec![Utxo {
+                outpoint: OutPoint {
+                    txid: [1; 32],
+                    n: 0,
+                },
+                address: String::new(),
+                script: Vec::new(),
+                value: 50_000,
+                height: 1,
+                class: c,
+                cents: 0,
+            }];
+            let n = hold_by_provenance(&mut rows, |_| false);
+            let plain = matches!(c, UtxoClass::Yec | UtxoClass::PqOwned);
+            assert_eq!(n, plain as usize, "{c:?}");
+            assert_eq!(rows[0].class, if plain { UtxoClass::Held } else { c });
+        }
+    }
 
     fn info(t: &str, verdict: &str, burned: i64) -> YedTxInfo {
         YedTxInfo {

@@ -545,6 +545,7 @@ CREATE TABLE IF NOT EXISTS vaults (
   cancel_quiet_until INTEGER NOT NULL DEFAULT 0, held_residuals TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS pq_owners (idx INTEGER PRIMARY KEY, scheme INTEGER NOT NULL, hash BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS pq_holders (idx INTEGER PRIMARY KEY, scheme INTEGER NOT NULL, hash BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS provenance (txid BLOB NOT NULL, n INTEGER NOT NULL, verdict TEXT NOT NULL, PRIMARY KEY (txid, n));
 CREATE TABLE IF NOT EXISTS claim_bounds (
   mint_id INTEGER PRIMARY KEY, max_burn_cents INTEGER NOT NULL, min_out_zat INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS claim_intents (
@@ -1552,6 +1553,31 @@ impl Store {
         self.conn.execute(
             "INSERT OR REPLACE INTO pq_holders (idx, scheme, hash) VALUES (?1, ?2, ?3)",
             params![idx, id.scheme as i64, id.hash.as_slice()],
+        )?;
+        Ok(())
+    }
+
+    // ---- layer-3 provenance verdicts (review YEW-REVIEW-4 M3; additive table)
+
+    /// The stored provenance verdict of an own output: `Some("")` proven plain YEC, `Some(why)`
+    /// carries YED or cannot be YEC (final: the verdict rests on the creating transaction's
+    /// bytes, bound to the txid), `None` not decided yet.
+    pub fn provenance(&self, op: &OutPoint) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT verdict FROM provenance WHERE txid = ?1 AND n = ?2",
+                params![op.txid.as_slice(), op.n],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Record a final provenance verdict (`""` = proven plain YEC).
+    pub fn set_provenance(&self, op: &OutPoint, verdict: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO provenance (txid, n, verdict) VALUES (?1, ?2, ?3)",
+            params![op.txid.as_slice(), op.n, verdict],
         )?;
         Ok(())
     }
