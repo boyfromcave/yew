@@ -72,6 +72,9 @@ class FakeWalletApi implements WalletApi {
   List<VaultSummary> vaultsAnswer = const [];
   List<ClaimableItem> claimableAnswer = const [];
   Object? mintEstimateError;
+  /// When set, a private-source preview / mint start without the go-ahead refuses with
+  /// ErrorKind.noteLookupNeeded and this text.
+  String? noteLookupText;
   Object? mintStartError;
   Object? mintFinishError;
   Object? mintSweepError;
@@ -274,6 +277,10 @@ class FakeWalletApi implements WalletApi {
     calls.add('mintStart $cents $lockBlocks');
     calls.add('mintStart confirmed ${confirmed.collateralZat} ${confirmed.feeZat} ${confirmed.payee} ${confirmed.termClass}');
     if (confirmed.from.isNotEmpty) calls.add('mintStart from ${confirmed.from} carrier ${confirmed.carrierFeeZat}');
+    if (confirmed.allowNoteLookup) calls.add('mintStart lookup');
+    if (noteLookupText != null && confirmed.from == 'private' && !confirmed.allowNoteLookup) {
+      throw YewError(kind: ErrorKind.noteLookupNeeded, message: noteLookupText!);
+    }
     if (mintStartError != null) throw mintStartError!;
     final m = mintRow(id: mintsAnswer.length + 1, state: 'CARRIER_SENT', cents: cents, tip: tip, refHeight: tip - 4);
     _set(m);
@@ -600,8 +607,9 @@ class FakeWalletApi implements WalletApi {
   }
 
   @override
-  Future<PqSendPreviewInfo> privatePqSendPreview({required String to, required int zat}) async {
-    calls.add('privatePqPreview $to $zat');
+  Future<PqSendPreviewInfo> privatePqSendPreview({required String to, required int zat, bool allowNoteLookup = false}) async {
+    calls.add(allowNoteLookup ? 'privatePqPreview $to $zat lookup' : 'privatePqPreview $to $zat');
+    if (noteLookupText != null && !allowNoteLookup) throw YewError(kind: ErrorKind.noteLookupNeeded, message: noteLookupText!);
     if (pqPreviewError != null) throw pqPreviewError!;
     return PqSendPreviewInfo(
       previewId: 'zq1',

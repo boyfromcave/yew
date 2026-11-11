@@ -187,6 +187,7 @@ abstract class RustLibApi extends BaseApi {
   Future<PqSendPreviewInfo> crateApiPrivatePqSendPreview({
     required String to,
     required PlatformInt64 zat,
+    required bool allowNoteLookup,
   });
 
   Future<ServerProbe> crateApiProbeServer({
@@ -1234,6 +1235,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<PqSendPreviewInfo> crateApiPrivatePqSendPreview({
     required String to,
     required PlatformInt64 zat,
+    required bool allowNoteLookup,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1241,6 +1243,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(to, serializer);
           sse_encode_i_64(zat, serializer);
+          sse_encode_bool(allowNoteLookup, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1253,7 +1256,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_yew_error,
         ),
         constMeta: kCrateApiPrivatePqSendPreviewConstMeta,
-        argValues: [to, zat],
+        argValues: [to, zat, allowNoteLookup],
         apiImpl: this,
       ),
     );
@@ -1262,7 +1265,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiPrivatePqSendPreviewConstMeta =>
       const TaskConstMeta(
         debugName: "private_pq_send_preview",
-        argNames: ["to", "zat"],
+        argNames: ["to", "zat", "allowNoteLookup"],
       );
 
   @override
@@ -2284,8 +2287,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MintTerms dco_decode_mint_terms(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return MintTerms(
       collateralZat: dco_decode_i_64(arr[0]),
       feeZat: dco_decode_i_64(arr[1]),
@@ -2295,6 +2298,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       from: dco_decode_String(arr[5]),
       carrierFeeZat: dco_decode_i_64(arr[6]),
       acceptUnusualCarrierFee: dco_decode_opt_String(arr[7]),
+      allowNoteLookup: dco_decode_bool(arr[8]),
     );
   }
 
@@ -3416,6 +3420,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_from = sse_decode_String(deserializer);
     var var_carrierFeeZat = sse_decode_i_64(deserializer);
     var var_acceptUnusualCarrierFee = sse_decode_opt_String(deserializer);
+    var var_allowNoteLookup = sse_decode_bool(deserializer);
     return MintTerms(
       collateralZat: var_collateralZat,
       feeZat: var_feeZat,
@@ -3425,6 +3430,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       from: var_from,
       carrierFeeZat: var_carrierFeeZat,
       acceptUnusualCarrierFee: var_acceptUnusualCarrierFee,
+      allowNoteLookup: var_allowNoteLookup,
     );
   }
 
@@ -4544,6 +4550,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.from, serializer);
     sse_encode_i_64(self.carrierFeeZat, serializer);
     sse_encode_opt_String(self.acceptUnusualCarrierFee, serializer);
+    sse_encode_bool(self.allowNoteLookup, serializer);
   }
 
   @protected

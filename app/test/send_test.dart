@@ -389,6 +389,40 @@ void main() {
     expect(find.text('Sent'), findsWidgets);
   });
 
+  testWidgets('review YEW-REVIEW-8 M1: notes the store lacks need the go-ahead before the server is asked', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.balancesAnswer = Balances(
+      yecZat: h.api.balancesAnswer.yecZat, yecReservedZat: 0, yecPendingZat: 0, yedCents: 5000, yedPendingCents: 0,
+      heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 90000000, yecShieldedSpendableZat: 90000000,
+      yecShieldedPendingZat: 0, shieldedScannedHeight: 484, shieldedSendable: true, yecPqZat: 0, yecPqSlhZat: 0,
+      yecPqFalconZat: 0, pqCoins: const []);
+    h.api.noteLookupText = 'To spend older notes the app must ask the server for 2 transactions; the server can then tell which notes this payment spends. Nothing was sent.';
+    await openSend(tester, h);
+    await tester.tap(find.text('YEC'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('from')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Private · 0.90').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('address')), fakePqSlh);
+    await tester.enterText(find.byKey(const Key('amount')), '0.5');
+    // declined: no lookup, no preview
+    await tester.tap(find.byKey(const Key('preview')));
+    await tester.pumpAndSettle();
+    expect(find.text(h.api.noteLookupText!), findsOneWidget);
+    await tester.tap(find.byKey(const Key('note-lookup-cancel')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, isNot(contains('privatePqPreview $fakePqSlh 50000000 lookup')));
+    expect(find.byKey(const Key('slide-to-confirm')), findsNothing);
+    // accepted: the same call again with the go-ahead
+    await tester.tap(find.byKey(const Key('preview')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('note-lookup-accept')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('privatePqPreview $fakePqSlh 50000000 lookup'));
+    expect(find.text('This payment leaves your private balance'), findsOneWidget);
+  });
+
   testWidgets('a private -> post-quantum refusal is shown verbatim and nothing is sent', (tester) async {
     final h = Harness(withWallet: true);
     h.api.balancesAnswer = Balances(

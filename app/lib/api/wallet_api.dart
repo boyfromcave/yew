@@ -135,7 +135,9 @@ abstract class WalletApi {
   /// A send from the private balance to a post-quantum address (`sqf…`/`sqs…`; beta2 D-2):
   /// proven at the preview (the proving files first), confirmed with [pqSendConfirm]. The
   /// preview's `fromPrivate` is set: the amount and the recipient become visible on the chain.
-  Future<PqSendPreviewInfo> privatePqSendPreview({required String to, required int zat});
+  /// The notes' transactions come from the wallet's store; with [allowNoteLookup] the core may ask
+  /// the server for those it lacks (after the user agreed to ErrorKind.noteLookupNeeded's text).
+  Future<PqSendPreviewInfo> privatePqSendPreview({required String to, required int zat, bool allowNoteLookup = false});
 
   /// The Sapling proving files on this device (no network).
   Future<ParamsStatus> paramsStatus();

@@ -198,10 +198,19 @@ Future<PqSendPreviewInfo> pqSendPreview({
 /// (`build::sapling_pq`; beta2 D-2, D-8). Proven here, so it needs the Sapling parameters
 /// ([`ErrorKind::ParamsMissing`] otherwise). The amount and the recipient become visible on the
 /// chain (`from_private` set: D-5). Confirm with [`pq_send_confirm`]. Nothing is broadcast.
+///
+/// The notes' transactions are read from the wallet's own store; one the store lacks is fetched
+/// from the server only with `allow_note_lookup` (the user's go-ahead after
+/// [`ErrorKind::NoteLookupNeeded`], review YEW-REVIEW-8 M1).
 Future<PqSendPreviewInfo> privatePqSendPreview({
   required String to,
   required PlatformInt64 zat,
-}) => RustLib.instance.api.crateApiPrivatePqSendPreview(to: to, zat: zat);
+  required bool allowNoteLookup,
+}) => RustLib.instance.api.crateApiPrivatePqSendPreview(
+  to: to,
+  zat: zat,
+  allowNoteLookup: allowNoteLookup,
+);
 
 /// Broadcast a [`pq_send_preview`] (or a [`private_pq_send_preview`]) through both gate layers (the node's dry run must say `ok,
 /// burned 0`; a server without Yellowback refuses it). A send whose outcome is unknown says
@@ -1111,6 +1120,12 @@ enum ErrorKind {
 
   /// Anything else (storage, key derivation).
   other,
+
+  /// Spending these private notes needs transactions the wallet does not hold yet; fetching
+  /// them now would tell the server which notes the payment spends (review YEW-REVIEW-8 M1).
+  /// `message` says so in plain words. Sync again, or repeat the call with the go-ahead
+  /// (`allow_note_lookup`) after the user agreed.
+  noteLookupNeeded,
 }
 
 /// One history row.
@@ -1717,6 +1732,10 @@ class MintTerms {
   /// `MintEstimate::unusual_carrier_fee_ack` when the user confirmed it separately.
   final String? acceptUnusualCarrierFee;
 
+  /// From the private balance: the user's go-ahead to fetch, from the server, note
+  /// transactions the wallet does not hold yet ([`ErrorKind::NoteLookupNeeded`]).
+  final bool allowNoteLookup;
+
   const MintTerms({
     required this.collateralZat,
     required this.feeZat,
@@ -1726,6 +1745,7 @@ class MintTerms {
     required this.from,
     required this.carrierFeeZat,
     this.acceptUnusualCarrierFee,
+    required this.allowNoteLookup,
   });
 
   @override
@@ -1737,7 +1757,8 @@ class MintTerms {
       acceptUnusualFee.hashCode ^
       from.hashCode ^
       carrierFeeZat.hashCode ^
-      acceptUnusualCarrierFee.hashCode;
+      acceptUnusualCarrierFee.hashCode ^
+      allowNoteLookup.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1751,7 +1772,8 @@ class MintTerms {
           acceptUnusualFee == other.acceptUnusualFee &&
           from == other.from &&
           carrierFeeZat == other.carrierFeeZat &&
-          acceptUnusualCarrierFee == other.acceptUnusualCarrierFee;
+          acceptUnusualCarrierFee == other.acceptUnusualCarrierFee &&
+          allowNoteLookup == other.allowNoteLookup;
 }
 
 /// The direction of [`move_preview`].

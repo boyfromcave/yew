@@ -1488,6 +1488,31 @@ impl Shielded {
         })
     }
 
+    /// The raw bytes of those of `txids` (internal order) the store holds: memo enhancement
+    /// (`decrypt_and_store_transaction` on every transaction that paid the wallet a note) and
+    /// [`Shielded::record_sent`] keep each full transaction. No network request (review
+    /// YEW-REVIEW-8 M1: the notes a spend takes are not revealed to the server by fetching their
+    /// transactions just before it).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn stored_transactions(
+        &self,
+        txids: &[[u8; 32]],
+    ) -> Result<std::collections::HashMap<[u8; 32], Vec<u8>>, ShieldedError> {
+        let mut out = std::collections::HashMap::new();
+        for t in txids {
+            if let Some(tx) = self
+                .store()?
+                .get_transaction(TxId::from_bytes(*t))
+                .map_err(store_err)?
+            {
+                let mut raw = Vec::new();
+                tx.write(&mut raw).map_err(store_err)?;
+                out.insert(*t, raw);
+            }
+        }
+        Ok(out)
+    }
+
     /// Record a transaction this wallet built outside the store's own builder (the hybrid
     /// builder's Sapling -> post-quantum send) once it has been handed to the server: the store
     /// decrypts it with the account's keys as it does a fetched transaction (the memo enhancement

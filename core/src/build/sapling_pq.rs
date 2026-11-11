@@ -88,7 +88,7 @@ pub fn shape_fee(script: &[u8], notes: usize) -> i64 {
 }
 
 /// A planned Sapling -> post-quantum send: the recipient checked, the notes selected with their
-/// paths. Next: fetch the notes' transactions ([`fetch_note_txs`]), then [`build_sapling_to_pq`].
+/// paths. Next: the notes' transactions ([`note_txs`]: the store first), then [`build_sapling_to_pq`].
 #[derive(Clone, Debug)]
 pub struct SaplingPqPlan {
     to: String,
@@ -164,14 +164,6 @@ pub fn plan_sapling_to_pq(
     })
 }
 
-/// Fetch the transactions that created the plan's notes (`GetTransaction`), by txid.
-pub async fn fetch_note_txs(
-    client: &mut CompactClient,
-    plan: &SaplingPqPlan,
-) -> Result<std::collections::HashMap<[u8; 32], Vec<u8>>, WalletError> {
-    fetch_txs(client, plan.note_txids()).await
-}
-
 /// The transactions that created `notes` (internal order, each once).
 pub fn note_txids(notes: &[crate::shielded::SelectedNote]) -> Vec<[u8; 32]> {
     let mut v: Vec<[u8; 32]> = notes.iter().map(|n| n.txid).collect();
@@ -180,8 +172,8 @@ pub fn note_txids(notes: &[crate::shielded::SelectedNote]) -> Vec<[u8; 32]> {
     v
 }
 
-/// Fetch `txids` (`GetTransaction`).
-pub async fn fetch_txs(
+/// Fetch `txids` (`GetTransaction`): only through [`note_txs`], for what the store lacks.
+async fn fetch_txs(
     client: &mut CompactClient,
     txids: Vec<[u8; 32]>,
 ) -> Result<std::collections::HashMap<[u8; 32], Vec<u8>>, WalletError> {
@@ -196,6 +188,54 @@ pub async fn fetch_txs(
         out.insert(txid, raw);
     }
     Ok(out)
+}
+
+pub use super::NOTE_LOOKUP_NEEDED;
+
+/// The transactions that created the notes a spend takes, by txid (review YEW-REVIEW-8 M1):
+/// from the wallet's own store first ([`crate::shielded::Shielded::stored_transactions`]: memo
+/// enhancement and `record_sent` keep every transaction that paid the wallet a note), so a
+/// wallet whose notes were enhanced makes **no** request. Only a transaction the store lacks (a
+/// note received since the last enhancement) is fetched with `GetTransaction`, and only with
+/// `allow_server`; without it the refusal ([`NOTE_LOOKUP_NEEDED`]) says what the server would
+/// learn and that nothing was sent.
+pub async fn note_txs(
+    client: &mut CompactClient,
+    shielded: &crate::shielded::Shielded,
+    txids: Vec<[u8; 32]>,
+    allow_server: bool,
+) -> Result<std::collections::HashMap<[u8; 32], Vec<u8>>, WalletError> {
+    let (mut out, missing) = stored_note_txs(shielded, txids)?;
+    if missing.is_empty() {
+        return Ok(out);
+    }
+    if !allow_server {
+        return Err(other(note_lookup_text(missing.len())));
+    }
+    out.extend(fetch_txs(client, missing).await?);
+    Ok(out)
+}
+
+/// Raw transactions by txid (internal order).
+pub type Fetched = std::collections::HashMap<[u8; 32], Vec<u8>>;
+
+/// The stored transactions of `txids` and the txids the store lacks (no network).
+pub fn stored_note_txs(
+    shielded: &crate::shielded::Shielded,
+    txids: Vec<[u8; 32]>,
+) -> Result<(Fetched, Vec<[u8; 32]>), WalletError> {
+    let out = shielded.stored_transactions(&txids)?;
+    let missing = txids.into_iter().filter(|t| !out.contains_key(t)).collect();
+    Ok((out, missing))
+}
+
+/// The go-ahead question for `n` transactions the store lacks.
+pub fn note_lookup_text(n: usize) -> String {
+    format!(
+        "{NOTE_LOOKUP_NEEDED}To spend older notes the app must ask the server for {n} transaction{s}; the server can then tell which notes this payment spends. Nothing was sent. Sync again and the wallet reads {them} with its other received transactions, or confirm to ask the server now.",
+        s = if n == 1 { "" } else { "s" },
+        them = if n == 1 { "it" } else { "them" },
+    )
 }
 
 /// Each selected note as the hybrid builder spends it: the note plaintext decrypted again from
@@ -276,7 +316,7 @@ pub fn note_spends(
 }
 
 /// Prove and authorize the planned send with the notes' `fetched` transactions
-/// ([`fetch_note_txs`]). Nothing is broadcast, stored or locked.
+/// ([`note_txs`]). Nothing is broadcast, stored or locked.
 pub fn build_sapling_to_pq(
     wallet: &Wallet,
     side: &SaplingSide,
@@ -507,8 +547,6 @@ mod tests {
         (w, dir, fetched)
     }
 
-    type Fetched = std::collections::HashMap<[u8; 32], Vec<u8>>;
-
     /// The refusal's text (a built preview is too large to print).
     fn err(r: Result<SaplingPqPreview, WalletError>) -> String {
         match r {
@@ -658,6 +696,61 @@ mod tests {
         assert_eq!(after.spendable_zat, 0, "{after:?}");
         let e = err(build(&mut w, &side, &to, 100_000, VAULT_BRANCH_ID, &f));
         assert!(e.starts_with("Not enough private YEC"), "{e}");
+        drop(w);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review YEW-REVIEW-8 M1: the notes' transactions come from the wallet's own store. A note
+    /// only scanned from compact blocks (no enhancement yet) is reported missing, and without
+    /// the go-ahead the refusal says what the server would learn (mapped to
+    /// `ErrorKind::NoteLookupNeeded`, the prefix stripped); once the transaction is in the store
+    /// (memo enhancement's `decrypt_and_store_transaction`, which `record_sent` also calls)
+    /// nothing is missing, so `note_txs` returns before any request, and the stored bytes build
+    /// the send exactly as fetched ones do.
+    #[test]
+    fn enhanced_notes_need_no_server_lookup() {
+        let (mut w, dir, f) = wallet_with_notes("stored", &[2_000_000]);
+        let txid = *f.keys().next().unwrap();
+        let (stored, missing) = stored_note_txs(w.shielded().unwrap(), vec![txid]).unwrap();
+        assert!(stored.is_empty());
+        assert_eq!(missing, vec![txid]);
+        let t = note_lookup_text(missing.len());
+        assert!(t.starts_with(NOTE_LOOKUP_NEEDED));
+        assert!(t.contains("ask the server for 1 transaction;"), "{t}");
+        assert!(t.contains("which notes this payment spends"), "{t}");
+        assert!(t.contains("Nothing was sent"), "{t}");
+        let y = crate::api::YewError::from(WalletError::Other(note_lookup_text(3)));
+        assert_eq!(y.kind, crate::api::ErrorKind::NoteLookupNeeded);
+        assert!(y
+            .message
+            .starts_with("To spend older notes the app must ask the server for 3 transactions;"));
+        // what memo enhancement leaves in the store: the transaction's raw bytes on its row
+        // (this test chain's paying transaction is not value-balanced, which
+        // `decrypt_and_store_transaction` refuses, so the column is written directly)
+        let db =
+            rusqlite::Connection::open(w.shielded().unwrap().dir().join("wallet.sqlite")).unwrap();
+        let n = db
+            .execute(
+                "UPDATE transactions SET raw = ?1 WHERE txid = ?2",
+                rusqlite::params![f[&txid], txid.as_slice()],
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        drop(db);
+        let (stored, missing) = stored_note_txs(w.shielded().unwrap(), vec![txid]).unwrap();
+        assert!(missing.is_empty());
+        assert_eq!(
+            stored[&txid], f[&txid],
+            "the store gives back the exact bytes"
+        );
+        let id = crate::pq::PqKeyId {
+            scheme: crate::pq::SCHEME_SLH_DSA_SHA2_128S,
+            hash: [0x5c; 32],
+        };
+        let to = keys::encode_pq_yec(w.network, &id).unwrap();
+        let side = SaplingSide::of(&w, &params_dir()).unwrap();
+        let p = build(&mut w, &side, &to, 1_000_000, VAULT_BRANCH_ID, &stored).unwrap();
+        assert_eq!(p.notes, 1);
         drop(w);
         let _ = std::fs::remove_dir_all(&dir);
     }

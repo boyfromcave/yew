@@ -21,6 +21,7 @@ import '../term_classes.dart';
 import '../theme.dart';
 import '../trust_text.dart';
 import '../widgets/move_public_hint.dart';
+import '../widgets/note_lookup.dart';
 import '../widgets/preview_card.dart';
 import '../widgets/unusual_fee.dart';
 import 'mint_progress.dart';
@@ -175,20 +176,34 @@ class _MintScreenState extends State<MintScreen> {
       // beta2 D-3: a post-quantum source's carrier fee rests on the server's terms
       if (!mounted) return;
       final carrierAck = await acceptUnusualFee(context, note: e.carrierFeeNote, ack: e.unusualCarrierFeeAck);
-      final row = await app.api.mintStart(
-        cents: e.cents,
-        lockBlocks: e.lockBlocks,
-        confirmed: MintTerms(
-          collateralZat: e.collateralZat,
-          feeZat: e.feeZat,
-          payee: e.payee,
-          termClass: e.termClass,
-          acceptUnusualFee: ack,
-          from: e.from,
-          carrierFeeZat: e.carrierFeeZat,
-          acceptUnusualCarrierFee: carrierAck,
-        ),
-      );
+      Future<MintStatus> start(bool allowLookup) => app.api.mintStart(
+            cents: e.cents,
+            lockBlocks: e.lockBlocks,
+            confirmed: MintTerms(
+              collateralZat: e.collateralZat,
+              feeZat: e.feeZat,
+              payee: e.payee,
+              termClass: e.termClass,
+              acceptUnusualFee: ack,
+              from: e.from,
+              carrierFeeZat: e.carrierFeeZat,
+              acceptUnusualCarrierFee: carrierAck,
+              allowNoteLookup: allowLookup,
+            ),
+          );
+      MintStatus row;
+      try {
+        row = await start(false);
+      } catch (err) {
+        // review YEW-REVIEW-8 M1: from the private balance, asking the server for note
+        // transactions the wallet does not hold yet needs the user's go-ahead
+        if (kindOf(err) != ErrorKind.noteLookupNeeded) rethrow;
+        if (!mounted || !await askNoteLookup(context, messageOf(err))) {
+          setState(() => _busy = false);
+          return;
+        }
+        row = await start(true);
+      }
       await app.refresh();
       if (!mounted) return;
       Navigator.of(context).pushReplacement(MaterialPageRoute<void>(builder: (_) => MintProgressScreen(mintId: row.mintId)));

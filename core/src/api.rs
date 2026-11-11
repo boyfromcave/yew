@@ -127,6 +127,11 @@ pub enum ErrorKind {
     ParamsMissing,
     /// Anything else (storage, key derivation).
     Other,
+    /// Spending these private notes needs transactions the wallet does not hold yet; fetching
+    /// them now would tell the server which notes the payment spends (review YEW-REVIEW-8 M1).
+    /// `message` says so in plain words. Sync again, or repeat the call with the go-ahead
+    /// (`allow_note_lookup`) after the user agreed.
+    NoteLookupNeeded,
 }
 
 /// The one error type of the surface. `message` is complete and showable as-is.
@@ -168,7 +173,10 @@ impl From<WalletError> for YewError {
             WalletError::Coins(c) => YewError::new(ErrorKind::NeedYecForFees, c.to_string()),
             WalletError::Transfer(t) => YewError::new(ErrorKind::Refused, t.to_string()),
             WalletError::Key(k) => YewError::new(ErrorKind::Input, k.to_string()),
-            WalletError::Other(m) => YewError::new(ErrorKind::Refused, m),
+            WalletError::Other(m) => match m.strip_prefix(crate::build::NOTE_LOOKUP_NEEDED) {
+                Some(text) => YewError::new(ErrorKind::NoteLookupNeeded, text),
+                None => YewError::new(ErrorKind::Refused, m),
+            },
             WalletError::Mint(crate::build::mint::MintError::Unaffordable { .. }) => {
                 YewError::new(ErrorKind::NeedYecForFees, text)
             }
@@ -1167,6 +1175,9 @@ pub struct MintTerms {
     pub carrier_fee_zat: i64,
     /// `MintEstimate::unusual_carrier_fee_ack` when the user confirmed it separately.
     pub accept_unusual_carrier_fee: Option<String>,
+    /// From the private balance: the user's go-ahead to fetch, from the server, note
+    /// transactions the wallet does not hold yet ([`ErrorKind::NoteLookupNeeded`]).
+    pub allow_note_lookup: bool,
 }
 
 /// [`MintEstimate::from`] / [`MintTerms::from`] naming the private (Sapling) balance.
@@ -2492,7 +2503,15 @@ pub fn pq_send_preview(from: String, to: String, zat: i64) -> Result<PqSendPrevi
 /// (`build::sapling_pq`; beta2 D-2, D-8). Proven here, so it needs the Sapling parameters
 /// ([`ErrorKind::ParamsMissing`] otherwise). The amount and the recipient become visible on the
 /// chain (`from_private` set: D-5). Confirm with [`pq_send_confirm`]. Nothing is broadcast.
-pub fn private_pq_send_preview(to: String, zat: i64) -> Result<PqSendPreviewInfo, YewError> {
+///
+/// The notes' transactions are read from the wallet's own store; one the store lacks is fetched
+/// from the server only with `allow_note_lookup` (the user's go-ahead after
+/// [`ErrorKind::NoteLookupNeeded`], review YEW-REVIEW-8 M1).
+pub fn private_pq_send_preview(
+    to: String,
+    zat: i64,
+    allow_note_lookup: bool,
+) -> Result<PqSendPreviewInfo, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
             let r = o.sync().await?;
@@ -2511,11 +2530,14 @@ pub fn private_pq_send_preview(to: String, zat: i64) -> Result<PqSendPreviewInfo
                 r.branch_id,
             )?;
             // the notes' plaintexts are decrypted again from their transactions (the store keeps
-            // `rcm` only, the builder spends ZIP-212 notes by their `rseed`)
+            // `rcm` only, the builder spends ZIP-212 notes by their `rseed`): from the store,
+            // the server only with the user's go-ahead (review YEW-REVIEW-8 M1)
             ensure_conn(o).await?;
-            let fetched = crate::build::sapling_pq::fetch_note_txs(
+            let fetched = crate::build::sapling_pq::note_txs(
                 &mut o.conn.as_mut().expect("connected").compact,
-                &plan,
+                o.wallet.shielded()?,
+                plan.note_txids(),
+                allow_note_lookup,
             )
             .await?;
             let side = crate::build::pq_send::SaplingSide::of(&o.wallet, &o.params_dir)?;
@@ -3538,6 +3560,7 @@ pub fn mint_start(
                     r.tip,
                     r.branch_id,
                     params_dir,
+                    confirmed.allow_note_lookup,
                 )
                 .await?;
                 return row_status(o, id);

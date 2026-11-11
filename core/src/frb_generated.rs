@@ -1137,10 +1137,15 @@ fn wire__crate__api__private_pq_send_preview_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_to = <String>::sse_decode(&mut deserializer);
             let api_zat = <i64>::sse_decode(&mut deserializer);
+            let api_allow_note_lookup = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
-                    let output_ok = crate::api::private_pq_send_preview(api_to, api_zat)?;
+                    let output_ok = crate::api::private_pq_send_preview(
+                        api_to,
+                        api_zat,
+                        api_allow_note_lookup,
+                    )?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -2047,6 +2052,7 @@ impl SseDecode for crate::api::ErrorKind {
             11 => crate::api::ErrorKind::ShieldedNotReady,
             12 => crate::api::ErrorKind::ParamsMissing,
             13 => crate::api::ErrorKind::Other,
+            14 => crate::api::ErrorKind::NoteLookupNeeded,
             _ => unreachable!("Invalid variant for ErrorKind: {}", inner),
         };
     }
@@ -2423,6 +2429,7 @@ impl SseDecode for crate::api::MintTerms {
         let mut var_from = <String>::sse_decode(deserializer);
         let mut var_carrierFeeZat = <i64>::sse_decode(deserializer);
         let mut var_acceptUnusualCarrierFee = <Option<String>>::sse_decode(deserializer);
+        let mut var_allowNoteLookup = <bool>::sse_decode(deserializer);
         return crate::api::MintTerms {
             collateral_zat: var_collateralZat,
             fee_zat: var_feeZat,
@@ -2432,6 +2439,7 @@ impl SseDecode for crate::api::MintTerms {
             from: var_from,
             carrier_fee_zat: var_carrierFeeZat,
             accept_unusual_carrier_fee: var_acceptUnusualCarrierFee,
+            allow_note_lookup: var_allowNoteLookup,
         };
     }
 }
@@ -3427,6 +3435,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::ErrorKind {
             Self::ShieldedNotReady => 11.into_dart(),
             Self::ParamsMissing => 12.into_dart(),
             Self::Other => 13.into_dart(),
+            Self::NoteLookupNeeded => 14.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -3602,6 +3611,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::MintTerms {
             self.from.into_into_dart().into_dart(),
             self.carrier_fee_zat.into_into_dart().into_dart(),
             self.accept_unusual_carrier_fee.into_into_dart().into_dart(),
+            self.allow_note_lookup.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4369,6 +4379,7 @@ impl SseEncode for crate::api::ErrorKind {
                 crate::api::ErrorKind::ShieldedNotReady => 11,
                 crate::api::ErrorKind::ParamsMissing => 12,
                 crate::api::ErrorKind::Other => 13,
+                crate::api::ErrorKind::NoteLookupNeeded => 14,
                 _ => {
                     unimplemented!("");
                 }
@@ -4634,6 +4645,7 @@ impl SseEncode for crate::api::MintTerms {
         <String>::sse_encode(self.from, serializer);
         <i64>::sse_encode(self.carrier_fee_zat, serializer);
         <Option<String>>::sse_encode(self.accept_unusual_carrier_fee, serializer);
+        <bool>::sse_encode(self.allow_note_lookup, serializer);
     }
 }
 

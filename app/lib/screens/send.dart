@@ -25,6 +25,7 @@ import '../state/app_scope.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
 import '../widgets/memo_field.dart';
+import '../widgets/note_lookup.dart';
 import '../widgets/params_sheet.dart';
 import '../widgets/preview_card.dart';
 import '../widgets/scan_sheet.dart';
@@ -142,14 +143,25 @@ class _SendScreenState extends State<SendScreen> {
           // preview, the proving-files sheet first if needed; the core's refusals verbatim
           final zat = parseYecZat(_amount.text);
           if (zat == null || zat <= 0) throw const YewError(kind: ErrorKind.input, message: 'Enter an amount in YEC, up to eight decimals');
-          PqSendPreviewInfo p;
-          try {
-            p = await app.api.privatePqSendPreview(to: to, zat: zat);
-          } catch (e) {
-            if (kindOf(e) != ErrorKind.paramsMissing) rethrow;
-            if (!mounted || !await preparePrivateSending(context)) return;
-            p = await app.api.privatePqSendPreview(to: to, zat: zat);
+          // review YEW-REVIEW-8 M1: the notes' transactions come from the wallet's store; asking
+          // the server for missing ones needs the user's go-ahead (the core's text, verbatim)
+          var allowLookup = false;
+          PqSendPreviewInfo? p;
+          for (var attempt = 0; attempt < 3 && p == null; attempt++) {
+            try {
+              p = await app.api.privatePqSendPreview(to: to, zat: zat, allowNoteLookup: allowLookup);
+            } catch (e) {
+              if (kindOf(e) == ErrorKind.paramsMissing) {
+                if (!mounted || !await preparePrivateSending(context)) return;
+              } else if (kindOf(e) == ErrorKind.noteLookupNeeded && !allowLookup) {
+                if (!mounted || !await askNoteLookup(context, messageOf(e))) return;
+                allowLookup = true;
+              } else {
+                rethrow;
+              }
+            }
           }
+          if (p == null) return;
           setState(() => _pq = p);
           return;
         }

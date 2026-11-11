@@ -206,9 +206,22 @@ void main() {
     expect(find.textContaining('spends private notes'), findsOneWidget);
     await tester.scrollUntilVisible(find.byKey(const Key('start')), 200, scrollable: find.byType(Scrollable).first);
     await tester.pumpAndSettle();
+    // review YEW-REVIEW-8 M1: notes the wallet's store lacks need the go-ahead; cancel sends nothing
+    h.api.noteLookupText = 'To spend older notes the app must ask the server for 1 transaction; the server can then tell which notes this payment spends. Nothing was sent.';
     await tester.tap(find.byKey(const Key('start')));
     await tester.pumpAndSettle();
+    expect(find.byKey(const Key('note-lookup-dialog')), findsOneWidget);
+    expect(find.text(h.api.noteLookupText!), findsOneWidget);
+    await tester.tap(find.byKey(const Key('note-lookup-cancel')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, isNot(contains('mintStart lookup')));
+    expect(h.state.mints, isEmpty);
+    await tester.tap(find.byKey(const Key('start')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('note-lookup-accept')));
+    await tester.pumpAndSettle();
     expect(h.api.calls, contains('mintStart from private carrier 18000'));
+    expect(h.api.calls, contains('mintStart lookup'));
   });
 
   testWidgets('without post-quantum coins there is no funding chooser and the public balance funds the mint', (tester) async {

@@ -11,6 +11,12 @@
 //! `mint` holds the carrier step and the sweep that `claim` shares, `redeem` the vault-spend
 //! plan that `claim` shares.
 
+/// The start of the refusal that asks for the user's go-ahead before the transactions that
+/// created the notes a private spend takes are fetched from the server
+/// (`sapling_pq::note_txs`, review YEW-REVIEW-8 M1); the API maps it to
+/// `ErrorKind::NoteLookupNeeded`.
+pub const NOTE_LOOKUP_NEEDED: &str = "note-lookup-needed: ";
+
 pub mod any_to_any;
 pub mod claim;
 // review YEW-PORT-5 R3: the hybrid builder (native only: the prover is not in the browser build).

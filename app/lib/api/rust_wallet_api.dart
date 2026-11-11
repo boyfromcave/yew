@@ -134,8 +134,8 @@ class RustWalletApi implements WalletApi {
       rust.pqSendConfirm(previewId: previewId, acceptUnusualFee: acceptUnusualFee);
 
   @override
-  Future<PqSendPreviewInfo> privatePqSendPreview({required String to, required int zat}) =>
-      rust.privatePqSendPreview(to: to, zat: zat);
+  Future<PqSendPreviewInfo> privatePqSendPreview({required String to, required int zat, bool allowNoteLookup = false}) =>
+      rust.privatePqSendPreview(to: to, zat: zat, allowNoteLookup: allowNoteLookup);
 
   @override
   Future<ParamsStatus> paramsStatus() => rust.paramsStatus();

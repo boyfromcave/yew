@@ -48,7 +48,9 @@ fn other(m: impl Into<String>) -> WalletError {
 /// `mint_start` with the private balance as the source: [`mint::prepare_start`] (the estimate
 /// re-checked, its acknowledgements, the bundle, the owner key, the attestor payee), the note
 /// selection for the carrier and the staged need with their paths, the notes' plaintexts, then
-/// [`carrier_step_sapling`]. `params_dir` holds the Sapling proving parameters. Returns the row.
+/// [`carrier_step_sapling`]. `params_dir` holds the Sapling proving parameters. The notes'
+/// transactions come from the store; one it lacks is fetched only with `allow_note_lookup`
+/// (`sapling_pq::note_txs`). Returns the row.
 #[allow(clippy::too_many_arguments)]
 pub async fn start_from_sapling(
     wallet: &mut Wallet,
@@ -60,6 +62,7 @@ pub async fn start_from_sapling(
     tip: u64,
     branch_id: u32,
     params_dir: &std::path::Path,
+    allow_note_lookup: bool,
 ) -> Result<i64, WalletError> {
     if branch_id != VAULT_BRANCH_ID {
         return Err(other(
@@ -84,8 +87,15 @@ pub async fn start_from_sapling(
         .select_spends((CARRIER_VALUE + staged) as u64, |n| {
             mint::sapling_carrier_fee(flat, n) as u64
         })?;
-    let fetched =
-        super::sapling_pq::fetch_txs(client, super::sapling_pq::note_txids(&picked.notes)).await?;
+    // review YEW-REVIEW-8 M1: the notes' transactions from the store; the server only with the
+    // user's go-ahead
+    let fetched = super::sapling_pq::note_txs(
+        client,
+        wallet.shielded()?,
+        super::sapling_pq::note_txids(&picked.notes),
+        allow_note_lookup,
+    )
+    .await?;
     let side = SaplingSide::of(wallet, params_dir)?;
     let sent = RefCell::new(None);
     let r = carrier_step_sapling(
