@@ -1,0 +1,307 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
+//! Burn safety (beta2): every yewd path that selects transparent or post-quantum coins for a plain
+//! YEC spend fails closed when the node cannot answer for its Yellowback index. Three node states,
+//! for each path:
+//!
+//! - live and unhealthy (`yed_getinfo.healthy` false): refused with the C++ lines' string;
+//! - live and healthy, but `yed_listtokens` fails: refused the same way (a failing read is never
+//!   read as "no tokens");
+//! - not live (`yed_getinfo` and `yed_listtokens` both `-32601`, what ycashd and kogany answer
+//!   without the vault upgrade and a YED attestor set): the send goes ahead.
+//!
+//! The paths: `sendtoaddress`, `sendmany`, `fundrawtransaction`, `z_sendmany` from ECC (to a
+//! transparent and to a Sapling recipient: the shielding), `z_sendmany` from a post-quantum
+//! address, `vault_lock` funded from the wallet's coins (the `Fund` path every vault and Yellowback
+//! builder shares: `set_join`, the vault builders' fees, `yed_mint` and the YED builders' fee
+//! inputs) and `vault_lock` with `"from"`. Nothing is broadcast on a refusal.
+
+mod common;
+
+use common::*;
+
+const COIN: i64 = 100_000_000;
+
+const REFUSAL: &str = "refusing to spend as plain YEC while the Yellowback index is unhealthy (a test reason): the wallet's YED coin locks cannot be trusted; restart with -reindex-yellowback";
+
+#[derive(Clone, Copy, Debug)]
+enum State {
+    Unhealthy,
+    ReadFails,
+    NotLive,
+}
+
+struct Fix {
+    node: MockNode,
+    w: Wallet,
+    ecc: String,
+    slh: String,
+    zaddr: String,
+}
+
+fn addr_script(a: &str) -> Vec<u8> {
+    yewd_wallet::rpc::parse_taddr_script(Network::Regtest, a).unwrap()
+}
+
+/// A wallet past the Vault activation with 5 YEC at its ECC address, 5 YEC at its first SLH-DSA
+/// address and four 1 YEC coins at the ECC address.
+async fn fixture(name: &str) -> Fix {
+    let node = MockNode::default();
+    node.0.lock().unwrap().vault_height = Some(1);
+    genesis(&node);
+    let d = dir(name);
+    let mut w = Wallet::open(&d, Network::Regtest, core_signer(&d.join("signer")), 0).unwrap();
+    w.sync(&node).await.unwrap();
+    let text = |v: yewd_wallet::json::J| v.text().trim_matches('"').to_string();
+    let ecc = text(w.call(&node, "getnewaddress", &[]).await.unwrap());
+    let slh = text(
+        w.call(&node, "getnewaddress", &[json!("pqslh")])
+            .await
+            .unwrap(),
+    );
+    let zaddr = text(w.call(&node, "z_getnewaddress", &[]).await.unwrap());
+    let foreign = |n: u32| OutPoint { txid: [7; 32], n };
+    let mut txs = vec![
+        coinbase(1, vec![0x51], 0),
+        payment(foreign(0), addr_script(&ecc), 5 * COIN),
+        payment(foreign(1), addr_script(&slh), 5 * COIN),
+    ];
+    for n in 2..6 {
+        txs.push(payment(foreign(n), addr_script(&ecc), COIN));
+    }
+    node.mine(txs, 0);
+    w.sync(&node).await.unwrap();
+    Fix {
+        node,
+        w,
+        ecc,
+        slh,
+        zaddr,
+    }
+}
+
+impl Fix {
+    fn set(&self, s: State) {
+        let mut c = self.node.0.lock().unwrap();
+        match s {
+            State::Unhealthy => {
+                c.yed_info = Some(json!({"healthy": false, "unhealthyReason": "a test reason"}));
+                c.tokens_error = Some((
+                    -26,
+                    "yellowback-unhealthy: a test reason; restart with -reindex-yellowback".into(),
+                ));
+            }
+            State::ReadFails => {
+                c.yed_info = Some(json!({"healthy": true, "unhealthyReason": ""}));
+                c.tokens_error = Some((
+                    -26,
+                    "yellowback-unhealthy: a test reason; restart with -reindex-yellowback".into(),
+                ));
+            }
+            State::NotLive => {
+                c.yed_info = None;
+                c.tokens_error = Some((-32601, "Method not found".into()));
+            }
+        }
+    }
+
+    fn sent(&self) -> usize {
+        self.node.0.lock().unwrap().sent.len()
+    }
+
+    async fn call(&mut self, m: &str, p: &[Value]) -> Result<String, (i64, String)> {
+        self.w
+            .call(&self.node, m, p)
+            .await
+            .map(|v| v.text())
+            .map_err(|e| (e.code, e.message))
+    }
+
+    /// `z_sendmany`, run to its end.
+    async fn zsend(&mut self, from: &str, to: &str, amount: i64) -> Result<String, (i64, String)> {
+        let p = [
+            json!(from),
+            json!([{"address": to, "amount": amount as f64 / COIN as f64}]),
+            json!(1),
+        ];
+        let opid = self.call("z_sendmany", &p).await?;
+        let r = call_json(
+            &mut self.w,
+            &self.node,
+            "z_getoperationresult",
+            &[json!([opid.trim_matches('"')])],
+        )
+        .await;
+        match r[0]["status"].as_str() {
+            Some("success") => Ok(r[0]["result"]["txid"].as_str().unwrap().to_string()),
+            _ => Err((
+                r[0]["error"]["code"].as_i64().unwrap(),
+                r[0]["error"]["message"].as_str().unwrap().to_string(),
+            )),
+        }
+    }
+
+    async fn lock(&mut self, from: Option<&str>) -> Result<String, (i64, String)> {
+        let mut p = json!({
+            "tag": "TEST",
+            "setid": "11".repeat(32),
+            "delay": 1,
+            "ownerheight": 1000,
+            "amount": 1.0,
+        });
+        if let Some(f) = from {
+            p["from"] = json!(f);
+        }
+        self.call("vault_lock", &[p]).await
+    }
+}
+
+/// Run `op` in each state on a fresh wallet: refused (nothing broadcast) while the index cannot
+/// answer, accepted when Yellowback is not live.
+async fn each_state<F>(name: &str, prefix: &str, op: F)
+where
+    F: for<'a> Fn(
+        &'a mut Fix,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, (i64, String)>> + 'a>,
+    >,
+{
+    for s in [State::Unhealthy, State::ReadFails, State::NotLive] {
+        let mut f = fixture(&format!("{name}-{s:?}")).await;
+        f.set(s);
+        let before = f.sent();
+        let r = op(&mut f).await;
+        match s {
+            State::NotLive => {
+                r.unwrap_or_else(|e| panic!("{name} {s:?}: {e:?}"));
+                assert!(f.sent() > before, "{name} {s:?}: broadcast");
+            }
+            _ => {
+                assert_eq!(
+                    r.unwrap_err(),
+                    (-4, format!("{prefix}{REFUSAL}")),
+                    "{name} {s:?}"
+                );
+                assert_eq!(f.sent(), before, "{name} {s:?}: nothing broadcast");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn sendtoaddress_fails_closed() {
+    let to = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x33; 20]);
+    each_state("sendtoaddress", "", |f| {
+        let to = to.clone();
+        Box::pin(async move { f.call("sendtoaddress", &[json!(to), json!(1.0)]).await })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn sendmany_fails_closed() {
+    let to = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x34; 20]);
+    each_state("sendmany", "", |f| {
+        let to = to.clone();
+        let mut m = serde_json::Map::new();
+        m.insert(to.clone(), json!(1.0));
+        Box::pin(async move { f.call("sendmany", &[json!(""), Value::Object(m)]).await })
+    })
+    .await;
+}
+
+/// fundrawtransaction only funds (nothing is broadcast), so its "accepted" leg checks the answer.
+#[tokio::test]
+async fn fundrawtransaction_fails_closed() {
+    let mut t = Transaction::new_v4();
+    t.vout.push(TxOut {
+        value: COIN,
+        script_pubkey: yewd_wallet::rpc::parse_taddr_script(
+            Network::Regtest,
+            &yew_core::keys::encode_p2pkh(Network::Regtest, &[0x35; 20]),
+        )
+        .unwrap(),
+    });
+    let raw = hex::encode(t.serialize().unwrap());
+    for s in [State::Unhealthy, State::ReadFails, State::NotLive] {
+        let mut f = fixture(&format!("fundraw-{s:?}")).await;
+        f.set(s);
+        let r = f.call("fundrawtransaction", &[json!(raw)]).await;
+        match s {
+            State::NotLive => {
+                let v: Value = serde_json::from_str(&r.unwrap()).unwrap();
+                assert!(v["hex"].as_str().is_some_and(|h| h.len() > raw.len()));
+            }
+            _ => assert_eq!(r.unwrap_err(), (-4, REFUSAL.to_string()), "{s:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn z_sendmany_from_ecc_to_transparent_fails_closed() {
+    let to = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x36; 20]);
+    each_state("zsend-t", "", |f| {
+        let (from, to) = (f.ecc.clone(), to.clone());
+        Box::pin(async move { f.zsend(&from, &to, COIN).await })
+    })
+    .await;
+}
+
+/// Sapling shielding from transparent coins.
+#[tokio::test]
+async fn z_sendmany_shielding_from_ecc_fails_closed() {
+    each_state("zsend-shield", "", |f| {
+        let (from, to) = (f.ecc.clone(), f.zaddr.clone());
+        Box::pin(async move { f.zsend(&from, &to, COIN).await })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn z_sendmany_from_post_quantum_fails_closed() {
+    each_state("zsend-pq", "", |f| {
+        let (from, to) = (f.slh.clone(), f.ecc.clone());
+        Box::pin(async move { f.zsend(&from, &to, COIN).await })
+    })
+    .await;
+}
+
+/// The default funding: `Fund` / `EligibleCoins`, which `set_join`, the vault builders' fee
+/// inputs, `yed_mint` and the YED builders' fee inputs share.
+#[tokio::test]
+async fn vault_lock_default_funding_fails_closed() {
+    each_state("lock-default", "", |f| Box::pin(f.lock(None))).await;
+}
+
+#[tokio::test]
+async fn vault_lock_from_ecc_and_pq_fails_closed() {
+    each_state("lock-from-ecc", "from: ", |f| {
+        let from = f.ecc.clone();
+        Box::pin(async move { f.lock(Some(&from)).await })
+    })
+    .await;
+    each_state("lock-from-pq", "from: ", |f| {
+        let from = f.slh.clone();
+        Box::pin(async move { f.lock(Some(&from)).await })
+    })
+    .await;
+}
+
+/// A live `yed_getinfo` that does not say `healthy: true` is not trusted: refused.
+#[tokio::test]
+async fn a_live_answer_without_healthy_true_is_refused() {
+    let mut f = fixture("getinfo-error").await;
+    {
+        let mut c = f.node.0.lock().unwrap();
+        c.yed_info = Some(json!({"unhealthyReason": ""})); // no `healthy` field: not trusted
+    }
+    let to = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x37; 20]);
+    let e = f
+        .call("sendtoaddress", &[json!(to), json!(1.0)])
+        .await
+        .unwrap_err();
+    assert_eq!(e, (-4, REFUSAL.replace("a test reason", "")));
+    assert_eq!(f.sent(), 0);
+}

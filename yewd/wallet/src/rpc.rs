@@ -2104,8 +2104,8 @@ impl Wallet {
                 // the wallet half of yed_getinfo (ENABLE_WALLET): the overlay's lock count (H10)
                 let mut o = raw_obj(result).map_err(bad)?;
                 let locked = self
-                    .yed_reserved(node)
-                    .await?
+                    .yed_reserved_view(node)
+                    .await
                     .into_iter()
                     .filter(|(t, n)| self.st.locks.contains(&format!("{t}:{n}")))
                     .count();

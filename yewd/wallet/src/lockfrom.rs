@@ -128,7 +128,7 @@ impl Wallet {
     ) -> Result<Funded, RpcError> {
         let pq = yew_core::pq::pqpkh_of(only).is_some();
         let reserved = self
-            .yed_reserved_strict(node)
+            .yed_reserved(node)
             .await
             .map_err(|e| RpcError::new(e.code, format!("from: {}", e.message)))?;
         let shield_coinbase = self.network != yew_core::params::Network::Regtest;

@@ -68,7 +68,7 @@ impl Wallet {
             ));
         }
         let _watch = p_bool(p, 1, false)?;
-        let reserved = self.yed_reserved(node).await?;
+        let reserved = self.yed_reserved_view(node).await;
         let mut transparent = 0i64;
         let mut pq = [0i64; 3];
         for (c, d) in self.available_coins(None) {

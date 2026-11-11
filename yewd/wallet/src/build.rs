@@ -383,7 +383,75 @@ impl Wallet {
     /// The outputs YED holds, never spent as YEC (ycashd's overlay locks them, H5): the index's
     /// tokens at this wallet's scripts, and every output of a mempool wallet transaction that
     /// carries a payload (its tokens are not indexed until it confirms).
+    ///
+    /// Fail closed (beta2, burn safety): every path that selects transparent or post-quantum
+    /// coins for a plain YEC spend takes the set from here, and gets it only when the node can
+    /// answer for its Yellowback index. The test for "Yellowback is not live on this node" is
+    /// what the node reports, by JSON-RPC code, not by message text: `yed_getinfo` answers
+    /// `-32601` (ycashd's and kogany's `EnsureIndex`: the yed_* commands exist only while the
+    /// vault upgrade and a YED attestor set are configured; lightwalletd-dd's `ProbeYellowback`
+    /// reads the same code the same way), and then no token can exist, so the send proceeds.
+    /// Every other answer is "live": `healthy` must be `true` and `yed_listtokens` must answer;
+    /// an unhealthy index, any `yed_getinfo` failure other than `-32601` (node unreachable,
+    /// warming up, malformed) or any `yed_listtokens` failure while live refuses with the C++
+    /// lines' string (ycash-dd 8e67b2a35 `YellowbackInputRefusal`). yewd is a sidecar, so the
+    /// "restart with -reindex-yellowback" in that string is advice for the node; the node's own
+    /// error is logged here.
     pub async fn yed_reserved(&self, node: &dyn Node) -> Result<BTreeSet<(String, u32)>, RpcError> {
+        let refuse = |reason: String, logged: String| {
+            eprintln!("yewd: refusing plain YEC spends: the node's Yellowback index cannot be read ({logged})");
+            RpcError::new(
+                code::WALLET_ERROR,
+                format!("refusing to spend as plain YEC while the Yellowback index is unhealthy ({reason}): the wallet's YED coin locks cannot be trusted; restart with -reindex-yellowback"),
+            )
+        };
+        let live = match node::call(node, "yed_getinfo", serde_json::json!([])).await {
+            Err(NodeError::Rpc { code: c, .. }) if c == code::METHOD_NOT_FOUND => false,
+            Err(e) => return Err(refuse(e.to_string(), format!("yed_getinfo: {e}"))),
+            Ok(v) => {
+                if v["healthy"].as_bool() != Some(true) {
+                    let reason = v["unhealthyReason"].as_str().unwrap_or("").to_string();
+                    return Err(refuse(
+                        reason.clone(),
+                        format!(
+                            "yed_getinfo: healthy {}, unhealthyReason {reason:?}",
+                            v["healthy"]
+                        ),
+                    ));
+                }
+                true
+            }
+        };
+        let mut r = BTreeSet::new();
+        match self.tokens(node).await {
+            Ok(tokens) => {
+                for t in tokens {
+                    if let (Some(txid), Some(vout)) = (t["txid"].as_str(), t["vout"].as_u64()) {
+                        r.insert((txid.to_string(), vout as u32));
+                    }
+                }
+            }
+            // not live: the node has no yed_* command at all, so it holds no token
+            Err(e) if !live && e.code == code::METHOD_NOT_FOUND => {}
+            Err(e) => {
+                let reason = e
+                    .message
+                    .trim_start_matches("yellowback-unhealthy: ")
+                    .trim_end_matches("; restart with -reindex-yellowback")
+                    .to_string();
+                return Err(refuse(
+                    reason,
+                    format!("yed_listtokens: node error {}: {}", e.code, e.message),
+                ));
+            }
+        }
+        r.extend(self.payload_reserved());
+        Ok(r)
+    }
+
+    /// [`Wallet::yed_reserved`] for a read that spends nothing (a balance, a count): the index's
+    /// tokens when it answers, else only the mempool payload outputs.
+    pub async fn yed_reserved_view(&self, node: &dyn Node) -> BTreeSet<(String, u32)> {
         let mut r = BTreeSet::new();
         if let Ok(tokens) = self.tokens(node).await {
             for t in tokens {
@@ -392,6 +460,13 @@ impl Wallet {
                 }
             }
         }
+        r.extend(self.payload_reserved());
+        r
+    }
+
+    /// Every output of a mempool wallet transaction that carries a Yellowback payload.
+    fn payload_reserved(&self) -> BTreeSet<(String, u32)> {
+        let mut r = BTreeSet::new();
         for (txid, p) in self.parsed_all() {
             let mempool = self.st.wtx.get(txid).is_some_and(|w| w.block.is_none());
             let payload = p.tx.vout.iter().any(|o| {
@@ -404,7 +479,7 @@ impl Wallet {
                 }
             }
         }
-        Ok(r)
+        r
     }
 
     /// `Fund`: add wallet P2PKH inputs (and a change output) so inputs = outputs + `fee`, given

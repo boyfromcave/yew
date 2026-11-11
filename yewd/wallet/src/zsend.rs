@@ -1015,31 +1015,6 @@ impl Wallet {
         self.ensure_unlocked()
     }
 
-    /// The outputs YED holds (the index's tokens at this wallet's scripts and every output of a
-    /// mempool wallet transaction carrying a payload), as [`Wallet::yed_reserved`], but strict:
-    /// where the node serves the Yellowback index and cannot answer for it, plain YEC is not
-    /// spent at all (ycash6 `YellowbackInputRefusal`'s unhealthy-index refusal). A node where
-    /// Yellowback is not live answers `-32601` and holds no token.
-    pub(crate) async fn yed_reserved_strict(
-        &self,
-        node: &dyn Node,
-    ) -> Result<BTreeSet<(String, u32)>, RpcError> {
-        if let Err(e) = self.tokens(node).await {
-            if e.code != code::METHOD_NOT_FOUND {
-                let reason = e
-                    .message
-                    .trim_start_matches("yellowback-unhealthy: ")
-                    .trim_end_matches("; restart with -reindex-yellowback")
-                    .to_string();
-                return Err(RpcError::new(
-                    code::WALLET_ERROR,
-                    format!("refusing to spend as plain YEC while the Yellowback index is unhealthy ({reason}): the wallet's YED coin locks cannot be trusted; restart with -reindex-yellowback"),
-                ));
-            }
-        }
-        self.yed_reserved(node).await
-    }
-
     /// ycash6 `WalletTxBuilder::PreparePQTransaction` (beta2 D-2, D-4, D-5): `z_sendmany` from a
     /// post-quantum address. Its own `TX_PQPKH` coins (never a YED output, never a locked coin),
     /// largest first; the fee priced on the transaction's size (`PQBuilderFee`) and settled with
@@ -1088,7 +1063,7 @@ impl Wallet {
         let send: i64 = recipients.iter().map(|r| r.1).sum();
         // the source's own coins: unspent, unlocked, mature, at depth >= minconf, not spent by a
         // mempool transaction of this wallet, and never an output YED holds
-        let reserved = self.yed_reserved_strict(node).await?;
+        let reserved = self.yed_reserved(node).await?;
         let spent = self.mempool_spent();
         let key =
             KeyRef::Pq {
