@@ -916,17 +916,31 @@ impl Wallet {
             .map_err(|e| RpcError::new(code::WALLET_ERROR, e))
     }
 
-    /// `getnewaddress ( "" "type" )`.
+    /// `getnewaddress ( "type" )` or `getnewaddress ( "" "type" )` (beta2 item 10, ycash6
+    /// c33854654 / ycash-dd#164): the first slot is the address type or the old placeholder `""`;
+    /// a type given first takes no second argument; any other first string, a type name in
+    /// another case too, is refused with the node's "Accounts are unsupported" error. The
+    /// arguments are judged before any key is issued.
     fn getnewaddress(&mut self, p: &[Value]) -> Result<J, RpcError> {
         arity("getnewaddress", p, 2)?;
-        if let Some(d) = p_str(p, 0)? {
-            if !d.is_empty() {
-                return Err(invalid(
-                    "dummy first argument must be excluded or set to \"\".",
+        let second = p.get(1).filter(|v| !v.is_null());
+        let typ = match p_str(p, 0)? {
+            Some(t @ ("p2pkh" | "pq" | "pqslh")) => {
+                if second.is_some() {
+                    return Err(invalid(
+                        "the address type is given first, so there is no second argument (getnewaddress pq, or getnewaddress \"\" pq)",
+                    ));
+                }
+                t
+            }
+            Some(d) if !d.is_empty() => {
+                return Err(RpcError::new(
+                    code::WALLET_ACCOUNTS_UNSUPPORTED,
+                    "Accounts are unsupported; the first argument is the address type, \"p2pkh\", \"pq\" or \"pqslh\" (lower case), or \"\" followed by the type",
                 ));
             }
-        }
-        let typ = p_str(p, 1)?.unwrap_or("p2pkh");
+            _ => p_str(p, 1)?.unwrap_or("p2pkh"),
+        };
         if typ == "pq" || typ == "pqslh" {
             if !self.vault_active_next() {
                 return Err(invalid(

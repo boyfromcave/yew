@@ -118,6 +118,8 @@ pub mod code {
     pub const WALLET_INSUFFICIENT_FUNDS: i64 = -6;
     pub const INVALID_PARAMETER: i64 = -8;
     pub const WALLET_INVALID_ACCOUNT_NAME: i64 = -11;
+    /// ycashd's `RPC_WALLET_ACCOUNTS_UNSUPPORTED` (the same -11).
+    pub const WALLET_ACCOUNTS_UNSUPPORTED: i64 = -11;
     pub const WALLET_UNLOCK_NEEDED: i64 = -13;
     pub const WALLET_PASSPHRASE_INCORRECT: i64 = -14;
     pub const WALLET_WRONG_ENC_STATE: i64 = -15;
@@ -418,7 +420,7 @@ impl Wallet {
     ) -> Result<Wallet, String> {
         let path = dir.join("wallet.json");
         let st = match State::load(&path)? {
-            Some(s) => {
+            Some(mut s) => {
                 if s.network != network.chain_name() {
                     return Err(format!(
                         "{} is a {} wallet, asked for {}",
@@ -426,6 +428,10 @@ impl Wallet {
                         s.network,
                         network.chain_name()
                     ));
+                }
+                // D-9: a book from before the scheme-visible prefixes is rewritten once.
+                if s.migrate_pq_book(network) > 0 {
+                    s.save(&path)?;
                 }
                 s
             }

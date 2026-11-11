@@ -46,7 +46,13 @@ use crate::tx::{txid_from_hex, OutPoint};
 /// attested price (`params.fees.network`), `maxMintCents` is $100,000, `params.feeMinZat` /
 /// `feeBps` and `GetFeePayee`'s collateral and fee are gone. Exact again: an rpcversion-7 node
 /// charges a collateral fee this build no longer computes.
-pub const KNOWN_RPCVERSION: i64 = 8;
+/// `9` is the scheme-visible post-quantum address prefixes this build implements (beta2 decision
+/// D-9, ycash-dd#166 / ycash6 `up/b2-pq-prefix`): a post-quantum address is `Base58Check(3-byte
+/// version ‖ keyHash)`, one version per network, coin and scheme (`sqf…`/`sqs…`, `ybf…`/`ybs…`),
+/// and `yed_getinfo`'s `params.pqAddressVersion` / `params.pq.plainAddressVersion` are objects
+/// keyed by scheme. Exact again: an rpcversion-8 node and its lightwalletd index and print the
+/// pre-D-9 form, which this build refuses.
+pub const KNOWN_RPCVERSION: i64 = 9;
 
 /// The upgrade status string that means "active" (`YellowbackActivation.status`, rpcversion 5:
 /// `"pending"` | `"active"`).

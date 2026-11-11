@@ -108,9 +108,9 @@ void main() {
 
   // Post-quantum destinations (D-Q-20/D-Q-21): YEC to rq…/sq…, YED to a 53-character yr…/yb…
   // Falcon holder; the other way round is refused before the core, with the reason.
-  const pqYec = 'rq5MXCssfNHhhz8WuNL5bKAmUKc1k1Wx7TpG2fM8ks9Gz5cPeCqKa';
-  const pqYed = 'yr2VA5rANyC4wfgx6kmvLPy2LxuhHYitwJ8xazzFCdXa1gEZSXSRH';
-  const pqOwner = 'yr2UGYBxhHb8yzYYCjZ1HtJ8cNHP6tNJawkjC4L1wmRiGdFQVjNy5';
+  const pqYec = 'rqf37MAujTiHQadywBQeNWk42bweehqf1UdcCrXg4oAqhqZQhCebM';
+  const pqYed = 'yrf1yW8ubn3p8Wf9XWuksXcZs562YHJTTjqdnLuWym3qJQ8SeGH2b';
+  const pqOwner = 'yrs2wCox3ZNcy8vFFh8wejMoNVDfSRKfdjwrp3q4fipDxaJRZPzW3';
 
   testWidgets('YEC to a post-quantum rq… address goes to the core preview', (tester) async {
     final h = Harness(withWallet: true);

@@ -598,12 +598,12 @@ class FakeWalletApi implements WalletApi {
   AddressCheck validateAddress({required NetworkId network, required String address}) => address.startsWith('yregtestsapling1')
       ? const AddressCheck(valid: true, kind: 'sapling', yellowbackForm: false, message: '')
       // The 53-character post-quantum regtest forms (the core's kinds; vectors: a q/attest node's
-      // vault_getnewowner pairs): rq… plain YEC, yr2V… a Falcon YED holder, yr2U… an SLH-DSA owner.
+      // vault_getnewowner pairs, D-9 forms): rq… plain YEC, yrf… a Falcon YED holder, yrs… an SLH-DSA owner.
       : address.length == 53 && address.startsWith('rq')
       ? const AddressCheck(valid: true, kind: 'pq_yec', yellowbackForm: false, message: '')
-      : address.length == 53 && address.startsWith('yr2V')
+      : address.length == 53 && address.startsWith('yrf')
       ? const AddressCheck(valid: true, kind: 'pq', yellowbackForm: true, message: '')
-      : address.length == 53 && address.startsWith('yr2U')
+      : address.length == 53 && address.startsWith('yrs')
       ? AddressCheck(valid: false, kind: 'pq_owner', yellowbackForm: true, message: '$address is a post-quantum vault-owner address, not a payment address')
       : address.startsWith('yr1') || address.startsWith('sm')
       ? AddressCheck(valid: true, kind: 'p2pkh', yellowbackForm: address.startsWith('yr1'), message: '')

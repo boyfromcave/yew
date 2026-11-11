@@ -175,6 +175,11 @@ impl State {
         }
     }
 
+    /// D-9: see [`migrate_pq_book`].
+    pub fn migrate_pq_book(&mut self, network: yew_core::params::Network) -> usize {
+        migrate_pq_book(&mut self.book, network)
+    }
+
     /// Write atomically (temporary file, fsync, rename).
     pub fn save(&self, path: &Path) -> Result<(), String> {
         use std::io::Write;
@@ -190,5 +195,68 @@ impl State {
             .and_then(|_| f.sync_all())
             .map_err(|e| format!("{}: {e}", tmp.display()))?;
         std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    }
+}
+
+/// D-9: rewrite every address-book key written in the pre-D-9 post-quantum form (`sq…`/`tq…`/
+/// `rq…` + a digit, `version2 ‖ scheme ‖ keyHash`) to the D-9 form of the same key (`sqf…`/
+/// `sqs…`, …), as ycashd rewrites its address-book records once at load. The old form is never an
+/// address, so no other key changes. Returns how many keys were rewritten.
+pub fn migrate_pq_book(
+    book: &mut BTreeMap<String, BookEntry>,
+    network: yew_core::params::Network,
+) -> usize {
+    use yew_core::keys;
+    let old: Vec<(String, String)> = book
+        .keys()
+        .filter_map(|a| {
+            let id = keys::parse_legacy_pq_address(network, a, false)?;
+            Some((a.clone(), keys::encode_pq_yec(network, &id)?))
+        })
+        .collect();
+    for (from, to) in &old {
+        if let Some(e) = book.remove(from) {
+            book.entry(to.clone()).or_insert(e);
+        }
+    }
+    old.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yew_core::keys;
+    use yew_core::params::Network;
+    use yew_core::pq::PqKeyId;
+
+    /// D-9: a book written before D-9 keys a post-quantum address by its old form; at load it is
+    /// keyed by the D-9 form of the same key, its label and purpose kept, every other key as is.
+    #[test]
+    fn migrate_pq_book_rewrites_the_pre_d9_form() {
+        let net = Network::Regtest;
+        let mut book = BTreeMap::new();
+        let entry = |l: &str| BookEntry {
+            label: l.into(),
+            purpose: "receive".into(),
+        };
+        let ids = [1u8, 2].map(|scheme| PqKeyId {
+            scheme,
+            hash: [scheme * 7; 32],
+        });
+        for (i, id) in ids.iter().enumerate() {
+            let mut old = net.legacy_pq_versions().1.to_vec();
+            old.extend_from_slice(&id.to_bytes());
+            book.insert(keys::base58check_encode(&old), entry(&format!("pq{i}")));
+        }
+        let p2pkh = keys::encode_p2pkh(net, &[5; 20]);
+        book.insert(p2pkh.clone(), entry("ecc"));
+        assert_eq!(migrate_pq_book(&mut book, net), 2);
+        assert_eq!(book.len(), 3);
+        assert_eq!(book[&p2pkh].label, "ecc");
+        for (i, id) in ids.iter().enumerate() {
+            let a = keys::encode_pq_yec(net, id).unwrap();
+            assert_eq!(book[&a].label, format!("pq{i}"));
+        }
+        assert_eq!(migrate_pq_book(&mut book, net), 0);
     }
 }

@@ -816,12 +816,17 @@ fn check_in_term_claim(v: &Value, m: &NodeMint) {
     );
     assert_eq!(row["claimable"].as_bool(), Some(true));
     assert_eq!(row["claimPath"].as_str(), Some("a"));
-    // The node's 53-character post-quantum owner address (rpcversion 7 `ownerAddress`) is the
-    // one YEW renders for the payload's owner (quantum spec §4; regtest `yr…` is final).
-    assert_eq!(
-        row["ownerAddress"].as_str().unwrap(),
-        keys::encode_pq_yellowback(network, &m.owner).unwrap()
-    );
+    // The node's 53-character post-quantum owner address (rpcversion 7 `ownerAddress`) names the
+    // payload's owner. These vectors were mined before D-9 (rpcversion 9), so the record holds the
+    // pre-D-9 form `version2 ‖ scheme ‖ keyHash`; YEW now renders the D-9 form (`yrs…` for an
+    // SLH-DSA owner) and refuses the recorded one as an address.
+    let recorded = row["ownerAddress"].as_str().unwrap();
+    let mut legacy = network.legacy_pq_versions().0.to_vec();
+    legacy.extend_from_slice(&m.owner.to_bytes());
+    assert_eq!(recorded, keys::base58check_encode(&legacy));
+    assert!(keys::parse_pq_address(network, recorded).is_err());
+    let d9 = keys::encode_pq_yellowback(network, &m.owner).unwrap();
+    assert_eq!(keys::parse_pq_address(network, &d9).unwrap(), m.owner);
     assert_eq!(row["lockHeight"].as_u64(), Some(m.lock_height as u64));
     let height = claim["txinfo"]["height"].as_u64().unwrap() as u32;
     assert!(

@@ -107,32 +107,52 @@ impl Network {
         }
     }
 
-    /// Post-quantum Yellowback address version bytes (quantum spec §4, F-4): the 33-byte payload
-    /// `scheme ‖ keyHash` of a `CPQKeyID` renders `yb…` / `yt…` / `yr…` at 53 characters, beside
-    /// the 35-character 20-byte form. Main `{0x56,0xAB}` (D-Q-21; the node's
-    /// `pqAddressVersion` is `{0x56,0xBF}` = `ye…` until the Y-B sweep), test `{0x57,0x1E}`,
-    /// regtest `{0x57,0x10}` (`ycash-dd/src/yellowback/params.cpp` `pqAddressVersion`) — each
-    /// the lowest version whose whole payload interval keeps the prefix and the length.
-    pub fn pq_yellowback_prefix(self) -> [u8; 2] {
-        match self {
-            Network::Mainnet => [0x56, 0xAB],
-            Network::Testnet => [0x57, 0x1E],
-            Network::Regtest => [0x57, 0x10],
-        }
+    /// Post-quantum Yellowback address versions (quantum spec §4, D-9): one 3-byte version per
+    /// scheme, so the prefix names the scheme; the address is `Base58Check(version ‖ keyHash)`,
+    /// 53 characters. Main FN-DSA-512 `56AEDE` `ybf…` / SLH-DSA-SHA2-128s `56B044` `ybs…`, test
+    /// `5721C9` `ytf…` / `572330` `yts…`, regtest `571444` `yrf…` / `5715AA` `yrs…`
+    /// (`ycash6/src/yellowback/params.cpp` `pqAddressVersions`, ycash-dd#166). `None` for a
+    /// scheme outside the registry.
+    pub fn pq_yellowback_version(self, scheme: u8) -> Option<[u8; 3]> {
+        use crate::pq::{SCHEME_FN_DSA_512 as F, SCHEME_SLH_DSA_SHA2_128S as S};
+        Some(match (self, scheme) {
+            (Network::Mainnet, F) => [0x56, 0xAE, 0xDE],
+            (Network::Mainnet, S) => [0x56, 0xB0, 0x44],
+            (Network::Testnet, F) => [0x57, 0x21, 0xC9],
+            (Network::Testnet, S) => [0x57, 0x23, 0x30],
+            (Network::Regtest, F) => [0x57, 0x14, 0x44],
+            (Network::Regtest, S) => [0x57, 0x15, 0xAA],
+            _ => return None,
+        })
     }
 
-    /// Post-quantum plain-YEC address version bytes (owner decision D-Q-20): the same 33-byte
-    /// `scheme ‖ keyHash` payload and the same `TX_PQPKH` script as the post-quantum Yellowback
-    /// form, rendered `sq…` / `tq…` / `rq…` (53 characters): main `{0x4D,0xD9}`, test
-    /// `{0x4F,0x61}`, regtest `{0x4C,0x51}` (the node's `key_io` `PlainPQAddressVersion`,
-    /// decoded chain-wide since the plan's §8.1 "SQ" step). YEW sends YEC to it
-    /// (`keys::parse_yec_destination`) and syncs its own keys' forms through lightwalletd's taddr
-    /// methods, which index `TX_PQPKH` under it.
-    pub fn pq_yec_prefix(self) -> [u8; 2] {
+    /// Post-quantum plain-YEC address versions (D-Q-20, D-9): the same `TX_PQPKH` script as the
+    /// post-quantum Yellowback form, one 3-byte version per scheme: main FN-DSA-512 `4DDD04`
+    /// `sqf…` / SLH-DSA-SHA2-128s `4DDE6A` `sqs…`, test `4F6519` `tqf…` / `4F667F` `tqs…`,
+    /// regtest `4C54EF` `rqf…` / `4C5655` `rqs…` (the node's `key_io` `PlainPQAddressVersions`).
+    /// YEW sends YEC to it (`keys::parse_yec_destination`) and syncs its own keys' forms through
+    /// lightwalletd's taddr methods, which index `TX_PQPKH` under it.
+    pub fn pq_yec_version(self, scheme: u8) -> Option<[u8; 3]> {
+        use crate::pq::{SCHEME_FN_DSA_512 as F, SCHEME_SLH_DSA_SHA2_128S as S};
+        Some(match (self, scheme) {
+            (Network::Mainnet, F) => [0x4D, 0xDD, 0x04],
+            (Network::Mainnet, S) => [0x4D, 0xDE, 0x6A],
+            (Network::Testnet, F) => [0x4F, 0x65, 0x19],
+            (Network::Testnet, S) => [0x4F, 0x66, 0x7F],
+            (Network::Regtest, F) => [0x4C, 0x54, 0xEF],
+            (Network::Regtest, S) => [0x4C, 0x56, 0x55],
+            _ => return None,
+        })
+    }
+
+    /// The pre-D-9 2-byte versions (`version ‖ scheme ‖ keyHash`), `(yed, plain)`: never produced
+    /// and never accepted as an address. Only yewd reads them, to rewrite an address-book key
+    /// written before D-9 (the node's `DecodeLegacyPQAddress`).
+    pub fn legacy_pq_versions(self) -> ([u8; 2], [u8; 2]) {
         match self {
-            Network::Mainnet => [0x4D, 0xD9],
-            Network::Testnet => [0x4F, 0x61],
-            Network::Regtest => [0x4C, 0x51],
+            Network::Mainnet => ([0x56, 0xAB], [0x4D, 0xD9]),
+            Network::Testnet => ([0x57, 0x1E], [0x4F, 0x61]),
+            Network::Regtest => ([0x57, 0x10], [0x4C, 0x51]),
         }
     }
 

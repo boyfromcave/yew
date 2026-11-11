@@ -343,6 +343,60 @@ async fn read_rpcs_over_the_mock_chain() {
             "post-quantum addresses need the vault upgrade active at the next block"
         )
     );
+    // beta2 item 10 (ycash6 c33854654): the type may come first; the old "" + type shape stands;
+    // the arguments are judged before the vault-upgrade check and before any key is issued.
+    for args in [
+        vec![json!("p2pkh")],
+        vec![json!(""), Value::Null],
+        vec![json!(""), json!("p2pkh")],
+    ] {
+        let a = w.call(&node, "getnewaddress", &args).await.unwrap().text();
+        assert!(a.starts_with("\"sm"), "{args:?}: {a}");
+    }
+    for args in [
+        vec![json!("pq")],
+        vec![json!("pqslh")],
+        vec![json!("pq"), Value::Null],
+    ] {
+        let e = w.call(&node, "getnewaddress", &args).await.unwrap_err();
+        assert_eq!(e.code, -8, "{args:?}");
+        assert!(
+            e.message.contains("vault upgrade"),
+            "{args:?}: {}",
+            e.message
+        );
+    }
+    let accounts = "Accounts are unsupported; the first argument is the address type, \"p2pkh\", \"pq\" or \"pqslh\" (lower case), or \"\" followed by the type";
+    for args in [
+        vec![json!("savings")],
+        vec![json!("savings"), json!("pq")],
+        vec![json!("PQ")],
+        vec![json!("Pq")],
+        vec![json!("PQSLH")],
+        vec![json!("P2PKH")],
+    ] {
+        let e = w.call(&node, "getnewaddress", &args).await.unwrap_err();
+        assert_eq!((e.code, e.message.as_str()), (-11, accounts), "{args:?}");
+    }
+    let twice = "the address type is given first, so there is no second argument (getnewaddress pq, or getnewaddress \"\" pq)";
+    for args in [
+        vec![json!("pq"), json!("pq")],
+        vec![json!("p2pkh"), json!("")],
+    ] {
+        let e = w.call(&node, "getnewaddress", &args).await.unwrap_err();
+        assert_eq!((e.code, e.message.as_str()), (-8, twice), "{args:?}");
+    }
+    for args in [
+        vec![json!(""), json!("PQ")],
+        vec![json!(""), json!("bogus")],
+    ] {
+        let e = w.call(&node, "getnewaddress", &args).await.unwrap_err();
+        assert!(
+            e.message.starts_with("type must be"),
+            "{args:?}: {}",
+            e.message
+        );
+    }
     let e = w
         .call(&node, "gettransaction", &[json!("00".repeat(32))])
         .await

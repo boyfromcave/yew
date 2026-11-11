@@ -4000,17 +4000,23 @@ mod tests {
         // the node's regtest pair (lightwalletd-dd q/pqaddr pqPlainVectors): rq… is a YEC address
         let n = validate_address(
             NetworkId::Regtest,
-            "rq5MXCssfNHhhz8WuNL5bKAmUKc1k1Wx7TpG2fM8ks9Gz5cPeCqKa".into(),
+            "rqf37MAujTiHQadywBQeNWk42bweehqf1UdcCrXg4oAqhqZQhCebM".into(),
         );
         assert!(n.valid && n.kind == "pq_yec" && !n.yellowback_form, "{n:?}");
         let m = validate_address(
             NetworkId::Mainnet,
-            "sq4ekeYR7pAE7ByLpq428jfiHrrsVyMnSTs58MNJeFMXDFL63vTbT".into(),
+            "sqf3ARYKcaUk1YK34TAkwvGjSQRuLkLH2sCqnofzQ1Fr59eA2Past".into(),
         );
         assert!(m.valid && m.kind == "pq_yec", "{m:?}");
+        // the pre-D-9 form of the same key (D-9: refused, never read as an address)
+        let old = validate_address(
+            NetworkId::Mainnet,
+            "sq4ekeYR7pAE7ByLpq428jfiHrrsVyMnSTs58MNJeFMXDFL63vTbT".into(),
+        );
+        assert!(!old.valid && old.kind.is_empty(), "{old:?}");
         assert!(validate_address(
             NetworkId::Regtest,
-            "sq4ekeYR7pAE7ByLpq428jfiHrrsVyMnSTs58MNJeFMXDFL63vTbT".into()
+            "sqf3ARYKcaUk1YK34TAkwvGjSQRuLkLH2sCqnofzQ1Fr59eA2Past".into()
         )
         .kind
         .is_empty());
