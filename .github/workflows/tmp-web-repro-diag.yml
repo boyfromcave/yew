@@ -1,0 +1,56 @@
+# TEMPORARY diagnostic (never merged): build the web wasm three times on ubuntu-26.04 and keep the
+# intermediate artifacts, to find the bytes that differ.
+name: tmp web repro diag
+on:
+  push:
+    branches: [up/b2-web-repro-diag]
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: toolchain
+        run: rustup show active-toolchain && rustup target add wasm32-unknown-unknown
+      - name: apt
+        run: sudo apt-get update && sudo apt-get install -y clang lld llvm protobuf-compiler wabt && clang --version
+      - name: wasm-pack
+        run: cargo install wasm-pack --version 0.15.0 --locked
+      - name: three builds
+        working-directory: web
+        env:
+          CC_wasm32_unknown_unknown: clang
+          AR_wasm32_unknown_unknown: llvm-ar
+        run: |
+          set -euo pipefail
+          OUT=$RUNNER_TEMP/out; mkdir -p "$OUT"
+          REPO=$(cd .. && pwd)
+          base="--cfg getrandom_backend=\"wasm_js\" --remap-path-prefix=$REPO=/src/yew --remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$(rustc --print sysroot)=/rustc"
+          # A, B: two target dirs (as build-release.sh); C: target dir A again after a clean.
+          for i in A B C; do
+            case $i in A|C) T=$RUNNER_TEMP/tA ;; B) T=$RUNNER_TEMP/tB ;; esac
+            rm -rf "$T"
+            export CARGO_TARGET_DIR=$T
+            export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="$base --remap-path-prefix=$T=/target"
+            wasm-pack build core-wasm --target web --release --no-opt --out-dir "$OUT/wasm$i" --out-name yew_web_core
+            mkdir -p "$OUT/raw$i" "$OUT/c$i"
+            cp "$T/wasm32-unknown-unknown/release/yew_web_core.wasm" "$OUT/raw$i/"
+            (cd "$T/wasm32-unknown-unknown/release/build" && find . -name '*.a' -o -name '*.o' | while read -r f; do d="$OUT/c$i/$(dirname "$f" | sed 's#^\./##; s#-[0-9a-f]\{16\}#-H#')"; mkdir -p "$d"; cp "$f" "$d/"; done)
+            (cd "$OUT/c$i" && find . -type f | LC_ALL=C sort | xargs sha256sum) > "$OUT/c$i.sums"
+            sha256sum "$OUT/wasm$i/yew_web_core_bg.wasm" "$OUT/raw$i/yew_web_core.wasm"
+          done
+          for p in AB AC; do echo "== C objects ${p:0:1} vs ${p:1:1}"; diff "$OUT/c${p:0:1}.sums" "$OUT/c${p:1:1}.sums" | sed 's#  \./# #' || true; done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: diag-${{ matrix.os }}
+          path: ${{ runner.temp }}/out
+          retention-days: 3
