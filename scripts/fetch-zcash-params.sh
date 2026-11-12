@@ -24,7 +24,13 @@ for f in sapling-spend.params sapling-output.params sprout-groth16.params; do
   rm -f "$f.release"
   echo "fetch-zcash-params: $f not verified from the release; falling back to download.z.cash" >&2
   for i in 1 2; do curl -fsSL --retry 3 -o "$f.part.$i" "https://download.z.cash/downloads/$f.part.$i"; done
-  cat "$f.part.1" "$f.part.2" > "$f" && rm "$f.part.1" "$f.part.2"
+  cat "$f.part.1" "$f.part.2" > "$f.tmp" && rm "$f.part.1" "$f.part.2"
+  # the final name only after the pinned sum holds: a bad download never stays behind as the file
+  if [ "$("${sha[@]}" "$f.tmp" | cut -d' ' -f1)" = "$(pinned "$f")" ]; then
+    mv "$f.tmp" "$f"
+  else
+    rm -f "$f.tmp"; echo "fetch-zcash-params: $f from download.z.cash does not match the pinned sum" >&2; exit 1
+  fi
 done
 # every file against the pinned sums; a mismatch or a missing file fails
 sums="$(mktemp)"; trap 'rm -f "$sums"' EXIT

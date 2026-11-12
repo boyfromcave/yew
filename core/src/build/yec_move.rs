@@ -254,8 +254,8 @@ fn plan_shield(
 /// `to` with the optional `memo`, transparent change to a fresh change address of this wallet (as
 /// the node's change from transparent addresses, and as every other public-balance send here),
 /// and the node's fee for that shape ([`ShieldTo::fixed_fee`], 1,000 zat). The recipient gets
-/// exactly `amount`: a change of exactly `TOKEN_VALUE` or of dust goes to the fee, never to the
-/// recipient. Confirm is [`confirm_shield`] (gate path [`GatePath::Shield`], the held-YED guard,
+/// exactly `amount`: a change of dust goes to the fee, and a change of exactly `TOKEN_VALUE` is one
+/// zat less (that zat to the fee), never to the recipient. Confirm is [`confirm_shield`] (gate path [`GatePath::Shield`], the held-YED guard,
 /// the provenance layer, the built fee equal to the previewed one).
 ///
 /// The coins come from one public address, as every other public-balance send (beta2 D-5,
@@ -291,7 +291,11 @@ pub fn plan_shield_to(
     let total: i64 = inputs.iter().map(|u| u.value).sum();
     let mut change = total - amount - base_fee;
     let mut fee = base_fee;
-    if change == TOKEN_VALUE || (change > 0 && change < MIN_CHANGE) {
+    if change == TOKEN_VALUE {
+        // never an output that looks like a token: one zat less change, as the public send does
+        change -= 1;
+        fee += 1;
+    } else if change > 0 && change < MIN_CHANGE {
         fee += change;
         change = 0;
     }
@@ -830,7 +834,7 @@ mod tests {
         let s = shield(&p);
         assert_eq!((s.amount, s.fee, s.change), (3_000_000 - 1_050, 1_050, 0));
         assert!(s.change_address.is_none());
-        // a change of exactly TOKEN_VALUE: to the fee as well
+        // a change of exactly TOKEN_VALUE: one zat less, that zat to the fee
         let p = plan_yec_send(
             &mut w,
             &to,
@@ -844,7 +848,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             (shield(&p).fee, shield(&p).change),
-            (1_000 + TOKEN_VALUE, 0)
+            (1_001, TOKEN_VALUE - 1)
         );
         // more than the public plain YEC: the private shortfall error, as before
         let e = plan_yec_send(&mut w, &to, 3_000_000, false, false, None, 120, 1).unwrap_err();
