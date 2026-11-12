@@ -1021,18 +1021,8 @@ pub fn output_provenance(
         ));
     }
     if let Some(found) = payload::find_payload(&parent) {
-        // every way an output comes to hold YED (ycash-dd state.cpp, the four TokenRecord
-        // writes): a MINT's vout[1] (ApplyMint), a TRANSFER's assignments (ApplyTransfer), a
-        // REDEEM's assignments on a vault spend (ApplyVaultSpend), and CAN-1's refund on a
-        // claim cancel, which carries CANCEL_COSIGN (ApplyIntentSpend: the lowest output at
-        // index >= 1 paying the claimant's refund script, at any non-zero value, from vault
-        // state; over-approximated here as every output at index >= 1)
-        let assigned = match &found.payload {
-            Payload::Mint { .. } => op.n == 1,
-            Payload::CancelCosign => op.n >= 1,
-            p => p.assignments().iter().any(|a| a.vout as u32 == op.n),
-        };
-        if assigned {
+        // every way an output comes to hold YED (`payload::payload_assigns`)
+        if payload::payload_assigns(&found.payload, op.n) {
             return Err(GateError::InputCarriesYed {
                 outpoint: name(),
                 payload: found.payload.payload_type().name(),
