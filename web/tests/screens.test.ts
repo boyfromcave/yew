@@ -218,6 +218,18 @@ describe("yellowback", () => {
     await vm.claimPreview(vm.state.claimable[0].vaultTxid); expect(vm.state.claim?.minOutZat).toBe("119900000"); expect(vm.state.claim?.maxBurnCents).toBe("5000");
     await vm.confirm(); expect(core.broadcasts).toHaveLength(1);
   });
+  it("the Mint screen's gate follows the syncs: \"Waiting for a price\" becomes open without a reload (real-stack run WEB-FIX)", async () => {
+    const core = await openWallet(); const vm = new YellowbackVm(core);
+    const open = await core.mint_availability();
+    const waiting = { ...open, allowed: false, reason: "Waiting for a price: the attestors have not published a YEC price the network can mint at yet." };
+    let next = waiting; core.mint_availability = async () => next;
+    vm.onSynced(); await new Promise((r) => setTimeout(r, 0)); expect(vm.state.availability).toBeNull(); // the screen was never opened: nothing asked
+    await vm.loadAvailability(); expect(vm.state.availability?.allowed).toBe(false); expect(vm.state.availability?.reason).toContain("Waiting for a price");
+    next = open; vm.onSynced(); await new Promise((r) => setTimeout(r, 0));
+    expect(vm.state.availability?.allowed).toBe(true); expect(vm.state.availability?.reason).toBe("");
+    core.mint_availability = async () => { throw new Error("network: down"); };
+    vm.onSynced(); await new Promise((r) => setTimeout(r, 0)); expect(vm.state.availability?.allowed).toBe(true); expect(vm.state.error).toBe("");
+  });
   it("busy: a second call while one is in progress rejects", async () => {
     const core = new MockCore({ delayMs: 20 }); await core.open(MOCK_SEED, 0, "http://x", "regtest");
     const a = core.vaults(); await expect(core.balances()).rejects.toThrow("busy"); await a;

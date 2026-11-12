@@ -63,6 +63,10 @@ export class YellowbackVm extends Vm<YellowbackState> {
   load() { return this.run(async () => this.set({ vaults: await this.core.vaults() })); }
   /** The node's mint gate (H-1/H-5): shown on the Mint screen; a halted mint is not estimated. */
   loadAvailability() { return this.run(async () => this.set({ availability: await this.core.mint_availability() })); }
+  /** The gate again, quietly (after a sync): a failed read keeps the last answer; the sync's own error shows on Home. */
+  private async refreshAvailability() {
+    try { this.set({ availability: await this.core.mint_availability() }); } catch { /* keep the last answer */ }
+  }
   loadClaimable() { return this.run(async () => this.set({ claimable: await this.core.claimable() })); }
 
   estimate(amount: string, lockBlocks: number) {
@@ -114,7 +118,10 @@ export class YellowbackVm extends Vm<YellowbackState> {
   /** After a sync (HomeVm.onSynced): a pending mint re-checks its carrier; a broadcast MINT refreshes its
    *  row (and the vaults) so the screen moves to "Minted" without a click. */
   onSynced() {
-    if (this.state.busy || this.state.mintId === null) return;
+    if (this.state.busy) return;
+    // no mint in progress: the mint gate follows the chain, so a Mint screen opened while the price was
+    // missing reads "Minting is open" after the sync that brings it, without a reload (real-stack run WEB-FIX)
+    if (this.state.mintId === null) { if (this.state.availability) void this.refreshAvailability(); return; }
     const st = this.state.mintStatus;
     if (st && st.inProgress && !st.canFinish && !this.state.step) { this.run(async () => {
       const id = this.state.mintId!; try { const step = await this.core.mint_finish(id); this.set({ step, mintStatus: step.row }); }
