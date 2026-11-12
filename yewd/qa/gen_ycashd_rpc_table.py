@@ -19,7 +19,7 @@ With --forwarded, only the table's `forwarded` section is (re)written, the rest 
 bounds and help of every node method of ycashd's `help` listing that the façade forwards (methods.rs:
 neither a wallet table, LOCAL, OUT_OF_SCOPE nor OWN), so a wrong argument count to a forwarded or
 augmented method answers ycashd's -32602 whatever the backend says (koganyd's jsonrpsee answers
--1 "Invalid params"; the Yellowback lead architect's decision, lane KG-YEWD-FIX: the façade, not
+-1 "Invalid params"; the beta2 decision: the façade, not
 kogany-rpc, carries ycashd's answer).
 
     YCASH6_QA=<ycash6>/qa/rpc-tests ZCASHD=<ycashd> <venv>/bin/python yewd/qa/gen_ycashd_rpc_table.py \\

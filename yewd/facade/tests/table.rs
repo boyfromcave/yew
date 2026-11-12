@@ -67,7 +67,7 @@ async fn every_wallet_method_answers_32601() {
     }
 }
 
-/// Lane KG-YEWD-FIX (the Yellowback lead architect's decision): a wrong argument count to a node
+/// The beta2 arity decision: a wrong argument count to a node
 /// method the façade forwards, or to an augmented read, answers ycashd's `-32602` with the help
 /// text from the façade, before the backend sees it (koganyd would answer `-1 "Invalid params"`).
 #[tokio::test]

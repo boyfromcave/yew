@@ -16,7 +16,7 @@
 //! The table's `forwarded` section holds the same bounds for the node methods the façade forwards
 //! (and the augmented reads): the façade answers their wrong argument counts as ycashd does, before
 //! the backend sees the call, since koganyd's RPC server answers `-1 "Invalid params"` there (the
-//! Yellowback lead architect's decision, lane KG-YEWD-FIX: the façade carries ycashd's answer,
+//! beta2 decision: the façade carries ycashd's answer,
 //! kogany-rpc stays as upstream Zakura has it). Only [`arity_error`] reads that section.
 
 use std::collections::BTreeMap;
