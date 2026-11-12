@@ -59,11 +59,27 @@ transaction depends on the source.
 | Post-quantum address | `mint::carrier_step_pq` | `Path::CarrierFromPq`: vout = [carrier P2SH, staged P2PKH], change to the source | yes |
 | Private | `mint_sapling::start_from_sapling` | `Path::CarrierFromSapling`: no transparent input, vout = [carrier P2SH, staged P2PKH], Sapling change | **no** |
 
+A mint start takes its terms from the estimate the core issued, never from the screen: the web
+wallet passes only the core's estimate id and the acknowledgement tokens; the app's terms must equal
+the estimate the core issued for the same amount, lock and source. The carrier fee shown is the
+most the funding may pay.
+
 **Why three shapes are app only.** Three shapes use the hybrid builder (`core/src/build/hybrid.rs`):
 post-quantum → private, private → post-quantum, and a mint funded from the private balance. That
 builder is compiled for native targets only (`#[cfg(not(target_arch = "wasm32"))]`). The web
-wallet does not offer these shapes. It shows the core's one-line reason (`unavailable_shapes`), and
-the wasm core refuses them with `unsupported: …`. To enable them in the browser:
+wallet does not offer these shapes and shows the core's one-line reason (`unavailable_shapes`). The
+wasm core answers each with `unsupported: …`:
+
+- **Post-quantum → private** and **a mint from the private balance** are refused outright
+  (`pq_send_preview` to a `ys1…` address; `mint_estimate` with `from = private`).
+- **Private → post-quantum** has no builder in the browser at all: `send_yec_preview` pays a
+  post-quantum recipient from public coins only. When the public balance is too small and the
+  private balance holds spendable YEC, the answer is `unsupported: This browser wallet cannot pay a
+  post-quantum address from the private balance; use the mobile app or move funds to a public
+  address first.` (`yec_private::pq_recipient_needs_private`). With no private YEC either, it is the
+  ordinary `insufficient-yec` error.
+
+To enable them in the browser:
 
 1. Compile `build::hybrid`, `build::sapling_pq` and `build::mint_sapling` for wasm32.
 2. Give the hybrid builder the browser's prover. Today it reads the parameter files from
@@ -108,8 +124,9 @@ that server and a burn. They are listed in the order a coin meets them.
    - An output of exactly `TOKEN_VALUE` that the server does not list is `HELD`.
    - No plain send creates an output of exactly `TOKEN_VALUE`: the amount is raised by 1 zat, and
      the preview says so.
-   - The gate refuses any other `TOKEN_VALUE` output, except the carrier, which `Path::CarrierFromPq`
-     and `Path::CarrierFromSapling` bind by script.
+   - The gate refuses any other `TOKEN_VALUE` output, except the carrier (`CARRIER_VALUE` equals
+     `TOKEN_VALUE`), which `Path::Carrier`, `Path::CarrierFromPq` and `Path::CarrierFromSapling`
+     bind by script.
 3. **Provenance, at sync and at broadcast (gate layer 3).**
    - **At sync.** A plain YEC or post-quantum output whose creating transaction could assign it
      YED, or whose creating transaction could not be fetched and checked (txid recomputed), is
@@ -215,14 +232,14 @@ that server and a burn. They are listed in the order a coin meets them.
   row; no earlier record of it exists to compare with.
 - **A mint from the private balance asks the note-lookup question before it derives any key**
   (YEW-REVIEW-9 L2), so it checks every spendable note, not only the ones the mint will spend
-  (their amount is known only after the estimate is re-checked). The question can therefore name
-  more transactions than are then fetched; with the go-ahead only the selected notes' missing
-  transactions are fetched.
+  (their amount is known only after the estimate is re-checked). The count is therefore an upper
+  bound, and the question says "up to n transactions"; with the go-ahead only the selected notes'
+  missing transactions are fetched.
 
 **Display and tests**
 - **Staged-for-mint YEC is shown by the web wallet only**; the app does not show the amount yet.
 - **One test skips** where the machine has no Sapling parameters:
-  `core/src/sapling_params.rs:991` (`real_parameters_verify_over_file_and_http_when_available`).
+  `core/src/sapling_params.rs:989` (`real_parameters_verify_over_file_and_http_when_available`).
 
 ### Still to be confirmed against a real node and lightwalletd
 

@@ -557,6 +557,33 @@ mod tests {
         (w, dir, fetched)
     }
 
+    /// Review YEW-REVIEW-10 L4: with private YEC and no public coins, a send to a post-quantum
+    /// address through `plan_yec_send` (the browser's only path to one) is the case the browser
+    /// explains as unsupported; a transparent recipient never is.
+    #[test]
+    fn a_pq_recipient_short_of_public_coins_with_private_funds() {
+        let (mut w, dir, _) = wallet_with_notes("pqpriv", &[2_000_000]);
+        let pq = crate::keys::encode_pq_yec(
+            crate::params::Network::Regtest,
+            &crate::pq::PqKeyId {
+                scheme: crate::pq::SCHEME_SLH_DSA_SHA2_128S,
+                hash: [7; 32],
+            },
+        )
+        .unwrap();
+        let e = crate::build::yec_private::plan_yec_send(&mut w, &pq, 1_000, false, None, 120, 1)
+            .expect_err("no public coins");
+        assert!(matches!(e, WalletError::Coins(_)), "{e}");
+        assert!(crate::build::yec_private::pq_recipient_needs_private(
+            &w, &pq, &e
+        ));
+        let t = crate::keys::encode_p2pkh(crate::params::Network::Regtest, &[3; 20]);
+        assert!(!crate::build::yec_private::pq_recipient_needs_private(
+            &w, &t, &e
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The refusal's text (a built preview is too large to print).
     fn err(r: Result<SaplingPqPreview, WalletError>) -> String {
         match r {

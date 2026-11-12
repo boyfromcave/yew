@@ -1083,7 +1083,9 @@ pub async fn fetch_params(f: Option<js_sys::Function>, sources: JsValue) -> Resu
 /// Plan a YEC send (`api::send_yec_preview`): after a sync of both pools, funded privacy first
 /// (a `ys1…` recipient from private notes, with an optional memo; a transparent one from
 /// private notes when they cover it — `revealsShielded` —, else from public YEC). A public
-/// preview is signed already; a private one is proved and signed at [`confirm`].
+/// preview is signed already; a private one is proved and signed at [`confirm`]. A post-quantum
+/// recipient is paid from public YEC only (the browser has no private → post-quantum builder):
+/// short of it while private YEC exists, the answer is `unsupported:` with the reason.
 #[wasm_bindgen]
 pub async fn send_yec_preview(
     to: String,
@@ -1107,7 +1109,15 @@ pub async fn send_yec_preview(
                 r.tip,
                 r.branch_id,
             )
-            .map_err(wallet_err)?;
+            .map_err(|e| {
+                // review YEW-REVIEW-10 L4: the browser pays a post-quantum address from public
+                // coins only; short of them with private YEC, say why instead of "insufficient"
+                if yec_private::pq_recipient_needs_private(&s.wallet, &to, &e) {
+                    err("unsupported", yec_private::PQ_FROM_PRIVATE_UNAVAILABLE)
+                } else {
+                    wallet_err(e)
+                }
+            })?;
             let id = match &plan.funding {
                 yec_private::Funding::Transparent(p) => txid_hex(&p.txid),
                 _ => s.next_preview_id(),
