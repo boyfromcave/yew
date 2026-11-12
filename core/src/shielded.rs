@@ -1846,8 +1846,9 @@ pub struct NoteSpends {
 
 /// One selected note as the store holds it. The store keeps a note's `rcm`, not the ZIP-212
 /// `rseed` it was derived from (`zcash_client_sqlite` reads every note back as pre-ZIP-212),
-/// and the hybrid builder spends only post-ZIP-212 notes; so the note plaintext is decrypted
-/// again from its transaction (`build::sapling_pq::note_spends`), bound to this commitment.
+/// and the hybrid builder needs a ZIP-212 note's `rseed` (a note from before Canopy it spends by
+/// its `rcm`); so the note plaintext is decrypted again from its transaction
+/// (`build::sapling_pq::note_spends`), bound to this commitment.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SelectedNote {

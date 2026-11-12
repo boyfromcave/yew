@@ -252,7 +252,7 @@ fn lookup_text(n: usize, bound: &str) -> String {
 /// its creating transaction (`fetched`, by txid) with the account's incoming viewing key of the
 /// note's scope, and bound to the store's note: the fetched bytes must hash to the txid, the
 /// output must decrypt, its commitment must equal the store's (so value, recipient and `rcm` are
-/// the store's), and it must be a ZIP-212 note (its `rseed`). The paths are the store's.
+/// the store's); a note from before ZIP-212 is spent by its `rcm`. The paths are the store's.
 pub fn note_spends(
     extsk: &sapling_crypto::zip32::ExtendedSpendingKey,
     notes: &[crate::shielded::SelectedNote],
@@ -306,17 +306,16 @@ pub fn note_spends(
                 n.output_index
             )));
         }
-        let rseed = match note.rseed() {
-            sapling_crypto::Rseed::AfterZip212(r) => *r,
-            sapling_crypto::Rseed::BeforeZip212(_) => return Err(other(
-                "a note from before ZIP-212 cannot be spent by this app; move it with a full node",
-            )),
+        // a note from before Canopy (pre-ZIP-212) is spent by its `rcm` (YEW-REAL finding 1)
+        let (rseed, after_zip212) = match note.rseed() {
+            sapling_crypto::Rseed::AfterZip212(r) => (*r, true),
+            sapling_crypto::Rseed::BeforeZip212(r) => (r.to_bytes(), false),
         };
         out.push(crate::sapling_part::SaplingSpend {
             recipient: hex::encode(addr.to_bytes()),
             value: n.value,
             rseed: hex::encode(rseed),
-            after_zip212: true,
+            after_zip212,
             internal: n.internal,
             position: n.position,
             path: n.path.clone(),

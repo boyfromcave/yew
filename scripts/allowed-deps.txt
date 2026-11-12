@@ -70,3 +70,7 @@ hex
 incrementalmerkletree
 orchard
 rand_core
+# Real-stack run YEW-REAL finding 1 (2026-11-11, approved by the Yellowback lead architect; plan §3.3):
+# spending a Sapling note from before Canopy (pre-ZIP-212, mainnet below height 1,100,006) in the hybrid
+# builder, whose `rseed` is a Jubjub scalar. jubjub 0.10.0, already in both Cargo.lock files (no new crate).
+jubjub

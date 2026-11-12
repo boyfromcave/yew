@@ -15,7 +15,7 @@ use rand_core::OsRng;
 use sapling_crypto::keys::OutgoingViewingKey;
 use sapling_crypto::value::NoteValue;
 use sapling_crypto::zip32::ExtendedSpendingKey;
-use sapling_crypto::{Anchor, MerklePath, Node, Note, PaymentAddress, Rseed};
+use sapling_crypto::{Anchor, MerklePath, Node, Note, PaymentAddress};
 use yewd_proto::{refuse, KeyRef, SaplingBuildRequest, SaplingOut};
 use zcash_primitives::transaction::builder::{BuildConfig, Builder};
 use zcash_primitives::transaction::fees::fixed::FeeRule;
@@ -27,7 +27,8 @@ use zip32::Scope;
 use crate::sign::{no, Refused, SignerCore};
 // review YEW-PORT-5 R3: the hybrid builder and its helpers moved to yew-core (a pure move)
 use yew_core::build::hybrid::{
-    hex32, owns_in_scope, sapling_extsk, sapling_prepare, script_of, taddr_of, zat, Hybrid,
+    hex32, owns_in_scope, rseed_of, sapling_extsk, sapling_prepare, script_of, taddr_of, zat,
+    Hybrid,
 };
 use yew_core::params::Network;
 
@@ -111,17 +112,8 @@ fn sapling_build(
             })?;
         let addr = PaymentAddress::from_bytes(&addr_bytes)
             .ok_or_else(|| (refuse::MALFORMED, "spend recipient".to_string()))?;
-        if !s.after_zip212 {
-            return no(
-                refuse::MALFORMED,
-                "a pre-ZIP-212 note is not spent by this signer",
-            );
-        }
-        let note = Note::from_parts(
-            addr,
-            NoteValue::from_raw(s.value),
-            Rseed::AfterZip212(hex32(&s.rseed, "rseed")?),
-        );
+        // before ZIP-212 (a note from before Canopy) the façade hands in its `rcm`
+        let note = Note::from_parts(addr, NoteValue::from_raw(s.value), rseed_of(s)?);
         // the note must be this account's in the scope the façade says
         let scope = if s.internal {
             Scope::Internal
@@ -316,6 +308,7 @@ fn sapling_build(
 mod tests {
     use super::*;
     use incrementalmerkletree::{Hashable, Level};
+    use sapling_crypto::Rseed;
     use yewd_proto::SaplingSpend;
 
     const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -390,6 +383,40 @@ mod tests {
         sapling_build(extsk.clone(), Network::Regtest, &r, |_, _| {
             no(refuse::KEY_MISMATCH, "no transparent input here")
         })
+    }
+
+    /// Real-stack run YEW-REAL finding 1: a note from before Canopy (pre-ZIP-212: its `rcm`, a
+    /// Jubjub scalar, in place of an `rseed`) is spent, external or change; it used to be refused
+    /// ("a pre-ZIP-212 note is not spent by this signer"). A `rcm` that is not a scalar is not.
+    #[test]
+    fn a_pre_zip212_note_is_spent() {
+        let extsk = sapling_extsk(PHRASE, Network::Regtest).unwrap();
+        let dfvk = extsk.to_diversifiable_full_viewing_key();
+        // the façade's encoding of a pre-ZIP-212 note (yewd/wallet zsend.rs): rcm's bytes
+        let mut b = [0u8; 32];
+        b[0] = 0x2a;
+        let probe = SaplingSpend {
+            recipient: String::new(),
+            value: 0,
+            rseed: hex::encode(b),
+            after_zip212: false,
+            internal: false,
+            position: 0,
+            path: Vec::new(),
+        };
+        let rcm = rseed_of(&probe).unwrap();
+        assert!(matches!(rcm, Rseed::BeforeZip212(_)));
+        for (addr, internal) in [
+            (dfvk.default_address().1, false),
+            (dfvk.change_address().1, true),
+        ] {
+            let (s, a) = lone_spend(&addr, 600_000, rcm, internal);
+            assert!(!s.after_zip212);
+            build_lone(&extsk, s, a).expect("a pre-ZIP-212 note spends");
+        }
+        let (mut s, a) = lone_spend(&dfvk.default_address().1, 600_000, rcm, false);
+        s.rseed = hex::encode([0xff; 32]);
+        assert_eq!(build_lone(&extsk, s, a).unwrap_err().0, refuse::MALFORMED);
     }
 
     /// Real-stack run YEW-REAL finding 0: a note received on the internal (change) scope is

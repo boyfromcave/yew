@@ -390,3 +390,92 @@ fn real_stack_addresses_sends_balances_restore() {
     let after = sync_to(tip);
     report("balances_after_restore", bal_json(&after));
 }
+
+/// The pre-Canopy leg (`scripts/real-run/yew_real_precanopy.py`, real-stack run YEW-REAL finding
+/// 1): `YEW_REAL_PHASE=address` prints the Sapling address of the fixed regtest phrase (no
+/// stack); the harness has the node pay notes to it before Canopy (pre-ZIP-212 notes), then
+/// with `YEW_REAL_PHASE=spend` the app restores the phrase and spends those notes: private ->
+/// post-quantum twice (the hybrid builder) and private -> private (the store's builder).
+#[test]
+#[ignore]
+fn real_stack_pre_canopy_notes() {
+    const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    let Ok(phase) = std::env::var("YEW_REAL_PHASE") else {
+        return;
+    };
+    if phase == "address" {
+        let a = yew_core::shielded_keys::SaplingAccount::from_mnemonic(
+            PHRASE,
+            "",
+            yew_core::params::Network::Regtest,
+        )
+        .unwrap();
+        report("zaddr", serde_json::json!(a.default_address().1));
+        return;
+    }
+    let server = std::env::var("YEW_REAL_SERVER").unwrap();
+    let dir = std::env::var("YEW_REAL_DIR").unwrap();
+    let params = std::env::var("YEW_REAL_PARAMS").unwrap();
+    let d = format!("{dir}/pre");
+    std::fs::create_dir_all(format!("{d}/sapling-params")).unwrap();
+    for f in ["sapling-spend.params", "sapling-output.params"] {
+        let _ =
+            std::os::unix::fs::symlink(format!("{params}/{f}"), format!("{d}/sapling-params/{f}"));
+    }
+    let dst: std::collections::HashMap<String, String> = std::env::var("YEW_REAL_DST")
+        .unwrap()
+        .split(',')
+        .map(|kv| {
+            let mut i = kv.splitn(2, '=');
+            (i.next().unwrap().to_string(), i.next().unwrap().to_string())
+        })
+        .collect();
+    api::init_app();
+    api::create_wallet(
+        Some(PHRASE.to_string()),
+        String::new(),
+        Some(100),
+        NetworkId::Regtest,
+        server,
+        true,
+        None,
+        d,
+    )
+    .expect("create_wallet");
+    let tip = cli(&["getblockcount"]).parse().unwrap();
+    report("balances_pre", bal_json(&sync_to(tip)));
+    let pq_conf = |id: &str, ack: Option<String>| api::pq_send_confirm(id.to_string(), ack);
+    let yec_conf = |id: &str, _ack: Option<String>| api::send_yec_confirm(id.to_string());
+    let sends: [(&str, &str, i64); 3] = [
+        ("sapling->pq_slh", "pq_slh", 1_100_000),
+        ("sapling->sapling", "sapling", 600_000),
+        ("sapling->pq_falcon", "pq_falcon", 1_200_000),
+    ];
+    for (label, dk, amount) in sends {
+        let to = dst[dk].clone();
+        let r = if dk.starts_with("pq") {
+            let p = api::private_pq_send_preview(to, amount, true).map(|p| {
+                report("preview", serde_json::json!({"cell": label, "fee": p.fee_zat, "change": p.change_zat, "inputs": p.inputs, "size": p.size_bytes}));
+                (p.preview_id, p.fee_zat, p.unusual_fee_ack)
+            });
+            cell(label, p, &pq_conf)
+        } else {
+            let p = api::send_yec_preview(to, amount, false, None).map(|p| {
+                report("preview", serde_json::json!({"cell": label, "funding": format!("{:?}", p.funding), "fee": p.fee_zat, "change": p.change_zat, "inputs": p.inputs}));
+                (p.preview_id, p.fee_zat, None)
+            });
+            cell(label, p, &yec_conf)
+        };
+        let tip = mine(1);
+        if let Some(x) = r {
+            report(
+                "mined",
+                serde_json::json!({"cell": label, "txid": x, "block": mined_in(&x)}),
+            );
+        }
+        report(
+            "balances",
+            serde_json::json!({"after": label, "app": bal_json(&sync_to(tip))}),
+        );
+    }
+}
