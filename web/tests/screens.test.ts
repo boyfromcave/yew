@@ -180,13 +180,20 @@ describe("yellowback", () => {
     await vm.mintStepConfirm(); expect(core.broadcasts).toHaveLength(2); expect(vm.state.mintStatus?.state).toBe("DONE"); expect(vm.state.mintStatus?.inProgress).toBe(false);
     await vm.load(); expect(vm.state.vaults).toHaveLength(2);
   });
-  it("mint \"Fund from\" a post-quantum address (beta2 D-3): the estimate names the source and its carrier fee; start passes them as terms", async () => {
+  it("mint \"Fund from\" a post-quantum address (beta2 D-3): the estimate names the source and its carrier fee; start passes only the core's estimate id", async () => {
     const core = await openWallet(); const vm = new YellowbackVm(core);
     await vm.loadSources(); expect(vm.unavailableReason("mint_from_private")).toContain("only the app");
     const src = vm.state.sources[0]; vm.setFrom(src.address);
     await vm.estimate("1", 100); const e = vm.state.estimate!; expect(e.from).toBe(src.address); expect(e.carrierFeeZat).toBe("20000"); expect(e.availableZat).toBe(src.balanceZat);
-    await vm.mintStart(); expect(core.lastMintTerms?.from).toBe(src.address); expect(core.lastMintTerms?.carrierFeeZat).toBe("20000"); expect(core.lastMintTerms?.collateralZat).toBe(e.collateralZat);
+    await vm.mintStart(); const st = core.lastMintStart!; expect(st.args).toBe(2); expect(Object.keys(st.acks ?? {})).toEqual(["acceptUnusualCarrierFee"]);
+    expect(st.estimate.estimateId).toBe(e.estimateId); expect(st.estimate.from).toBe(src.address); expect(st.estimate.carrierFeeZat).toBe("20000");
     expect(core.broadcasts).toHaveLength(0);
+  });
+  it("mint start: an estimate id the core did not issue is refused (review YEW-REVIEW-10 L2)", async () => {
+    const core = await openWallet(); const vm = new YellowbackVm(core);
+    await expect(core.mint_start("e999")).rejects.toThrow(/^invalid: This estimate is no longer valid/);
+    await vm.estimate("1", 100); (vm as unknown as { set(p: object): void }).set({ estimate: { ...vm.state.estimate!, estimateId: "forged", carrierFeeZat: "99999999" } });
+    await vm.mintStart(); expect(vm.state.error).toContain("no longer valid"); expect(vm.state.mint).toBeNull(); expect(core.lastMintStart).toBeUndefined();
   });
   it("mint finish: a fee above what the start accepted is asked for, then confirmed with the new ack (review YEW-REVIEW-5 M2, L4)", async () => {
     const core = await openWallet(); const vm = new YellowbackVm(core);

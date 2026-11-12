@@ -402,6 +402,10 @@ pub struct SendResult {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MintEstimate {
+    /// The id the core issued for this estimate (review YEW-REVIEW-10 L2): `mint_start` takes
+    /// only this id and the acknowledgement tokens; the terms, the carrier fee cap and the source
+    /// come from the estimate the core keeps.
+    pub estimate_id: String,
     pub cents: String,
     pub lock_blocks: u32,
     pub term_class: String,
@@ -438,13 +442,14 @@ pub struct MintEstimate {
     pub carrier_fee_zat: String,
     /// Set when the carrier fee is unusual: the separate confirmation's text.
     pub carrier_fee_note: Option<String>,
-    /// Set exactly when `carrierFeeNote` is: pass it in the terms as `acceptUnusualCarrierFee`
-    /// after the separate confirmation.
+    /// Set exactly when `carrierFeeNote` is: pass it to `mint_start` as
+    /// `acceptUnusualCarrierFee` after the separate confirmation.
     pub unusual_carrier_fee_ack: Option<String>,
 }
 
-pub fn mint_estimate(e: &CoreMintEstimate, from: &str) -> MintEstimate {
+pub fn mint_estimate(e: &CoreMintEstimate, from: &str, estimate_id: String) -> MintEstimate {
     MintEstimate {
+        estimate_id,
         cents: amt(e.cents as i64),
         lock_blocks: e.lock_blocks,
         term_class: e.term_class.clone(),

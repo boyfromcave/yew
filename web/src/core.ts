@@ -53,6 +53,9 @@ export interface MintAvailability {
   mintableClasses: string[]; enabledClasses: string[]; halts: string[];
 }
 export interface MintEstimate {
+  /** The id the core issued for this estimate: `mint_start` takes only it (and the acknowledgement tokens);
+   *  the terms, the carrier fee cap and the source come from the estimate the core keeps (review YEW-REVIEW-10 L2). */
+  estimateId: string;
   cents: string; lockBlocks: number; termClass: string; refHeight: number; lockHeight: number; claimHeight: number; expiryHeight: number;
   requiredZat: string; collateralZat: string; feeZat: string; attestFeeZat: string; payee: string; carrierZat: string; tokenZat: string;
   networkFeeZat: string; totalZat: string; availableZat: string; affordable: boolean; pMintMicroUsd: string | null; armed: boolean; bundleSeqs: number[];
@@ -108,11 +111,10 @@ export interface PqSendPreview {
 }
 /** A shape the app supports that this build cannot run, and the one-line reason the screen shows. */
 export interface Unavailable { shape: "pq_to_private" | "private_to_pq" | "mint_from_private"; reason: string }
-/** Mint terms the start holds the server to (audit G-2) and the source the carrier is funded from (beta2 D-3). */
-export interface MintTermsArg {
-  collateralZat: string; feeZat: string; payee: string; termClass: string; from: string;
-  carrierFeeZat: string; acceptUnusualCarrierFee: string | null;
-}
+/** The acknowledgement tokens an estimate issued, passed back to `mint_start` after their separate confirmations.
+ *  The terms the start holds the server to (audit G-2), the carrier fee cap and the source (beta2 D-3) are the
+ *  core's stored estimate's, never the page's (review YEW-REVIEW-10 L2). */
+export interface MintStartAcks { acceptUnusualFee?: string | null; acceptUnusualCarrierFee?: string | null }
 export interface Confirmed { txid: string; verdict: string; mintId: number | null }
 export interface AddressCheck { valid: boolean; kind: string; yellowbackForm: boolean; message: string }
 export interface AddressPair { ye: string; s: string; path: string; coveredBySeed: boolean; address: string; kind: string }
@@ -155,7 +157,7 @@ export interface Core {
   mint_availability(): Promise<MintAvailability>;
   /** `from`: "" (the public balance) or one of the wallet's post-quantum addresses. */
   mint_estimate(cents: string, lockBlocks: number, from?: string): Promise<MintEstimate>;
-  mint_start(cents: string, lockBlocks: number, terms?: MintTermsArg): Promise<MintStart>;
+  mint_start(estimateId: string, acks?: MintStartAcks): Promise<MintStart>;
   mint_finish(mintId: number): Promise<MintStep>;
   mint_sweep(mintId: number): Promise<MintStep>;
   mints(): Promise<MintStatus[]>;
@@ -246,7 +248,7 @@ export class CoreClient implements Core {
   move_preview(direction: MoveDirection, zat: string) { return this.call<MovePreview>("move_preview", direction, zat); }
   mint_availability() { return this.call<MintAvailability>("mint_availability"); }
   mint_estimate(cents: string, lockBlocks: number, from = "") { return this.call<MintEstimate>("mint_estimate", cents, lockBlocks, from); }
-  mint_start(cents: string, lockBlocks: number, terms?: MintTermsArg) { return this.call<MintStart>("mint_start", cents, lockBlocks, terms ?? null); }
+  mint_start(estimateId: string, acks?: MintStartAcks) { return this.call<MintStart>("mint_start", estimateId, acks ?? null); }
   mint_finish(mintId: number) { return this.call<MintStep>("mint_finish", BigInt(mintId)); }
   mint_sweep(mintId: number) { return this.call<MintStep>("mint_sweep", BigInt(mintId)); }
   mints() { return this.call<MintStatus[]>("mints"); }

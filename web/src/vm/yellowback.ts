@@ -78,12 +78,10 @@ export class YellowbackVm extends Vm<YellowbackState> {
       const e = this.state.estimate; if (!e) throw new Error("invalid: estimate first");
       // the carrier fee's own confirmation goes with the start (the core refuses a flagged one without it)
       if (e.unusualCarrierFeeAck && !this.state.carrierFeeAccepted) throw new Error("invalid: the carrier fee is unusual; press \"Pay this fee\" first");
-      // the terms the user saw: a server answer that differs is refused (audit G-2), and the carrier
-      // funding may not pay more than the fee shown (beta2 D-3)
-      this.set({ mint: await this.core.mint_start(e.cents, e.lockBlocks, {
-        collateralZat: e.collateralZat, feeZat: e.feeZat, payee: e.payee, termClass: e.termClass, from: e.from,
-        carrierFeeZat: e.carrierFeeZat, acceptUnusualCarrierFee: e.unusualCarrierFeeAck ?? null,
-      }) });
+      // only the core's estimate id and the acknowledgement: the core starts from the estimate it keeps (the terms a
+      // server answer may not differ from, audit G-2; the carrier fee the funding may not exceed and the source,
+      // beta2 D-3; review YEW-REVIEW-10 L2)
+      this.set({ mint: await this.core.mint_start(e.estimateId, { acceptUnusualCarrierFee: e.unusualCarrierFeeAck ?? null }) });
     });
   }
   /** Confirm the carrier (funded and broadcast by the core; the mintId comes back), then stage the finish. */

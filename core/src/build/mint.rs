@@ -189,6 +189,57 @@ pub struct ConfirmedTerms {
     pub accept_unusual_carrier_fee: Option<String>,
 }
 
+/// The mint estimates the core issued, by an id the core chose (review YEW-REVIEW-10 L2). A
+/// start takes its terms from here, never from the page or screen: the collateral, fee, payee,
+/// class, the carrier fee cap and the source are the ones the core computed and showed, so a
+/// faulty or tampered caller cannot raise the carrier fee the funding may pay, or name another
+/// source. Only the last [`IssuedEstimates::KEEP`] are kept.
+#[derive(Clone, Debug, Default)]
+pub struct IssuedEstimates {
+    seq: u64,
+    issued: std::collections::VecDeque<(String, MintEstimate)>,
+}
+
+impl IssuedEstimates {
+    /// How many issued estimates are kept (the oldest is dropped first).
+    pub const KEEP: usize = 16;
+
+    /// Record `e` and return its id.
+    pub fn issue(&mut self, e: &MintEstimate) -> String {
+        self.seq += 1;
+        let id = format!("e{}", self.seq);
+        if self.issued.len() == Self::KEEP {
+            self.issued.pop_front();
+        }
+        self.issued.push_back((id.clone(), e.clone()));
+        id
+    }
+
+    /// The estimate issued under `id`, if it is still kept.
+    pub fn get(&self, id: &str) -> Option<&MintEstimate> {
+        self.issued.iter().find(|(i, _)| i == id).map(|(_, e)| e)
+    }
+
+    /// The last estimate issued for this amount, lock and source.
+    pub fn latest_for(
+        &self,
+        cents: u64,
+        lock_blocks: u32,
+        source: MintSource,
+    ) -> Option<&MintEstimate> {
+        self.issued
+            .iter()
+            .rev()
+            .map(|(_, e)| e)
+            .find(|e| e.cents == cents && e.lock_blocks == lock_blocks && e.source == source)
+    }
+
+    /// Forget every issued estimate.
+    pub fn clear(&mut self) {
+        self.issued.clear();
+    }
+}
+
 /// Where a mint's YEC comes from (beta2 D-3 in the app: "MINT funded from a chosen source"; the
 /// app has no generic vault-lock builder). The MINT transaction is the same for every source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -274,6 +325,26 @@ impl MintEstimate {
     /// True when the wallet can fund both steps.
     pub fn affordable(&self) -> bool {
         self.available_zat >= self.total_zat
+    }
+
+    /// The terms a start re-checks, taken from this estimate (review YEW-REVIEW-10 L2): the
+    /// collateral, fee, payee and class the user saw, the carrier fee as the cap on the funding,
+    /// and the acknowledgement tokens the caller passes back (each is compared with the guard's
+    /// own token at `start`).
+    pub fn confirmed_terms(
+        &self,
+        accept_unusual_fee: Option<String>,
+        accept_unusual_carrier_fee: Option<String>,
+    ) -> ConfirmedTerms {
+        ConfirmedTerms {
+            collateral_zat: self.collateral_zat,
+            fee_zat: self.fee_zat,
+            payee: self.payee.clone(),
+            term_class: self.term_class.clone(),
+            accept_unusual_fee,
+            carrier_fee_zat: Some(self.carrier_fee_zat),
+            accept_unusual_carrier_fee,
+        }
     }
 }
 
@@ -1770,6 +1841,31 @@ pub(crate) async fn prepare_start(
     })
 }
 
+/// The start terms for a caller that passes the terms back (the app's `api::mint_start`;
+/// review YEW-REVIEW-10 L2): `shown` must be the terms of `issued`, the estimate the core issued
+/// for this amount, lock and source, field for field, the carrier fee included; the terms used
+/// are `issued`'s, with `shown`'s acknowledgement tokens. A caller that raises (or lowers) the
+/// carrier fee, or changes any other term, is refused before anything is fetched.
+pub fn terms_from_issued(
+    issued: &MintEstimate,
+    shown: &ConfirmedTerms,
+) -> Result<ConfirmedTerms, MintError> {
+    check_confirmed(shown, issued)?;
+    if let Some(f) = shown.carrier_fee_zat {
+        if f != issued.carrier_fee_zat {
+            return Err(MintError::TermsChanged {
+                what: "carrier fee",
+                was: issued.carrier_fee_zat.to_string(),
+                now: f.to_string(),
+            });
+        }
+    }
+    Ok(issued.confirmed_terms(
+        shown.accept_unusual_fee.clone(),
+        shown.accept_unusual_carrier_fee.clone(),
+    ))
+}
+
 /// The estimate at `start` against the one the user confirmed (audit G-2).
 fn check_confirmed(c: &ConfirmedTerms, est: &MintEstimate) -> Result<(), MintError> {
     let changed = |what, was: String, now: String| MintError::TermsChanged { what, was, now };
@@ -2919,10 +3015,8 @@ mod tests {
         assert_eq!(class, UtxoClass::Yec);
     }
 
-    /// The second answer at `mint_start` may not differ from the confirmed estimate (audit G-2).
-    #[test]
-    fn changed_terms_are_refused() {
-        let est = MintEstimate {
+    fn sample_estimate() -> MintEstimate {
+        MintEstimate {
             cents: 10_000,
             lock_blocks: 48,
             term_class: "A".into(),
@@ -2946,7 +3040,88 @@ mod tests {
             source: MintSource::Ecc,
             carrier_fee_zat: 1_000,
             carrier_fee_guard: None,
+        }
+    }
+
+    /// Review YEW-REVIEW-10 L2: a start takes its terms from an estimate the core issued. An id
+    /// the core did not issue (or no longer keeps) finds nothing; the terms built from an issued
+    /// estimate carry its carrier fee as the cap; a caller that passes the terms back cannot
+    /// raise the carrier fee above the issued one, or change any other term.
+    #[test]
+    fn a_start_takes_the_issued_estimate() {
+        let est = sample_estimate();
+        let mut book = IssuedEstimates::default();
+        assert!(book.get("e1").is_none());
+        let id = book.issue(&est);
+        assert_eq!(book.get(&id), Some(&est));
+        assert!(book.get("e999").is_none() && book.get("").is_none());
+        let t = book
+            .get(&id)
+            .unwrap()
+            .confirmed_terms(None, Some("ack".into()));
+        assert_eq!(t.carrier_fee_zat, Some(est.carrier_fee_zat));
+        assert_eq!(t.accept_unusual_carrier_fee.as_deref(), Some("ack"));
+        assert!(check_confirmed(&t, &est).is_ok());
+        // the app's route: matched by amount, lock and source; the latest wins
+        assert!(book
+            .latest_for(est.cents, est.lock_blocks, MintSource::Sapling)
+            .is_none());
+        assert!(book
+            .latest_for(est.cents + 1, est.lock_blocks, MintSource::Ecc)
+            .is_none());
+        let later = MintEstimate {
+            carrier_fee_zat: 2_000,
+            ..est.clone()
         };
+        book.issue(&later);
+        assert_eq!(
+            book.latest_for(est.cents, est.lock_blocks, MintSource::Ecc),
+            Some(&later)
+        );
+        let shown = est.confirmed_terms(None, None);
+        assert_eq!(terms_from_issued(&est, &shown).unwrap(), shown);
+        for f in [est.carrier_fee_zat + 1, i64::MAX, est.carrier_fee_zat - 1] {
+            let raised = ConfirmedTerms {
+                carrier_fee_zat: Some(f),
+                ..shown.clone()
+            };
+            assert!(matches!(
+                terms_from_issued(&est, &raised),
+                Err(MintError::TermsChanged {
+                    what: "carrier fee",
+                    ..
+                })
+            ));
+        }
+        // no carrier fee passed: the issued one is the cap
+        let none = ConfirmedTerms {
+            carrier_fee_zat: None,
+            ..shown.clone()
+        };
+        assert_eq!(
+            terms_from_issued(&est, &none).unwrap().carrier_fee_zat,
+            Some(est.carrier_fee_zat)
+        );
+        let bent = ConfirmedTerms {
+            collateral_zat: est.collateral_zat - 1_000,
+            ..shown
+        };
+        assert!(terms_from_issued(&est, &bent).is_err());
+        // only the last KEEP are kept
+        for _ in 0..IssuedEstimates::KEEP {
+            book.issue(&est);
+        }
+        assert!(book.get(&id).is_none());
+        book.clear();
+        assert!(book
+            .latest_for(est.cents, est.lock_blocks, MintSource::Ecc)
+            .is_none());
+    }
+
+    /// The second answer at `mint_start` may not differ from the confirmed estimate (audit G-2).
+    #[test]
+    fn changed_terms_are_refused() {
+        let est = sample_estimate();
         let confirmed = ConfirmedTerms {
             collateral_zat: est.collateral_zat,
             fee_zat: est.fee_zat,

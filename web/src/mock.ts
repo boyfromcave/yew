@@ -3,7 +3,7 @@
 // mock never leaves the browser's memory and constructs no bytes: previews are opaque ids.
 import type {
   AddressCheck, AddressKind, AddressPair, Balances, ClaimPreview, ClaimableItem, Confirmed, Core, HistoryRow,
-  MintAvailability, MintEstimate, MintStart, MintStatus, MintStep, MintTermsArg, MoveDirection, MovePreview, ParamsProgress, ParamsStatus,
+  MintAvailability, MintEstimate, MintStart, MintStatus, MintStep, MintStartAcks, MoveDirection, MovePreview, ParamsProgress, ParamsStatus,
   PqSendPreview, PqSource, Progress, ProgressEvent, RedeemPreview, ShieldedBalance, Status, SyncResult, Unavailable, Vault, YecPreview, YedPreview,
 } from "./core";
 
@@ -42,8 +42,10 @@ export class MockCore implements Core {
   ];
   /** When set, a post-quantum send's fee is flagged with this note, and confirm needs the ack. */
   unusualPqFee: string | null = null;
-  /** The last terms mint_start received (the tests check what the screen passes). */
-  lastMintTerms: MintTermsArg | undefined;
+  /** The estimates this core issued, by id (as the real core keeps them; review YEW-REVIEW-10 L2). */
+  private issuedEstimates = new Map<string, MintEstimate>();
+  /** The last mint_start: the stored estimate it took and the acknowledgements the screen passed. */
+  lastMintStart: { estimate: MintEstimate; acks: MintStartAcks | undefined; args: number } | undefined;
   private rows: HistoryRow[] = [
     hist("a1", 1180, "received private YEC", "", "150000000", "0", "", "thanks for lunch", true),
     hist("b2", 1175, "sent YED", "transfer", "-10000", "-2500", "ok", ""),
@@ -195,7 +197,8 @@ export class MockCore implements Core {
       const collateral = (BigInt(cents) * 100000000n * 3n) / BigInt(this.bal.priceCents ?? "0");
       const total = collateral + 100000n + carrierFee + 10000n + 10000n;
       const available = src ? BigInt(src.balanceZat) : BigInt(this.bal.yecZat);
-      return {
+      const e = {
+        estimateId: `e${this.issuedEstimates.size + 1}`,
         cents, lockBlocks, termClass: lockBlocks < 1000 ? "A" : lockBlocks < 10000 ? "B" : "C", refHeight: this.tip,
         lockHeight: this.tip + lockBlocks, claimHeight: this.tip + lockBlocks + 60, expiryHeight: this.tip + 40,
         requiredZat: collateral.toString(), collateralZat: collateral.toString(), feeZat: "100000", attestFeeZat: "0", payee: "s1MinerPayee000000000000000000000000",
@@ -203,11 +206,18 @@ export class MockCore implements Core {
         affordable: total <= available, pMintMicroUsd: "520000", armed: false, bundleSeqs: [],
         feeNote: null, unusualFeeAck: null, feePriceMicroUsd: null, from, carrierFeeZat: carrierFee.toString(), carrierFeeNote: null, unusualCarrierFeeAck: null,
       } as MintEstimate;
+      this.issuedEstimates.set(e.estimateId, { ...e });
+      return e;
     });
   }
   /** The carrier, staged: confirm funds it and answers the mintId (as the real core). */
-  mint_start(cents: string, lockBlocks: number, terms?: MintTermsArg) {
-    return this.step(() => { this.need(); this.lastMintTerms = terms; return { previewId: this.preview("carrier", { cents, lockBlocks }), cents, lockBlocks } as MintStart; });
+  mint_start(estimateId: string, acks?: MintStartAcks, ...rest: unknown[]) {
+    return this.step(() => {
+      this.need();
+      const e = this.issuedEstimates.get(estimateId); if (!e) throw new Error("invalid: This estimate is no longer valid. Estimate the mint again.");
+      this.lastMintStart = { estimate: { ...e }, acks, args: 2 + rest.length };
+      return { previewId: this.preview("carrier", { cents: e.cents, lockBlocks: e.lockBlocks }), cents: e.cents, lockBlocks: e.lockBlocks } as MintStart;
+    });
   }
   /** The MINT, staged for confirm; "build: …" until the carrier is confirmed. */
   mint_finish(mintId: number) {

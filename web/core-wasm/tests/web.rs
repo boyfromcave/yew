@@ -623,7 +623,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
         field_str(&m, "attestStatus"),
         field(&m, "mintableClasses")
     );
-    match yew_web_core::mint_estimate(JsValue::from_str("100"), 48).await {
+    match yew_web_core::mint_estimate(JsValue::from_str("100"), 48, None).await {
         Ok(e) => console_log!(
             "yew-web-core: mint_estimate: collateral {} total {} affordable {} armed {}",
             field_amt(&e, "collateralZat"),
@@ -636,10 +636,13 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
             assert!(!field_bool(&m, "allowed") || message(&e).starts_with("build: "));
         }
     }
-    let e = yew_web_core::mint_estimate(JsValue::from_str("0"), 48)
+    let e = yew_web_core::mint_estimate(JsValue::from_str("0"), 48, None)
         .await
         .expect_err("zero");
     assert!(message(&e).starts_with("invalid: "));
+    // review YEW-REVIEW-10 L2: a start takes only an estimate id the core issued
+    let e = yew_web_core::mint_start("e-not-issued".into(), JsValue::NULL).expect_err("unknown id");
+    assert!(message(&e).starts_with("invalid: "), "{}", message(&e));
     let cl = yew_web_core::claimable().await.expect("claimable");
     console_log!(
         "yew-web-core: claimable: {} rows",

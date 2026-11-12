@@ -23,7 +23,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use yew_core::build::mint::{ConfirmedTerms, MintError, MintSource};
+use yew_core::build::mint::{ConfirmedTerms, IssuedEstimates, MintError, MintSource};
 use yew_core::build::redeem::RedeemBuild;
 use yew_core::build::release::ReleaseBuild;
 use yew_core::build::terms::ClaimBounds;
@@ -176,6 +176,9 @@ struct Session {
     conn: Option<Conn>,
     previews: HashMap<String, Preview>,
     preview_seq: u64,
+    /// The mint estimates the core issued: `mint_start` takes its terms from here (review
+    /// YEW-REVIEW-10 L2).
+    mint_estimates: IssuedEstimates,
 }
 
 thread_local! {
@@ -578,6 +581,7 @@ pub async fn open_at(
         conn: Some(conn),
         previews: HashMap::new(),
         preview_seq: 0,
+        mint_estimates: IssuedEstimates::default(),
     });
     to_js(&opened)
 }
@@ -1306,7 +1310,8 @@ fn cents_arg(cents: &JsValue) -> Result<u64, JsValue> {
 
 /// The mint estimate after a sync (`api::mint_estimate`): collateral, fees, payee, heights,
 /// term class, attestor seqs, and the carrier funding's fee from the source `from` (empty or
-/// absent = the public balance; a post-quantum address of the wallet). Nothing is signed.
+/// absent = the public balance; a post-quantum address of the wallet). Nothing is signed. The
+/// core keeps the estimate and answers its `estimateId`, the only thing `mint_start` takes.
 #[wasm_bindgen]
 pub async fn mint_estimate(
     cents: JsValue,
@@ -1319,13 +1324,19 @@ pub async fn mint_estimate(
         Box::pin(async move {
             let source = mint_source_of(s.network, &from)?;
             let r = s.sync().await?;
-            let Session { wallet, conn, .. } = s;
+            let Session {
+                wallet,
+                conn,
+                mint_estimates,
+                ..
+            } = s;
             let conn = conn.as_mut().expect("connected");
             let e = wallet
                 .mint_estimate(&mut conn.validator, cents, lock_blocks, r.tip, source)
                 .await
                 .map_err(wallet_err)?;
-            to_js(&dto::mint_estimate(&e, &from))
+            let id = mint_estimates.issue(&e);
+            to_js(&dto::mint_estimate(&e, &from, id))
         })
     })
     .await
@@ -1364,75 +1375,70 @@ struct MintStartPreview {
 }
 
 /// Stage a mint (`api::mint_start`): [`confirm`] verifies the bundle, funds the carrier through
-/// the gate and records the row (`CARRIER_SENT`; `mintId` in the confirm's result). `terms`
-/// `{collateralZat, feeZat, payee, termClass}` from the estimate the user saw: a server answer
-/// that differs is refused at confirm (`terms-changed`, audit G-2); `null` skips the check.
-/// With `from` (beta2 D-3: empty = the public balance, or one of the wallet's post-quantum
-/// addresses) also `carrierFeeZat` (the funding may not pay more) and, when the estimate flagged
-/// it, `acceptUnusualCarrierFee`.
+/// the gate and records the row (`CARRIER_SENT`; `mintId` in the confirm's result). The page
+/// passes only `estimateId`, the id [`mint_estimate`] answered, and `acks`
+/// `{acceptUnusualFee?, acceptUnusualCarrierFee?}`, the acknowledgement tokens that estimate
+/// issued (review YEW-REVIEW-10 L2). The amount, the lock, the terms the start re-checks (a server
+/// answer that differs is refused at confirm: `terms-changed`, audit G-2), the carrier fee the
+/// funding may not exceed and the source (beta2 D-3) are all the core's stored estimate's. An id
+/// the core did not issue is refused.
 #[wasm_bindgen]
-pub fn mint_start(cents: JsValue, lock_blocks: u32, terms: JsValue) -> Result<JsValue, JsValue> {
-    let cents = cents_arg(&cents)?;
-    let terms = if terms.is_undefined() || terms.is_null() {
-        None
+pub fn mint_start(estimate_id: String, acks: JsValue) -> Result<JsValue, JsValue> {
+    #[derive(Default, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Acks {
+        #[serde(default)]
+        accept_unusual_fee: Option<String>,
+        #[serde(default)]
+        accept_unusual_carrier_fee: Option<String>,
+    }
+    let acks: Acks = if acks.is_undefined() || acks.is_null() {
+        Acks::default()
     } else {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Terms {
-            collateral_zat: String,
-            fee_zat: String,
-            payee: String,
-            term_class: String,
-            #[serde(default)]
-            accept_unusual_fee: Option<String>,
-            #[serde(default)]
-            from: String,
-            #[serde(default)]
-            carrier_fee_zat: Option<String>,
-            #[serde(default)]
-            accept_unusual_carrier_fee: Option<String>,
-        }
-        let t: Terms = serde_wasm_bindgen::from_value(terms)
-            .map_err(|e| err("invalid", format!("terms: {e}")))?;
-        Some((
-            ConfirmedTerms {
-                collateral_zat: amount_arg(&JsValue::from_str(&t.collateral_zat), "collateralZat")?,
-                fee_zat: amount_arg(&JsValue::from_str(&t.fee_zat), "feeZat")?,
-                payee: t.payee,
-                term_class: t.term_class,
-                accept_unusual_fee: t.accept_unusual_fee,
-                // beta2 D-3: the carrier fee the user confirmed; start refuses a funding that pays more
-                carrier_fee_zat: t
-                    .carrier_fee_zat
-                    .map(|f| amount_arg(&JsValue::from_str(&f), "carrierFeeZat"))
-                    .transpose()?,
-                accept_unusual_carrier_fee: t.accept_unusual_carrier_fee,
-            },
-            t.from,
-        ))
+        serde_wasm_bindgen::from_value(acks).map_err(|e| err("invalid", format!("acks: {e}")))?
     };
     with_session_sync(|s| {
-        let (terms, from) = match terms {
-            Some((t, from)) => (Some(t), from),
-            None => (None, String::new()),
-        };
-        let source = mint_source_of(s.network, &from)?;
+        let (preview, cents, lock_blocks) = mint_start_preview(
+            &s.mint_estimates,
+            &estimate_id,
+            acks.accept_unusual_fee,
+            acks.accept_unusual_carrier_fee,
+        )?;
         let id = s.next_preview_id();
-        s.previews.insert(
-            id.clone(),
-            Preview::MintStart {
-                cents,
-                lock_blocks,
-                terms,
-                source,
-            },
-        );
+        s.previews.insert(id.clone(), preview);
         to_js(&MintStartPreview {
             preview_id: id,
             cents: dto::amt(cents as i64),
             lock_blocks,
         })
     })
+}
+
+/// The staged start for an issued estimate (review YEW-REVIEW-10 L2): everything from the
+/// stored estimate, the acknowledgement tokens from the page. Refused for an id the core did
+/// not issue (or no longer keeps).
+fn mint_start_preview(
+    issued: &IssuedEstimates,
+    estimate_id: &str,
+    accept_unusual_fee: Option<String>,
+    accept_unusual_carrier_fee: Option<String>,
+) -> Result<(Preview, u64, u32), JsValue> {
+    let e = issued.get(estimate_id).ok_or_else(|| {
+        err(
+            "invalid",
+            "This estimate is no longer valid. Estimate the mint again.",
+        )
+    })?;
+    Ok((
+        Preview::MintStart {
+            cents: e.cents,
+            lock_blocks: e.lock_blocks,
+            terms: Some(e.confirmed_terms(accept_unusual_fee, accept_unusual_carrier_fee)),
+            source: e.source,
+        },
+        e.cents,
+        e.lock_blocks,
+    ))
 }
 
 #[derive(Serialize)]

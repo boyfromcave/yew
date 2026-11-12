@@ -1155,7 +1155,9 @@ pub struct ClaimableItem {
 }
 
 /// The terms of a [`MintEstimate`] the user confirmed, passed back to [`mint_start`] so the
-/// server's second answer may not differ from what was shown (audit G-2).
+/// server's second answer may not differ from what was shown (audit G-2). They must equal the
+/// estimate the core issued for the same amount, lock and `from`, field for field: the start uses
+/// the core's copy and only the acknowledgement tokens from here (review YEW-REVIEW-10 L2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MintTerms {
     /// `MintEstimate::collateral_zat`.
@@ -1323,6 +1325,9 @@ struct Open {
     server: Server,
     conn: Option<Conn>,
     previews: HashMap<String, Preview>,
+    /// The mint estimates the core issued: a start takes its terms from here (review
+    /// YEW-REVIEW-10 L2).
+    mint_estimates: crate::build::mint::IssuedEstimates,
     /// `<data_dir>/sapling-params`: the proving parameters (S0-2).
     params_dir: PathBuf,
 }
@@ -1758,6 +1763,7 @@ pub fn create_wallet(
             server,
             conn: None,
             previews: HashMap::new(),
+            mint_estimates: Default::default(),
             params_dir: params_dir_of(&data_dir),
         });
         Ok(Created {
@@ -1797,6 +1803,7 @@ pub fn unlock(
             server,
             conn: None,
             previews: HashMap::new(),
+            mint_estimates: Default::default(),
             params_dir: params_dir_of(&data_dir),
         });
         Ok(id)
@@ -1825,6 +1832,7 @@ pub fn set_server(server: String, plain: bool, ca_pem: Option<String>) -> Result
         o.wallet.reset_provenance_backoff()?;
         o.conn = None;
         o.previews.clear();
+        o.mint_estimates.clear();
         if let Some(sh) = o.wallet.shielded.as_mut() {
             sh.disconnect();
         }
@@ -3460,7 +3468,12 @@ pub fn mint_estimate(cents: i64, lock_blocks: u32, from: String) -> Result<MintE
             if source == crate::build::mint::MintSource::Sapling {
                 o.sync_shielded(yec_private::no_progress()).await?;
             }
-            let Open { wallet, conn, .. } = o;
+            let Open {
+                wallet,
+                conn,
+                mint_estimates,
+                ..
+            } = o;
             let conn = conn.as_mut().expect("connected");
             let e = wallet
                 .mint_estimate(
@@ -3471,6 +3484,8 @@ pub fn mint_estimate(cents: i64, lock_blocks: u32, from: String) -> Result<MintE
                     source,
                 )
                 .await?;
+            // review YEW-REVIEW-10 L2: the start takes its terms from the estimate issued here
+            mint_estimates.issue(&e);
             Ok(MintEstimate {
                 cents: e.cents as i64,
                 lock_blocks: e.lock_blocks,
@@ -3509,7 +3524,10 @@ pub fn mint_estimate(cents: i64, lock_blocks: u32, from: String) -> Result<MintE
 
 /// Start a mint (after a sync): verify the bundle, fund the carrier through the gate, record
 /// the row. `confirmed` is the estimate the user confirmed: a server answer that differs in
-/// collateral, fee, payee or class is refused (`terms-changed`, audit G-2). Returns the row
+/// collateral, fee, payee or class is refused (`terms-changed`, audit G-2). The start takes its
+/// terms from the estimate this wallet issued for `(cents, lock_blocks, from)` (review
+/// YEW-REVIEW-10 L2): none issued is [`ErrorKind::PreviewExpired`], terms that differ from it (a
+/// raised carrier fee included) are refused before anything is fetched. Returns the row
 /// (`CARRIER_SENT`); [`mint_finish`] sends the MINT once a sync has seen the carrier confirm.
 pub fn mint_start(
     cents: i64,
@@ -3524,17 +3542,33 @@ pub fn mint_start(
                     "Enter an amount in dollars to mint.",
                 ));
             }
-            let r = o.sync().await?;
             let source = mint_source_of(o.wallet.network, &confirmed.from)?;
-            let terms = crate::build::mint::ConfirmedTerms {
-                collateral_zat: confirmed.collateral_zat,
-                fee_zat: confirmed.fee_zat,
-                payee: confirmed.payee,
-                term_class: confirmed.term_class,
-                accept_unusual_fee: confirmed.accept_unusual_fee,
-                carrier_fee_zat: Some(confirmed.carrier_fee_zat),
-                accept_unusual_carrier_fee: confirmed.accept_unusual_carrier_fee,
-            };
+            // review YEW-REVIEW-10 L2: the terms (the carrier fee cap and the source included)
+            // are those of the estimate the core issued for this amount, lock and source; the
+            // screen's must equal them, and only its acknowledgement tokens are taken
+            let issued = o
+                .mint_estimates
+                .latest_for(cents as u64, lock_blocks, source)
+                .ok_or_else(|| {
+                    YewError::new(
+                        ErrorKind::PreviewExpired,
+                        "Estimate the mint again: a start takes the terms of an estimate this wallet made.",
+                    )
+                })?;
+            let terms = crate::build::mint::terms_from_issued(
+                issued,
+                &crate::build::mint::ConfirmedTerms {
+                    collateral_zat: confirmed.collateral_zat,
+                    fee_zat: confirmed.fee_zat,
+                    payee: confirmed.payee,
+                    term_class: confirmed.term_class,
+                    accept_unusual_fee: confirmed.accept_unusual_fee,
+                    carrier_fee_zat: Some(confirmed.carrier_fee_zat),
+                    accept_unusual_carrier_fee: confirmed.accept_unusual_carrier_fee,
+                },
+            )
+            .map_err(|e| YewError::from(WalletError::Mint(e)))?;
+            let r = o.sync().await?;
             if source == crate::build::mint::MintSource::Sapling {
                 if !sapling_params::status(&o.params_dir).present() {
                     return Err(YewError::new(
@@ -4201,6 +4235,22 @@ mod tests {
                 .unwrap_err()
                 .kind,
             ErrorKind::Input
+        );
+        // review YEW-REVIEW-10 L2: a start needs an estimate this wallet issued (none yet)
+        let terms = MintTerms {
+            collateral_zat: 1_000,
+            fee_zat: 0,
+            payee: String::new(),
+            term_class: "A".into(),
+            accept_unusual_fee: None,
+            from: String::new(),
+            carrier_fee_zat: 1_000,
+            accept_unusual_carrier_fee: None,
+            allow_note_lookup: false,
+        };
+        assert_eq!(
+            mint_start(100, 48, terms).unwrap_err().kind,
+            ErrorKind::PreviewExpired
         );
         assert_eq!(
             send_yec_confirm("nope".into()).unwrap_err().kind,
