@@ -166,7 +166,7 @@ def phase_private():
         # a second walk on the same stack: node 0's mature coinbase was shielded by the first, so
         # z0 is empty; pay from its transparent coins instead (repeatable walk)
         print('PRIVATE z0 send', st['status'], str(st.get('error', ''))[:200], '; from ANY_TADDR', flush=True)
-        st = z_send('ANY_TADDR', 'null', 'AllowRevealedSenders')
+        st = z_send('ANY_TADDR', 'null', 'AllowFullyTransparent')
         print('PRIVATE ANY_TADDR send', st['status'], str(st.get('error', ''))[:200], flush=True)
     d.mine(1)
     print('PRIVATE funded', d.settle(lambda b: b.get('private', 0) >= 200_000_000), flush=True)
