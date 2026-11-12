@@ -95,6 +95,7 @@ pub struct Confirmed {
 /// with the server's `branch_id` (the transparent path signs with it). `memo` is for Sapling
 /// recipients only. `allow_linking`: the transparent path may combine coins of several public
 /// addresses (the user's go-ahead, [`yec_send::build_yec_send`]).
+#[allow(clippy::too_many_arguments)]
 pub fn plan_yec_send(
     wallet: &mut Wallet,
     to: &str,
