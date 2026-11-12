@@ -67,6 +67,88 @@ async fn every_wallet_method_answers_32601() {
     }
 }
 
+/// Lane KG-YEWD-FIX (the Yellowback lead architect's decision): a wrong argument count to a node
+/// method the façade forwards, or to an augmented read, answers ycashd's `-32602` with the help
+/// text from the façade, before the backend sees it (koganyd would answer `-1 "Invalid params"`).
+#[tokio::test]
+async fn forwarded_methods_answer_ycashds_arity_error() {
+    let dir = scratch("fwd-arity");
+    let node = fake_node(&dir).await;
+    let f = facade(
+        &dir,
+        node.addr,
+        &node.cookie,
+        &["-rpcuser=u", "-rpcpassword=p"],
+    )
+    .await;
+    let c = client(&f, "u", "p");
+    let fwd: Vec<&str> = yewd_facade::ycashd::forwarded_methods().collect();
+    assert!(fwd.len() >= 100, "{}", fwd.len());
+    // the augmented reads and every node read koganyd serves with a ycashd counterpart
+    for m in methods::AUGMENTED.iter().chain(&[
+        "getaddressbalance",
+        "getaddressutxos",
+        "getaddresstxids",
+        "getaddressdeltas",
+        "getaddressmempool",
+        "getblockchaininfo",
+        "getnetworkinfo",
+        "getblock",
+        "getrawtransaction",
+        "gettxout",
+        "sendrawtransaction",
+        "vault_getinfo",
+        "vault_decodescript",
+        "set_list",
+        "yed_getvault",
+        "yed_listtokens",
+        "yed_setquote",
+    ]) {
+        assert!(fwd.contains(m), "{m} has no bounds in the forwarded table");
+    }
+    let mut n = 0;
+    for m in &fwd {
+        assert!(
+            !methods::answered_locally(m),
+            "{m} is answered locally, not forwarded"
+        );
+        let i = yewd_facade::ycashd::forwarded(m).unwrap();
+        let (lo, hi) = (i.min.unwrap(), i.max.unwrap());
+        let mut counts = vec![hi + 1];
+        if lo > 0 {
+            counts.push(lo - 1);
+        }
+        for k in counts {
+            let params = format!("[{}]", vec!["null"; k].join(","));
+            let (_, v, _) = call(&c, m, &params).await;
+            let want = yewd_facade::ycashd::arity_error(m, k, false).unwrap();
+            assert_eq!(v["error"]["code"], -32602, "{m} {k}: {v}");
+            assert_eq!(v["error"]["message"].as_str().unwrap(), want, "{m} {k}");
+            assert!(
+                want.starts_with(if k > hi {
+                    "Too many parameters"
+                } else {
+                    "Not enough parameters"
+                }),
+                "{want}"
+            );
+            n += 1;
+        }
+    }
+    assert!(n > fwd.len());
+    // none reached the backend; a call with an accepted count does
+    assert!(node.seen.lock().unwrap().is_empty(), "{:?}", node.seen);
+    let (_, v, _) = call(&c, "vault_decodescript", r#"["00"]"#).await;
+    assert_eq!(v["result"]["method"], "vault_decodescript", "{v}");
+    assert_eq!(*node.seen.lock().unwrap(), ["vault_decodescript"]);
+    let (_, v, _) = call(&c, "set_getinfo", "[]").await;
+    assert_eq!(v["error"]["code"], -32602);
+    assert!(v["error"]["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("Not enough parameters for method `set_getinfo`. Needed at least 1 and at most 2, but received 0\n\nset_getinfo"));
+}
+
 #[tokio::test]
 async fn node_rpcs_are_forwarded_unchanged() {
     let dir = scratch("forward");
@@ -79,8 +161,12 @@ async fn node_rpcs_are_forwarded_unchanged() {
     )
     .await;
     let c = client(&f, "u", "p");
-    for m in ["getblockchaininfo", "generate", "vault_getinfo"] {
-        let (status, v, text) = call(&c, m, "[]").await;
+    for (m, p) in [
+        ("getblockchaininfo", "[]"),
+        ("generate", "[1]"),
+        ("vault_getinfo", "[]"),
+    ] {
+        let (status, v, text) = call(&c, m, p).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(v["result"]["method"], m);
         // the amount's decimal text survives (nothing is re-encoded through a float)

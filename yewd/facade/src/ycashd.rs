@@ -12,6 +12,12 @@
 //! "Not enough|Too many parameters for method `<m>`. Needed exactly <n> | at least <a> and at most
 //! <b>, but received <k>", then a blank line and the help text (absent when the handler's help
 //! branch does not throw: `walletlock`/`walletpassphrase` on an unencrypted wallet).
+//!
+//! The table's `forwarded` section holds the same bounds for the node methods the façade forwards
+//! (and the augmented reads): the façade answers their wrong argument counts as ycashd does, before
+//! the backend sees the call, since koganyd's RPC server answers `-1 "Invalid params"` there (the
+//! Yellowback lead architect's decision, lane KG-YEWD-FIX: the façade carries ycashd's answer,
+//! kogany-rpc stays as upstream Zakura has it). Only [`arity_error`] reads that section.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -32,6 +38,9 @@ struct Table {
     #[serde(rename = "_help")]
     help: String,
     methods: BTreeMap<String, MethodInfo>,
+    /// The forwarded node methods' bounds and help (`gen_ycashd_rpc_table.py --forwarded`).
+    #[serde(default)]
+    forwarded: BTreeMap<String, MethodInfo>,
 }
 
 fn table() -> &'static Table {
@@ -45,6 +54,16 @@ pub fn info(method: &str) -> Option<&'static MethodInfo> {
     table().methods.get(method)
 }
 
+/// The bounds and help of a node method the façade forwards, if the table has it.
+pub fn forwarded(method: &str) -> Option<&'static MethodInfo> {
+    table().forwarded.get(method)
+}
+
+/// The forwarded node methods the table has bounds for, by name.
+pub fn forwarded_methods() -> impl Iterator<Item = &'static str> {
+    table().forwarded.keys().map(String::as_str)
+}
+
 /// ycashd's help text of `method`, if the table has it.
 pub fn help(method: &str) -> Option<&'static str> {
     info(method).map(|i| i.help.as_str())
@@ -53,7 +72,7 @@ pub fn help(method: &str) -> Option<&'static str> {
 /// The `-32602` message for `n` arguments, or `None` when `n` is accepted. `encrypted` decides
 /// the help tail of the two methods whose help branch depends on it.
 pub fn arity_error(method: &str, n: usize, encrypted: bool) -> Option<String> {
-    let i = info(method)?;
+    let i = info(method).or_else(|| forwarded(method))?;
     let (lo, hi) = (i.min?, i.max?);
     if (lo..=hi).contains(&n) {
         return None;
