@@ -229,3 +229,20 @@ describe("serialized core", () => {
     const [a, b] = await Promise.all([core.vaults(), core.balances()]); expect(a).toHaveLength(1); expect(b.yedCents).toBe("12500");
   });
 });
+
+describe("real-stack run WEB-REAL (2026-11-12)", () => {
+  it("a restore with birthday 0 (\"scan everything\") reaches the core as height 1, never 0 (the core's new-seed tip start)", () => {
+    const vm = new OnboardingVm(new MockCore(), new FakeKeystore());
+    vm.startRestore(); vm.restore(MOCK_SEED, 0); expect(vm.state.step).toBe("server"); expect(vm.state.birthday).toBe(1);
+    vm.restore(MOCK_SEED, 2500); expect(vm.state.birthday).toBe(2500);
+  });
+  it("a private send's message does not outlive it: the form clears after confirm, and a hidden message goes with its field", async () => {
+    const core = await openWallet(); await core.fetch_params(() => {}); const vm = new SendVm(core, "yec");
+    await vm.setTo("ys1qprivaterecipient00000000000000000000"); vm.state.amount = "0.1"; vm.state.memo = "hello";
+    await vm.preview(); expect(vm.state.error).toBe(""); await vm.confirm(); expect(vm.state.txid).not.toBe("");
+    expect(vm.state.memo).toBe(""); expect(vm.state.to).toBe(""); expect(vm.state.amount).toBe("");
+    vm.reset(); await vm.setTo("ys1qprivaterecipient00000000000000000000"); vm.state.memo = "typed, then the address changed";
+    await vm.setTo("s1PublicRecipient0000000000000000000"); expect(vm.state.memo).toBe(""); vm.state.amount = "0.1";
+    await vm.preview(); expect(vm.state.error).not.toContain("needs a private");
+  });
+});

@@ -50,3 +50,9 @@ export function ratioPct(collateralZat: string | bigint, cents: string | bigint,
   if (c <= 0n || p <= 0n) return null;
   return Number((big(collateralZat) * p * 100n) / (ZAT_PER_YEC * c));
 }
+
+/** A post-quantum preview's signing time. The core's `None` (no clock in the browser) arrives as
+ *  `undefined` (serde_wasm_bindgen serializes a missing value so), not `null`: both read "not measured". */
+export function formatSigning(ms: number | null | undefined): string {
+  return ms == null || !Number.isFinite(ms) ? "not measured in the browser" : `${(ms / 1000).toFixed(ms < 1000 ? 2 : 1)} s on this device`;
+}

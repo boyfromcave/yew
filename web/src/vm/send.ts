@@ -68,7 +68,9 @@ export class SendVm extends Vm<SendState> {
     this.state.to = to;
     const k = to.trim() ? await this.core.validate_address(to.trim()).catch(() => ({ valid: false, kind: "" })) : { valid: false, kind: "" };
     const toKind = k.valid ? k.kind : "";
-    if (toKind !== this.state.toKind) this.set({ toKind });
+    // the message field exists only for a private recipient: when it goes, its text goes with it (a hidden
+    // message the user cannot see or clear would refuse every later preview)
+    if (toKind !== this.state.toKind) this.set(toKind === "sapling" ? { toKind } : { toKind, memo: "" });
   }
   get toPrivate() { return this.state.asset === "yec" && !this.state.from && this.state.toKind === "sapling"; }
   get memoBytes() { return new TextEncoder().encode(this.state.memo).length; }
@@ -119,7 +121,8 @@ export class SendVm extends Vm<SendState> {
       const ack = this.feeAck;
       if (ack && !this.state.feeAccepted) throw new Error("invalid: this fee is unusual; press \"Pay this fee\" first");
       const r = await this.core.confirm(id, ack ?? undefined);
-      this.set({ txid: r.txid, yec: null, yed: null, move: null, pq: null, feeAccepted: false });
+      // a sent payment's form is done with: the next send starts empty (its message included)
+      this.set({ txid: r.txid, yec: null, yed: null, move: null, pq: null, feeAccepted: false, to: "", toKind: "", amount: "", memo: "" });
     });
   }
 }

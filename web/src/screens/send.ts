@@ -1,6 +1,6 @@
 import { mount } from "../dom";
 import { clear, go, h } from "../dom";
-import { formatYec, formatYed, shorten } from "../format";
+import { formatSigning, formatYec, formatYed, shorten } from "../format";
 import type { PqSendPreview } from "../core";
 import { SendVm } from "../vm/send";
 import { errorCard, feeLine, previewCard, resultCard, slideToConfirm, unusualFeeCard } from "../widgets";
@@ -40,14 +40,15 @@ export function renderSend(root: HTMLElement, vm: SendVm) {
         unusualFeeCard(s.pq.feeNote, s.feeAccepted, () => vm.acceptFee()),
         slideToConfirm(`Slide to send ${formatYec(s.pq.amountZat)} YEC`, () => vm.confirm(), s.busy || (!!s.pq.unusualFeeAck && !s.feeAccepted)), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Change")] : null);
   };
-  draw(); if (!vm.state.sources.length && !vm.state.unavailable.length) vm.loadSources(); return vm.subscribe(draw);
+  // the From chooser's balances change with every send and sync: read them again on every visit
+  draw(); vm.loadSources(); return vm.subscribe(draw);
 }
 
 /** A post-quantum send's preview (app/lib/widgets/preview_card.dart PqSendPreviewCard): the fee, the
  *  signed size and the signing time ("not measured" where the platform has no clock: the browser). */
 export function pqPreviewCard(p: PqSendPreview): HTMLElement {
   const ms = p.signMillis;
-  const signing = ms === null ? "not measured in the browser" : `${(ms / 1000).toFixed(ms < 1000 ? 2 : 1)} s on this device`;
+  const signing = formatSigning(ms);
   const rows: [string, string][] = [["To", p.to], ["Amount", `${formatYec(p.amountZat)} YEC`]];
   if (p.amountBumped) rows.push(["", "Raised by 1 zat: exactly 0.0001 YEC would look like a YED token"]);
   rows.push(["From", p.fromPrivate ? "your private balance" : `post-quantum ${p.schemeName} · ${shorten(p.from, 6, 4)}`],

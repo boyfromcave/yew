@@ -89,7 +89,7 @@ export class YellowbackVm extends Vm<YellowbackState> {
     return this.run(async () => {
       const m = this.state.mint; if (!m) throw new Error("invalid: nothing to confirm");
       const r = await this.core.confirm(m.previewId, this.ackFor(this.state.estimate?.unusualFeeAck));
-      if (r.mintId === null) throw new Error("build: the core did not record the mint");
+      if (r.mintId == null) throw new Error("build: the core did not record the mint");
       this.set({ txid: r.txid, mintId: r.mintId });
       await this.stageFinish();
     });
