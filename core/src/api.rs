@@ -1761,12 +1761,7 @@ pub fn create_wallet(
         // The YED form as `receive_address` gives it: the Falcon holder once TOK-PQ is in force
         // (mainnet and testnet always; regtest once the server's terms are known), never a
         // P2PKH `yb…` a sender's node would refuse as `bad-yed-holder`.
-        let address_ye = if wallet.falcon_now() {
-            wallet.falcon_holder_address(&primary)
-        } else {
-            None
-        }
-        .unwrap_or_else(|| primary.address_ye.clone());
+        let address_ye = wallet.yed_receive_address(&primary).0;
         if generated.is_some() {
             // A seed generated here has no history: the private account starts at the tip
             // when no birthday was given (`build::yec_private::sync_shielded`).
@@ -2000,12 +1995,7 @@ pub fn receive_address(kind: ReceiveKind, fresh: bool) -> Result<AddressPair, Ye
             // TOK-PQ (mainnet and testnet from the first block; regtest from its Falcon height):
             // YED is received by the Falcon holder paired with this key, so the YED form is its
             // 53-character post-quantum address (YED only: YEC goes to the `s…` form).
-            let falcon = if o.wallet.falcon_now() {
-                o.wallet.falcon_holder_address(&row)
-            } else {
-                None
-            };
-            let ye = falcon.clone().unwrap_or_else(|| row.address_ye.clone());
+            let (ye, falcon) = o.wallet.yed_receive_address(&row);
             Ok(AddressPair {
                 address: if kind == ReceiveKind::Yed {
                     ye.clone()
@@ -2015,7 +2005,7 @@ pub fn receive_address(kind: ReceiveKind, fresh: bool) -> Result<AddressPair, Ye
                 kind,
                 ye,
                 s: row.address_s,
-                path: if falcon.is_some() {
+                path: if falcon {
                     format!("m/44'/347'/0'/{}/{} (Falcon holder)", row.chain, row.index)
                 } else {
                     format!("m/44'/347'/0'/{}/{}", row.chain, row.index)
@@ -2080,28 +2070,23 @@ pub fn addresses() -> Result<Vec<AddressPair>, YewError> {
         // TOK-PQ: once Falcon is in force the YED form of an HD key is its Falcon holder (as
         // `receive_address`); the P2PKH `yb…` form is the key's WIF export only
         // (`export_wif`, labelled there). An imported key has no Falcon pair.
-        let falcon = o.wallet.falcon_now();
         Ok(o.wallet
             .addresses()?
             .into_iter()
             .map(|r| {
                 let hd = r.hd_chain().is_some();
-                let holder = if falcon && hd {
-                    o.wallet.falcon_holder_address(&r)
-                } else {
-                    None
-                };
+                let (ye, holder) = o.wallet.yed_receive_address(&r);
                 AddressPair {
                     address: r.address_s.clone(),
                     kind: ReceiveKind::Transparent,
-                    path: match (hd, holder.is_some()) {
+                    path: match (hd, holder) {
                         (true, true) => {
                             format!("m/44'/347'/0'/{}/{} (Falcon holder)", r.chain, r.index)
                         }
                         (true, false) => format!("m/44'/347'/0'/{}/{}", r.chain, r.index),
                         _ => "imported".into(),
                     },
-                    ye: holder.unwrap_or(r.address_ye),
+                    ye,
                     s: r.address_s,
                     covered_by_seed: hd,
                 }

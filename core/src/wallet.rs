@@ -565,6 +565,24 @@ impl Wallet {
         keys::encode_pq_yellowback(self.network, &self.falcon_holder_id(row)?)
     }
 
+    /// The address `row` receives YED at, and whether it is the Falcon holder (TOK-PQ): once
+    /// Falcon is in force for the next block ([`Wallet::falcon_now`]; mainnet and testnet from the
+    /// first block) the 53-character Falcon holder paired with an HD key, the only YED holder a
+    /// sender's node accepts (`bad-yed-holder`); before it, or for an imported key (no Falcon
+    /// pair), the key's 35-character P2PKH `yb…`/`yt…`/`yr…` form. The one rule every shell
+    /// (the app's `api`, the browser's `yew-web-core`) shows and hands out.
+    pub fn yed_receive_address(&self, row: &AddressRow) -> (String, bool) {
+        let falcon = if self.falcon_now() {
+            self.falcon_holder_address(row)
+        } else {
+            None
+        };
+        match falcon {
+            Some(a) => (a, true),
+            None => (row.address_ye.clone(), false),
+        }
+    }
+
     /// Every own Falcon holder id with the HD address row it is paired with (the gap-scanned
     /// set of both chains, so a restore finds the YED of every derived key).
     pub fn own_falcon_holders(
@@ -1396,6 +1414,41 @@ mod tests {
             let r = Wallet::from_parts(store, net, &seed, None).unwrap();
             assert!(r.falcon_now() && r.pq_terms().falcon_at(0));
             assert_eq!(r.pq_terms().fee_rate_zat_per_kb, 300);
+        }
+    }
+
+    /// Final-run D-1: the YED receive address is the Falcon holder from the Falcon height (the
+    /// form a sender's node accepts), the P2PKH form before it; mainnet and testnet from day one.
+    #[test]
+    fn yed_receive_address_is_the_falcon_holder_once_falcon_is_in_force() {
+        let seed = keys::seed_from_mnemonic(PHRASE, "").unwrap();
+        let w = wallet();
+        let row = w.receive_address(false).unwrap();
+        assert_eq!(w.yed_receive_address(&row), (row.address_ye.clone(), false));
+        assert_eq!((row.address_ye.len(), &row.address_ye[..2]), (35, "yr"));
+        let p = crate::net::rpc::YellowbackParams {
+            pq: Some(crate::net::rpc::YellowbackPqParams {
+                schemes: vec![1, 2],
+                falcon_active: true,
+                falcon_height: 0,
+                fee_rate_zat_per_kb: 300,
+            }),
+            fees: Some(crate::build::terms::fallback_fee_params(300)),
+            ..Default::default()
+        };
+        w.note_server_params(Some(&p)).unwrap();
+        let (ye, falcon) = w.yed_receive_address(&row);
+        assert!(falcon);
+        assert_eq!((ye.len(), &ye[..3]), (53, "yrf"), "{ye}");
+        assert_eq!(Some(ye.clone()), w.falcon_holder_address(&row));
+        let id = keys::parse_pq_address(Network::Regtest, &ye).unwrap();
+        assert_eq!(Some(id), w.falcon_holder_id(&row));
+        for (net, prefix) in [(Network::Mainnet, "ybf"), (Network::Testnet, "ytf")] {
+            let m = Wallet::from_parts(Store::open_in_memory().unwrap(), net, &seed, None).unwrap();
+            let r = m.receive_address(false).unwrap();
+            let (ye, falcon) = m.yed_receive_address(&r);
+            assert!(falcon, "{net:?}");
+            assert_eq!((ye.len(), &ye[..3]), (53, prefix), "{ye}");
         }
     }
 
