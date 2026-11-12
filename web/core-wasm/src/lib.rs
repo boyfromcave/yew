@@ -1263,15 +1263,14 @@ pub async fn move_preview(
         Box::pin(async move {
             let r = s.sync().await?;
             s.sync_shielded(yec_private::no_progress()).await?;
-            let plan =
-                yec_move::plan_move(
-                    &mut s.wallet,
-                    direction,
-                    zat,
-                    allow_linking.unwrap_or(false),
-                    r.tip,
-                )
-                .map_err(wallet_err)?;
+            let plan = yec_move::plan_move(
+                &mut s.wallet,
+                direction,
+                zat,
+                allow_linking.unwrap_or(false),
+                r.tip,
+            )
+            .map_err(wallet_err)?;
             let id = s.next_preview_id();
             let out = dto::yec_preview(id.clone(), &plan, r.yec.1, s.has_prover());
             s.previews.insert(id, Preview::Yec(Box::new(plan)));
