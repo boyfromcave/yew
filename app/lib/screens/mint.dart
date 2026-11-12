@@ -221,6 +221,19 @@ class _MintScreenState extends State<MintScreen> {
     }
   }
 
+  /// The source the estimate was asked for, as the "Not enough YEC" line names it.
+  static String _sourceName(String from) => from.isEmpty
+      ? 'your public balance'
+      : from == mintFromPrivate
+          ? 'your private balance'
+          : 'the post-quantum address ${shorten(from, head: 6, tail: 4)}';
+
+  /// beta2 D-3: the private balance can fund the mint itself; said beside "Move YEC to public"
+  /// when the "Fund from" chooser offers it.
+  static String? _privateSourceHint(Balances b) => b.yecShieldedSpendableZat > 0
+      ? 'Or choose "Private · ${formatYec(b.yecShieldedSpendableZat)} YEC" under Fund from: this mint can be funded from your private balance.'
+      : null;
+
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
@@ -367,7 +380,8 @@ class _MintScreenState extends State<MintScreen> {
                           icon: const Icon(Icons.qr_code_2_rounded),
                           label: const Text('Show my receive address'),
                         ),
-                        if (app.balances.yecShieldedZat > 0) MovePublicHint(what: 'Minting', privateZat: app.balances.yecShieldedZat),
+                        if (_from.isEmpty && app.balances.yecShieldedZat > 0)
+                          MovePublicHint(what: 'Minting from the public balance', privateZat: app.balances.yecShieldedZat, orText: _privateSourceHint(app.balances)),
                       ],
                     ],
                   ),
@@ -387,13 +401,19 @@ class _MintScreenState extends State<MintScreen> {
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
                   child: Text(
-                    'Not enough YEC: this mint needs ${formatYec(e.totalZat)} YEC and the wallet has ${formatYec(e.availableZat)} public YEC.',
+                    'Not enough YEC: this mint needs ${formatYec(e.totalZat)} YEC and ${_sourceName(e.from)} has ${formatYec(e.availableZat)} YEC.',
                     key: const Key('unaffordable'),
                     style: t.bodySmall?.copyWith(color: c.danger),
                   ),
                 ),
-              if (!e.affordable && app.balances.yecShieldedZat > 0)
-                MovePublicHint(what: 'Minting', privateZat: app.balances.yecShieldedZat, shortfallZat: e.totalZat - e.availableZat),
+              // Moving private YEC to public helps only a mint funded from the public balance.
+              if (!e.affordable && e.from.isEmpty && app.balances.yecShieldedZat > 0)
+                MovePublicHint(
+                  what: 'Minting from the public balance',
+                  privateZat: app.balances.yecShieldedZat,
+                  shortfallZat: e.totalZat - e.availableZat,
+                  orText: _privateSourceHint(app.balances),
+                ),
               const SizedBox(height: 8),
               TextButton(key: const Key('cancel'), onPressed: _reset, child: const Text('Change the amount')),
               const SizedBox(height: 8),

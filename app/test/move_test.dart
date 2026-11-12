@@ -101,7 +101,10 @@ void main() {
     await tester.pumpAndSettle();
     // The fake: collateral 2500 · 38000 zat + 23000 zat of fees and outputs, 100000 public.
     const shortfall = 2500 * 38000 + 23000 - 100000;
+    // beta2 D-3: the "Fund from" chooser (shown for the private balance) puts the hint below the fold
+    await tester.scrollUntilVisible(find.byKey(const Key('move-public-open')), 200, scrollable: find.byType(Scrollable).first);
     expect(find.textContaining('0.94923000 YEC more is needed.'), findsOneWidget);
+    expect(find.text('Or choose "Private · 2.00000000 YEC" under Fund from: this mint can be funded from your private balance.'), findsOneWidget);
     await tester.ensureVisible(find.byKey(const Key('move-public-open')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('move-public-open')));
@@ -126,7 +129,7 @@ void main() {
     await tester.enterText(find.byKey(const Key('amount')), '25');
     await tester.tap(find.byKey(const Key('estimate')));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.byKey(const Key('move-public-open')));
+    await tester.scrollUntilVisible(find.byKey(const Key('move-public-open')), 200, scrollable: find.byType(Scrollable).first);
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('move-public-open')));
     await tester.pumpAndSettle();

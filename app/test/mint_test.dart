@@ -156,7 +156,10 @@ void main() {
     await tester.tap(find.byKey(const Key('estimate')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('unaffordable')), findsOneWidget);
-    expect(find.textContaining('needs 0.95023000 YEC and the wallet has 0.00100000'), findsOneWidget);
+    expect(find.text('Not enough YEC: this mint needs 0.95023000 YEC and your public balance has 0.00100000 YEC.'), findsOneWidget);
+    // no private balance: nothing to move, no "Fund from" chooser to point at
+    expect(find.byKey(const Key('mint-from')), findsNothing);
+    expect(find.byKey(const Key('move-public')), findsNothing);
     await tester.tap(find.byKey(const Key('start')));
     await tester.pumpAndSettle();
     expect(h.api.calls.where((c) => c.startsWith('mintStart')), isEmpty);

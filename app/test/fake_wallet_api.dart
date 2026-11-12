@@ -242,7 +242,8 @@ class FakeWalletApi implements WalletApi {
     final klass = lockBlocks <= 96 ? 'A' : (lockBlocks <= 144 ? 'B' : 'C');
     final collateral = cents * 19000 * 2 ~/ 1; // 1 YED = $1, $0.52/YEC, 200 %
     final total = collateral + 10000 + 10000 + 2000 + 1000;
-    final available = balancesAnswer.yecZat + balancesAnswer.yecReservedZat;
+    // As the core: the source's own balance (the private balance's spendable YEC for 'private').
+    final available = from == 'private' ? balancesAnswer.yecShieldedSpendableZat : balancesAnswer.yecZat + balancesAnswer.yecReservedZat;
     return MintEstimate(
       cents: cents,
       lockBlocks: lockBlocks,

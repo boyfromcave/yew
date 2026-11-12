@@ -549,17 +549,98 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('mint')));
       await tester.pumpAndSettle();
+      // beta2 D-3: the "Fund from" chooser offers the private balance, with its spendable YEC
+      await tester.tap(find.byKey(const Key('mint-from')));
+      await tester.pumpAndSettle();
+      expect(find.text('Private · 2.00000000 YEC'), findsWidgets);
+      await tester.tap(find.text('Public · 0.00100000 YEC').last);
+      await tester.pumpAndSettle();
       await tester.enterText(find.byKey(const Key('amount')), '25');
       await tester.tap(find.byKey(const Key('estimate')));
       await tester.pumpAndSettle();
-      expect(find.byKey(const Key('unaffordable')), findsOneWidget);
-      expect(find.text('Move YEC to public first'), findsOneWidget);
+      expect(h.api.calls, contains('mintEstimate 2500 48'));
+      // the chooser puts the hint below the fold
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('move-public-open')),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(
-        find.textContaining(
-          'Minting uses public YEC, and 2.00000000 YEC is in your private balance.',
+        find.text(
+          'Not enough YEC: this mint needs 0.95023000 YEC and your public balance has 0.00100000 YEC.',
         ),
         findsOneWidget,
       );
+      expect(find.text('Move YEC to public first'), findsOneWidget);
+      expect(
+        find.textContaining(
+          'Minting from the public balance uses public YEC, and 2.00000000 YEC is in your private balance.',
+        ),
+        findsOneWidget,
+      );
+      // ... and names the other way out: funding the mint from the private balance
+      expect(
+        find.text(
+          'Or choose "Private · 2.00000000 YEC" under Fund from: this mint can be funded from your private balance.',
+        ),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'mint: funded from the private balance and still short: the shortfall names the private balance, no "Move YEC to public"',
+    (tester) async {
+      final h = Harness(withWallet: true);
+      h.api.balancesAnswer = const Balances(
+        yecZat: 100000,
+        yecReservedZat: 0,
+        yecPendingZat: 0,
+        yedCents: 0,
+        yedPendingCents: 0,
+        priceMicroUsd: 520000,
+        heldCount: 0,
+        syncHeight: 484,
+        yedSendMinZat: 21000,
+        yecShieldedZat: 50000000,
+        yecShieldedSpendableZat: 50000000,
+        yecShieldedPendingZat: 0,
+        shieldedScannedHeight: 484,
+        shieldedSendable: true,
+        yecPqZat: 0,
+        yecPqSlhZat: 0, yecPqFalconZat: 0, yecStagedForMintZat: 0, pqCoins: [],
+      );
+      await h.pump(tester);
+      await tester.tap(find.byKey(const Key('tab-yellowback')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('mint')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('mint-from')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Private · 0.50000000 YEC').last);
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('amount')), '25');
+      await tester.tap(find.byKey(const Key('estimate')));
+      await tester.pumpAndSettle();
+      expect(h.api.calls, contains('mintEstimate 2500 48 from private'));
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('unaffordable')),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(
+        find.text(
+          'Not enough YEC: this mint needs 0.95023000 YEC and your private balance has 0.50000000 YEC.',
+        ),
+        findsOneWidget,
+      );
+      // moving private YEC to public would not fund a mint from the private balance
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('promise')),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.byKey(const Key('move-public')), findsNothing);
     },
   );
 
