@@ -11,6 +11,7 @@ import { SettingsVm } from "../src/vm/settings";
 import { YellowbackVm } from "../src/vm/yellowback";
 import type { Unlock, WalletMeta } from "../src/keystore";
 import { localize, setNetwork } from "../src/prefixes";
+import { termsRefusedText } from "../src/screens/home";
 
 class FakeKeystore {
   saved: { seed: string; unlock: Unlock; meta: WalletMeta } | null = null; forgotten = false;
@@ -232,6 +233,10 @@ describe("serialized core", () => {
 });
 
 describe("real-stack run WEB-REAL (2026-11-12)", () => {
+  it("refused fee terms: the FN-DSA and YED balances say why instead of 0 (LOW-5)", () => {
+    const t = termsRefusedText("inconsistent-server: plain.zatPerKB 800000");
+    expect(t).toContain("cannot be computed"); expect(t).toContain("inconsistent-server");
+  });
   it("labels name the prefixes of the network in use (LOW-4): rqs…/rqf… on regtest, tqs…/tqf… on testnet", () => {
     expect(localize("PQ · SLH-DSA (sqs…)", "regtest")).toBe("PQ · SLH-DSA (rqs…)");
     expect(localize("ys1… (private), s…, sqf… or sqs… address", "testnet")).toBe("ytestsapling1… (private), s…, tqf… or tqs… address");

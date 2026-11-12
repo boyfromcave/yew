@@ -820,7 +820,14 @@ pub fn balances() -> Result<JsValue, JsValue> {
             None => Default::default(),
         };
         let staged = yew_core::build::mint::staged_for_mint_zat(&s.wallet).map_err(wallet_err)?;
-        to_js(&dto::balances(&b, &z, held, s.synced_tip()?, staged))
+        to_js(&dto::balances(
+            &b,
+            &z,
+            held,
+            s.synced_tip()?,
+            staged,
+            s.wallet.terms_refused(),
+        ))
     })
 }
 

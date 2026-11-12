@@ -67,6 +67,11 @@ pub struct Balances {
     /// YEC staged for mints in progress (locked to the mint; `build::mint::staged_for_mint_zat`):
     /// in no balance above, never in a spendable total.
     pub staged_for_mint_zat: String,
+    /// Why the server's fee terms were refused (`Wallet::terms_refused`), else `None`. The
+    /// FN-DSA-512 keys and the YED holder key follow those terms, so the FN-DSA and YED balances
+    /// above cannot be trusted while this is set (real-stack run WEB-REAL LOW-5): the screens
+    /// show the reason, never 0.
+    pub terms_refused: Option<String>,
 }
 
 pub fn balances(
@@ -75,6 +80,7 @@ pub fn balances(
     held: u64,
     sync_height: u64,
     staged_for_mint_zat: i64,
+    terms_refused: Option<String>,
 ) -> Balances {
     Balances {
         yec_zat: amt(b.yec_zat),
@@ -98,6 +104,7 @@ pub fn balances(
             .scheme(yew_core::pq::SCHEME_SLH_DSA_SHA2_128S)),
         pq_falcon_zat: amt(b.yec_pq_by_scheme.scheme(yew_core::pq::SCHEME_FN_DSA_512)),
         staged_for_mint_zat: amt(staged_for_mint_zat),
+        terms_refused,
     }
 }
 

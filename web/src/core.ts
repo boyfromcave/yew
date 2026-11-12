@@ -25,6 +25,8 @@ export interface Balances {
   pqZat: string; pqSlhZat: string; pqFalconZat: string;
   /** YEC staged for mints in progress: locked to the mint, never in a spendable total. */
   stagedForMintZat: string;
+  /** Why the server's fee terms were refused; while set, the FN-DSA-512 and YED balances cannot be computed (WEB-REAL LOW-5). */
+  termsRefused?: string | null;
 }
 export interface HistoryRow {
   txid: string; height: number; pending: boolean; yecDelta: string; yedDelta: string;
