@@ -1006,7 +1006,7 @@ pub struct PqSendPreview {
     pub expiry_height: u32,
     pub txid: String,
     /// Always false here: a send from the private balance to a post-quantum address is built
-    /// by the hybrid builder, which the browser build does not have.
+    /// by a builder compiled for native targets only.
     pub from_private: bool,
 }
 

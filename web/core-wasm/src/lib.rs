@@ -1154,15 +1154,15 @@ pub fn pq_sources() -> Result<JsValue, JsValue> {
 /// (beta2 D-8). The screens hide them; the core refuses them anyway.
 #[wasm_bindgen]
 pub fn unavailable_shapes() -> Result<JsValue, JsValue> {
-    const NO_HYBRID: &str = "Not available in the browser: this send needs the wallet's combined private and post-quantum builder, which only the app has. Use the app.";
+    const APP_ONLY: &str = "Not available in the browser: this send needs the wallet's combined private and post-quantum builder, which only the app has. Use the app.";
     to_js(&[
         dto::Unavailable {
             shape: "pq_to_private",
-            reason: NO_HYBRID,
+            reason: APP_ONLY,
         },
         dto::Unavailable {
             shape: "private_to_pq",
-            reason: NO_HYBRID,
+            reason: APP_ONLY,
         },
         dto::Unavailable {
             shape: "mint_from_private",
@@ -1173,7 +1173,7 @@ pub fn unavailable_shapes() -> Result<JsValue, JsValue> {
 
 /// Plan and sign a send of `zat` from the own post-quantum address `from` to `to` (an `s…` or
 /// a post-quantum address), after a sync (`api::pq_send_preview`, `build::pq_send`). A private
-/// (`ys1…`) recipient is refused here: the browser build has no hybrid builder. Nothing is
+/// (`ys1…`) recipient is refused here: the browser build has no builder for it (native only). Nothing is
 /// broadcast; [`confirm`] sends it through both gate layers.
 #[wasm_bindgen]
 pub async fn pq_send_preview(from: String, to: String, zat: JsValue) -> Result<JsValue, JsValue> {
@@ -1333,7 +1333,7 @@ pub async fn mint_estimate(
 
 /// The mint source `from` names (`api::mint_source_of`): empty = the public (ECC) balance, else
 /// one of the wallet's post-quantum addresses. The private balance (`private`) is the app's: the
-/// browser build has no hybrid builder.
+/// browser build has no builder for it (native only).
 fn mint_source_of(network: Network, from: &str) -> Result<MintSource, JsValue> {
     let from = from.trim();
     if from.is_empty() {
