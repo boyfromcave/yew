@@ -208,6 +208,11 @@ def phase_yed():
     d.cli(0, 'sendtoaddress', A['pq_falcon'], 10)
     d.mine(1)
     d.settle()
+    # a page open since before the price came back keeps its "Waiting for a price" gate across
+    # syncs (seen in the WEB-FIX re-run; reported, not fixed): reload so the Mint screen reads it
+    wd.req('POST', wd.sess() + '/url', {'url': PAGE})
+    d.unlock()
+    wd.wait('Public (ECC)', 60)
     mint.main('pub', '100.00', '48')
     ye = d.cli(1, 'yed_getnewaddress')
     d.nav('Send')
