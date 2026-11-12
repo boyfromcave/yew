@@ -1,0 +1,176 @@
+<!-- Copyright (c) 2026 The Ycash developers. Distributed under the MIT software license. -->
+
+# YEW and yewd: beta2 wallet notes
+
+YEW is the Ycash light wallet: the YEW core, the mobile app and the web wallet. `yewd` is the YEW
+core as a daemon: the wallet sidecar for kogany, answering a subset of ycashd's wallet RPCs. This
+beta brings them to the same behaviour as the C++ nodes (ycashd 6.22.0-beta2) for Ycash Yellowback
+(YED) and plain YEC: sends between every address type, balances by type, and post-quantum addresses
+that show their scheme. No consensus change.
+
+## What changed
+
+### Addresses and the RPC contract
+
+- A post-quantum address names its scheme in its third character: `sqf…`/`sqs…` (FN-DSA-512 /
+  SLH-DSA) for YEC, `ybf…`/`ybs…` for YED on mainnet; `tqf`/`tqs`/`ytf`/`yts` on testnet;
+  `rqf`/`rqs`/`yrf`/`yrs` on regtest. The earlier form is refused everywhere.
+- `yewd` rewrites its address book to the new form once, at load, keeping labels.
+- The wallet requires RPC contract version 9 exactly (`yed_getinfo.rpcversion`). It does not work
+  with a node or lightwalletd at version 8.
+- `yewd getnewaddress` takes the type first (`pq`, `pqslh`, `p2pkh`); `getnewaddress "" <type>`
+  still works. Another first string is refused with ycashd's text. Its help
+  names the scheme-visible prefixes.
+
+### Balances by type
+
+- App and web wallet: Private, Public (ECC), PQ · SLH-DSA, PQ · FN-DSA-512. Held outputs and YEC
+  staged for a mint in progress are shown on their own rows and never count as spendable.
+- `yewd`: `getwalletinfo` adds `balance_ecc`, `balance_pq`, `unconfirmed_balance_ecc`,
+  `unconfirmed_balance_pq` and `pq_by_scheme`. `z_gettotalbalance` (with `transparent_ecc`,
+  `transparent_pq`, `pq_by_scheme`) and `listaddresses` (with a `pq` list) are new, read-only.
+  `listreceivedbyaddress` and `validateaddress` name the scheme.
+- `yewd z_getbalance` takes the wallet's own post-quantum address and refuses a transparent address
+  the wallet does not hold: `From address does not belong to this node, transparent or post-quantum
+  key or watch-only script not found.`
+
+### Sends between every address type
+
+- `yewd z_sendmany`: from an ECC, SLH-DSA, FN-DSA-512 or Sapling address to any mix of recipient
+  types, with ycash6's fees, dust thresholds, privacy-policy refusals and error texts. Post-quantum
+  change returns to its source address. A transparent-only `z_sendmany` needs no Sapling proving
+  parameters.
+- `yewd vault_lock` takes `"from"`: any of the wallet's address types.
+- App: a **From** chooser (Automatic, one of the wallet's post-quantum addresses, or Private toward
+  a post-quantum recipient). The preview shows the fee, the signed size, the signing time, the change
+  and, for payments that leave the private balance, a privacy notice.
+- Web wallet: the same, except three shapes (see Known limitations).
+- **`yewd sendtoaddress`, `sendmany` and `fundrawtransaction` choose ECC coins
+  only**, as ycashd 6.22.0-beta2 does (the beta2 decision, confirmed by the Yellowback lead architect
+  on 2026-11-12). Short of ECC coins while post-quantum coins exist, they refuse with ycashd's
+  `Insufficient funds in ordinary transparent addresses; this wallet also holds <amount> YEC at
+  post-quantum addresses: send from one with z_sendmany, which returns the change to it`. A
+  post-quantum input that `fundrawtransaction` is given stays, and is priced by its size.
+- **Public YEC to someone else's private address.** The app and the web wallet
+  can pay another wallet's Sapling (`ys1…`) address from the public balance. A send from public
+  coins takes one address's coins; combining several public addresses in one transaction (which
+  links them on the chain) needs the user's go-ahead in the app and is refused in the web wallet.
+  `yewd z_sendmany ANY_TADDR` combines addresses only where the privacy policy allows it
+  (`AllowLinkingAccountAddresses` or `NoPrivacy`), as ycashd does.
+- A public send whose change would be exactly 0.0001 YEC (the value a YED token
+  output carries) lowers the change by one zatoshi and adds it to the fee, instead of putting the
+  whole 0.0001 YEC into the fee.
+
+### Mints funded from a chosen source
+
+- The app and the web wallet open a vault only through a mint. **Fund from** selects the source:
+  the public (ECC) balance, a post-quantum address, or (app only) the private balance. The mint
+  transaction itself is unchanged; only the funding step depends on the source.
+- From a post-quantum address or the private balance, the YEC for the mint is first staged on a new
+  key of the wallet. It is locked to that mint until the mint spends it, or until the mint lapses
+  or fails, when it becomes ordinary YEC again.
+- `yewd yed_mint` checks the mint's whole need (collateral, fees and the
+  carrier), from coins and from Sapling notes, before it broadcasts the carrier, as ycashd does.
+  The app's mint estimate prices the inputs the mint will take, and the mint total shown is what
+  leaves the balance. An unarmed price feed blocks a mint up front on every network.
+
+### Fees
+
+- The wallet cannot verify the YEC price a server reports. It refuses fee terms above the rates a
+  node would charge at a compiled floor price of $0.01 per YEC, and no post-quantum send pays more
+  than 10 YEC.
+- A fee is **unusual** when it is above twice the usual fee at the wallet's reference price (the
+  median of the last 30 days of the server's price reports, one per day, moved at most ×4 per
+  report), or when the server's price is below half the reference. While the reference is weak
+  (fewer than three days of reports, or below $0.05), any fee above 0.1 YEC is unusual.
+- An unusual fee needs a **separate confirmation**. Without it the send is refused. A mint whose
+  finishing fee rose above what its start accepted asks again.
+- When the wallet refuses a server's fee terms, the web wallet shows why and
+  never shows a 0 FN-DSA or YED balance.
+
+### Keeping YED from being spent as plain YEC (yewd)
+
+- With an unhealthy or unreadable Yellowback index on the node, plain-YEC sends are refused.
+- **The has-held-YED guard.** A wallet that has held YED refuses plain-YEC sends while the
+  connected node reports Yellowback not live: `This wallet has held YED, but Yellowback is not live
+  on the connected node, so its YED outputs cannot be told apart from plain YEC. Connect to a node
+  with the network's attestor set, or start yewd with -yellowback=0 to acknowledge that they are
+  spendable as plain YEC.` yewd checks at send time, not at start, because it can be pointed at
+  another node without a restart. `getwalletinfo` reports `yed_unlocked`, as
+  ycashd does.
+- **Outputs the node's index has not judged.** An output whose transaction the
+  node's Yellowback index has not judged yet (Yellowback not live, or its block above the index
+  height) and whose payload may give it YED (a MINT token, a TRANSFER or REDEEM assignment, a claim
+  cancel's refund) stays out of every plain-YEC send.
+
+### Private (Sapling) balance
+
+- **Sapling change is found and spent.** Change notes at the internal scope were not recognised as
+  the wallet's own, so a second private send could fail ("key-mismatch: a spent note is not this
+  account's"). No funds were at risk. The cause is upstream (sapling-crypto 0.7.0's
+  `decrypt_diversifier` never answers the internal scope); yew checks ownership in the named scope
+  itself.
+- **Notes from before Canopy** (mainnet below height 1,100,006) can be spent.
+- **Web wallet restore with the default birthday** scans the private pool from the start. Before,
+  a birthday of 0 was read as "seed made here" and the scan started at the tip, so a restored
+  wallet showed no private balance.
+
+### Sapling proving files
+
+- The web wallet fetches the Sapling proving files from **its own origin** (`/sapling-params/`) by
+  default; `download.z.cash` sends no CORS header, so a browser could not use it, and the default
+  web wallet could not shield or send privately. The hash check stays mandatory. ycash-infra's web
+  image serves the files from the project's `zcash-params-v1` release.
+- The app keeps `download.z.cash` and falls back to the Ycash developers' mirror. A source can be
+  typed in Settings, and a refused fetch says why.
+
+### yewd answers
+
+- An accepted transaction always returns its txid. If the node's answer is lost, the txid is looked
+  up; otherwise the answer is "status unknown, txid …: check before sending again", and the inputs
+  stay locked until the transaction is dead or `clearunknownsubmission` releases them.
+- A wrong argument count to a method yewd forwards to its node answers
+  ycashd's `-32602` with ycashd's help, also when the node is koganyd (which itself answers `-1`).
+  `z_getnewaddress sprout` is refused with ycashd's text.
+- On regtest, yewd and the core take the network-upgrade heights from the
+  node or server instead of assuming Canopy from height 1.
+
+### Tested against real nodes
+
+yewd was run against ycash6 and against koganyd (koganyd as its node and miner), and the web wallet in
+a headless browser against a node, lightwalletd-dd and a gRPC-web front. yewd: all sixteen send
+shapes between address types accepted, mined and balanced against both nodes; vault locks from every
+source, mints, YED sends and redeems; seed restore. Web wallet: all fourteen browser send shapes,
+mints from the public balance and an FN-DSA-512 address. No YED was ever spent as plain YEC. Not
+yet run in a browser: redeem and claim, and the unusual-fee confirmation.
+
+## Known limitations
+
+- **Three shapes are app only.** The web wallet cannot send post-quantum → private, private →
+  post-quantum, or fund a mint from the private balance: the builder they need is not compiled for
+  the browser in this beta. The web wallet says so and does not offer them.
+- **A post-quantum → private send copies the Sapling spending key.** It needs only the outgoing
+  viewing key, but the builder copies the full spending key, and the copies are not zeroized. A
+  memory disclosure during such a send would expose that key. Accepted for this beta as the beta2
+  decision; the fix follows after beta2.
+- **The fee reference follows the server's price reports.** A server that is the wallet's only
+  source of reports for more than half of the 30-day window sets the reference, moving it by at most
+  ×4 per day. A fee below the bound but within twice the usual fee is then not confirmed separately.
+  The reference can be reset in Settings (or `fee-reference --reset` in the command-line tool).
+- **The has-held-YED mark is not derived from the seed.** A wallet restored from its seed against a
+  server without Yellowback has never seen its YED and is not marked. Restore only against a server
+  with Yellowback.
+- **YED cannot be minted on the fast testnet** with the current node builds: no attestor set is
+  compiled in.
+- **`yewd` does not serve `z_mergetoaddress`**; it answers only its refusals.
+- `yewd` prices sends with no post-quantum party at the ZIP-317 fee, where ycash6 defaults to a flat
+  1,000 zat; both are at or above the node's rule. Aligning them follows after beta2.
+- **No privacy note in the app for a public-funded payment to a private
+  address.** When the private balance falls short, the app can pay a `ys1…` address from the public
+  balance by itself; the web wallet says that the amount and the public source address are visible
+  on the chain, the app's preview says only "From: your public balance".
+- **A shield from many small public coins can be refused by the node.** About 49
+  or more inputs exceed the node's unpaid-action limit at the 1,000-zat fee (as with ycash6's own
+  `z_sendmany`). Nothing is locked or lost; send a smaller amount or merge coins first.
+- **The web Mint screen can show a stale "Minting is open"** after a failed
+  refresh. The mint itself still goes through the core's gate and the node's policy.
