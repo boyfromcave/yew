@@ -1278,3 +1278,77 @@ async fn fundrawtransaction_prices_a_named_pq_input_by_size() {
             .sum::<i64>();
     assert_eq!(paid, fee);
 }
+
+/// ycashd's linking rule (wallet_tx_builder.cpp GetRequiredPrivacyPolicy): ANY_TADDR combines coins
+/// of several transparent addresses only under NoPrivacy (a transparent recipient) or
+/// AllowLinkingAccountAddresses (a shielded one); its "Insufficient funds" carries the linking hint
+/// unless the policy allows linking. Found by KG-YEWD-REAL against a ycash6 wallet node.
+#[tokio::test]
+async fn any_taddr_links_addresses_only_where_the_policy_allows() {
+    let mut f = fixture("linking").await;
+    let r_ecc = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x61; 20]);
+    let text = |v: yewd_wallet::json::J| v.text().trim_matches('"').to_string();
+    let ecc2 = text(f.w.call(&f.node, "getnewaddress", &[]).await.unwrap());
+    // the 5 YEC coin pays 3 YEC to a second own address, its change to a third: three funded addresses
+    let ecc = f.ecc.clone();
+    f.send(
+        &ecc,
+        &[(&ecc2, 3 * COIN)],
+        None,
+        Some("AllowFullyTransparent"),
+    )
+    .await
+    .unwrap();
+    f.mine_sync().await;
+    // one address covers 1 YEC: the default policy (LegacyCompat = AllowFullyTransparent) builds it
+    f.send("ANY_TADDR", &[(&r_ecc, COIN)], None, None)
+        .await
+        .unwrap();
+    f.mine_sync().await;
+    // 6 YEC needs two addresses: refused as ycashd refuses, NoPrivacy builds it
+    let e = f
+        .send("ANY_TADDR", &[(&r_ecc, 6 * COIN)], None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(e, (-4, "Failed to build transaction: The specified privacy policy, AllowFullyTransparent, does not permit the creation of the requested transaction. Select NoPrivacy to allow this transaction to be constructed.".into()));
+    // a shielded recipient needs AllowLinkingAccountAddresses or weaker
+    let zaddr = f.zaddr.clone();
+    let e = f
+        .send(
+            "ANY_TADDR",
+            &[(&zaddr, 6 * COIN)],
+            None,
+            Some("AllowRevealedSenders"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e, (-4, "Failed to build transaction: The specified privacy policy, AllowRevealedSenders, does not permit the creation of the requested transaction. Select AllowLinkingAccountAddresses or weaker to allow this transaction to be constructed.".into()));
+    // more than the wallet holds: the hint replaces the final full stop, unless linking is allowed
+    let e = f
+        .send("ANY_TADDR", &[(&r_ecc, 1000 * COIN)], None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.0, -8);
+    assert!(
+        e.1.ends_with("or weaker. (This transaction may require selecting transparent coins that were sent to multiple addresses, which is not enabled by default because it would create a public link between those addresses. THIS MAY AFFECT YOUR PRIVACY. Resubmit with the `privacyPolicy` parameter set to `AllowLinkingAccountAddresses` or weaker if you wish to allow this transaction to proceed anyway.)"),
+        "{}",
+        e.1
+    );
+    let e = f
+        .send(
+            "ANY_TADDR",
+            &[(&r_ecc, 1000 * COIN)],
+            None,
+            Some("NoPrivacy"),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        e.1.starts_with("Insufficient funds") && !e.1.contains("public link"),
+        "{}",
+        e.1
+    );
+    f.send("ANY_TADDR", &[(&r_ecc, 6 * COIN)], None, Some("NoPrivacy"))
+        .await
+        .unwrap();
+}
