@@ -10,7 +10,8 @@ node 2  plain ycashd wallet: the receiver of the matrix sends
 node 3  plain ycashd wallet: the observer (imports yewd's z_exportwallet dump: the node's view of the same keys)
 
 YCASH6_QA=<ycash6>/qa/rpc-tests ZCASHD=<ycashd> YEWD_BIN_PAIR=<yewd> python yew_real_run.py --tmpdir=... --portseed=...
-Phases: --phases=addr,matrix,yed,restore (default all).
+Phases, in the order given: --phases=addr,matrix,yed,restore (default); also `nodefees` (ycash6's own
+z_sendmany over the same 16 shapes); `matrix` after `yed` runs the matrix at the attested price.
 """
 import json
 import os
@@ -302,12 +303,14 @@ class YewRealRun(BitcoinTestFramework):
             wait_and_assert_operationid_status(n0, z_sendmany_opid(n0, fund, [(src[SAP], 1)]))
         self.mine(1)
         self.compare('funded')
-        expect_in = {k: Decimal(0) for k in KINDS}
+        expect_in = getattr(self, 'expect_in', None) or {k: Decimal(0) for k in KINDS}
+        self.expect_in = expect_in
+        priced = getattr(self, 'yed_done', False)
         amount = Decimal('0.10')
         for s in KINDS:
             for d in KINDS:
                 amount += Decimal('0.01')
-                cell = {'src': s, 'dst': d, 'amount': str(amount)}
+                cell = {'src': s, 'dst': d, 'amount': str(amount), 'priced': priced}
                 RESULTS['cells'].append(cell)
                 try:
                     opid = z_sendmany_opid(n1, src[s], [(dst[d], amount)])
@@ -350,7 +353,7 @@ class YewRealRun(BitcoinTestFramework):
         print('mine the matrix')
         blk = self.mine(1)[0]
         for c in RESULTS['cells']:
-            if 'txid' in c:
+            if 'txid' in c and c.get('priced') == priced:
                 c['mined'] = c['txid'] in self.backend().getblock(blk)['tx']
                 if not c['mined']:
                     finding('HIGH', 'not mined: %s -> %s %s' % (c['src'], c['dst'], c['txid']))
@@ -366,6 +369,7 @@ class YewRealRun(BitcoinTestFramework):
     def phase_yed(self):
         print('=== phase yed: activate YED late (node 0 pool), vault_lock from each source, yed_mint, yed_send')
         activate_yed_late(self, [0], self.edges())
+        self.yed_done = True
         n0, n1, n2, n3 = self.nodes
         src = self.src
         RESULTS['yed'] = {}
@@ -484,6 +488,25 @@ class YewRealRun(BitcoinTestFramework):
             RESULTS['yed']['yed_send'] = {'error': e.error}
             finding('HIGH', 'yewd yed_send failed: %s' % e.error)
         self.compare('after YED')
+        # a mint the wallet cannot cover (YEW-REAL finding 5): yewd refuses before any carrier; the
+        # node's own wallet (node 2, a few YEC) is tried the same way, for the record
+        big = 20_000_00   # 20,000.00 YED: far above either wallet's YEC at the test price
+        for label, node in (('yewd', n1), ('node2', n2)):
+            self.mine(1)
+            before = set(n0.getrawmempool())
+            row = {}
+            try:
+                row['answer'] = node.yed_mint(big, 48, '', '', False)
+            except JSONRPCException as e:
+                row['error'] = e.error
+            time.sleep(2)
+            sync_mempools(self.nodes)
+            row['new_mempool_txs'] = sorted(set(n0.getrawmempool()) - before)
+            RESULTS['yed']['unaffordable_mint_' + label] = row
+            print('  unaffordable mint on %s: %s' % (label, json.dumps(row, default=str)[:400]))
+            if label == 'yewd' and row['new_mempool_txs']:
+                finding('MEDIUM', 'yewd broadcast %s for a mint it cannot cover' % row['new_mempool_txs'])
+        self.mine(1)
         save()
 
     # --- phase 5: restore from the seed ---
@@ -530,15 +553,54 @@ class YewRealRun(BitcoinTestFramework):
         self.compare('after restore')
         save()
 
+    # --- the node's own fees for the same 16 shapes (node 0's plain ycash6 wallet -> node 2) ---
+    def phase_nodefees(self):
+        n0, n1, n2, n3 = self.nodes
+        dst = self.dst
+        priced = getattr(self, 'yed_done', False)
+        print('=== phase nodefees: ycash6 z_sendmany from its own address of each type (priced %s)' % priced)
+        own = {ECC: n0.getnewaddress(), SAP: n0.z_getnewaddress('sapling'), FN: n0.getnewaddress('', 'pq'),
+               SLH: n0.getnewaddress('', 'pqslh')}
+        for _ in range(5):
+            for k in (ECC, FN, SLH):
+                n0.sendtoaddress(own[k], 1)
+        fund = n0.getnewaddress()
+        for _ in range(5):
+            n0.sendtoaddress(fund, 2)
+        self.mine(1)
+        for _ in range(5):
+            wait_and_assert_operationid_status(n0, z_sendmany_opid(n0, fund, [(own[SAP], 1)]))
+        self.mine(1)
+        rows = RESULTS.setdefault('node_cells', [])
+        amount = Decimal('0.20')
+        for s in KINDS:
+            for d in KINDS:
+                amount += Decimal('0.01')
+                row = {'src': s, 'dst': d, 'priced': priced}
+                try:
+                    txid = wait_and_assert_operationid_status(n0, z_sendmany_opid(n0, own[s], [(dst[d], amount)]))
+                    fee, raw, prevs = self.fee_and_raw(txid)
+                    row.update(txid=txid, fee_zat=fee, size=len(n0.getrawtransaction(txid)) // 2)
+                    if getattr(self, 'expect_in', None) is not None:
+                        self.expect_in[d] += amount
+                    else:
+                        self.expect_in = {k: Decimal(0) for k in KINDS}
+                        self.expect_in[d] += amount
+                except (JSONRPCException, AssertionError) as e:
+                    row['error'] = getattr(e, 'error', str(e))
+                rows.append(row)
+                mine = [c for c in RESULTS['cells'] if c['src'] == s and c['dst'] == d and c.get('priced') == priced]
+                print('  node %-10s -> %-10s fee %s size %s (yewd %s)' % (s, d, row.get('fee_zat'), row.get('size'),
+                                                                         mine[0].get('fee_zat') if mine else None))
+                save()
+            self.mine(1)
+
     def run_test(self):
         phases = self.options.phases.split(',')
         self.phase_addr()
-        if 'matrix' in phases:
-            self.phase_matrix()
-        if 'yed' in phases:
-            self.phase_yed()
-        if 'restore' in phases:
-            self.phase_restore()
+        for ph in phases:
+            if ph != 'addr':
+                getattr(self, 'phase_' + ph)()
         save()
         print('findings:', json.dumps(RESULTS['findings'], indent=1, default=str))
 

@@ -408,6 +408,15 @@ impl Wallet {
         if max_collateral > 0 && collateral > max_collateral {
             return Err(RpcError::new(code::WALLET_ERROR, format!("collateral-above-max: the mint needs {collateral} zat of collateral, above the maxCollateralZat of {max_collateral}")));
         }
+        // the whole mint must be coverable before the carrier is broadcast (real-stack run
+        // YEW-REAL finding 5): the MINT's collateral and the carrier's flat fee at least, from the
+        // same plain coins the MINT is funded from (`yec_for`: confirmed, unlocked, `from` only when
+        // named); a Sapling source stages its collateral in the carrier itself (zfund's check)
+        if !self.is_sapling(&from) {
+            let flat = prm["feeZat"].as_i64().unwrap_or(10_000);
+            self.yec_for(node, mint_funds_floor(collateral, flat), only.as_deref())
+                .await?;
+        }
         let r = est["refHeight"].as_i64().unwrap_or(0);
         // BundleAt (the pool's bundle, or bundleHex) and, while armed, AFEE-W at completion (F-S2-4)
         let facts = self.bundle_at(node, r, "", &bundle_bytes).await?;
@@ -1110,8 +1119,22 @@ fn raw_or_null(v: &Value) -> J {
     }
 }
 
+/// The least plain YEC a mint funded from ECC coins needs before its carrier is broadcast: the
+/// collateral and one flat fee (the carrier's). A lower bound: the carrier's value returns as a
+/// MINT input, the MINT's own fees come on top, so a mint this refuses could never complete and
+/// one it admits is still checked in full when the MINT is built.
+pub(crate) fn mint_funds_floor(collateral: i64, flat: i64) -> i64 {
+    collateral.saturating_add(flat)
+}
+
 #[cfg(test)]
 mod tests {
+    /// YEW-REAL finding 5: the floor is the collateral plus the carrier's flat fee.
+    #[test]
+    fn mint_funds_floor_is_collateral_plus_the_carrier_fee() {
+        assert_eq!(super::mint_funds_floor(600_000_000, 10_000), 600_010_000);
+        assert_eq!(super::mint_funds_floor(i64::MAX, 10_000), i64::MAX);
+    }
     #[test]
     fn mint10_divergence() {
         // 500 bps: 0.50 vs 0.525 is exactly 500 bps of the lower, not diverged; one more is
