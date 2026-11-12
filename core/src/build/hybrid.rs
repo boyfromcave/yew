@@ -320,6 +320,26 @@ pub fn sapling_prepare(
     })
 }
 
+/// Whether `addr` is an address of `dfvk` in `scope`: its transmission key is the one that
+/// scope's incoming viewing key gives for its diversifier (`pk_d = [ivk] g_d`).
+///
+/// Not `DiversifiableFullViewingKey::decrypt_diversifier`: in sapling-crypto 0.7.0 its internal
+/// arm derives the internal diversifier index but rebuilds the address with the EXTERNAL key
+/// (`self.address(j_internal)`), so it never answers `Scope::Internal` and every change note
+/// (sent to `change_address()`) was refused as "not this account's" (real-stack run YEW-REAL,
+/// finding 0: the second private -> post-quantum send).
+pub fn owns_in_scope(
+    dfvk: &sapling_crypto::zip32::DiversifiableFullViewingKey,
+    addr: &PaymentAddress,
+    scope: Scope,
+) -> bool {
+    let derived = match scope {
+        Scope::External => dfvk.diversified_address(*addr.diversifier()),
+        Scope::Internal => dfvk.diversified_change_address(*addr.diversifier()),
+    };
+    derived.as_ref() == Some(addr)
+}
+
 /// A spend's note, path and full viewing key, checked as yewd-signer's `sapling_build` does.
 fn spend_parts(
     dfvk: &sapling_crypto::zip32::DiversifiableFullViewingKey,
@@ -353,9 +373,8 @@ fn spend_parts(
     } else {
         Scope::External
     };
-    match dfvk.decrypt_diversifier(&addr) {
-        Some((_, sc)) if sc == scope => {}
-        _ => return no(refuse::KEY_MISMATCH, "a spent note is not this account's"),
+    if !owns_in_scope(dfvk, &addr, scope) {
+        return no(refuse::KEY_MISMATCH, "a spent note is not this account's");
     }
     if s.path.len() != 32 {
         return no(refuse::MALFORMED, "a Merkle path has 32 nodes");

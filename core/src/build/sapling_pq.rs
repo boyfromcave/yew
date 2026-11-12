@@ -737,6 +737,61 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Real-stack run YEW-REAL finding 0: the second private -> post-quantum send. The first send
+    /// leaves its change at the account's internal address; once mined, that change note is the
+    /// only spendable note, recorded with the internal scope, and the second send spends it (it
+    /// used to be refused before signing: "key-mismatch: a spent note is not this account's",
+    /// sapling-crypto 0.7.0's `decrypt_diversifier` never answers the internal scope). Its own
+    /// change is again internal, and spends again: a third send.
+    #[test]
+    fn sapling_to_pq_twice_spends_the_change() {
+        let (mut w, dir, f) = wallet_with_notes("twice", &[2_000_000]);
+        let first_raw = f.values().next().unwrap().clone();
+        let id = crate::pq::PqKeyId {
+            scheme: crate::pq::SCHEME_SLH_DSA_SHA2_128S,
+            hash: [0x5d; 32],
+        };
+        let to = keys::encode_pq_yec(w.network, &id).unwrap();
+        let side = SaplingSide::of(&w, &params_dir()).unwrap();
+        let mut mined: Vec<Vec<u8>> = vec![first_raw];
+        let mut height = 120u32;
+        let mut have = 2_000_000i64;
+        for round in 0..3 {
+            let mut fetched = Fetched::new();
+            for r in &mined {
+                let (_, t) = Transaction::parse(r).unwrap();
+                fetched.insert(t, r.clone());
+            }
+            let p = build(&mut w, &side, &to, 300_000, VAULT_BRANCH_ID, &fetched)
+                .unwrap_or_else(|e| panic!("send {}: {e}", round + 1));
+            assert_eq!(p.notes, 1);
+            assert_eq!(p.amount + p.fee + p.change, have);
+            have = p.change;
+            w.shielded_mut()
+                .unwrap()
+                .record_sent(&p.raw, VAULT_BRANCH_ID)
+                .unwrap();
+            let earlier: Vec<&[u8]> = mined.iter().map(|r| r.as_slice()).collect();
+            w.shielded_mut()
+                .unwrap()
+                .mine_for_test(&earlier, height + 1, height + 20, &p.raw);
+            height += 20;
+            mined.push(p.raw.clone());
+            let b = w.shielded().unwrap().balance().unwrap();
+            assert_eq!(b.spendable_zat as i64, have, "round {round}: {b:?}");
+            // the change note the store will hand the next send is internal
+            let spends = w
+                .shielded_mut()
+                .unwrap()
+                .select_spends(100_000, |_| 2_000)
+                .unwrap();
+            assert_eq!(spends.notes.len(), 1);
+            assert!(spends.notes[0].internal, "round {round}");
+        }
+        drop(w);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Review YEW-REVIEW-8 M1: the notes' transactions come from the wallet's own store. A note
     /// only scanned from compact blocks (no enhancement yet) is reported missing, and without
     /// the go-ahead the refusal says what the server would learn (mapped to

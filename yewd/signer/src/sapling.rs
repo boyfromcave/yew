@@ -27,7 +27,7 @@ use zip32::Scope;
 use crate::sign::{no, Refused, SignerCore};
 // review YEW-PORT-5 R3: the hybrid builder and its helpers moved to yew-core (a pure move)
 use yew_core::build::hybrid::{
-    hex32, sapling_extsk, sapling_prepare, script_of, taddr_of, zat, Hybrid,
+    hex32, owns_in_scope, sapling_extsk, sapling_prepare, script_of, taddr_of, zat, Hybrid,
 };
 use yew_core::params::Network;
 
@@ -128,9 +128,8 @@ fn sapling_build(
         } else {
             Scope::External
         };
-        match dfvk.decrypt_diversifier(&addr) {
-            Some((_, sc)) if sc == scope => {}
-            _ => return no(refuse::KEY_MISMATCH, "a spent note is not this account's"),
+        if !owns_in_scope(&dfvk, &addr, scope) {
+            return no(refuse::KEY_MISMATCH, "a spent note is not this account's");
         }
         if s.path.len() != 32 {
             return no(refuse::MALFORMED, "a Merkle path has 32 nodes");
@@ -311,4 +310,123 @@ fn sapling_build(
         .write(&mut out)
         .map_err(|e| (refuse::FAILED, e.to_string()))?;
     Ok(hex::encode(out))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use incrementalmerkletree::{Hashable, Level};
+    use yewd_proto::SaplingSpend;
+
+    const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    fn params_dir() -> String {
+        if let Ok(d) = std::env::var("YEW_SAPLING_PARAMS") {
+            return d;
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        if cfg!(target_os = "macos") {
+            format!("{home}/Library/Application Support/ZcashParams")
+        } else {
+            format!("{home}/.zcash-params")
+        }
+    }
+
+    /// One note of `value` to `addr` at position 0 of an otherwise empty tree: its spend (the
+    /// path of empty subtrees) and the anchor that path leads to.
+    fn lone_spend(
+        addr: &PaymentAddress,
+        value: u64,
+        rseed: Rseed,
+        internal: bool,
+    ) -> (SaplingSpend, String) {
+        let note = Note::from_parts(*addr, NoteValue::from_raw(value), rseed);
+        let mut cur = Node::from_cmu(&note.cmu());
+        let mut path = Vec::with_capacity(32);
+        for i in 0..32u8 {
+            let sib = Node::empty_root(Level::from(i));
+            path.push(hex::encode(sib.to_bytes()));
+            cur = Node::combine(Level::from(i), &cur, &sib);
+        }
+        let (rseed, after_zip212) = match note.rseed() {
+            Rseed::AfterZip212(r) => (hex::encode(r), true),
+            Rseed::BeforeZip212(r) => (hex::encode(r.to_bytes()), false),
+        };
+        (
+            SaplingSpend {
+                recipient: hex::encode(addr.to_bytes()),
+                value,
+                rseed,
+                after_zip212,
+                internal,
+                position: 0,
+                path,
+            },
+            hex::encode(cur.to_bytes()),
+        )
+    }
+
+    /// Spend the lone note back to the account's change address, paying `fee`.
+    fn build_lone(
+        extsk: &ExtendedSpendingKey,
+        spend: SaplingSpend,
+        anchor: String,
+    ) -> Result<String, Refused> {
+        let fee = 1_000;
+        let r = SaplingBuildRequest {
+            target_height: 200,
+            expiry_height: 240,
+            vault_height: Some(1),
+            inputs: Vec::new(),
+            outputs: vec![SaplingOut::Change {
+                value: spend.value as i64 - fee,
+            }],
+            spends: vec![spend],
+            fee_zat: fee,
+            anchor,
+            outflow_cap_zat: fee,
+            params_dir: params_dir(),
+        };
+        sapling_build(extsk.clone(), Network::Regtest, &r, |_, _| {
+            no(refuse::KEY_MISMATCH, "no transparent input here")
+        })
+    }
+
+    /// Real-stack run YEW-REAL finding 0: a note received on the internal (change) scope is
+    /// this account's and is spent; it used to be refused as "not this account's" (sapling-crypto
+    /// 0.7.0's `decrypt_diversifier` never answers the internal scope). The check itself stands:
+    /// a note's scope must be the one the façade names, and another account's note is refused.
+    #[test]
+    fn a_change_note_is_spent_in_its_own_scope_only() {
+        let extsk = sapling_extsk(PHRASE, Network::Regtest).unwrap();
+        let dfvk = extsk.to_diversifiable_full_viewing_key();
+        let (_, change) = dfvk.change_address();
+        let (_, ext) = dfvk.default_address();
+        let rs = || Rseed::AfterZip212([7; 32]);
+        let (s, a) = lone_spend(&change, 500_000, rs(), true);
+        build_lone(&extsk, s, a).expect("the change note spends");
+        let (s, a) = lone_spend(&ext, 500_000, rs(), false);
+        build_lone(&extsk, s, a).expect("an external note spends");
+        // the wrong scope, either way
+        for (addr, internal) in [(&change, false), (&ext, true)] {
+            let (s, a) = lone_spend(addr, 500_000, rs(), internal);
+            let e = build_lone(&extsk, s, a).unwrap_err();
+            assert_eq!(e.0, refuse::KEY_MISMATCH, "{e:?}");
+        }
+        // another account's notes, in either scope
+        let other = sapling_extsk(
+            "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong",
+            Network::Regtest,
+        )
+        .unwrap()
+        .to_diversifiable_full_viewing_key();
+        for (addr, internal) in [
+            (other.change_address().1, true),
+            (other.default_address().1, false),
+        ] {
+            let (s, a) = lone_spend(&addr, 500_000, rs(), internal);
+            let e = build_lone(&extsk, s, a).unwrap_err();
+            assert_eq!(e.0, refuse::KEY_MISMATCH, "{e:?}");
+        }
+    }
 }

@@ -1702,6 +1702,130 @@ impl Shielded {
         .expect("scan");
         raw
     }
+
+    /// Continue [`Shielded::receive_for_test`]'s chain: `raw` (a transaction this wallet built,
+    /// e.g. a first send leaving Sapling change) mined in the block at `at`, empty blocks up to
+    /// `tip`. `earlier` are the transactions already mined on this chain, in order (the
+    /// `receive_for_test` paying transaction first): they give the commitment tree's frontier
+    /// at `at - 1`. Every block at or below `at - 1` must already be scanned.
+    pub(crate) fn mine_for_test(&mut self, earlier: &[&[u8]], at: u32, tip: u32, raw: &[u8]) {
+        use zcash_client_backend::data_api::chain::{
+            error::Error as ChainError, scan_cached_blocks, BlockSource, ChainState,
+        };
+        use zcash_client_backend::proto::compact_formats as cf;
+        let hash = |h: u32| {
+            let mut b = [0u8; 32];
+            b[..4].copy_from_slice(&h.to_le_bytes());
+            b[31] = 0xaa;
+            b
+        };
+        let parse = |r: &[u8]| {
+            ZTransaction::read(
+                r,
+                BranchId::try_from(crate::params::VAULT_BRANCH_ID).unwrap(),
+            )
+            .expect("parse")
+        };
+        let mut frontier = incrementalmerkletree::frontier::Frontier::<
+            sapling_crypto::Node,
+            { sapling_crypto::NOTE_COMMITMENT_TREE_DEPTH },
+        >::empty();
+        let mut size = 0u32;
+        for r in earlier {
+            if let Some(b) = parse(r).sapling_bundle() {
+                for o in b.shielded_outputs() {
+                    frontier.append(sapling_crypto::Node::from_cmu(o.cmu()));
+                    size += 1;
+                }
+            }
+        }
+        let prior = ChainState::new(
+            BlockHeight::from_u32(at - 1),
+            zcash_primitives::block::BlockHash(hash(at - 1)),
+            frontier,
+        );
+        let ztx = parse(raw);
+        let bundle = ztx.sapling_bundle().expect("sapling");
+        let outputs: Vec<cf::CompactSaplingOutput> = bundle
+            .shielded_outputs()
+            .iter()
+            .map(|o| cf::CompactSaplingOutput {
+                cmu: o.cmu().to_bytes().to_vec(),
+                ephemeral_key: o.ephemeral_key().0.to_vec(),
+                ciphertext: o.enc_ciphertext()[..52].to_vec(),
+            })
+            .collect();
+        let spends: Vec<cf::CompactSaplingSpend> = bundle
+            .shielded_spends()
+            .iter()
+            .map(|s| cf::CompactSaplingSpend {
+                nf: s.nullifier().0.to_vec(),
+            })
+            .collect();
+        let mut blocks = Vec::new();
+        for h in at..=tip {
+            let mut vtx = Vec::new();
+            if h == at {
+                size += outputs.len() as u32;
+                vtx.push(cf::CompactTx {
+                    index: 1,
+                    txid: ztx.txid().as_ref().to_vec(),
+                    spends: spends.clone(),
+                    outputs: outputs.clone(),
+                    ..Default::default()
+                });
+            }
+            blocks.push(cf::CompactBlock {
+                height: h as u64,
+                hash: hash(h).to_vec(),
+                prev_hash: hash(h - 1).to_vec(),
+                time: 1_600_000_000 + h,
+                vtx,
+                chain_metadata: Some(cf::ChainMetadata {
+                    sapling_commitment_tree_size: size,
+                    orchard_commitment_tree_size: 0,
+                }),
+                ..Default::default()
+            });
+        }
+        struct Src(Vec<cf::CompactBlock>);
+        impl BlockSource for Src {
+            type Error = std::convert::Infallible;
+            fn with_blocks<F, E>(
+                &self,
+                from: Option<BlockHeight>,
+                limit: Option<usize>,
+                mut f: F,
+            ) -> Result<(), ChainError<E, Self::Error>>
+            where
+                F: FnMut(cf::CompactBlock) -> Result<(), ChainError<E, Self::Error>>,
+            {
+                let from = from.map_or(0, |h| u32::from(h) as u64);
+                for b in self
+                    .0
+                    .iter()
+                    .filter(|b| b.height >= from)
+                    .take(limit.unwrap_or(usize::MAX))
+                {
+                    f(b.clone())?;
+                }
+                Ok(())
+            }
+        }
+        let params = self.params;
+        let db = self.store_mut().expect("store");
+        db.update_chain_tip(BlockHeight::from_u32(tip))
+            .expect("tip");
+        scan_cached_blocks(
+            &params,
+            &Src(blocks),
+            db,
+            BlockHeight::from_u32(at),
+            &prior,
+            (tip - at + 1) as usize,
+        )
+        .expect("scan");
+    }
 }
 
 /// Notes and their paths for a hybrid spend ([`Shielded::select_spends`]).
@@ -1999,6 +2123,43 @@ mod tests {
     /// signs the activation block under Vault only once it has, a plan targeting the block
     /// before the activation is refused once the next block is past it, and a mainnet store
     /// ignores a server height.
+    /// Real-stack run YEW-REAL finding 0, the plain private arm: Sapling -> Sapling through the
+    /// store's own builder (`create_proposed_transactions`), twice in a row, the second spending
+    /// the internal change the first left once mined.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn private_send_twice_spends_the_change() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let params: PathBuf = std::env::var("YEW_SAPLING_PARAMS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                if cfg!(target_os = "macos") {
+                    format!("{home}/Library/Application Support/ZcashParams").into()
+                } else {
+                    format!("{home}/.zcash-params").into()
+                }
+            });
+        let dir = tmp("twice");
+        let mut s = Shielded::open(&dir, Network::Regtest, account(Network::Regtest, "")).unwrap();
+        s.set_vault_activation(Some(1)).unwrap();
+        let mut mined = vec![s.receive_for_test(100, 120, &[2_000_000], &params)];
+        let other = SaplingAccount::from_mnemonic(PHRASE, "another", Network::Regtest).unwrap();
+        let (_, to) = other.default_address();
+        let mut height = 120u32;
+        for round in 0..2 {
+            let plan = s.plan(&to, 300_000, None).unwrap();
+            let built = s
+                .build(&plan, &params)
+                .unwrap_or_else(|e| panic!("send {}: {e}", round + 1));
+            let earlier: Vec<&[u8]> = mined.iter().map(|r| r.as_slice()).collect();
+            s.mine_for_test(&earlier, height + 1, height + 20, &built.raw);
+            height += 20;
+            mined.push(built.raw);
+        }
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn shielded_store_takes_the_vault_activation() {
         const CANOPY: u32 = 0x19bd_2d2f;
