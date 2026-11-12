@@ -64,6 +64,13 @@ wallet passes only the core's estimate id and the acknowledgement tokens; the ap
 the estimate the core issued for the same amount, lock and source. The carrier fee shown is the
 most the funding may pay.
 
+An estimate the source cannot cover says so for that source ("Not enough YEC: this mint needs …
+YEC and your public balance has … YEC"; the private balance or the post-quantum address when one of
+them was chosen). In the app, a mint estimated from the public balance that falls short while the
+private balance holds YEC also shows **Move YEC to public** (with the shortfall filled in) and the
+other way out, choosing **Private** under Fund from. A mint funded from the private balance or a
+post-quantum address gets no Move hint: moving YEC to public would not fund it.
+
 **Why three shapes are app only.** Three shapes use the hybrid builder (`core/src/build/hybrid.rs`):
 post-quantum → private, private → post-quantum, and a mint funded from the private balance. That
 builder is compiled for native targets only (`#[cfg(not(target_arch = "wasm32"))]`). The web
