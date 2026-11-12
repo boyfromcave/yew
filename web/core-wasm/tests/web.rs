@@ -19,6 +19,9 @@ use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
+/// The sync progress events a test collects: (phase, pct, height, tip).
+type SyncEvents = Rc<RefCell<Vec<(String, u64, u64, u64)>>>;
+
 const LWD: &str = match option_env!("YEW_WEB_LWD") {
     Some(u) => u,
     None => "http://localhost:9067",
@@ -229,7 +232,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
     );
 
     // The progress callback: every event of the first sync.
-    let events: Rc<RefCell<Vec<(String, u64, u64, u64)>>> = Rc::new(RefCell::new(Vec::new()));
+    let events: SyncEvents = Rc::new(RefCell::new(Vec::new()));
     let sink = events.clone();
     let cb = Closure::<dyn Fn(JsValue)>::new(move |ev: JsValue| {
         sink.borrow_mut().push((
@@ -434,7 +437,9 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
             .expect_err("no params yet");
         assert!(message(&e).starts_with("params: "), "{}", message(&e));
     }
-    let params_url = option_env!("YEW_WEB_PARAMS_URL").expect("YEW_WEB_PARAMS_URL");
+    let Some(params_url) = option_env!("YEW_WEB_PARAMS_URL") else {
+        panic!("YEW_WEB_PARAMS_URL")
+    };
     let fetch_events: Rc<RefCell<Vec<(String, u64, u64)>>> = Rc::new(RefCell::new(Vec::new()));
     let sink = fetch_events.clone();
     let fcb = Closure::<dyn Fn(JsValue)>::new(move |ev: JsValue| {
