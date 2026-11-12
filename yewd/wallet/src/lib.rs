@@ -225,6 +225,41 @@ pub struct ChainFacts {
     pub falcon_active: Option<bool>,
 }
 
+/// The backend is on the wallet's network (`getblockchaininfo`): on testnet, the testnet-yb-fast
+/// profile (`testnetprofile`, when the node reports it: ycashd and kogany do) with the Vault height
+/// this build compiles in. A node on testnet-yb-slow or testnet-legacy reports `chain` `test` too,
+/// and a wallet following it would sign for the wrong branch: refused.
+pub fn check_backend_network(network: Network, info: &serde_json::Value) -> Result<(), RpcError> {
+    let Some(profile) = network.testnet_profile() else {
+        return Ok(());
+    };
+    let bad = |what: String| {
+        Err(RpcError::new(
+            code::MISC_ERROR,
+            format!("yewd: the backend is not on testnet-yb-fast: {what}"),
+        ))
+    };
+    if let Some(chain) = info["chain"].as_str() {
+        if chain != network.chain_name() {
+            return bad(format!("it reports chain {chain:?}"));
+        }
+    }
+    if let Some(p) = info["testnetprofile"].as_str() {
+        if p != profile.name() {
+            return bad(format!("it reports testnetprofile {p:?}"));
+        }
+    }
+    let key = format!("{:08x}", VAULT_BRANCH_ID);
+    let vault = info["upgrades"][&key]["activationheight"].as_u64();
+    if info["upgrades"].is_object() && vault != network.vault_activation_height() {
+        return bad(format!(
+            "it schedules the vault upgrade at {vault:?}, this build at {:?}",
+            network.vault_activation_height()
+        ));
+    }
+    Ok(())
+}
+
 /// The node's upgrade heights before the vault upgrade (`getblockchaininfo.upgrades`, keyed by
 /// branch id) as the light library's regtest spec (`YcashNetwork::with_upgrades`): every upgrade
 /// through Canopy, its height, or `none` when the node does not list it (on regtest an upgrade
@@ -900,6 +935,7 @@ impl Wallet {
 
     async fn refresh_chain(&mut self, node: &dyn Node) -> Result<(), RpcError> {
         let info = node::call(node, "getblockchaininfo", serde_json::json!([])).await?;
+        check_backend_network(self.network, &info)?;
         let key = format!("{:08x}", VAULT_BRANCH_ID);
         self.chain.vault_activation = info["upgrades"][&key]["activationheight"]
             .as_u64()
@@ -1173,6 +1209,41 @@ mod tests {
     fn links_the_core() {
         assert_eq!(super::VAULT_BRANCH_ID, 0x6d5b_7a31);
         assert!(!super::CORE_VERSION.is_empty());
+    }
+
+    /// The backend's `getblockchaininfo` must be testnet-yb-fast's on testnet (KG-TESTNET's
+    /// koganyd reported `chain test`, `testnetprofile fast`, Vault 510,400 pending); a slow or
+    /// legacy node, or another Vault height, is refused. Mainnet and regtest are not checked.
+    #[test]
+    fn the_backend_must_be_on_the_wallets_testnet_profile() {
+        use super::{check_backend_network, Network};
+        let info = |chain: &str, profile: Option<&str>, vault: Option<u64>| {
+            let mut v = serde_json::json!({"chain": chain, "upgrades": {
+                "19bd2d2f": {"name": "Canopy", "activationheight": 510_254}}});
+            if let Some(p) = profile {
+                v["testnetprofile"] = p.into();
+            }
+            if let Some(h) = vault {
+                v["upgrades"]["6d5b7a31"] =
+                    serde_json::json!({"name": "Vault", "activationheight": h});
+            }
+            v
+        };
+        let t = Network::Testnet;
+        assert!(check_backend_network(t, &info("test", Some("fast"), Some(510_400))).is_ok());
+        assert!(check_backend_network(t, &info("test", None, Some(510_400))).is_ok());
+        for bad in [
+            info("test", Some("slow"), None),
+            info("test", Some("legacy"), None),
+            info("test", Some("fast"), None),
+            info("test", Some("fast"), Some(510_500)),
+            info("main", None, Some(510_400)),
+        ] {
+            let e = check_backend_network(t, &bad).unwrap_err();
+            assert!(e.message.contains("testnet-yb-fast"), "{}", e.message);
+        }
+        assert!(check_backend_network(Network::Mainnet, &info("main", None, None)).is_ok());
+        assert!(check_backend_network(Network::Regtest, &info("regtest", None, Some(5))).is_ok());
     }
 }
 

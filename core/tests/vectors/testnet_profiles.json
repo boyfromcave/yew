@@ -1,0 +1,344 @@
+{
+ "source": {
+  "repo": "boyfromcave/ycash6",
+  "commit": "d35c48658fdd54983364d4b375272fe0e65c8c25",
+  "files": [
+   "src/chainparams.cpp",
+   "src/consensus/upgrades.cpp",
+   "src/consensus/upgrades.h",
+   "src/yellowback/params.cpp"
+  ]
+ },
+ "networks": {
+  "main": {
+   "upgrades": [
+    {
+     "name": "overwinter",
+     "branch_id": "5ba81b19",
+     "height": 347500
+    },
+    {
+     "name": "sapling",
+     "branch_id": "76b809bb",
+     "height": 419200
+    },
+    {
+     "name": "ycash",
+     "branch_id": "374d694f",
+     "height": 570000
+    },
+    {
+     "name": "blossom",
+     "branch_id": "8e471bd6",
+     "height": 1100000
+    },
+    {
+     "name": "heartwood",
+     "branch_id": "66314da3",
+     "height": 1100003
+    },
+    {
+     "name": "canopy",
+     "branch_id": "19bd2d2f",
+     "height": 1100006
+    },
+    {
+     "name": "nu5",
+     "branch_id": "f919a198",
+     "height": null
+    },
+    {
+     "name": "nu6",
+     "branch_id": "c8e71055",
+     "height": null
+    },
+    {
+     "name": "nu6_1",
+     "branch_id": "4dec4df0",
+     "height": null
+    },
+    {
+     "name": "nu6_2",
+     "branch_id": "5437f330",
+     "height": null
+    },
+    {
+     "name": "shadow",
+     "branch_id": "57a24d5d",
+     "height": null
+    },
+    {
+     "name": "vault",
+     "branch_id": "6d5b7a31",
+     "height": null
+    }
+   ],
+   "yed": {
+    "grace": 34560,
+    "claimDelay": 576,
+    "classes": [
+     {
+      "classMin": 34560,
+      "classMax": 103680,
+      "baseRatioBps": 30000,
+      "earlyRedeemFeeBps": 500
+     },
+     {
+      "classMin": 103681,
+      "classMax": 207360,
+      "baseRatioBps": 40000,
+      "earlyRedeemFeeBps": 250
+     },
+     {
+      "classMin": 207361,
+      "classMax": 420480,
+      "baseRatioBps": 50000,
+      "earlyRedeemFeeBps": 100
+     }
+    ]
+   }
+  },
+  "test-fast": {
+   "upgrades": [
+    {
+     "name": "overwinter",
+     "branch_id": "5ba81b19",
+     "height": 207500
+    },
+    {
+     "name": "sapling",
+     "branch_id": "76b809bb",
+     "height": 280000
+    },
+    {
+     "name": "ycash",
+     "branch_id": "374d694f",
+     "height": 510248
+    },
+    {
+     "name": "blossom",
+     "branch_id": "8e471bd6",
+     "height": 510250
+    },
+    {
+     "name": "heartwood",
+     "branch_id": "66314da3",
+     "height": 510252
+    },
+    {
+     "name": "canopy",
+     "branch_id": "19bd2d2f",
+     "height": 510254
+    },
+    {
+     "name": "nu5",
+     "branch_id": "f919a198",
+     "height": null
+    },
+    {
+     "name": "nu6",
+     "branch_id": "c8e71055",
+     "height": null
+    },
+    {
+     "name": "nu6_1",
+     "branch_id": "4dec4df0",
+     "height": null
+    },
+    {
+     "name": "nu6_2",
+     "branch_id": "5437f330",
+     "height": null
+    },
+    {
+     "name": "shadow",
+     "branch_id": "57a24d5d",
+     "height": null
+    },
+    {
+     "name": "vault",
+     "branch_id": "6d5b7a31",
+     "height": 510400
+    }
+   ],
+   "yed": {
+    "grace": 103,
+    "claimDelay": 20,
+    "classes": [
+     {
+      "classMin": 103,
+      "classMax": 309,
+      "baseRatioBps": 30000,
+      "earlyRedeemFeeBps": 500
+     },
+     {
+      "classMin": 310,
+      "classMax": 618,
+      "baseRatioBps": 40000,
+      "earlyRedeemFeeBps": 250
+     },
+     {
+      "classMin": 619,
+      "classMax": 1252,
+      "baseRatioBps": 50000,
+      "earlyRedeemFeeBps": 100
+     }
+    ]
+   }
+  },
+  "test-slow": {
+   "shadow_split_height": 3079999,
+   "upgrades": [
+    {
+     "name": "overwinter",
+     "branch_id": "5ba81b19",
+     "height": 347500
+    },
+    {
+     "name": "sapling",
+     "branch_id": "76b809bb",
+     "height": 419200
+    },
+    {
+     "name": "ycash",
+     "branch_id": "374d694f",
+     "height": 570000
+    },
+    {
+     "name": "blossom",
+     "branch_id": "8e471bd6",
+     "height": 1100000
+    },
+    {
+     "name": "heartwood",
+     "branch_id": "66314da3",
+     "height": 1100003
+    },
+    {
+     "name": "canopy",
+     "branch_id": "19bd2d2f",
+     "height": 1100006
+    },
+    {
+     "name": "nu5",
+     "branch_id": "f919a198",
+     "height": null
+    },
+    {
+     "name": "nu6",
+     "branch_id": "c8e71055",
+     "height": null
+    },
+    {
+     "name": "nu6_1",
+     "branch_id": "4dec4df0",
+     "height": null
+    },
+    {
+     "name": "nu6_2",
+     "branch_id": "5437f330",
+     "height": null
+    },
+    {
+     "name": "shadow",
+     "branch_id": "57a24d5d",
+     "height": 3080000
+    },
+    {
+     "name": "vault",
+     "branch_id": "e1f1cc08",
+     "height": null
+    }
+   ],
+   "yed": {
+    "grace": 34560,
+    "claimDelay": 576,
+    "classes": [
+     {
+      "classMin": 34560,
+      "classMax": 103680,
+      "baseRatioBps": 30000,
+      "earlyRedeemFeeBps": 500
+     },
+     {
+      "classMin": 103681,
+      "classMax": 207360,
+      "baseRatioBps": 40000,
+      "earlyRedeemFeeBps": 250
+     },
+     {
+      "classMin": 207361,
+      "classMax": 420480,
+      "baseRatioBps": 50000,
+      "earlyRedeemFeeBps": 100
+     }
+    ]
+   }
+  },
+  "test-legacy": {
+   "shadow_split_height": 3079999,
+   "upgrades": [
+    {
+     "name": "overwinter",
+     "branch_id": "5ba81b19",
+     "height": 347500
+    },
+    {
+     "name": "sapling",
+     "branch_id": "76b809bb",
+     "height": 419200
+    },
+    {
+     "name": "ycash",
+     "branch_id": "374d694f",
+     "height": 570000
+    },
+    {
+     "name": "blossom",
+     "branch_id": "8e471bd6",
+     "height": 1100000
+    },
+    {
+     "name": "heartwood",
+     "branch_id": "66314da3",
+     "height": 1100003
+    },
+    {
+     "name": "canopy",
+     "branch_id": "19bd2d2f",
+     "height": 1100006
+    },
+    {
+     "name": "nu5",
+     "branch_id": "f919a198",
+     "height": null
+    },
+    {
+     "name": "nu6",
+     "branch_id": "c8e71055",
+     "height": null
+    },
+    {
+     "name": "nu6_1",
+     "branch_id": "4dec4df0",
+     "height": null
+    },
+    {
+     "name": "nu6_2",
+     "branch_id": "5437f330",
+     "height": null
+    },
+    {
+     "name": "shadow",
+     "branch_id": "35706728",
+     "height": 3080000
+    },
+    {
+     "name": "vault",
+     "branch_id": "6d5b7a31",
+     "height": null
+    }
+   ]
+  }
+ }
+}

@@ -14,6 +14,7 @@ Usage: yewd [options]
   -datadir=<dir>              data directory (default ~/.yewd); the cookie is <datadir>/<net>/.cookie
   -conf=<file>                configuration file (default <datadir>/yewd.conf; relative to -datadir)
   -regtest | -testnet         network (default mainnet); picks the default -rpcport and the cookie subdirectory
+  -testnetprofile=<profile>   with -testnet: fast (the default; <datadir>/testnet-yb-fast). slow and legacy are refused
   -rpcbind=<ip>[:port]        listen address, repeatable (default 127.0.0.1)
   -rpcport=<port>             listen port (default 8832, 18832 on testnet and regtest: ycashd's)
   -rpcuser=<u> -rpcpassword=<p>   client credentials (without -rpcpassword: cookie authentication)
@@ -60,6 +61,7 @@ fn main() {
         // `-mineraddress=<the printed address>`.
         let code = match Config::merged(cli).and_then(|(a, datadir)| {
             let net = Config::network_of(&a)?;
+            Config::check_old_testnet_dir(net, &datadir)?;
             let bin = a
                 .get("signerbin")
                 .map(std::path::PathBuf::from)
@@ -115,8 +117,9 @@ fn main() {
             }
         };
         eprintln!(
-            "yewd: listening on {:?}, backend {} ({})",
+            "yewd: listening on {:?}, network {}, backend {} ({})",
             running.addrs,
+            cfg.network.label(),
             cfg.backend,
             if cfg.user_pass.is_some() {
                 "rpcpassword"

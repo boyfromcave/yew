@@ -95,6 +95,9 @@ jobs:
       # The node's golden vectors, fetched at core/tests/vectors/PIN from both node lines and
       # compared byte for byte with the copies the tests replay. No skip path: a failed fetch fails.
       - run: scripts/check-node-vectors.sh
+      # The network tables (upgrade heights, branch ids, the YED lifecycle columns; mainnet and the
+      # testnet profiles), regenerated from ycash6 at the commit the fixture records and compared.
+      - run: scripts/check-testnet-profiles.sh
       - run: scripts/check-deps.sh
       - run: scripts/check-licenses.sh
       # The Sapling parameters the core's hybrid tests prove with (hybrid_vectors*, build::pq_send,

@@ -1837,7 +1837,9 @@ mod tests {
         }
         // In-term D-IT-9: classes B and C are enabled on mainnet and testnet again (H-5 reversed).
         assert_eq!(class_for(Network::Mainnet, 200_000).unwrap().letter, "B");
-        assert_eq!(class_for(Network::Testnet, 103_681).unwrap().letter, "B");
+        // testnet-yb-fast's column (TestFastParams): B is 310..618 blocks there
+        assert_eq!(class_for(Network::Testnet, 310).unwrap().letter, "B");
+        assert!(class_for(Network::Testnet, 103_681).is_err());
         assert_eq!(class_for(Network::Mainnet, 420_480).unwrap().letter, "C");
         assert!(matches!(
             class_for(Network::Mainnet, 420_481),
