@@ -1338,6 +1338,29 @@ impl Shielded {
         Ok((notes.len(), fee, total))
     }
 
+    /// The creating transactions (txids, internal order, deduplicated) of every note the store
+    /// would select from now: the selection of [`Shielded::select_spends`] for the whole
+    /// spendable balance, no fee (read-only; review YEW-REVIEW-9 L2: an upper bound of the notes
+    /// any spend can take, known before its amount is). Empty when nothing is spendable; a store
+    /// whose balance and selection disagree (`Insufficient`) also answers empty, so the caller's
+    /// later per-spend check still runs.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn spendable_note_txids(&self) -> Result<Vec<[u8; 32]>, ShieldedError> {
+        let b = self.balance()?;
+        if b.spendable_zat == 0 {
+            return Ok(Vec::new());
+        }
+        let notes = match self.pick_notes(b.spendable_zat, |_| 0) {
+            Ok((notes, ..)) => notes,
+            Err(ShieldedError::Insufficient { .. }) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let mut t: Vec<[u8; 32]> = notes.iter().map(|n| *n.txid().as_ref()).collect();
+        t.sort();
+        t.dedup();
+        Ok(t)
+    }
+
     /// The selection half of [`Shielded::select_spends`] (the store's own selection, the fee
     /// settled in a few rounds).
     #[cfg(not(target_arch = "wasm32"))]

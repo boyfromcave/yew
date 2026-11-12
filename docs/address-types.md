@@ -213,10 +213,11 @@ that server and a burn. They are listed in the order a coin meets them.
   (`derived_carrier_hash`, YEW-REVIEW-9 L1), so a `vout[0]` built from another key or bundle fails
   the gate. The bundle itself is the start's verified bundle, the one later stored in the mint
   row; no earlier record of it exists to compare with.
-- **A mint from the private balance takes its owner key before the note-lookup question.** The
-  retry after the go-ahead then estimates with the next owner key: a different fee payee can fail
-  it with "fee payee changed", and every attempt uses up an external key that never appears on
-  chain. (YEW-REVIEW-9 L2.)
+- **A mint from the private balance asks the note-lookup question before it derives any key**
+  (YEW-REVIEW-9 L2), so it checks every spendable note, not only the ones the mint will spend
+  (their amount is known only after the estimate is re-checked). The question can therefore name
+  more transactions than are then fetched; with the go-ahead only the selected notes' missing
+  transactions are fetched.
 
 **Display and tests**
 - **Staged-for-mint YEC is shown by the web wallet only**; the app does not show the amount yet.

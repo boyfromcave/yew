@@ -69,6 +69,9 @@ pub async fn start_from_sapling(
             "a mint can be funded from the private balance only once the vault upgrade is active at the next block",
         ));
     }
+    // review YEW-REVIEW-9 L2: the note-lookup question is settled before prepare_start takes the
+    // owner key, so a refusal takes no key and the retry after the go-ahead estimates with it
+    note_lookup_settled(wallet, allow_note_lookup)?;
     let p = mint::prepare_start(
         wallet,
         client,
@@ -120,6 +123,25 @@ pub async fn start_from_sapling(
     let id = r?;
     mint::note_fee_ack(wallet, id, &p.est.fee_guard)?;
     Ok(id)
+}
+
+/// Without the user's go-ahead (`allow`), every currently spendable note's creating transaction
+/// must be in the wallet's store, else the note-lookup question (`NoteLookupNeeded`) is asked
+/// now, before [`mint::prepare_start`] derives the owner key (review YEW-REVIEW-9 L2). It covers
+/// every spendable note, an upper bound of the ones the mint will spend (their amount is known
+/// only after the estimate is re-checked); with the go-ahead only the selected notes' missing
+/// transactions are fetched. No network request.
+pub(crate) fn note_lookup_settled(wallet: &Wallet, allow: bool) -> Result<(), WalletError> {
+    if allow {
+        return Ok(());
+    }
+    let sh = wallet.shielded()?;
+    let (_, missing) = super::sapling_pq::stored_note_txs(sh, sh.spendable_note_txids()?)?;
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(other(super::sapling_pq::note_lookup_text(missing.len())))
+    }
 }
 
 /// Build, check, record and send the carrier funding from the private balance (see the module
@@ -373,6 +395,61 @@ mod tests {
         } else {
             format!("{home}/.zcash-params").into()
         }
+    }
+
+    /// Review YEW-REVIEW-9 L2: a mint from the private balance whose notes' transactions the store
+    /// lacks is asked the note-lookup question before any key is derived (declining takes no key,
+    /// so the retry with the go-ahead starts from the same next key); with the go-ahead, or once
+    /// the store holds the transactions, nothing is asked.
+    #[test]
+    fn note_lookup_is_settled_before_any_key() {
+        let dir = std::env::temp_dir().join(format!("yew-mintlookup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.sqlite");
+        let mut w = Wallet::open(
+            path.to_str().unwrap(),
+            params::Network::Regtest,
+            PHRASE,
+            "",
+            Some(100),
+        )
+        .unwrap();
+        w.set_vault_activation(Some(1)).unwrap();
+        let raw = w.shielded_mut().unwrap().receive_for_test(
+            100,
+            120,
+            &[30_000_000, 4_000_000],
+            &params_dir(),
+        );
+        let (_, ptxid) = Transaction::parse(&raw).unwrap();
+        assert_eq!(
+            w.shielded().unwrap().spendable_note_txids().unwrap(),
+            vec![ptxid]
+        );
+        let keys_before = w.store.addresses().unwrap();
+        let next_before = w.receive_address(false).unwrap();
+        // declined: the question, and no key derived or marked used
+        let e = note_lookup_settled(&w, false).unwrap_err();
+        let y = crate::api::YewError::from(e);
+        assert_eq!(y.kind, crate::api::ErrorKind::NoteLookupNeeded);
+        assert_eq!(w.store.addresses().unwrap(), keys_before);
+        assert_eq!(w.receive_address(false).unwrap(), next_before);
+        // the go-ahead: nothing asked
+        note_lookup_settled(&w, true).unwrap();
+        // what memo enhancement leaves in the store (written directly: the test chain's paying
+        // transaction is not value-balanced, which `decrypt_and_store_transaction` refuses)
+        let db =
+            rusqlite::Connection::open(w.shielded().unwrap().dir().join("wallet.sqlite")).unwrap();
+        db.execute(
+            "UPDATE transactions SET raw = ?1 WHERE txid = ?2",
+            rusqlite::params![raw, ptxid.as_slice()],
+        )
+        .unwrap();
+        drop(db);
+        note_lookup_settled(&w, false).unwrap();
+        drop(w);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Beta2 D-3, a mint funded from the private balance, through the builder `mint_start` uses:
