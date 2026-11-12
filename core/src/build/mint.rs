@@ -2907,7 +2907,9 @@ mod tests {
         // a carrier key that is not a change key of the seed, or not a key at all, is refused
         let ext = w.receive_address(false).unwrap();
         assert!(derived_carrier_hash(&w, &ext.hash160, &bundle).is_err());
-        assert!(derived_carrier_hash(&w, &[0x66; 20], &bundle).is_err());
+        // (a random hash160: no key of this wallet has it)
+        let stranger: [u8; 20] = rand::random();
+        assert!(derived_carrier_hash(&w, &stranger, &bundle).is_err());
         // a record naming an external key, or a key this wallet does not have, is refused
         let ext = w.receive_address(false).unwrap();
         w.store
