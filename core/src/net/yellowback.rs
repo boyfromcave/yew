@@ -738,6 +738,44 @@ pub fn vault_activation(ci: &rpc::YedChainInfo) -> Option<u64> {
         .map(|u| u.activation_height as u64)
 }
 
+/// The upgrade heights before the vault upgrade in a `GetChainInfo` answer, as the light
+/// library's regtest spec (`name=height`, `none` for an upgrade the server does not list or
+/// lists unscheduled), every upgrade through Canopy by branch id (yewd's `upgrades_spec`).
+/// `None` when the answer lists no upgrade at all (a server without them).
+pub fn upgrades_spec(ci: &rpc::YedChainInfo) -> Option<String> {
+    const BRANCHES: [(&str, u32); 6] = [
+        ("overwinter", 0x5ba8_1b19),
+        ("sapling", 0x76b8_09bb),
+        ("ycash", 0x374d_694f),
+        ("blossom", 0x8e47_1bd6),
+        ("heartwood", 0x6631_4da3),
+        ("canopy", 0x19bd_2d2f),
+    ];
+    if ci.upgrades.is_empty() {
+        return None;
+    }
+    let height = |branch: u32| {
+        ci.upgrades
+            .iter()
+            .find(|u| {
+                u32::from_str_radix(u.branch_id.trim_start_matches("0x"), 16)
+                    .is_ok_and(|b| b == branch)
+            })
+            .filter(|u| u.activation_height > 0)
+            .map(|u| u.activation_height)
+    };
+    Some(
+        BRANCHES
+            .iter()
+            .map(|(name, branch)| match height(*branch) {
+                Some(h) => format!("{name}={h}"),
+                None => format!("{name}=none"),
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -800,6 +838,35 @@ mod tests {
         assert_eq!(vault_activation(&ci), None, "unscheduled");
         ci.upgrades = vec![up("19bd2d2f", 1), up("0x6d5b7a31", 230)];
         assert_eq!(vault_activation(&ci), Some(230));
+    }
+
+    /// The core's regtest parameters follow the server's upgrade heights (review LOW-4, as yewd's
+    /// `upgrades_spec`): every upgrade through Canopy by branch id, `none` when not listed.
+    #[test]
+    fn upgrades_spec_reads_the_upgrades_list() {
+        let up = |b: &str, h: i64| rpc::YedUpgrade {
+            branch_id: b.into(),
+            name: String::new(),
+            activation_height: h,
+            status: String::new(),
+        };
+        let mut ci = rpc::YedChainInfo::default();
+        assert_eq!(upgrades_spec(&ci), None, "a server listing nothing");
+        ci.upgrades = vec![
+            up("5ba81b19", 1),
+            up("76b809bb", 1),
+            up("374d694f", 1),
+            up("8e471bd6", 1),
+            up("0x66314da3", 1),
+            up("19bd2d2f", 150),
+            up("6d5b7a31", 290),
+        ];
+        assert_eq!(
+            upgrades_spec(&ci).unwrap(),
+            "overwinter=1,sapling=1,ycash=1,blossom=1,heartwood=1,canopy=150"
+        );
+        ci.upgrades.retain(|u| u.branch_id != "19bd2d2f");
+        assert!(upgrades_spec(&ci).unwrap().ends_with(",canopy=none"));
     }
 
     #[test]

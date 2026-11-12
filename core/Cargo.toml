@@ -103,6 +103,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
 # (`pq.rs` `falcon_reproduces_the_nist_kats`); `aes` 0.8.4 is already in Cargo.lock.
 [dev-dependencies]
 aes = "=0.8.4"
+# The tests' pre-ZIP-212 notes (`Shielded::receive_pre_zip212_for_test`): the note encryption
+# trait sapling-crypto implements; already in Cargo.lock (sapling-crypto's own dependency).
+zcash_note_encryption = "=0.4.1"
 
 [build-dependencies]
 # The vendored Falcon C (`pq-c/falcon`, build.rs): the `cc` already in Cargo.lock (rusqlite's

@@ -147,6 +147,8 @@ pub async fn sync_with_progress(
                 branch_id = params::VAULT_BRANCH_ID;
             }
             activation = crate::net::yellowback::vault_activation(&ci);
+            // the other upgrade heights too (regtest's scan parameters, review LOW-4)
+            wallet.set_chain_upgrades(crate::net::yellowback::upgrades_spec(&ci))?;
         }
     }
     let branch_id = params::signing_branch_id(
