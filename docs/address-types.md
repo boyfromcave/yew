@@ -212,9 +212,10 @@ that server and a burn. They are listed in the order a coin meets them.
 - **`Path::Carrier` (the ECC source and the claim) checks only `vout[0]`**, as some P2SH of
   `CARRIER_VALUE`, and leaves every other output unconstrained. The ECC carrier funding pays the
   carrier and a P2PKH change, which can be most of a large coin. (YEW-REVIEW-9 L3.)
-- **The carrier hash the gate compares is taken from the builder's own redeem script**, not
-  re-derived from the recorded carrier key and the bundle. A wrong bundle or carrier key surfaces
-  only when the MINT fails. (YEW-REVIEW-9 L1.)
+- **The carrier hash is re-derived from the carrier key and the bundle the start holds**
+  (`derived_carrier_hash`, YEW-REVIEW-9 L1), so a `vout[0]` built from another key or bundle fails
+  the gate. The bundle itself is the start's verified bundle, the one later stored in the mint
+  row; no earlier record of it exists to compare with.
 - **A mint from the private balance takes its owner key before the note-lookup question.** The
   retry after the go-ahead then estimates with the next owner key: a different fee payee can fail
   it with "fee payee changed", and every attempt uses up an external key that never appears on

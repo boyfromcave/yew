@@ -250,7 +250,7 @@ pub(crate) fn build_carrier_from_sapling(
     // review YEW-REVIEW-8 M2: the staged key is recorded before anything is built, and the gate
     // compares the outputs with what the record and the carrier script say
     let stage_row = mint::record_stage_key(wallet, &carrier_row.hash160)?;
-    let want = mint::recorded_carrier_outputs(wallet, &carrier_row.hash160, &redeem)?;
+    let want = mint::recorded_carrier_outputs(wallet, &carrier_row.hash160, bundle)?;
     let fee = picked.fee_zat as i64;
     // review YEW-REVIEW-6 M1: never more than the fee the user confirmed on the estimate
     if fee > carrier_quote {

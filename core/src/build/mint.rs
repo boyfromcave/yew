@@ -993,7 +993,7 @@ where
             wallet,
             client,
             validator,
-            (&carrier_row, &redeem),
+            (&carrier_row, &redeem, bundle),
             (id, staged, max_fee),
             (expiry_height, tip, branch_id),
             persist_row,
@@ -1155,14 +1155,43 @@ pub(crate) fn record_stage_key(
     Ok(row)
 }
 
+/// The HASH160 of the carrier redeem script, re-derived here (review YEW-REVIEW-9 L1) from the
+/// carrier key hash and the bundle the way the sync derives a carrier it holds: the key must be a
+/// change-chain key of this wallet's seed, re-derived at its recorded index (`key_for_hash`), and
+/// the script is `carrier_script(its public key, bundle_hash(bundle))`. A builder that built
+/// `vout[0]` from another key or another bundle than these fails the gate's comparison.
+pub(crate) fn derived_carrier_hash(
+    wallet: &Wallet,
+    carrier_key: &[u8; 20],
+    bundle: &[u8],
+) -> Result<[u8; 20], WalletError> {
+    let bad = |m: &str| WalletError::Other(format!("the mint's carrier key: {m}"));
+    let row = wallet
+        .store
+        .addresses()?
+        .into_iter()
+        .find(|r| r.hash160 == *carrier_key)
+        .ok_or_else(|| bad("not a key of this wallet"))?;
+    if row.hd_chain() != Some(keys::Chain::Change) {
+        return Err(bad("not a change key of this wallet's seed"));
+    }
+    let key = wallet
+        .key_for_hash(carrier_key)?
+        .ok_or_else(|| bad("not a key of this wallet"))?;
+    let redeem = script::carrier_script(&key.pubkey, &bundle::bundle_hash(bundle))
+        .map_err(MintError::Script)?;
+    Ok(keys::hash160(&redeem))
+}
+
 /// The outputs the gate's carrier-from-another-source paths compare (review YEW-REVIEW-8 M2,
-/// L1): the carrier is `P2SH(redeem)`, the script the core built; the staged key is read back
-/// from the wallet's record for this carrier key (never taken from a builder's argument) and
-/// must be a change-chain key of this wallet's seed (one a restore finds).
+/// L1; YEW-REVIEW-9 L1): the carrier is `P2SH` of the redeem script re-derived from the carrier
+/// key and `bundle` ([`derived_carrier_hash`], never the builder's own script); the staged key is
+/// read back from the wallet's record for this carrier key (never taken from a builder's
+/// argument) and must be a change-chain key of this wallet's seed (one a restore finds).
 pub(crate) fn recorded_carrier_outputs(
     wallet: &Wallet,
     carrier_key: &[u8; 20],
-    redeem: &[u8],
+    bundle: &[u8],
 ) -> Result<gate::CarrierOutputs, WalletError> {
     let bad = |m: &str| WalletError::Other(format!("the mint's staged funding key: {m}"));
     let v = wallet
@@ -1187,7 +1216,7 @@ pub(crate) fn recorded_carrier_outputs(
         return Err(bad("not a key of this wallet"));
     }
     Ok(gate::CarrierOutputs {
-        carrier_hash: keys::hash160(redeem),
+        carrier_hash: derived_carrier_hash(wallet, carrier_key, bundle)?,
         staged_key,
     })
 }
@@ -1282,7 +1311,7 @@ async fn carrier_step_pq<R>(
     wallet: &Wallet,
     client: &mut CompactClient,
     validator: &mut Validator,
-    (carrier_row, redeem): (&AddressRow, &[u8]),
+    (carrier_row, redeem, bundle): (&AddressRow, &[u8], &[u8]),
     (id, staged, max_fee): (crate::pq::PqKeyId, i64, i64),
     (expiry_height, tip, branch_id): (u32, u64, u32),
     persist_row: R,
@@ -1303,7 +1332,7 @@ where
     // review YEW-REVIEW-8 M2: the staged key is recorded before anything is built, and the gate
     // compares the outputs with what the record and the carrier script say
     let stage_row = record_stage_key(wallet, &carrier_row.hash160)?;
-    let want = recorded_carrier_outputs(wallet, &carrier_row.hash160, redeem)?;
+    let want = recorded_carrier_outputs(wallet, &carrier_row.hash160, bundle)?;
     let stage_spk = script::p2pkh_script(&want.staged_key);
     let carrier_spk = script::p2sh_of(redeem);
     let f = plan_pq_funding(wallet, &id, &carrier_spk, staged, &stage_spk, tip)?;
@@ -2611,13 +2640,32 @@ mod tests {
         w.ensure_gap().unwrap();
         // as carrier_step does: the carrier key, then the staged key recorded under it
         let carrier = fresh_change(&w).unwrap();
-        let redeem = vec![0x51u8; 40];
-        let e = recorded_carrier_outputs(&w, &carrier.hash160, &redeem).unwrap_err();
+        let bundle = vec![0x51u8; 40];
+        let e = recorded_carrier_outputs(&w, &carrier.hash160, &bundle).unwrap_err();
         assert!(e.to_string().contains("not recorded"), "{e}");
         let stage = record_stage_key(&w, &carrier.hash160).unwrap();
-        let want = recorded_carrier_outputs(&w, &carrier.hash160, &redeem).unwrap();
+        let want = recorded_carrier_outputs(&w, &carrier.hash160, &bundle).unwrap();
         assert_eq!(want.staged_key, stage.hash160);
+        // review YEW-REVIEW-9 L1: the carrier hash is re-derived from the key and the bundle
+        let pubkey = w.key_for_hash(&carrier.hash160).unwrap().unwrap().pubkey;
+        let redeem = script::carrier_script(&pubkey, &bundle::bundle_hash(&bundle)).unwrap();
         assert_eq!(want.carrier_hash, keys::hash160(&redeem));
+        // another bundle, another carrier key: other hashes, so a vout[0] built from either
+        // fails the comparison
+        let other_bundle = vec![0x52u8; 40];
+        assert_ne!(
+            derived_carrier_hash(&w, &carrier.hash160, &other_bundle).unwrap(),
+            want.carrier_hash
+        );
+        let other_key = fresh_change(&w).unwrap();
+        assert_ne!(
+            derived_carrier_hash(&w, &other_key.hash160, &bundle).unwrap(),
+            want.carrier_hash
+        );
+        // a carrier key that is not a change key of the seed, or not a key at all, is refused
+        let ext = w.receive_address(false).unwrap();
+        assert!(derived_carrier_hash(&w, &ext.hash160, &bundle).is_err());
+        assert!(derived_carrier_hash(&w, &[0x66; 20], &bundle).is_err());
         // a record naming an external key, or a key this wallet does not have, is refused
         let ext = w.receive_address(false).unwrap();
         w.store
@@ -2626,14 +2674,14 @@ mod tests {
                 &keys::hex(&ext.hash160),
             )
             .unwrap();
-        assert!(recorded_carrier_outputs(&w, &carrier.hash160, &redeem).is_err());
+        assert!(recorded_carrier_outputs(&w, &carrier.hash160, &bundle).is_err());
         w.store
             .set_meta(
                 &staging_record_key(&carrier.hash160),
                 &keys::hex(&[0x77; 20]),
             )
             .unwrap();
-        assert!(recorded_carrier_outputs(&w, &carrier.hash160, &redeem).is_err());
+        assert!(recorded_carrier_outputs(&w, &carrier.hash160, &bundle).is_err());
         w.store
             .set_meta(
                 &staging_record_key(&carrier.hash160),
