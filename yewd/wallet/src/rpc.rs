@@ -851,6 +851,13 @@ impl Wallet {
         o.push("mnemonic_seedfp", J::Str(self.st.public.seed_fp.clone()));
         // beta2: the C++ lines' "has held YED" marker
         o.push("yed_held", J::Bool(self.st.yed_held));
+        // ycash6 #97: "yed_unlocked" is true exactly when the wallet has held YED and the operator
+        // runs it Yellowback-off (-yellowback=0, which on ycashd is what makes Yellowback not live):
+        // its YED outputs are then not locked against a plain-YEC spend
+        o.push(
+            "yed_unlocked",
+            J::Bool(self.st.yed_held && self.opts.yellowback_ack),
+        );
         if !self.st.public.imported.is_empty()
             || self
                 .st
