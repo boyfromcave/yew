@@ -569,7 +569,9 @@ pub async fn open_at(
     let opened = Opened {
         network: network.chain_name(),
         address: sh.default_address().1,
-        address_ye: primary.address_ye,
+        // final-run D-1: the YED form as the app's `api::create_wallet` gives it (the Falcon holder
+        // once TOK-PQ is in force), never a P2PKH form a sender's node refuses (`bad-yed-holder`)
+        address_ye: wallet.yed_receive_address(&primary).0,
         address_s: primary.address_s,
         birthday: (birthday > 0).then_some(birthday),
         vault_activation: sh.vault_activation(),
@@ -833,8 +835,8 @@ pub fn balances() -> Result<JsValue, JsValue> {
 }
 
 /// The address at the first valid diversifier index at or after `index` (`api::shielded_pair`).
-fn shielded_pair(s: &Session, index: u64) -> Result<dto::AddressPair, JsValue> {
-    let sh = s.wallet.shielded().map_err(wallet_err)?;
+fn shielded_pair(w: &Wallet, index: u64) -> Result<dto::AddressPair, JsValue> {
+    let sh = w.shielded().map_err(wallet_err)?;
     let (j, address) = if index == 0 {
         sh.default_address()
     } else {
@@ -850,46 +852,50 @@ fn shielded_pair(s: &Session, index: u64) -> Result<dto::AddressPair, JsValue> {
     })
 }
 
-fn receive_pair(s: &Session, kind: &str) -> Result<dto::AddressPair, JsValue> {
+/// The receive address of `kind` (`api::receive_address`, `fresh` false).
+fn receive_pair(w: &Wallet, kind: &str) -> Result<dto::AddressPair, JsValue> {
     match kind {
         "shielded" => {
-            let index = s
-                .wallet
-                .store
-                .meta_u64("sapling_diversifier")
-                .map_err(store_err)?;
-            shielded_pair(s, index)
+            let index = w.store.meta_u64("sapling_diversifier").map_err(store_err)?;
+            shielded_pair(w, index)
         }
         "transparent" | "yed" => {
-            let row = s.wallet.receive_address(false).map_err(wallet_err)?;
+            let row = w.receive_address(false).map_err(wallet_err)?;
+            // final-run D-1 (TOK-PQ): YED is received by the Falcon holder paired with this key
+            // once Falcon is in force (mainnet and testnet from the first block), as the app's
+            // `api::receive_address`; YEC goes to the `s…` form
+            let (ye, falcon) = w.yed_receive_address(&row);
             Ok(dto::AddressPair {
                 address: if kind == "yed" {
-                    row.address_ye.clone()
+                    ye.clone()
                 } else {
                     row.address_s.clone()
                 },
                 kind: kind.into(),
-                ye: row.address_ye,
+                ye,
                 s: row.address_s,
-                path: format!("m/44'/347'/0'/{}/{}", row.chain, row.index),
+                path: if falcon {
+                    format!("m/44'/347'/0'/{}/{} (Falcon holder)", row.chain, row.index)
+                } else {
+                    format!("m/44'/347'/0'/{}/{}", row.chain, row.index)
+                },
                 covered_by_seed: true,
             })
         }
         // beta2 D-8, D-9: the post-quantum plain-YEC forms paired with the receive key
         // (`api::receive_address`, `ReceiveKind::PqFalcon` / `PqSlh`): the scheme is in the prefix
         "pq_falcon" | "pq_slh" => {
-            let row = s.wallet.receive_address(false).map_err(wallet_err)?;
+            let row = w.receive_address(false).map_err(wallet_err)?;
             let (id, name) = if kind == "pq_falcon" {
                 (
-                    s.wallet
-                        .falcon_holder_id(&row)
+                    w.falcon_holder_id(&row)
                         .ok_or_else(|| err("build", "this key has no post-quantum pair"))?,
                     "FN-DSA-512",
                 )
             } else {
-                (s.wallet.pq_owner_id(row.index), "SLH-DSA-SHA2-128s")
+                (w.pq_owner_id(row.index), "SLH-DSA-SHA2-128s")
             };
-            let address = keys::encode_pq_yec(s.network, &id)
+            let address = keys::encode_pq_yec(w.network, &id)
                 .ok_or_else(|| err("build", "the scheme has no address version"))?;
             Ok(dto::AddressPair {
                 ye: String::new(),
@@ -912,13 +918,20 @@ fn receive_pair(s: &Session, kind: &str) -> Result<dto::AddressPair, JsValue> {
 /// last handed out by [`new_shielded_address`] (or the default one) for `shielded`.
 #[wasm_bindgen]
 pub fn receive_address(kind: Option<String>) -> Result<String, JsValue> {
-    with_session_sync(|s| Ok(receive_pair(s, kind.as_deref().unwrap_or("shielded"))?.address))
+    with_session_sync(|s| {
+        Ok(receive_pair(&s.wallet, kind.as_deref().unwrap_or("shielded"))?.address)
+    })
 }
 
 /// [`receive_address`] with both forms, the path and the seed coverage (`api::AddressPair`).
 #[wasm_bindgen]
 pub fn receive_address_info(kind: Option<String>) -> Result<JsValue, JsValue> {
-    with_session_sync(|s| to_js(&receive_pair(s, kind.as_deref().unwrap_or("shielded"))?))
+    with_session_sync(|s| {
+        to_js(&receive_pair(
+            &s.wallet,
+            kind.as_deref().unwrap_or("shielded"),
+        )?)
+    })
 }
 
 /// A new diversified private address of the same account (`api::new_shielded_address`):
@@ -936,7 +949,7 @@ pub fn new_shielded_address() -> Result<String, JsValue> {
         } else {
             last + 1
         };
-        let pair = shielded_pair(s, start)?;
+        let pair = shielded_pair(&s.wallet, start)?;
         let j: u64 = pair
             .path
             .rsplit(' ')
@@ -954,30 +967,42 @@ pub fn new_shielded_address() -> Result<String, JsValue> {
 /// Every transparent address of the wallet (`api::addresses`; Settings → export a key).
 #[wasm_bindgen]
 pub fn addresses() -> Result<JsValue, JsValue> {
-    with_session_sync(|s| {
-        let rows: Vec<dto::AddressPair> = s
-            .wallet
-            .addresses()
-            .map_err(wallet_err)?
-            .into_iter()
-            .map(|r| {
-                let hd = r.hd_chain().is_some();
-                dto::AddressPair {
-                    address: r.address_s.clone(),
-                    kind: "transparent".into(),
-                    ye: r.address_ye,
-                    s: r.address_s,
-                    path: if hd {
-                        format!("m/44'/347'/0'/{}/{}", r.chain, r.index)
-                    } else {
-                        "imported".into()
-                    },
-                    covered_by_seed: hd,
-                }
-            })
-            .collect();
-        to_js(&rows)
-    })
+    with_session_sync(|s| to_js(&address_pairs(&s.wallet)?))
+}
+
+/// Every transparent address with its YED form (`api::addresses`): the Falcon holder of an HD
+/// key once TOK-PQ is in force (final-run D-1); the P2PKH `yb…` form is the WIF export's only.
+fn address_pairs(w: &Wallet) -> Result<Vec<dto::AddressPair>, JsValue> {
+    Ok(w.addresses()
+        .map_err(wallet_err)?
+        .into_iter()
+        .map(|r| {
+            let hd = r.hd_chain().is_some();
+            let (ye, holder) = w.yed_receive_address(&r);
+            dto::AddressPair {
+                address: r.address_s.clone(),
+                kind: "transparent".into(),
+                ye,
+                s: r.address_s,
+                path: match (hd, holder) {
+                    (true, true) => {
+                        format!("m/44'/347'/0'/{}/{} (Falcon holder)", r.chain, r.index)
+                    }
+                    (true, false) => format!("m/44'/347'/0'/{}/{}", r.chain, r.index),
+                    _ => "imported".into(),
+                },
+                covered_by_seed: hd,
+            }
+        })
+        .collect())
+}
+
+/// The receive address of `kind` and every transparent address (as [`receive_address_info`] and
+/// [`addresses`] answer them) for a wallet opened outside a session: tests/receive.rs holds the
+/// shell's YED forms to the app's without a server. Not a page API.
+#[doc(hidden)]
+pub fn address_forms_of(w: &Wallet, kind: &str) -> Result<(JsValue, JsValue), JsValue> {
+    Ok((to_js(&receive_pair(w, kind)?)?, to_js(&address_pairs(w)?)?))
 }
 
 /// One page of 50 history rows, pending first then newest first (`api::history`; the private
@@ -1660,6 +1685,13 @@ pub async fn claim_preview(vault_txid: String) -> Result<JsValue, JsValue> {
                 .iter()
                 .find(|c| c.vault_txid.eq_ignore_ascii_case(vault_txid.trim()))
                 .ok_or_else(|| err("invalid", "the node does not list that vault as claimable"))?;
+            // final-run D-3: listed is not claimable; the node's own judgement at its tip decides
+            if !item.claimable {
+                return Err(err(
+                    "invalid",
+                    "The node does not judge this vault claimable now.",
+                ));
+            }
             if item.minted_cents == 0 || item.claimant_zat <= 0 {
                 return Err(err(
                     "invalid",

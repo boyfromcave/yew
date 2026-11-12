@@ -279,7 +279,11 @@ class YewdS1(YellowbackTestFramework):
         self.same_keys(zv, user.z_validateaddress(user.z_getnewaddress()), 'z_validateaddress')
         assert_equal(user.z_validateaddress(self.zaddr)['ismine'], False)
         # answered by yewd itself (a -disablewallet ycash6 stops on z_validateaddress): the same fields as ycashd's
-        for a in (self.zaddr, a1, user.getnewaddress(), 'nonsense'):
+        # beta2 audit L-4 (final-run D-4): a post-quantum address of each scheme, the wallet's own and another's
+        pqs = [y.getnewaddress('', 'pq'), y.getnewaddress('', 'pqslh'), user.getnewaddress('', 'pq'), user.getnewaddress('', 'pqslh')]
+        for a in pqs:
+            assert_equal(y.z_validateaddress(a)['ismine'], a in pqs[:2])
+        for a in (self.zaddr, a1, user.getnewaddress(), 'nonsense', *pqs):
             mine = {k: v for k, v in y.z_validateaddress(a).items() if k != 'ismine'}
             theirs = {k: v for k, v in user.z_validateaddress(a).items() if k != 'ismine'}
             assert_equal(mine, theirs)
