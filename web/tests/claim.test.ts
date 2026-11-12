@@ -119,3 +119,22 @@ describe("the Claimable screen's first frame", () => {
     await settle(vm); expect(root.querySelector('[data-claimable="now"]')).not.toBeNull();
   });
 });
+
+describe("a claim whose second-step fee rose (review of #31 M-1)", () => {
+  it("shows the new fee and sends the claim once it is accepted", async () => {
+    const core = await openWallet(); const vm = new YellowbackVm(core);
+    const root = document.createElement("div"); renderClaimable(root, vm); await settle(vm);
+    await vm.claimPreview(vm.state.claimable[0].vaultTxid); await vm.confirm();
+    core.confirmCarriers(); await vm.mintFinish();
+    core.finishFeeAck = `accept-unusual-fee:50000000:row:${vm.state.mintId}`;
+    await vm.mintStepConfirm(); await settle(vm);
+    expect(core.broadcasts).toHaveLength(1); expect(vm.state.finishFee?.ack).toBe(core.finishFeeAck);
+    expect(root.textContent).toContain("Unusual fee"); expect(root.textContent).toContain("You accepted 0.1 YEC");
+    (([...root.querySelectorAll("button")].find((b) => b.textContent === "Pay this fee")) as HTMLButtonElement).click(); await settle(vm);
+    const slide = root.querySelector("input.slide") as HTMLInputElement;
+    expect(slide.getAttribute("aria-label")).toBe("Slide to send the claim at this fee");
+    slide.value = "100"; slide.dispatchEvent(new Event("change")); await settle(vm);
+    expect(core.broadcasts).toHaveLength(2); expect(vm.state.mintStatus?.state).toBe("MAIN_SENT");
+    expect(root.textContent).toContain("Claim sent");
+  });
+});

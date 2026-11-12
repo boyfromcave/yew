@@ -133,6 +133,10 @@ function claimProgress(vm: YellowbackVm, m: MintStatus | null): HTMLElement[] {
   return [h("div", { class: "card", "data-claim-state": m.state }, h("h3", null, m.canSweep ? "Claim: window closed" : m.state === "CARRIER_SENT" ? "Claim: step 1 of 2 sent" : "Claim: step 2 of 2"), h("p", null, claimStage(m)),
     h("p", { class: "small" }, `${formatYed(m.cents)} debt · carrier ${shorten(m.carrierTxid)}${m.note ? ` · ${m.note}` : ""}`),
     s.step && m.canFinish ? slideToConfirm("Slide to send the claim", () => vm.mintStepConfirm(), s.busy) : null,
+    // the claim's fee rose above what its start accepted: nothing was sent; the new fee needs its own yes
+    // before the window closes (review of #31 M-1; the Mint screen's card, here for a claim)
+    s.finishFee ? [unusualFeeCard(s.finishFee.note, s.feeAccepted, () => vm.acceptFee()),
+      s.feeAccepted ? slideToConfirm("Slide to send the claim at this fee", () => vm.acceptFinishFee(), s.busy) : null] : null,
     h("div", { class: "actions" }, !m.canFinish && !m.canSweep ? h("button", { disabled: s.busy, on: { click: () => vm.mintFinish() } }, s.busy ? "Checking…" : "Check the carrier") : null,
       m.canSweep && !s.step ? h("button", { class: "secondary", on: { click: () => vm.mintSweep() } }, "Sweep the carrier back") : null,
       s.step && m.canSweep ? slideToConfirm("Slide to sweep", () => vm.mintStepConfirm(), s.busy) : null))];
