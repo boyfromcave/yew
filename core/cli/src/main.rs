@@ -811,7 +811,16 @@ async fn main() {
                 _ => usage(),
             };
             let (w, _, mut v, r) = synced(&o).await;
-            let e = fail(w.mint_estimate(&mut v, cents, lock, r.tip).await);
+            let e = fail(
+                w.mint_estimate(
+                    &mut v,
+                    cents,
+                    lock,
+                    r.tip,
+                    yew_core::build::mint::MintSource::Ecc,
+                )
+                .await,
+            );
             println!(
                 "mint {} class {} R {} lock {} claim {} | required {} zat -> collateral {} zat, fee {} zat to {:?}, attestor fee {} zat, carrier {} zat | total {} zat, available {} zat: {}",
                 dollars(e.cents as i64),
@@ -847,7 +856,16 @@ async fn main() {
             let (w, mut c, mut v, r) = synced(&o).await;
             // The CLI confirms the estimate it just printed (audit G-2): the start's answer
             // must match it.
-            let e = fail(w.mint_estimate(&mut v, cents, lock, r.tip).await);
+            let e = fail(
+                w.mint_estimate(
+                    &mut v,
+                    cents,
+                    lock,
+                    r.tip,
+                    yew_core::build::mint::MintSource::Ecc,
+                )
+                .await,
+            );
             println!(
                 "estimate: collateral {} zat, fee {} zat to {:?}, class {}",
                 e.collateral_zat, e.fee_zat, e.payee, e.term_class
@@ -859,6 +877,9 @@ async fn main() {
                 term_class: e.term_class.clone(),
                 // an unusual fee is refused here: the CLI has no second confirmation
                 accept_unusual_fee: None,
+                // the CLI funds a mint from the wallet's ECC (public) coins only
+                carrier_fee_zat: Some(e.carrier_fee_zat),
+                accept_unusual_carrier_fee: None,
             };
             let id = fail(
                 w.mint_start(
@@ -869,6 +890,7 @@ async fn main() {
                     Some(&confirmed),
                     r.tip,
                     r.branch_id,
+                    yew_core::build::mint::MintSource::Ecc,
                 )
                 .await,
             );
