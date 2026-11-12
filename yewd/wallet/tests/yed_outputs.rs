@@ -61,8 +61,9 @@ async fn fixture(name: &str, index: Option<i64>) -> (MockNode, Wallet) {
         .text()
         .trim_matches('"')
         .to_string();
-    node.mine(vec![coinbase(1, vec![0x51], 0)], 1);
-    node.mine(
+    // four blocks; the block salt is the block's place in this list
+    let blocks = vec![
+        vec![coinbase(1, vec![0x51], 0)],
         vec![
             coinbase(2, vec![0x51], 0),
             payment(
@@ -74,16 +75,15 @@ async fn fixture(name: &str, index: Option<i64>) -> (MockNode, Wallet) {
                 3 * COIN / 10,
             ),
         ],
-        2,
-    );
-    node.mine(
         vec![
             coinbase(3, vec![0x51], 0),
             cancel_refund(&addr_script(&ecc)),
         ],
-        3,
-    );
-    node.mine(vec![coinbase(4, vec![0x51], 0)], 4);
+        vec![coinbase(4, vec![0x51], 0)],
+    ];
+    for (i, txs) in blocks.into_iter().enumerate() {
+        node.mine(txs, u8::try_from(i + 1).unwrap());
+    }
     w.sync(&node).await.unwrap();
     {
         let mut c = node.0.lock().unwrap();

@@ -74,9 +74,13 @@ async fn fixture(name: &str, c: Case, coins: &[i64]) -> Fix {
     for (i, v) in coins.iter().enumerate() {
         txs.push(payment(foreign(i as u32), addr_script(&ecc), *v));
     }
-    node.mine(txs, 0);
+    // the coins' block, then four more; the block salt is the block's place in this list
+    let mut blocks = vec![txs];
     for h in 2..6u32 {
-        node.mine(vec![coinbase(h, vec![0x51], 0)], h as u8);
+        blocks.push(vec![coinbase(h, vec![0x51], 0)]);
+    }
+    for (i, txs) in blocks.into_iter().enumerate() {
+        node.mine(txs, u8::try_from(i).unwrap());
     }
     w.sync(&node).await.unwrap();
     let tip = node.0.lock().unwrap().blocks.len() as i64 - 1;
