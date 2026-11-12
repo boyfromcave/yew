@@ -570,8 +570,10 @@ mod tests {
             },
         )
         .unwrap();
-        let e = crate::build::yec_private::plan_yec_send(&mut w, &pq, 1_000, false, None, 120, 1)
-            .expect_err("no public coins");
+        let e = crate::build::yec_private::plan_yec_send(
+            &mut w, &pq, 1_000, false, false, None, 120, 1,
+        )
+        .expect_err("no public coins");
         assert!(matches!(e, WalletError::Coins(_)), "{e}");
         assert!(crate::build::yec_private::pq_recipient_needs_private(
             &w, &pq, &e

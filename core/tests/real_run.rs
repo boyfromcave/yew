@@ -50,7 +50,7 @@ fn report(what: &str, v: Value) {
 fn sync_to(tip: u64) -> api::Balances {
     let start = Instant::now();
     loop {
-        let _ = api::move_preview(api::MoveDirection::ToPrivate, Some(1));
+        let _ = api::move_preview(api::MoveDirection::ToPrivate, Some(1), true);
         let b = api::balances().expect("balances");
         if b.sync_height as u64 >= tip && b.shielded_scanned_height as u64 >= tip {
             return b;
@@ -305,7 +305,7 @@ fn real_stack_addresses_sends_balances_restore() {
     for (dk, da) in &dst {
         amount += 10_000;
         // automatic funding (the app's default: privacy first for a private recipient)
-        let p = api::send_yec_preview(da.clone(), amount, false, None)
+        let p = api::send_yec_preview(da.clone(), amount, false, true, None)
             .map(|p| {
                 report("preview", serde_json::json!({"cell": format!("auto->{dk}"), "funding": format!("{:?}", p.funding), "fee": p.fee_zat, "change": p.change_zat, "inputs": p.inputs}));
                 (p.preview_id, p.fee_zat, None)
@@ -347,7 +347,8 @@ fn real_stack_addresses_sends_balances_restore() {
     }
     // move to public and to private (the app's Move)
     for dir in [api::MoveDirection::ToPublic, api::MoveDirection::ToPrivate] {
-        let p = api::move_preview(dir, Some(20_000_000)).map(|p| (p.preview_id, p.fee_zat, None));
+        let p =
+            api::move_preview(dir, Some(20_000_000), true).map(|p| (p.preview_id, p.fee_zat, None));
         let label = format!("move {dir:?}");
         let mc = |id: &str, _a: Option<String>| api::move_confirm(id.to_string());
         let x = cell(&label, p, &mc);
@@ -460,7 +461,7 @@ fn real_stack_pre_canopy_notes() {
             });
             cell(label, p, &pq_conf)
         } else {
-            let p = api::send_yec_preview(to, amount, false, None).map(|p| {
+            let p = api::send_yec_preview(to, amount, false, true, None).map(|p| {
                 report("preview", serde_json::json!({"cell": label, "funding": format!("{:?}", p.funding), "fee": p.fee_zat, "change": p.change_zat, "inputs": p.inputs}));
                 (p.preview_id, p.fee_zat, None)
             });

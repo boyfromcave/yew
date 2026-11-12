@@ -108,16 +108,17 @@ class RustWalletApi implements WalletApi {
     required String to,
     required int zat,
     required bool sendEverything,
+    bool allowLinking = false,
     String? memo,
-  }) => rust.sendYecPreview(to: to, zat: zat, sendEverything: sendEverything, memo: memo);
+  }) => rust.sendYecPreview(to: to, zat: zat, sendEverything: sendEverything, allowLinking: allowLinking, memo: memo);
 
   @override
   Future<SendResult> sendYecConfirm({required String previewId}) =>
       rust.sendYecConfirm(previewId: previewId);
 
   @override
-  Future<YecPreview> movePreview({required MoveDirection direction, int? amountZat}) =>
-      rust.movePreview(direction: direction, amountZat: amountZat);
+  Future<YecPreview> movePreview({required MoveDirection direction, int? amountZat, bool allowLinking = false}) =>
+      rust.movePreview(direction: direction, amountZat: amountZat, allowLinking: allowLinking);
 
   @override
   Future<SendResult> moveConfirm({required String previewId}) => rust.moveConfirm(previewId: previewId);

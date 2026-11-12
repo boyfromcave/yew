@@ -69,11 +69,15 @@ pub struct ShieldPlan {
 }
 
 /// Plan a move of `amount` zat (`None`: everything the direction can move) after a sync at
-/// `tip`. Nothing is signed, proved or locked.
+/// `tip`. Nothing is signed, proved or locked. To private, the coins come from one public
+/// address unless `allow_linking` (the user's go-ahead after
+/// [`coins::CoinError::LinkingNeeded`]; beta2 D-5: ycashd's `z_sendmany` asks for
+/// `AllowLinkingAccountAddresses` before it shields coins of several addresses together).
 pub fn plan_move(
     wallet: &mut Wallet,
     direction: Direction,
     amount: Option<i64>,
+    allow_linking: bool,
     tip: u64,
 ) -> Result<YecSendPlan, WalletError> {
     if matches!(amount, Some(a) if a <= 0) {
@@ -81,7 +85,7 @@ pub fn plan_move(
     }
     match direction {
         Direction::ToPrivate => {
-            let p = plan_shield(wallet, amount, tip)?;
+            let p = plan_shield(wallet, amount, allow_linking, tip)?;
             Ok(YecSendPlan {
                 funding: Funding::Shield(Box::new(p)),
                 reveals_shielded: false,
@@ -139,7 +143,12 @@ pub fn plan_move(
     }
 }
 
-fn plan_shield(wallet: &Wallet, amount: Option<i64>, tip: u64) -> Result<ShieldPlan, WalletError> {
+fn plan_shield(
+    wallet: &Wallet,
+    amount: Option<i64>,
+    allow_linking: bool,
+    tip: u64,
+) -> Result<ShieldPlan, WalletError> {
     let sh = wallet.shielded()?;
     let to = sh.default_address().1;
     let target = (tip as u32).saturating_add(1);
@@ -160,6 +169,18 @@ fn plan_shield(wallet: &Wallet, amount: Option<i64>, tip: u64) -> Result<ShieldP
             if all.is_empty() {
                 return Err(coins::CoinError::Insufficient { need: 1, have: 0 }.into());
             }
+            // "All" spends every address's coins: without the go-ahead only when there is one.
+            if !allow_linking && coins::distinct_addresses(&all) > 1 {
+                let mut per: std::collections::BTreeMap<&[u8], i64> = Default::default();
+                for u in &all {
+                    *per.entry(u.script.as_slice()).or_default() += u.value;
+                }
+                return Err(coins::CoinError::LinkingNeeded {
+                    need: all.iter().map(|u| u.value).sum(),
+                    best_one: per.values().copied().max().unwrap_or(0),
+                }
+                .into());
+            }
             let si = shield_inputs(wallet, &all)?;
             let total: i64 = all.iter().map(|u| u.value).sum();
             let fee = sh.shield_fee(target, &si, total as u64, None)? as i64;
@@ -177,7 +198,7 @@ fn plan_shield(wallet: &Wallet, amount: Option<i64>, tip: u64) -> Result<ShieldP
             // the fee for that selection, repeat until it holds (it only grows with inputs).
             let mut fee = 10_000i64;
             loop {
-                let sel = coins::select_yec(&spendable, a + fee, false)?;
+                let sel = coins::select_yec_linking(&spendable, a + fee, false, allow_linking)?;
                 let si = shield_inputs(wallet, &sel)?;
                 let f = sh.shield_fee(target, &si, a as u64, Some(change_h))? as i64;
                 let total: i64 = sel.iter().map(|u| u.value).sum();
@@ -437,7 +458,7 @@ mod tests {
         let own_z = w.shielded().unwrap().default_address().1;
         // 1 YEC: the smallest coin that covers it, one input + change + two padded Sapling
         // outputs = three logical actions = 15,000 zat; change back to a change address.
-        let p = plan_move(&mut w, Direction::ToPrivate, Some(40_000_000), 100).unwrap();
+        let p = plan_move(&mut w, Direction::ToPrivate, Some(40_000_000), false, 100).unwrap();
         assert!(!p.reveals_shielded);
         let s = shield(&p);
         assert_eq!(s.to, own_z);
@@ -448,11 +469,35 @@ mod tests {
         assert_eq!((s.target, s.expiry_height), (101, 141));
         assert_eq!(p.amount_zat(), 40_000_000);
         assert_eq!(p.fee_zat(), 15_000);
-        // Two inputs: four logical actions.
-        let p = plan_move(&mut w, Direction::ToPrivate, Some(120_000_000), 100).unwrap();
+        // Two inputs, from two public addresses: only with the go-ahead (beta2 D-5), which the
+        // refusal asks for; then four logical actions.
+        let e = plan_move(&mut w, Direction::ToPrivate, Some(120_000_000), false, 100).unwrap_err();
+        assert!(
+            matches!(
+                e,
+                WalletError::Coins(coins::CoinError::LinkingNeeded {
+                    best_one: 100_000_000,
+                    ..
+                })
+            ),
+            "{e}"
+        );
+        let p = plan_move(&mut w, Direction::ToPrivate, Some(120_000_000), true, 100).unwrap();
         assert_eq!((shield(&p).inputs.len(), shield(&p).fee), (2, 20_000));
-        // All: every YEC coin, never the reserve or anything YED, no change.
-        let p = plan_move(&mut w, Direction::ToPrivate, None, 100).unwrap();
+        // All: every YEC coin, never the reserve or anything YED, no change; two addresses, so
+        // only with the go-ahead.
+        let e = plan_move(&mut w, Direction::ToPrivate, None, false, 100).unwrap_err();
+        assert!(
+            matches!(
+                e,
+                WalletError::Coins(coins::CoinError::LinkingNeeded {
+                    need: 150_000_000,
+                    best_one: 100_000_000
+                })
+            ),
+            "{e}"
+        );
+        let p = plan_move(&mut w, Direction::ToPrivate, None, true, 100).unwrap();
         let s = shield(&p);
         assert!(s.inputs.iter().all(|u| u.class == UtxoClass::Yec));
         assert_eq!(s.inputs.len(), 2);
@@ -462,9 +507,9 @@ mod tests {
         );
         assert!(s.change_address.is_none());
         // More than the plain YEC: refused (the reserve is not an override here).
-        let e = plan_move(&mut w, Direction::ToPrivate, Some(150_000_000), 100).unwrap_err();
+        let e = plan_move(&mut w, Direction::ToPrivate, Some(150_000_000), false, 100).unwrap_err();
         assert!(matches!(e, WalletError::Coins(_)), "{e}");
-        assert!(plan_move(&mut w, Direction::ToPrivate, Some(0), 100).is_err());
+        assert!(plan_move(&mut w, Direction::ToPrivate, Some(0), false, 100).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -476,13 +521,21 @@ mod tests {
             &mut w,
             Direction::ToPrivate,
             Some(1_000_000 - fee - TOKEN_VALUE),
+            false,
             7,
         )
         .unwrap();
         let s = shield(&p);
         assert_eq!((s.change, s.amount_bumped), (TOKEN_VALUE - 1, true));
         assert_eq!(s.amount + s.change + s.fee, 1_000_000);
-        let p = plan_move(&mut w, Direction::ToPrivate, Some(1_000_000 - fee - 40), 7).unwrap();
+        let p = plan_move(
+            &mut w,
+            Direction::ToPrivate,
+            Some(1_000_000 - fee - 40),
+            false,
+            7,
+        )
+        .unwrap();
         let s = shield(&p);
         assert_eq!(
             (s.change, s.amount, s.amount_bumped),
@@ -497,14 +550,14 @@ mod tests {
         let (mut w, dir) = wallet_with("unshield", &[]);
         // No scan yet: the private side says so, it never falls back to anything else.
         for amount in [Some(1_000), None] {
-            let e = plan_move(&mut w, Direction::ToPublic, amount, 100).unwrap_err();
+            let e = plan_move(&mut w, Direction::ToPublic, amount, false, 100).unwrap_err();
             assert!(
                 matches!(e, WalletError::Shielded(ShieldedError::NotSynced { .. })),
                 "{e}"
             );
         }
         // An empty wallet cannot shield either.
-        let e = plan_move(&mut w, Direction::ToPrivate, None, 100).unwrap_err();
+        let e = plan_move(&mut w, Direction::ToPrivate, None, false, 100).unwrap_err();
         assert!(matches!(e, WalletError::Coins(_)), "{e}");
         assert!(keys::parse_address(
             Network::Regtest,

@@ -24,6 +24,7 @@ import '../format.dart';
 import '../state/app_scope.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
+import '../widgets/address_linking.dart';
 import '../widgets/memo_field.dart';
 import '../widgets/note_lookup.dart';
 import '../widgets/params_sheet.dart';
@@ -187,7 +188,16 @@ class _SendScreenState extends State<SendScreen> {
         final zat = everything ? app.balances.yecZat + app.balances.yecReservedZat - 1000 : parseYecZat(_amount.text);
         if (zat == null || zat <= 0) throw const YewError(kind: ErrorKind.input, message: 'Enter an amount in YEC, up to eight decimals');
         final memo = private && _memo.text.trim().isNotEmpty ? _memo.text : null;
-        final p = await app.api.sendYecPreview(to: to, zat: zat, sendEverything: everything, memo: memo);
+        // beta2 D-5: one public address's coins by default; combining several links them, so
+        // the core asks first (its text, verbatim) and builds it only with the go-ahead
+        YecPreview p;
+        try {
+          p = await app.api.sendYecPreview(to: to, zat: zat, sendEverything: everything, memo: memo);
+        } catch (e) {
+          if (kindOf(e) != ErrorKind.addressLinkingNeeded) rethrow;
+          if (!mounted || !await askAddressLinking(context, messageOf(e))) return;
+          p = await app.api.sendYecPreview(to: to, zat: zat, sendEverything: everything, allowLinking: true, memo: memo);
+        }
         setState(() => _yec = p);
       }
     } catch (e) {

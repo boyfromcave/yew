@@ -937,10 +937,12 @@ fn wire__crate__api__move_preview_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_direction = <crate::api::MoveDirection>::sse_decode(&mut deserializer);
             let api_amount_zat = <Option<i64>>::sse_decode(&mut deserializer);
+            let api_allow_linking = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
                 transform_result_sse::<_, crate::api::YewError>((move || {
-                    let output_ok = crate::api::move_preview(api_direction, api_amount_zat)?;
+                    let output_ok =
+                        crate::api::move_preview(api_direction, api_amount_zat, api_allow_linking)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -1447,6 +1449,7 @@ fn wire__crate__api__send_yec_preview_impl(
             let api_to = <String>::sse_decode(&mut deserializer);
             let api_zat = <i64>::sse_decode(&mut deserializer);
             let api_send_everything = <bool>::sse_decode(&mut deserializer);
+            let api_allow_linking = <bool>::sse_decode(&mut deserializer);
             let api_memo = <Option<String>>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| {
@@ -1455,6 +1458,7 @@ fn wire__crate__api__send_yec_preview_impl(
                         api_to,
                         api_zat,
                         api_send_everything,
+                        api_allow_linking,
                         api_memo,
                     )?;
                     std::result::Result::Ok(output_ok)
@@ -2055,6 +2059,7 @@ impl SseDecode for crate::api::ErrorKind {
             12 => crate::api::ErrorKind::ParamsMissing,
             13 => crate::api::ErrorKind::Other,
             14 => crate::api::ErrorKind::NoteLookupNeeded,
+            15 => crate::api::ErrorKind::AddressLinkingNeeded,
             _ => unreachable!("Invalid variant for ErrorKind: {}", inner),
         };
     }
@@ -3439,6 +3444,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::ErrorKind {
             Self::ParamsMissing => 12.into_dart(),
             Self::Other => 13.into_dart(),
             Self::NoteLookupNeeded => 14.into_dart(),
+            Self::AddressLinkingNeeded => 15.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -4384,6 +4390,7 @@ impl SseEncode for crate::api::ErrorKind {
                 crate::api::ErrorKind::ParamsMissing => 12,
                 crate::api::ErrorKind::Other => 13,
                 crate::api::ErrorKind::NoteLookupNeeded => 14,
+                crate::api::ErrorKind::AddressLinkingNeeded => 15,
                 _ => {
                     unimplemented!("");
                 }

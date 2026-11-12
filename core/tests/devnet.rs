@@ -301,7 +301,7 @@ async fn w1_yec_round_trip_and_restore() {
     // Send half back to node 0.
     let dest = dn.node(0, &["getnewaddress"]);
     let send = 50_000_000i64;
-    let p = yec_send::build_yec_send(&w, &dest, send, false, r.tip, r.branch_id).unwrap();
+    let p = yec_send::build_yec_send(&w, &dest, send, false, true, r.tip, r.branch_id).unwrap();
     assert_eq!(p.fee, FEE_ZAT);
     let txid = yec_send::broadcast(&w, &mut c, &mut v, &p)
         .await
@@ -930,7 +930,8 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
     // 8. A YEC send from a wallet holding tokens spends no token (the raw bytes), and the node
     //    accepts it through the gate's remote layer.
     let dest = dn.node(0, &["getnewaddress"]);
-    let p = yec_send::build_yec_send(&a, &dest, 10_000_000, false, ra.tip, ra.branch_id).unwrap();
+    let p =
+        yec_send::build_yec_send(&a, &dest, 10_000_000, false, true, ra.tip, ra.branch_id).unwrap();
     let (tx, _) = Transaction::parse(&p.raw).unwrap();
     let classes: HashMap<OutPoint, UtxoClass> = a
         .store
@@ -2791,6 +2792,7 @@ async fn s2_shielded_receive_send_memo_and_regressions() {
         &node_z,
         50_000_000,
         false,
+        true,
         Some(memo_out),
         r.tip,
         r.branch_id,
@@ -2865,12 +2867,23 @@ async fn s2_shielded_receive_send_memo_and_regressions() {
         &node_t,
         1_000,
         false,
+        true,
         Some("no"),
         r.tip,
         r.branch_id
     )
     .is_err());
-    let plan = plan_yec_send(&mut w, &node_t, 30_000_000, false, None, r.tip, r.branch_id).unwrap();
+    let plan = plan_yec_send(
+        &mut w,
+        &node_t,
+        30_000_000,
+        false,
+        true,
+        None,
+        r.tip,
+        r.branch_id,
+    )
+    .unwrap();
     assert!(plan.reveals_shielded, "{plan:?}");
     // ZIP-317: one spend, two Sapling outputs (change + padding) and one transparent output are
     // three logical actions.
@@ -2914,6 +2927,7 @@ async fn s2_shielded_receive_send_memo_and_regressions() {
         &node_t,
         150_000_000,
         false,
+        true,
         None,
         r.tip,
         r.branch_id,
@@ -2958,7 +2972,8 @@ async fn s2_shielded_receive_send_memo_and_regressions() {
         "node 0 received the YED"
     );
     let yec_before = r.yec.0 + r.yec.1;
-    let p = yec_send::build_yec_send(&w, &node_t, 10_000_000, false, r.tip, r.branch_id).unwrap();
+    let p =
+        yec_send::build_yec_send(&w, &node_t, 10_000_000, false, true, r.tip, r.branch_id).unwrap();
     let t2 = yec_send::broadcast(&w, &mut c, &mut v, &p).await.unwrap();
     dn.wait_mempool(&t2);
     let h = dn.mine_pool();
@@ -3072,7 +3087,7 @@ async fn s4_move_to_private_and_public_then_mint() {
 
     // 1. Move 1 YEC to private: plain YEC only (the 1-YEC coin falls short of amount + fee, so
     //    both YEC coins), never the reserve or the token; change back to public.
-    let plan = plan_move(&mut w, Direction::ToPrivate, Some(100_000_000), r.tip).unwrap();
+    let plan = plan_move(&mut w, Direction::ToPrivate, Some(100_000_000), true, r.tip).unwrap();
     assert!(!plan.reveals_shielded);
     let Funding::Shield(s) = &plan.funding else {
         panic!("{plan:?}")
@@ -3107,7 +3122,7 @@ async fn s4_move_to_private_and_public_then_mint() {
     assert_eq!(r.yed, (5_000, 0), "YED untouched");
 
     // 2. Move 0.5 YEC back to public: to the wallet's own address, the amount revealed.
-    let plan = plan_move(&mut w, Direction::ToPublic, Some(50_000_000), r.tip).unwrap();
+    let plan = plan_move(&mut w, Direction::ToPublic, Some(50_000_000), true, r.tip).unwrap();
     assert!(plan.reveals_shielded);
     let Funding::Shielded(p) = &plan.funding else {
         panic!("{plan:?}")
@@ -3133,7 +3148,7 @@ async fn s4_move_to_private_and_public_then_mint() {
 
     // 3. The S3 hint path: all public YEC to private, so a mint lacks public YEC; move exactly
     //    the shortfall to public; the mint then goes through.
-    let plan = plan_move(&mut w, Direction::ToPrivate, None, r.tip).unwrap();
+    let plan = plan_move(&mut w, Direction::ToPrivate, None, true, r.tip).unwrap();
     let Funding::Shield(s) = &plan.funding else {
         panic!("{plan:?}")
     };
@@ -3179,7 +3194,7 @@ async fn s4_move_to_private_and_public_then_mint() {
         .unwrap_err(),
         yew_core::wallet::WalletError::Mint(MintError::Unaffordable { .. })
     ));
-    let plan = plan_move(&mut w, Direction::ToPublic, Some(shortfall), r.tip).unwrap();
+    let plan = plan_move(&mut w, Direction::ToPublic, Some(shortfall), true, r.tip).unwrap();
     let shortfall_fee = plan.fee_zat();
     let sent = confirm_yec_send(&mut w, &mut c, &mut v, &plan, &params)
         .await
@@ -3836,6 +3851,7 @@ async fn s5_reorg_private_and_public() {
         &node_z,
         60_000_000,
         false,
+        true,
         Some("r3: dropped send"),
         tip,
         r.branch_id,
@@ -3909,6 +3925,7 @@ async fn s5_reorg_private_and_public() {
         &node_z,
         60_000_000,
         false,
+        true,
         Some("r3: sent again"),
         r.tip,
         r.branch_id,
@@ -4415,10 +4432,11 @@ async fn q_pqaddr_sq_receive_send_and_move() {
     let node_yr = dn.node(0, &["yed_getnewaddress"]);
     let node_id = keys::parse_pq_address(Network::Regtest, &node_yr).unwrap();
     let node_rq = keys::encode_pq_yec(Network::Regtest, &node_id).unwrap();
-    let e =
-        yec_send::build_yec_send(&a, &node_yr, 100_000_000, false, r.tip, r.branch_id).unwrap_err();
+    let e = yec_send::build_yec_send(&a, &node_yr, 100_000_000, false, true, r.tip, r.branch_id)
+        .unwrap_err();
     assert!(e.to_string().contains("sq…"), "{e}");
-    let p = yec_send::build_yec_send(&a, &node_rq, 100_000_000, false, r.tip, r.branch_id).unwrap();
+    let p = yec_send::build_yec_send(&a, &node_rq, 100_000_000, false, true, r.tip, r.branch_id)
+        .unwrap();
     let sent = yec_send::broadcast(&a, &mut c, &mut v, &p).await.unwrap();
     confirm(&dn, &mut c, &sent).await;
     let out = dn.node_json(0, &["gettxout", &sent, "0"]);
