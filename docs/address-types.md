@@ -31,7 +31,7 @@ in no balance and never in a spendable total, and are shown on their own:
 - **YEC staged for a mint in progress.** This is the staged funding output of a mint funded from a
   post-quantum address or the private balance. It is locked to its mint row
   (`staged-for-mint:<id>`) until the MINT spends it, or until the row lapses or fails, when it
-  becomes ordinary YEC again. The app does not show this amount yet; the web wallet does
+  becomes ordinary YEC again. The app and the web wallet show it on its own row
   (`build::mint::staged_for_mint_zat`).
 
 ## 2. The send matrix
@@ -237,7 +237,6 @@ that server and a burn. They are listed in the order a coin meets them.
   missing transactions are fetched.
 
 **Display and tests**
-- **Staged-for-mint YEC is shown by the web wallet only**; the app does not show the amount yet.
 - **One test skips** where the machine has no Sapling parameters:
   `core/src/sapling_params.rs:989` (`real_parameters_verify_over_file_and_http_when_available`).
 

@@ -29,7 +29,7 @@ const synced = Balances(
   shieldedScannedHeight: 484,
   shieldedSendable: true,
   yecPqZat: 0,
-  yecPqSlhZat: 0, yecPqFalconZat: 0, pqCoins: [],
+  yecPqSlhZat: 0, yecPqFalconZat: 0, yecStagedForMintZat: 0, pqCoins: [],
 );
 
 SyncEvent ev(
@@ -542,7 +542,7 @@ void main() {
         shieldedScannedHeight: 484,
         shieldedSendable: true,
         yecPqZat: 0,
-        yecPqSlhZat: 0, yecPqFalconZat: 0, pqCoins: [],
+        yecPqSlhZat: 0, yecPqFalconZat: 0, yecStagedForMintZat: 0, pqCoins: [],
       );
       await h.pump(tester);
       await tester.tap(find.byKey(const Key('tab-yellowback')));
@@ -582,7 +582,7 @@ void main() {
         shieldedScannedHeight: 484,
         shieldedSendable: true,
         yecPqZat: 0,
-        yecPqSlhZat: 0, yecPqFalconZat: 0, pqCoins: [],
+        yecPqSlhZat: 0, yecPqFalconZat: 0, yecStagedForMintZat: 0, pqCoins: [],
       );
       h.api.yedPreviewError = const YewError(
         kind: ErrorKind.needYecForFees,

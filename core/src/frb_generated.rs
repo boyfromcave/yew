@@ -1839,6 +1839,7 @@ impl SseDecode for crate::api::Balances {
         let mut var_pqCoins = <Vec<String>>::sse_decode(deserializer);
         let mut var_yecPqSlhZat = <i64>::sse_decode(deserializer);
         let mut var_yecPqFalconZat = <i64>::sse_decode(deserializer);
+        let mut var_yecStagedForMintZat = <i64>::sse_decode(deserializer);
         return crate::api::Balances {
             yec_zat: var_yecZat,
             yec_reserved_zat: var_yecReservedZat,
@@ -1858,6 +1859,7 @@ impl SseDecode for crate::api::Balances {
             pq_coins: var_pqCoins,
             yec_pq_slh_zat: var_yecPqSlhZat,
             yec_pq_falcon_zat: var_yecPqFalconZat,
+            yec_staged_for_mint_zat: var_yecStagedForMintZat,
         };
     }
 }
@@ -3263,6 +3265,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::Balances {
             self.pq_coins.into_into_dart().into_dart(),
             self.yec_pq_slh_zat.into_into_dart().into_dart(),
             self.yec_pq_falcon_zat.into_into_dart().into_dart(),
+            self.yec_staged_for_mint_zat.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4256,6 +4259,7 @@ impl SseEncode for crate::api::Balances {
         <Vec<String>>::sse_encode(self.pq_coins, serializer);
         <i64>::sse_encode(self.yec_pq_slh_zat, serializer);
         <i64>::sse_encode(self.yec_pq_falcon_zat, serializer);
+        <i64>::sse_encode(self.yec_staged_for_mint_zat, serializer);
     }
 }
 

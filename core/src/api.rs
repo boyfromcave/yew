@@ -359,6 +359,11 @@ pub struct Balances {
     pub yec_pq_slh_zat: i64,
     /// [`Balances::yec_pq_zat`] at FN-DSA-512 keys (`sqf…`, the Falcon holders), zat.
     pub yec_pq_falcon_zat: i64,
+    /// YEC staged for mints in progress (`build::mint::staged_for_mint_zat`): the staged funding
+    /// output of a mint funded from a post-quantum address or the private balance, locked to its
+    /// mint row until the MINT spends it or the row lapses or fails. In no balance and never in a
+    /// spendable total; shown on its own row.
+    pub yec_staged_for_mint_zat: i64,
 }
 
 /// Which receive address [`receive_address`] returns.
@@ -1938,6 +1943,7 @@ pub fn balances() -> Result<Balances, YewError> {
                 .yec_pq_by_scheme
                 .scheme(crate::pq::SCHEME_SLH_DSA_SHA2_128S),
             yec_pq_falcon_zat: b.yec_pq_by_scheme.scheme(crate::pq::SCHEME_FN_DSA_512),
+            yec_staged_for_mint_zat: crate::build::mint::staged_for_mint_zat(&o.wallet)?,
         })
     })
 }

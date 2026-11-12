@@ -40,7 +40,7 @@ class FakeWalletApi implements WalletApi {
     syncHeight: 484,
     yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false,
     yecPqZat: 0,
-    yecPqSlhZat: 0, yecPqFalconZat: 0, pqCoins: [],
+    yecPqSlhZat: 0, yecPqFalconZat: 0, yecStagedForMintZat: 0, pqCoins: [],
   );
   List<HistoryItem> historyAnswer = const [];
   Object? yedPreviewError;

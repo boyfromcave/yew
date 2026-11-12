@@ -150,7 +150,7 @@ void main() {
 
   testWidgets('an unaffordable estimate disables the start and says how much YEC is missing', (tester) async {
     final h = Harness(withWallet: true);
-    h.api.balancesAnswer = const Balances(yecZat: 100000, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0, priceMicroUsd: 520000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false, yecPqZat: 0, yecPqSlhZat: 0, yecPqFalconZat: 0, pqCoins: []);
+    h.api.balancesAnswer = const Balances(yecZat: 100000, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0, priceMicroUsd: 520000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false, yecPqZat: 0, yecPqSlhZat: 0, yecPqFalconZat: 0, yecStagedForMintZat: 0, pqCoins: []);
     await openMint(tester, h);
     await tester.enterText(find.byKey(const Key('amount')), '25');
     await tester.tap(find.byKey(const Key('estimate')));
@@ -190,7 +190,7 @@ void main() {
 
   testWidgets('beta2 D-3: the mint is funded from the private balance; the notice and the carrier fee are shown and passed back', (tester) async {
     final h = Harness(withWallet: true);
-    h.api.balancesAnswer = const Balances(yecZat: 150105000, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0, priceMicroUsd: 520000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 400000000, yecShieldedSpendableZat: 400000000, yecShieldedPendingZat: 0, shieldedScannedHeight: 484, shieldedSendable: true, yecPqZat: 0, yecPqSlhZat: 0, yecPqFalconZat: 0, pqCoins: []);
+    h.api.balancesAnswer = const Balances(yecZat: 150105000, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0, priceMicroUsd: 520000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 400000000, yecShieldedSpendableZat: 400000000, yecShieldedPendingZat: 0, shieldedScannedHeight: 484, shieldedSendable: true, yecPqZat: 0, yecPqSlhZat: 0, yecPqFalconZat: 0, yecStagedForMintZat: 0, pqCoins: []);
     await openMint(tester, h);
     // the chooser appears for the private balance alone
     await tester.tap(find.byKey(const Key('mint-from')));

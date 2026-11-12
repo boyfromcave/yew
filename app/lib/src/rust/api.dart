@@ -300,7 +300,10 @@ Future<MintEstimate> mintEstimate({
 
 /// Start a mint (after a sync): verify the bundle, fund the carrier through the gate, record
 /// the row. `confirmed` is the estimate the user confirmed: a server answer that differs in
-/// collateral, fee, payee or class is refused (`terms-changed`, audit G-2). Returns the row
+/// collateral, fee, payee or class is refused (`terms-changed`, audit G-2). The start takes its
+/// terms from the estimate this wallet issued for `(cents, lock_blocks, from)` (review
+/// YEW-REVIEW-10 L2): none issued is [`ErrorKind::PreviewExpired`], terms that differ from it (a
+/// raised carrier fee included) are refused before anything is fetched. Returns the row
 /// (`CARRIER_SENT`); [`mint_finish`] sends the MINT once a sync has seen the carrier confirm.
 Future<MintStatus> mintStart({
   required PlatformInt64 cents,
@@ -552,6 +555,12 @@ class Balances {
   /// [`Balances::yec_pq_zat`] at FN-DSA-512 keys (`sqf…`, the Falcon holders), zat.
   final PlatformInt64 yecPqFalconZat;
 
+  /// YEC staged for mints in progress (`build::mint::staged_for_mint_zat`): the staged funding
+  /// output of a mint funded from a post-quantum address or the private balance, locked to its
+  /// mint row until the MINT spends it or the row lapses or fails. In no balance and never in a
+  /// spendable total; shown on its own row.
+  final PlatformInt64 yecStagedForMintZat;
+
   const Balances({
     required this.yecZat,
     required this.yecReservedZat,
@@ -571,6 +580,7 @@ class Balances {
     required this.pqCoins,
     required this.yecPqSlhZat,
     required this.yecPqFalconZat,
+    required this.yecStagedForMintZat,
   });
 
   static Future<Balances> default_() =>
@@ -595,7 +605,8 @@ class Balances {
       yecPqZat.hashCode ^
       pqCoins.hashCode ^
       yecPqSlhZat.hashCode ^
-      yecPqFalconZat.hashCode;
+      yecPqFalconZat.hashCode ^
+      yecStagedForMintZat.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -619,7 +630,8 @@ class Balances {
           yecPqZat == other.yecPqZat &&
           pqCoins == other.pqCoins &&
           yecPqSlhZat == other.yecPqSlhZat &&
-          yecPqFalconZat == other.yecPqFalconZat;
+          yecPqFalconZat == other.yecPqFalconZat &&
+          yecStagedForMintZat == other.yecStagedForMintZat;
 }
 
 /// A claim intent paying this wallet (the vault upgrade, U-15, U-23, U-24): the claimant's
@@ -1705,7 +1717,9 @@ class MintStatus {
 }
 
 /// The terms of a [`MintEstimate`] the user confirmed, passed back to [`mint_start`] so the
-/// server's second answer may not differ from what was shown (audit G-2).
+/// server's second answer may not differ from what was shown (audit G-2). They must equal the
+/// estimate the core issued for the same amount, lock and `from`, field for field: the start uses
+/// the core's copy and only the acknowledgement tokens from here (review YEW-REVIEW-10 L2).
 class MintTerms {
   /// `MintEstimate::collateral_zat`.
   final PlatformInt64 collateralZat;

@@ -69,7 +69,7 @@ void main() {
 
   testWidgets('no YEC for fees: the explanation with the receive address one tap away', (tester) async {
     final h = Harness(withWallet: true);
-    h.api.balancesAnswer = const Balances(yecZat: 0, yecReservedZat: 0, yecPendingZat: 0, yedCents: 5000, yedPendingCents: 0, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false, yecPqZat: 0, yecPqSlhZat: 0, yecPqFalconZat: 0, pqCoins: []);
+    h.api.balancesAnswer = const Balances(yecZat: 0, yecReservedZat: 0, yecPendingZat: 0, yedCents: 5000, yedPendingCents: 0, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false, yecPqZat: 0, yecPqSlhZat: 0, yecPqFalconZat: 0, yecStagedForMintZat: 0, pqCoins: []);
     h.api.yedPreviewError = const YewError(kind: ErrorKind.needYecForFees, message: 'You need about 0.00021000 YEC to send YED. Receive YEC first.');
     await openSend(tester, h);
     await tester.enterText(find.byKey(const Key('address')), 'yr1recipient');
@@ -361,7 +361,7 @@ void main() {
       yecZat: h.api.balancesAnswer.yecZat, yecReservedZat: 0, yecPendingZat: 0, yedCents: 5000, yedPendingCents: 0,
       heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 90000000, yecShieldedSpendableZat: 90000000,
       yecShieldedPendingZat: 0, shieldedScannedHeight: 484, shieldedSendable: true, yecPqZat: 0, yecPqSlhZat: 0,
-      yecPqFalconZat: 0, pqCoins: const []);
+      yecPqFalconZat: 0, yecStagedForMintZat: 0, pqCoins: const []);
     await openSend(tester, h);
     await tester.tap(find.text('YEC'));
     await tester.pumpAndSettle();
@@ -395,7 +395,7 @@ void main() {
       yecZat: h.api.balancesAnswer.yecZat, yecReservedZat: 0, yecPendingZat: 0, yedCents: 5000, yedPendingCents: 0,
       heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 90000000, yecShieldedSpendableZat: 90000000,
       yecShieldedPendingZat: 0, shieldedScannedHeight: 484, shieldedSendable: true, yecPqZat: 0, yecPqSlhZat: 0,
-      yecPqFalconZat: 0, pqCoins: const []);
+      yecPqFalconZat: 0, yecStagedForMintZat: 0, pqCoins: const []);
     h.api.noteLookupText = 'To spend older notes the app must ask the server for 2 transactions; the server can then tell which notes this payment spends. Nothing was sent.';
     await openSend(tester, h);
     await tester.tap(find.text('YEC'));
@@ -429,7 +429,7 @@ void main() {
       yecZat: 0, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0,
       heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 1000, yecShieldedSpendableZat: 1000,
       yecShieldedPendingZat: 0, shieldedScannedHeight: 484, shieldedSendable: true, yecPqZat: 0, yecPqSlhZat: 0,
-      yecPqFalconZat: 0, pqCoins: const []);
+      yecPqFalconZat: 0, yecStagedForMintZat: 0, pqCoins: const []);
     h.api.pqPreviewError = const YewError(kind: ErrorKind.other, message: 'Not enough private YEC: 1000 zat spendable, 50002000 zat needed (amount plus fee).');
     await openSend(tester, h);
     await tester.tap(find.text('YEC'));

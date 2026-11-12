@@ -279,6 +279,13 @@ class _YecSplit extends StatelessWidget {
               '${formatYec(b.yecPqZat)} YEC at your post-quantum addresses · tap to move it to your wallet',
             ),
           ),
+        // never in a spendable total: YEC staged for a mint in progress is listed on its own
+        // (build::mint::staged_for_mint_zat, as the web wallet shows it)
+        if (b.yecStagedForMintZat > 0)
+          note(
+            '${formatYec(b.yecStagedForMintZat)} YEC staged for a mint in progress (not spendable until the mint finishes or lapses)',
+            const Key('yec-staged-for-mint'),
+          ),
         if (b.heldCount > 0)
           note(
             '${b.heldCount} output${b.heldCount == 1 ? '' : 's'} held: not spent as YEC until ${b.heldCount == 1 ? 'it is' : 'they are'} shown to carry no YED',

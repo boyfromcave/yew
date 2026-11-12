@@ -1890,8 +1890,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Balances dco_decode_balances(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 18)
-      throw Exception('unexpected arr length: expect 18 but see ${arr.length}');
+    if (arr.length != 19)
+      throw Exception('unexpected arr length: expect 19 but see ${arr.length}');
     return Balances(
       yecZat: dco_decode_i_64(arr[0]),
       yecReservedZat: dco_decode_i_64(arr[1]),
@@ -1911,6 +1911,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       pqCoins: dco_decode_list_String(arr[15]),
       yecPqSlhZat: dco_decode_i_64(arr[16]),
       yecPqFalconZat: dco_decode_i_64(arr[17]),
+      yecStagedForMintZat: dco_decode_i_64(arr[18]),
     );
   }
 
@@ -2850,6 +2851,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_pqCoins = sse_decode_list_String(deserializer);
     var var_yecPqSlhZat = sse_decode_i_64(deserializer);
     var var_yecPqFalconZat = sse_decode_i_64(deserializer);
+    var var_yecStagedForMintZat = sse_decode_i_64(deserializer);
     return Balances(
       yecZat: var_yecZat,
       yecReservedZat: var_yecReservedZat,
@@ -2869,6 +2871,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       pqCoins: var_pqCoins,
       yecPqSlhZat: var_yecPqSlhZat,
       yecPqFalconZat: var_yecPqFalconZat,
+      yecStagedForMintZat: var_yecStagedForMintZat,
     );
   }
 
@@ -4143,6 +4146,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_list_String(self.pqCoins, serializer);
     sse_encode_i_64(self.yecPqSlhZat, serializer);
     sse_encode_i_64(self.yecPqFalconZat, serializer);
+    sse_encode_i_64(self.yecStagedForMintZat, serializer);
   }
 
   @protected
