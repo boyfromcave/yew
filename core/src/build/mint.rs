@@ -391,6 +391,24 @@ pub fn mint_network_fee(wallet: &Wallet, funding: &[Utxo]) -> i64 {
     wallet.pq_terms().yed_network_fee(other, &pq)
 }
 
+/// The network fee [`finish`] would charge a MINT funded from the public balance whose outputs
+/// (collateral, token, protocol and attestor fees) come to `outputs`: the same selection loop
+/// over the coins spendable now. `None` when they do not cover it (the estimate's affordability
+/// check says so).
+pub fn ecc_mint_fee(wallet: &Wallet, outputs: i64) -> Option<i64> {
+    let spendable = wallet.spendable_utxos().ok()?;
+    let mut fee = mint_network_fee(wallet, &[]);
+    for _ in 0..64 {
+        let sel = coins::select_yec(&spendable, outputs + fee - CARRIER_VALUE, true).ok()?;
+        let next = mint_network_fee(wallet, &sel);
+        if next <= fee {
+            return Some(fee);
+        }
+        fee = next;
+    }
+    None
+}
+
 /// The seated set for bundle verification: `seq → attestorPubKey` from `ListAttestors`.
 pub async fn seated_set(yb: &mut YellowbackClient) -> Result<Seated, WalletError> {
     let mut seated = Seated::new();
@@ -537,6 +555,20 @@ pub async fn estimate(
         .pq_terms()
         .yed_fee(crate::params::yed_estimated_size(1, &[]));
     let (avail, reserved) = coins::yec_balances(&wallet.spendable_utxos()?);
+    // From the public balance the MINT selects its own coins at `finish`, raising its fee with
+    // each input (`PQFeeFollower`): price it on the coins that selection takes now (real-stack
+    // run WEB-REAL LOW-6: the estimate assumed one input and fell 0.0001 YEC short).
+    let mint_fee = match source {
+        MintSource::Ecc => ecc_mint_fee(
+            wallet,
+            collateral_zat
+                + TOKEN_VALUE
+                + if payee.is_empty() { 0 } else { fee_zat }
+                + attest_fee_zat,
+        )
+        .unwrap_or(mint_fee),
+        _ => mint_fee,
+    };
     let (carrier_fee_zat, carrier_fee_guard, available_zat) = match source {
         MintSource::Ecc => (wallet.pq_terms().flat_zat, None, avail + reserved),
         MintSource::Pq(id) => {
@@ -2786,6 +2818,71 @@ mod tests {
     /// its two transactions leaves the staged YEC as ordinary balance; and a wallet restored from
     /// the same seed has the staged key in its derivation and scan set, and classifies the staged
     /// output as plain YEC.
+    /// WEB-REAL LOW-6: from the public balance the estimate prices the MINT on the coins the
+    /// finish's selection takes, not on one input (the run: estimate 0.0001 YEC below the spend).
+    #[test]
+    fn ecc_mint_fee_counts_the_inputs_the_finish_selects() {
+        use crate::params::Network;
+        use crate::store::Store;
+        let seed = keys::seed_from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "",
+        )
+        .unwrap();
+        let mut w = Wallet::from_parts(
+            Store::open_in_memory().unwrap(),
+            Network::Regtest,
+            &seed,
+            None,
+        )
+        .unwrap();
+        w.ensure_gap().unwrap();
+        // the run's terms: 100,000 zat/kB for Yellowback transactions (a $50 price)
+        let mut t = w.pq_terms();
+        t.yed_rate_zat_per_kb = 100_000;
+        t.max_fee_zat = 10_000_000;
+        w.set_pq_terms_for_test(t);
+        let rows = w.addresses().unwrap();
+        // three coins of 2.5 YEC: a 6 YEC MINT needs all three
+        let utxos: Vec<Utxo> = (0..3)
+            .map(|i| Utxo {
+                outpoint: OutPoint {
+                    txid: [i as u8 + 1; 32],
+                    n: 0,
+                },
+                address: rows[i].address_s.clone(),
+                script: script::p2pkh_script(&rows[i].hash160),
+                value: 250_000_000,
+                height: 10,
+                class: UtxoClass::Yec,
+                cents: 0,
+            })
+            .collect();
+        w.store.replace_utxos(&utxos).unwrap();
+        let outputs = 600_000_000;
+        let fee = ecc_mint_fee(&w, outputs).unwrap();
+        // what finish's loop ends on: the fee of the coins it selects for outputs + fee
+        let sel = coins::select_yec(
+            &w.spendable_utxos().unwrap(),
+            outputs + fee - CARRIER_VALUE,
+            true,
+        )
+        .unwrap();
+        assert_eq!(sel.len(), 3);
+        assert_eq!(fee, mint_network_fee(&w, &sel));
+        assert!(
+            fee > w.pq_terms().yed_network_fee(1, &[]),
+            "more than one input's fee"
+        );
+        // one coin covers a small MINT: the one-input fee
+        assert_eq!(
+            ecc_mint_fee(&w, 100_000_000).unwrap(),
+            mint_network_fee(&w, &sel[..1])
+        );
+        // more than the coins hold: no estimate from the selection
+        assert_eq!(ecc_mint_fee(&w, 800_000_000), None);
+    }
+
     #[test]
     fn ecc_carrier_change_recorded_and_bound() {
         use crate::params::Network;
