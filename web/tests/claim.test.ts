@@ -109,3 +109,13 @@ describe("the Claimable list follows the node's flag (final-run D-3)", () => {
     expect(root.querySelector('[data-claimable="now"]')).toBeNull();
   });
 });
+
+describe("the Claimable screen's first frame", () => {
+  it("asks the node before it says nothing is claimable (the real-stack re-run read the empty first frame)", async () => {
+    const core = await openWallet(); const vm = new YellowbackVm(core);
+    const root = document.createElement("div"); renderClaimable(root, vm);
+    expect(root.textContent).not.toContain("Nothing is claimable");
+    expect(root.textContent).toContain("Asking the node");
+    await settle(vm); expect(root.querySelector('[data-claimable="now"]')).not.toBeNull();
+  });
+});
