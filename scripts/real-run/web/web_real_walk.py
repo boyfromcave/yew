@@ -147,15 +147,27 @@ def phase_private():
     d.mine(1)
     sendcell.record_own(txid)
     z0 = d.cli(0, 'z_getnewaddress', 'sapling')
-    d.cli(0, 'z_shieldcoinbase', '*', z0)
+    try:
+        d.cli(0, 'z_shieldcoinbase', '*', z0)
+    except RuntimeError as e:  # nothing left to shield (a second walk): the ANY_TADDR path below
+        print('PRIVATE shieldcoinbase', str(e)[:200], flush=True)
     time.sleep(5)
     d.mine(1)
-    op = d.cli(0, 'z_sendmany', z0, json.dumps([{'address': A['sapling'], 'amount': 1.5}]), 1)
-    for _ in range(60):
-        st = d.cli(0, 'z_getoperationstatus', json.dumps([op]))[0]
-        if st['status'] in ('success', 'failed'):
-            break
-        time.sleep(1)
+    def z_send(frm, *extra):
+        op = d.cli(0, 'z_sendmany', frm, json.dumps([{'address': A['sapling'], 'amount': 1.5}]), 1, *extra)
+        for _ in range(60):
+            st = d.cli(0, 'z_getoperationstatus', json.dumps([op]))[0]
+            if st['status'] in ('success', 'failed'):
+                return st
+            time.sleep(1)
+        return st
+    st = z_send(z0)
+    if st['status'] != 'success':
+        # a second walk on the same stack: node 0's mature coinbase was shielded by the first, so
+        # z0 is empty; pay from its transparent coins instead (repeatable walk)
+        print('PRIVATE z0 send', st['status'], str(st.get('error', ''))[:200], '; from ANY_TADDR', flush=True)
+        st = z_send('ANY_TADDR', 'null', 'AllowRevealedSenders')
+        print('PRIVATE ANY_TADDR send', st['status'], str(st.get('error', ''))[:200], flush=True)
     d.mine(1)
     print('PRIVATE funded', d.settle(lambda b: b.get('private', 0) >= 200_000_000), flush=True)
     os.environ['MEMO'] = 'hello from the browser'

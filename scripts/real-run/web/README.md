@@ -14,7 +14,7 @@ bundle needs nothing else from the cluster (the address calls are lightwalletd's
 |---|---|
 | `run.sh` | `up` (the stack, Envoy, `vite preview`, chromedriver, two proving-file mirrors), `walk`, `down` |
 | `web_real_stack.py` | regtest stack on ycash6's test framework: node 0 miner/pool/backend (`-insightexplorer -txindex`), node 1 the receiver, YED live (`activate_yed_late`), lightwalletd `--yellowback`; holds until `<tmpdir>/stop` |
-| `web_real_walk.py` | the walk in phases: `addr,fund,sends,params,private,arm,yed,persist,restore` (see its docstring) |
+| `web_real_walk.py` | the walk in phases: `addr,fund,params,sends,private,fresh,arm,yed,persist,restore` (see its docstring; `fresh` is a second browser profile with default settings) |
 | `drive.py`, `wd.py` | the page (stdlib WebDriver over HTTP, a persistent session) and the nodes (`ycash-cli` from `stack.json`) |
 | `sendcell.py`, `mint.py` | one send cell (preview, confirm, mempool, mine, the transaction, balances against the node) and one mint (estimate, carrier, MINT) |
 | `attest_loop.py` | keeps node 0's attestation pool fresh after `arm` (devnet doc section 2, by hand) |
@@ -34,6 +34,13 @@ CHROMEDRIVER=<chromedriver> S=<scratch dir> Y6=<ycash6 tree> scripts/real-run/we
 CHROMEDRIVER=<chromedriver> S=<scratch dir> scripts/real-run/web/run.sh walk                   # ~25 min
 S=<scratch dir> scripts/real-run/web/run.sh down
 ```
+
+To serve the page as production does, from ycash-infra's web image (the bundle and the Sapling
+proving files at `/sapling-params/`, nginx with COOP/COEP/CSP), build that image from this tree's
+`web/dist` and pass it: `WEB_IMAGE=<tag> NAME=<container prefix> … run.sh up`. With
+`WEB_IMAGE` the `params` and `fresh` phases prove the default source; under `vite preview` the
+default source has no files and the walk falls back to the loopback mirror. The whole walk
+(`run.sh walk`, all phases) runs end to end in about 45 minutes; run `arm` once per stack.
 
 Hostile fee terms: `lying_proxy.py 29773 http://127.0.0.1:29769 --rate-x 20 --price-micro 2500000`,
 then restore the seed in a second browser session (`WD_STATE=<other file> wd.py new`) with
