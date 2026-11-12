@@ -56,11 +56,20 @@ export class MockCore implements Core {
   /** The seed each store directory holds (a store refuses another seed, as the core does). */
   private storeSeeds = new Map<string, string>();
   private vaultRows: Vault[] = [vault("c3".repeat(32), YED, "10000", "200000000", 1230, 1290, 1170, 1200)];
-  private claimRows: ClaimableItem[] = [{
+  claimRows: ClaimableItem[] = [{
     vaultTxid: "e5".repeat(32), ownerAddress: "ye1OtherOwner00000000000000000000000", cents: "5000",
     collateralZat: "120000000", claimHeight: 1190, claimPath: "a", pClaimMicroUsd: "520000", feeZat: "100000", attestFeeZat: "0", residualZat: "0",
     claimantZat: "119900000", payee: "s1MinerPayee000000000000000000000000", claimable: true, underwaterAtMicroUsd: "400000", lockHeight: 1150, inTerm: false,
   }];
+  /** As the real core: a claim's carrier needs one confirmation before its CLAIM (mint_finish) can go out.
+   *  The test "mines" it here; `lapse` closes the window instead (the carrier is then swept back). */
+  confirmCarriers(lapse = false) {
+    for (const m of this.mintRows) {
+      if (m.state !== "CARRIER_SENT") continue;
+      if (lapse) Object.assign(m, { state: "LAPSED", inProgress: false, canFinish: false, canSweep: true, windowOpen: false, note: "window closed before the main transaction" });
+      else Object.assign(m, { state: "CARRIER_CONFIRMED", canFinish: true });
+    }
+  }
 
   constructor(o: MockOptions = {}) { this.tip = o.tip ?? 1200; this.delayMs = o.delayMs ?? 0; this.failNetwork = !!o.failNetwork; }
 
@@ -267,7 +276,19 @@ export class MockCore implements Core {
         mintId = ++this.seq;
         this.mintRows.push(mintRow(mintId, p.cents!, p.lockBlocks!, txid, this.tip));
       }
-      if (p.kind === "finish") {
+      if (p.kind === "claim") {
+        // the real core's confirm of a claim: the carrier only, and the row of kind "claim" (wasm confirm)
+        const c = this.claimRows.find((x) => x.vaultTxid === p.vaultTxid)!;
+        mintId = ++this.seq;
+        this.mintRows.push({ ...mintRow(mintId, c.cents, 0, txid, this.tip), kind: "claim", collateralZat: c.collateralZat, feeZat: c.feeZat, canFinish: false, vaultTxid: c.vaultTxid });
+      }
+      const fin = p.kind === "finish" ? this.mintRows.find((x) => x.mintId === p.mintId) : undefined;
+      if (fin && fin.kind === "claim") {
+        mintId = fin.mintId;
+        Object.assign(fin, { state: "MAIN_SENT", canFinish: false, mainTxid: txid });
+        this.bal.yedCents = (BigInt(this.bal.yedCents) - BigInt(fin.cents)).toString();
+        this.claimRows = this.claimRows.filter((x) => x.vaultTxid !== fin.vaultTxid);
+      } else if (p.kind === "finish") {
         const m = this.mintRows.find((x) => x.mintId === p.mintId)!; mintId = m.mintId;
         m.state = "DONE"; m.inProgress = false; m.canFinish = false; m.mainTxid = txid; m.vaultTxid = txid;
         this.vaultRows.unshift(vault(txid, YED, m.cents, m.collateralZat, this.tip + m.lockBlocks, this.tip + m.lockBlocks + 60, this.tip, this.tip));
