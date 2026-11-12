@@ -29,7 +29,9 @@
 //!
 //! wasm32 (the browser wallet, yew/web plan W0.3/W0.5): the pins, [`verify_bytes`], [`status`],
 //! [`ensure_verified`] and [`ParamsSource`] compile; the download ([`download`] and the HTTP/TLS
-//! client below it, tokio + rustls) is native only. The browser has no files: [`fetch`] (and
+//! client below it, tokio + rustls) is native only. The browser's default source is its own
+//! origin ([`WEB_DEFAULT_SOURCES`], `/sapling-params/`), since `download.z.cash` sends no CORS
+//! header. The browser has no files: [`fetch`] (and
 //! [`fetch_with`], with progress; [`cached`] reads the cache alone) looks in
 //! the Cache API (`caches.open(CACHE_NAME)`), else fetches each file from the sources in order
 //! with the browser's `fetch`, keeps bytes only if they verify against the same pins, and hands
@@ -85,6 +87,27 @@ pub const FILES: [ParamFile; 2] = [SPEND, OUTPUT];
 /// against [`FILES`]' pinned SHA-256 whatever its source.
 pub const DEFAULT_SOURCES: &[&str] = &["https://download.z.cash/downloads/"];
 
+/// Where the browser wallet fetches the files when Settings names no mirror: its own origin, at
+/// [`WEB_PARAMS_PATH`] (the Yellowback lead architect, 2026-11-12, real-stack run WEB-REAL
+/// HIGH-2). `download.z.cash` sends no CORS header, so a web page can never read it; the server
+/// that hands out the web bundle serves the two files beside it (ycash-infra's web image fetches
+/// them at build time against the same SHA-256s). The pins below still decide: a wrong file from
+/// the page's own server is refused like any other.
+pub const WEB_DEFAULT_SOURCES: &[&str] = &[WEB_PARAMS_PATH];
+
+/// The path, on the web bundle's own origin, under which the two files are served.
+pub const WEB_PARAMS_PATH: &str = "/sapling-params/";
+
+/// The sources tried when the caller names none: [`WEB_DEFAULT_SOURCES`] in the browser,
+/// [`DEFAULT_SOURCES`] in the app and the CLI.
+pub fn default_sources(browser: bool) -> &'static [&'static str] {
+    if browser {
+        WEB_DEFAULT_SOURCES
+    } else {
+        DEFAULT_SOURCES
+    }
+}
+
 /// Total bytes of a download from nothing.
 pub const TOTAL_BYTES: u64 = SPEND.bytes + OUTPUT.bytes;
 
@@ -125,6 +148,10 @@ pub enum ParamsError {
         /// The pinned hash.
         sha256: &'static str,
     },
+    /// A source answered, but not with the pinned file (the browser fetch: the URL and what to
+    /// do; [`wrong_file_text`], [`http_refused_text`]).
+    #[error("{0}")]
+    Refused(String),
     /// The files are not there.
     #[error("the Sapling proving parameters are not downloaded yet ({0})")]
     Missing(String),
@@ -768,7 +795,7 @@ pub async fn fetch_with(
     mut progress: impl FnMut(&'static str, u64, u64),
 ) -> Result<(Vec<u8>, Vec<u8>), ParamsError> {
     let sources = if sources.is_empty() {
-        DEFAULT_SOURCES
+        default_sources(true)
     } else {
         sources
     };
@@ -804,6 +831,48 @@ pub fn fetch_refused_text(url: &str, detail: &str) -> String {
     format!(
         "{url}: this browser could not download it ({}). The host is unreachable or does not let web pages download from it (no CORS header). Enter a mirror that does under Source, in Settings.",
         if detail.is_empty() { "no answer" } else { detail }
+    )
+}
+
+/// Who serves `url`: the page's own server (a path without a scheme, as
+/// [`WEB_DEFAULT_SOURCES`]) or a mirror named in Settings.
+fn served_by(url: &str) -> &'static str {
+    if url.starts_with('/') && !url.starts_with("//") {
+        "this wallet's server"
+    } else {
+        "that mirror"
+    }
+}
+
+/// What a browser says when a source answers with an HTTP error: a missing file on the page's
+/// own server (the operator has not deployed the files) reads differently from a mirror's.
+pub fn http_refused_text(url: &str, status: u16) -> String {
+    let who = served_by(url);
+    let what = if status == 404 {
+        format!("{who} does not provide this file")
+    } else {
+        format!("{who} answered with an error")
+    };
+    format!(
+        "{url}: HTTP {status}: {what}. Private sending needs the two Sapling proving files (about 52 MB, fetched once). Ask the wallet's operator, or enter a mirror under Source, in Settings."
+    )
+}
+
+/// What a browser says when a source answers with bytes that are not the pinned file (a web
+/// server's fallback page, a truncated or altered copy): the size (and hash) it got against the
+/// pin. The bytes are never used.
+pub fn wrong_file_text(url: &str, f: &ParamFile, got_bytes: u64, got_sha256: &str) -> String {
+    let why = if got_bytes != f.bytes {
+        format!("{got_bytes} bytes instead of {}", f.bytes)
+    } else {
+        format!(
+            "the right size, but SHA-256 {got_sha256} instead of {}",
+            f.sha256
+        )
+    };
+    format!(
+        "{url}: refused, not the Sapling proving file ({why}); {} sent the wrong file, nothing was kept. Ask the wallet's operator, or enter a mirror under Source, in Settings.",
+        served_by(url)
     )
 }
 
@@ -887,12 +956,24 @@ mod web {
                 }
             };
             if !resp.ok() {
-                last = ParamsError::Transfer(name.into(), format!("{url}: HTTP {}", resp.status()));
+                last = ParamsError::Refused(super::http_refused_text(&url, resp.status()));
                 continue;
             }
             let data = response_bytes(name, &resp).await?;
             if let Err(e) = super::verify_bytes(f, &data) {
-                last = e;
+                last = match e {
+                    ParamsError::Mismatch {
+                        got_bytes,
+                        got_sha256,
+                        ..
+                    } => ParamsError::Refused(super::wrong_file_text(
+                        &url,
+                        f,
+                        got_bytes,
+                        &got_sha256,
+                    )),
+                    e => e,
+                };
                 continue;
             }
             let body = js_sys::Uint8Array::from(data.as_slice());
@@ -928,6 +1009,48 @@ mod tests {
         assert!(t.contains("no CORS header") && t.contains("Source, in Settings"));
         assert!(!t.contains("__wbg") && !t.contains("JsValue"));
         assert!(fetch_refused_text("http://127.0.0.1:1/x", "").contains("(no answer)"));
+    }
+
+    #[test]
+    fn the_browser_default_is_its_own_origin() {
+        // WEB-REAL HIGH-2: download.z.cash sends no CORS header, so a browser with default
+        // settings must fetch from the page's own server; the app keeps download.z.cash.
+        assert_eq!(default_sources(true), &["/sapling-params/"]);
+        assert!(default_sources(true)
+            .iter()
+            .all(|s| s.starts_with('/') && !s.starts_with("//") && s.ends_with('/')));
+        assert!(!default_sources(true).iter().any(|s| s.contains("z.cash")));
+        assert_eq!(default_sources(false), DEFAULT_SOURCES);
+        assert_eq!(DEFAULT_SOURCES, &["https://download.z.cash/downloads/"]);
+    }
+
+    #[test]
+    fn a_missing_or_wrong_file_reads_as_a_sentence() {
+        let own = format!("{WEB_PARAMS_PATH}{}", SPEND.name);
+        let t = http_refused_text(&own, 404);
+        assert!(t.starts_with("/sapling-params/sapling-spend.params: HTTP 404: this wallet's server does not provide this file."), "{t}");
+        assert!(t.contains("about 52 MB") && t.contains("Source, in Settings"));
+        let t = http_refused_text("https://m.example/p/sapling-spend.params", 503);
+        assert!(
+            t.contains("HTTP 503: that mirror answered with an error"),
+            "{t}"
+        );
+        // A server's HTML fallback page instead of the file: the size says so.
+        let t = wrong_file_text(&own, &SPEND, 833, "ab");
+        assert!(
+            t.contains("833 bytes instead of 47958396")
+                && t.contains("this wallet's server sent the wrong file"),
+            "{t}"
+        );
+        let t = wrong_file_text("https://m.example/p/x", &OUTPUT, OUTPUT.bytes, "00ff");
+        assert!(
+            t.contains("the right size, but SHA-256 00ff instead of 2f0e")
+                && t.contains("that mirror"),
+            "{t}"
+        );
+        // verify_bytes still refuses both: the hash check is mandatory whatever the source.
+        assert!(verify_bytes(&OUTPUT, &vec![0u8; OUTPUT.bytes as usize]).is_err());
+        assert!(verify_bytes(&OUTPUT, b"<!doctype html>").is_err());
     }
 
     #[test]

@@ -15,11 +15,11 @@ export function renderSettings(root: HTMLElement, vm: SettingsVm, meta: WalletMe
     const wifIn = h("input", { type: "password", placeholder: "WIF from YecWallet", autocomplete: "off" });
     const wifBday = h("input", { type: "number", min: 0, value: "0" });
     const mb = (s.params?.bytes ?? 0) / 1e6;
-    const src = h("input", { type: "url", value: s.paramsSource, placeholder: "standard source (download.z.cash)", spellcheck: false, on: { input: () => (vm.state.paramsSource = src.value) } });   // no re-render per keystroke: the field would be rebuilt and lose all but its first character
+    const src = h("input", { type: "url", value: s.paramsSource, placeholder: "this wallet's server (/sapling-params/)", spellcheck: false, on: { input: () => (vm.state.paramsSource = src.value) } });   // no re-render per keystroke: the field would be rebuilt and lose all but its first character
     mount(root, h("h2", null, "Settings"),
       h("div", { class: "card" }, h("h3", null, "Server"), h("p", null, meta ? `${meta.serverUrl} · ${meta.network} · birthday ${meta.birthday}` : "—"), h("p", { class: "small" }, "Set at onboarding; to change it, forget this wallet and restore with the phrase.")),
       h("div", { class: "card" }, h("h3", null, "Private sending files"),
-        h("p", null, s.params === null ? "Checking…" : s.params.present ? `Ready (${mb.toFixed(1)} MB in the browser cache).` : "Not fetched. Needed before any private send or shield; 52 MB, fetched once from the standard source and kept only if the fingerprints built into YEW match."),
+        h("p", null, s.params === null ? "Checking…" : s.params.present ? `Ready (${mb.toFixed(1)} MB in the browser cache).` : "Not fetched. Needed before any private send or shield; 52 MB, fetched once from this wallet's server and kept only if the fingerprints built into YEW match."),
         s.fetching ? progressBar((100 * s.fetching.bytesDone) / Math.max(1, s.fetching.bytesTotal), `${s.fetching.name} · ${(s.fetching.bytesDone / 1e6).toFixed(1)} / ${(s.fetching.bytesTotal / 1e6).toFixed(1)} MB`) : null,
         s.params && !s.params.present && !s.fetching ? [h("label", null, "Source (advanced: a mirror; the fingerprints are checked either way)"), src,
           h("div", { class: "actions" }, h("button", { on: { click: () => vm.fetchParams() } }, "Fetch (52 MB)"))] : null),

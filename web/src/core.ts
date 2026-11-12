@@ -143,7 +143,7 @@ export interface Core {
   balances(): Promise<Balances>;
   history(page: number): Promise<HistoryRow[]>;
   params_status(): Promise<ParamsStatus>;
-  /** `sources`: base URLs ending in `/`; empty = the standard source (download.z.cash). */
+  /** `sources`: base URLs ending in `/`; empty = this page's own server, `/sapling-params/` (download.z.cash sends no CORS header). */
   fetch_params(fn: (p: ParamsProgress) => void, sources?: string[]): Promise<void>;
   send_yec_preview(to: string, zat: string, memo?: string): Promise<YecPreview>;
   send_yed_preview(to: string, cents: string): Promise<YedPreview>;
