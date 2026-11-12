@@ -35,8 +35,10 @@ secp256k1 = { version = "=0.33.1", default-features = false, features = ["std"] 
 web-sys = { version = "=0.3.105", features = ["WorkerGlobalScope", "Response"] }
 # tests/harden.rs (W3) reaches the sahpool's management handle (capacity, the file list): the
 # versions the light library pins (one copy in the graph).
-sqlite-wasm-rs = { version = "=0.5.5", default-features = false }
-sqlite-wasm-vfs = { version = "=0.2.0", default-features = false }
+# sqlite-wasm-rs 0.6.3 bundles SQLite 3.54.1; `wasm-bindgen` supplies the host services 0.6 links,
+# and sqlite-wasm-vfs 0.3 gates the pool behind `sahpool`.
+sqlite-wasm-rs = { version = "=0.6.3", default-features = false, features = ["wasm-bindgen"] }
+sqlite-wasm-vfs = { version = "=0.3.0", default-features = false, features = ["sahpool"] }
 
 [profile.release]
 opt-level = "s"
@@ -51,7 +53,7 @@ overflow-checks = false
 
 # As in the root Cargo.toml (patches do not propagate through dependencies).
 [patch.crates-io]
-schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee" }
+schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "6ff87bc9f564fcb7891e1f32698c7ad91ba85ca2" }
 # tonic-web-wasm-client 0.9.2 answers "malformed response" to a Trailers-Only gRPC-web reply
 # (grpc-status in the HTTP headers, empty body) — what Envoy Gateway sends for an empty server
 # stream (the kind cluster's yindex `GetTaddressTxids` for an address with no history) — so the

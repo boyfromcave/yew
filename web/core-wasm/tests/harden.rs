@@ -165,7 +165,7 @@ async fn open_in(words: &str, birthday: u64, dir: &str) -> JsValue {
 }
 
 /// The sahpool's management handle (`install` on the registered VFS only returns it). The
-/// pool's default capacity is 6 files (sqlite-wasm-vfs 0.2 `OpfsSAHPoolCfg`), which one wallet
+/// pool's default capacity is 6 files (sqlite-wasm-vfs 0.3 `OpfsSAHPoolCfg`, as in 0.2), which one wallet
 /// (its three databases and their journals) nearly fills: a second store directory in the same
 /// origin needs more — "unable to open database file" otherwise (W3 finding for the shell's
 /// restore and forget flows). The tests reserve what they use and log the pool.
@@ -176,16 +176,28 @@ async fn pool() -> sqlite_wasm_vfs::sahpool::OpfsSAHPoolUtil {
         .expect("the registered sahpool")
 }
 
+/// Files in use in the pool (sqlite-wasm-vfs 0.3 `VfsFilesManager::len`).
+fn in_use(p: &sqlite_wasm_vfs::sahpool::OpfsSAHPoolUtil) -> usize {
+    use sqlite_wasm_rs::vfs::VfsFilesManager;
+    p.len().expect("the pool's file count")
+}
+
+/// The file names in the pool (sqlite-wasm-vfs 0.3 `VfsFilesManager::names`).
+fn names(p: &sqlite_wasm_vfs::sahpool::OpfsSAHPoolUtil) -> Vec<String> {
+    use sqlite_wasm_rs::vfs::VfsFilesManager;
+    p.names().expect("the pool's file names")
+}
+
 async fn reserve_files(n: u32) {
     let p = pool().await;
-    p.reserve_minimum_capacity(p.count() + n)
+    p.ensure_capacity(in_use(&p) + n as usize)
         .await
         .expect("add capacity");
     console_log!(
         "yew-web-core: sahpool: capacity {} files, {} in use: {:?}",
-        p.get_capacity(),
-        p.count(),
-        p.list()
+        p.capacity(),
+        in_use(&p),
+        names(&p)
     );
 }
 
@@ -435,10 +447,10 @@ async fn several_stores_in_one_profile() {
     let p = pool().await;
     console_log!(
         "yew-web-core: sahpool after install_storage: capacity {} files, {} in use",
-        p.get_capacity(),
-        p.count()
+        p.capacity(),
+        in_use(&p)
     );
-    assert!(p.get_capacity() >= 24, "install_storage reserves headroom");
+    assert!(p.capacity() >= 24, "install_storage reserves headroom");
     let tip0 = yew_web_core::latest_height(LWD, NETWORK).await.expect("tip");
     let birthday = tip0.saturating_sub(5).max(1);
     let base = run_dir("stores");
@@ -462,14 +474,14 @@ async fn several_stores_in_one_profile() {
         yew_web_core::close();
     }
     assert_eq!(listed().await, (1..=4).map(dir).collect::<Vec<_>>());
-    let files_before = p.count();
-    assert!(files_before >= 12, "four stores: {files_before} files {:?}", p.list());
+    let files_before = in_use(&p);
+    assert!(files_before >= 12, "four stores: {files_before} files {:?}", names(&p));
     // Forget the second: its three files go, nothing else does, and the directory is not listed.
     let n = yew_web_core::forget(&dir(2)).await.expect("forget");
     assert_eq!(n, 3, "the transparent file and the private store's two");
-    assert_eq!(p.count(), files_before - 3);
-    assert!(!p.list().iter().any(under(&dir(2))), "{:?}", p.list());
-    assert!(p.list().iter().any(under(&dir(1))));
+    assert_eq!(in_use(&p), files_before - 3);
+    assert!(!names(&p).iter().any(under(&dir(2))), "{:?}", names(&p));
+    assert!(names(&p).iter().any(under(&dir(1))));
     assert_eq!(listed().await, [1, 3, 4].map(dir).to_vec());
     assert_eq!(yew_web_core::forget(&dir(2)).await.expect("forget twice"), 0);
     // A fifth opens beside the three, and the forgotten directory takes a new seed (no "other seed").
@@ -491,8 +503,8 @@ async fn several_stores_in_one_profile() {
     assert_eq!(listed().await, [1, 2, 4, 5].map(dir).to_vec());
     console_log!(
         "yew-web-core: sahpool at the end: capacity {} files, {} in use: {:?}",
-        p.get_capacity(),
-        p.count(),
-        p.list()
+        p.capacity(),
+        in_use(&p),
+        names(&p)
     );
 }
