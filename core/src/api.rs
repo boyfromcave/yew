@@ -127,6 +127,11 @@ pub enum ErrorKind {
     ParamsMissing,
     /// Anything else (storage, key derivation).
     Other,
+    /// Spending these private notes needs transactions the wallet does not hold yet; fetching
+    /// them now would tell the server which notes the payment spends (review YEW-REVIEW-8 M1).
+    /// `message` says so in plain words. Sync again, or repeat the call with the go-ahead
+    /// (`allow_note_lookup`) after the user agreed.
+    NoteLookupNeeded,
 }
 
 /// The one error type of the surface. `message` is complete and showable as-is.
@@ -168,7 +173,10 @@ impl From<WalletError> for YewError {
             WalletError::Coins(c) => YewError::new(ErrorKind::NeedYecForFees, c.to_string()),
             WalletError::Transfer(t) => YewError::new(ErrorKind::Refused, t.to_string()),
             WalletError::Key(k) => YewError::new(ErrorKind::Input, k.to_string()),
-            WalletError::Other(m) => YewError::new(ErrorKind::Refused, m),
+            WalletError::Other(m) => match m.strip_prefix(crate::build::NOTE_LOOKUP_NEEDED) {
+                Some(text) => YewError::new(ErrorKind::NoteLookupNeeded, text),
+                None => YewError::new(ErrorKind::Refused, m),
+            },
             WalletError::Mint(crate::build::mint::MintError::Unaffordable { .. }) => {
                 YewError::new(ErrorKind::NeedYecForFees, text)
             }
@@ -322,7 +330,9 @@ pub struct Balances {
     pub yed_pending_cents: i64,
     /// `GetPrice.pMint` at the last sync, micro-USD per YEC; `None` when undefined.
     pub price_micro_usd: Option<i64>,
-    /// Outputs of `TOKEN_VALUE` the server does not list (class `HELD`): count.
+    /// Outputs held (class `HELD`): of `TOKEN_VALUE` and not listed by the server, or plain coins
+    /// whose creating transaction assigns them YED or could not be verified (layer 3 at sync):
+    /// count. In no balance and in no selection.
     pub held_count: i64,
     /// The height the wallet last synced to (0 = never).
     pub sync_height: i64,
@@ -344,6 +354,16 @@ pub struct Balances {
     pub yec_pq_zat: i64,
     /// The `PQ_OWNED` coins not already being moved, `txid:n`, oldest first.
     pub pq_coins: Vec<String>,
+    /// [`Balances::yec_pq_zat`] at SLH-DSA-SHA2-128s keys (`sqs…`, the vault owners), zat
+    /// (beta2 D-8: balances by type; the split of `build::any_to_any::TypeSplit`).
+    pub yec_pq_slh_zat: i64,
+    /// [`Balances::yec_pq_zat`] at FN-DSA-512 keys (`sqf…`, the Falcon holders), zat.
+    pub yec_pq_falcon_zat: i64,
+    /// YEC staged for mints in progress (`build::mint::staged_for_mint_zat`): the staged funding
+    /// output of a mint funded from a post-quantum address or the private balance, locked to its
+    /// mint row until the MINT spends it or the row lapses or fails. In no balance and never in a
+    /// spendable total; shown on its own row.
+    pub yec_staged_for_mint_zat: i64,
 }
 
 /// Which receive address [`receive_address`] returns.
@@ -355,6 +375,13 @@ pub enum ReceiveKind {
     Shielded,
     /// The Yellowback `yb…` form of the transparent address (YED, mint).
     Yed,
+    /// The post-quantum FN-DSA-512 address paired with the transparent receive key (`sqf…` /
+    /// `tqf…` / `rqf…`, the Falcon holder's plain-YEC form; beta2 D-8, D-9). Plain YEC only.
+    PqFalcon,
+    /// The post-quantum SLH-DSA-SHA2-128s address paired with the transparent receive key
+    /// (`sqs…` / `tqs…` / `rqs…`, the key's vault owner; beta2 D-8, D-9). Plain YEC only; each
+    /// spend from it carries a ~7.9 KB signature, so its fees are the largest.
+    PqSlh,
 }
 
 /// A receive address: `address` is the one of `kind`; for the transparent kinds `ye` and `s`
@@ -552,6 +579,16 @@ pub struct YedPreview {
     pub txid: String,
     /// The node's dry run on these bytes (the same rule the gate applies at confirm).
     pub dry_run: DryRun,
+    /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
+    /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
+    /// the server). `None`: the normal confirmation.
+    pub fee_note: Option<String>,
+    /// Set exactly when [`YedPreview::fee_note`] is: pass it as `accept_unusual_fee` to the confirm call
+    /// after the user confirmed the fee separately; without it the confirm refuses.
+    pub unusual_fee_ack: Option<String>,
+    /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported). Shown in
+    /// the preview: the app cannot verify it.
+    pub fee_price_micro_usd: Option<i64>,
 }
 
 /// The result of a confirm.
@@ -707,6 +744,27 @@ pub struct MintEstimate {
     pub armed: bool,
     /// The attestor `seq`s the bundle would carry.
     pub bundle_seqs: Vec<u32>,
+    /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
+    /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
+    /// the server). `None`: the normal confirmation.
+    pub fee_note: Option<String>,
+    /// Set exactly when [`MintEstimate::fee_note`] is: pass it back in `accept_unusual_fee` of
+    /// [`MintTerms`] to [`mint_start`] after the separate confirmation; without it the start refuses.
+    pub unusual_fee_ack: Option<String>,
+    /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported).
+    pub fee_price_micro_usd: Option<i64>,
+    /// Where the YEC comes from (beta2 D-3): empty = the public (ECC) balance, `private` = the
+    /// private (Sapling) balance, else the own post-quantum address the mint is funded from.
+    pub from: String,
+    /// The carrier funding transaction's fee, zat (in `network_fee_zat`): the flat fee from the
+    /// public balance; from a post-quantum address the size fee of its signatures.
+    pub carrier_fee_zat: i64,
+    /// Set when the post-quantum carrier fee is unusual: show it beside that fee and confirm it
+    /// separately.
+    pub carrier_fee_note: Option<String>,
+    /// Set exactly when `carrier_fee_note` is: pass it back as
+    /// [`MintTerms::accept_unusual_carrier_fee`] after the separate confirmation.
+    pub unusual_carrier_fee_ack: Option<String>,
 }
 
 /// One `mints` row (plan §5.3, README "the two-step state machine is a table"): a mint or a
@@ -982,6 +1040,16 @@ pub struct ReleasePreview {
     pub fee_zat: i64,
     /// The txid the broadcast will have.
     pub txid: String,
+    /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
+    /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
+    /// the server). `None`: the normal confirmation.
+    pub fee_note: Option<String>,
+    /// Set exactly when [`ReleasePreview::fee_note`] is: pass it as `accept_unusual_fee` to the confirm call
+    /// after the user confirmed the fee separately; without it the confirm refuses.
+    pub unusual_fee_ack: Option<String>,
+    /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported). Shown in
+    /// the preview: the app cannot verify it.
+    pub fee_price_micro_usd: Option<i64>,
 }
 
 /// The result of [`release_confirm`].
@@ -1027,6 +1095,8 @@ pub struct ClaimTerms {
     pub max_burn_cents: i64,
     /// `ClaimableItem::claimant_zat`.
     pub min_out_zat: i64,
+    /// `ClaimableItem::unusual_fee_ack` when the user confirmed the unusual fee separately.
+    pub accept_unusual_fee: Option<String>,
 }
 
 /// One `ListClaimable` row (the liquidator persona, plan §5.3).
@@ -1078,10 +1148,21 @@ pub struct ClaimableItem {
     pub cancel_count: i64,
     /// From this height a cancel needs one attestor again; 0 when never cancelled.
     pub cancel_quiet_until: i64,
+    /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
+    /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
+    /// the server). `None`: the normal confirmation.
+    pub fee_note: Option<String>,
+    /// Set exactly when [`ClaimableItem::fee_note`] is: pass it back in `accept_unusual_fee` of
+    /// [`ClaimTerms`] to [`claim`] after the separate confirmation; without it the start refuses.
+    pub unusual_fee_ack: Option<String>,
+    /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported).
+    pub fee_price_micro_usd: Option<i64>,
 }
 
 /// The terms of a [`MintEstimate`] the user confirmed, passed back to [`mint_start`] so the
-/// server's second answer may not differ from what was shown (audit G-2).
+/// server's second answer may not differ from what was shown (audit G-2). They must equal the
+/// estimate the core issued for the same amount, lock and `from`, field for field: the start uses
+/// the core's copy and only the acknowledgement tokens from here (review YEW-REVIEW-10 L2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MintTerms {
     /// `MintEstimate::collateral_zat`.
@@ -1092,6 +1173,45 @@ pub struct MintTerms {
     pub payee: String,
     /// `MintEstimate::term_class`.
     pub term_class: String,
+    /// `MintEstimate::unusual_fee_ack` when the user confirmed the unusual fee separately.
+    pub accept_unusual_fee: Option<String>,
+    /// `MintEstimate::from` (beta2 D-3): empty = the public balance, `private` = the private
+    /// balance (proven at start: [`ErrorKind::ParamsMissing`] without the parameters).
+    pub from: String,
+    /// `MintEstimate::carrier_fee_zat`: the carrier funding may not pay more.
+    pub carrier_fee_zat: i64,
+    /// `MintEstimate::unusual_carrier_fee_ack` when the user confirmed it separately.
+    pub accept_unusual_carrier_fee: Option<String>,
+    /// From the private balance: the user's go-ahead to fetch, from the server, note
+    /// transactions the wallet does not hold yet ([`ErrorKind::NoteLookupNeeded`]).
+    pub allow_note_lookup: bool,
+}
+
+/// [`MintEstimate::from`] / [`MintTerms::from`] naming the private (Sapling) balance.
+pub(crate) const MINT_FROM_PRIVATE: &str = "private";
+
+/// The mint source an estimate or a start names: empty = the public (ECC) balance,
+/// [`MINT_FROM_PRIVATE`] = the private (Sapling) balance, else one of the wallet's post-quantum
+/// addresses holding plain YEC.
+fn mint_source_of(
+    network: params::Network,
+    from: &str,
+) -> Result<crate::build::mint::MintSource, YewError> {
+    let from = from.trim();
+    if from.is_empty() {
+        return Ok(crate::build::mint::MintSource::Ecc);
+    }
+    if from == MINT_FROM_PRIVATE {
+        return Ok(crate::build::mint::MintSource::Sapling);
+    }
+    keys::parse_pq_yec_address(network, from)
+        .map(crate::build::mint::MintSource::Pq)
+        .map_err(|_| {
+            YewError::new(
+                ErrorKind::Input,
+                "Fund the mint from your public balance, your private balance or one of your post-quantum (sqf…/sqs…) addresses.",
+            )
+        })
 }
 
 /// [`redeem_preview`]: the signed REDEEM (or VOID release) waiting for [`redeem_confirm`]
@@ -1199,6 +1319,9 @@ enum Preview {
     Yed(yed_transfer::YedTransferPreview),
     Redeem(crate::build::redeem::RedeemBuild),
     Release(crate::build::release::ReleaseBuild),
+    Pq(Box<crate::build::pq_send::PqSendPreview>),
+    /// A send from the private balance to a post-quantum address (`build::sapling_pq`).
+    SaplingPq(Box<crate::build::sapling_pq::SaplingPqPreview>),
 }
 
 /// The open wallet.
@@ -1207,6 +1330,9 @@ struct Open {
     server: Server,
     conn: Option<Conn>,
     previews: HashMap<String, Preview>,
+    /// The mint estimates the core issued: a start takes its terms from here (review
+    /// YEW-REVIEW-10 L2).
+    mint_estimates: crate::build::mint::IssuedEstimates,
     /// `<data_dir>/sapling-params`: the proving parameters (S0-2).
     params_dir: PathBuf,
 }
@@ -1348,15 +1474,24 @@ impl Open {
     /// Sync (the CLI's `synced`): connect if needed, run the §3.2 loop; on a network error
     /// drop the connection so the next call reconnects.
     async fn sync(&mut self) -> Result<sync::SyncReport, YewError> {
+        self.sync_with(None).await
+    }
+
+    /// [`Open::sync`], reporting the provenance checks' progress (review YEW-REVIEW-5 L1).
+    async fn sync_with(
+        &mut self,
+        progress: Option<sync::CheckProgress>,
+    ) -> Result<sync::SyncReport, YewError> {
         let network = self.wallet.network;
         if self.conn.is_none() {
             self.conn = Some(connect(&self.server, network).await?);
         }
         let conn = self.conn.as_mut().expect("set above");
-        let r = sync::sync(
+        let r = sync::sync_with_progress(
             &mut self.wallet,
             &mut conn.compact,
             conn.validator.client_mut(),
+            progress,
         )
         .await;
         match r {
@@ -1633,6 +1768,7 @@ pub fn create_wallet(
             server,
             conn: None,
             previews: HashMap::new(),
+            mint_estimates: Default::default(),
             params_dir: params_dir_of(&data_dir),
         });
         Ok(Created {
@@ -1672,6 +1808,7 @@ pub fn unlock(
             server,
             conn: None,
             previews: HashMap::new(),
+            mint_estimates: Default::default(),
             params_dir: params_dir_of(&data_dir),
         });
         Ok(id)
@@ -1696,13 +1833,23 @@ pub fn is_unlocked() -> bool {
 pub fn set_server(server: String, plain: bool, ca_pem: Option<String>) -> Result<(), YewError> {
     with_open(|o| {
         o.server = parse_server(&server, plain, ca_pem, o.wallet.network)?;
+        // review YEW-REVIEW-5 L1: another server may answer what this one did not
+        o.wallet.reset_provenance_backoff()?;
         o.conn = None;
         o.previews.clear();
+        o.mint_estimates.clear();
         if let Some(sh) = o.wallet.shielded.as_mut() {
             sh.disconnect();
         }
         Ok(())
     })
+}
+
+/// Forget the YEC price reports the unusual-fee check compares against (Settings; review
+/// YEW-REVIEW-5 M1): for a reference a server poisoned. Until three days have reported again,
+/// every fee above 0.1 YEC needs its own confirmation.
+pub fn reset_fee_reference() -> Result<(), YewError> {
+    with_open(|o| Ok(o.wallet.reset_fee_reference()?))
 }
 
 /// Server info, Yellowback info, tip, sync height (connects if needed).
@@ -1743,6 +1890,11 @@ pub fn status() -> Result<Status, YewError> {
             })
         })
     })
+}
+
+/// A reported price as the previews carry it (`None` for none).
+fn price_opt(micro_usd: i64) -> Option<i64> {
+    (micro_usd > 0).then_some(micro_usd)
 }
 
 /// The balances from the store (no network).
@@ -1787,6 +1939,11 @@ pub fn balances() -> Result<Balances, YewError> {
                 .iter()
                 .map(|op| format!("{}:{}", txid_hex(&op.txid), op.n))
                 .collect(),
+            yec_pq_slh_zat: b
+                .yec_pq_by_scheme
+                .scheme(crate::pq::SCHEME_SLH_DSA_SHA2_128S),
+            yec_pq_falcon_zat: b.yec_pq_by_scheme.scheme(crate::pq::SCHEME_FN_DSA_512),
+            yec_staged_for_mint_zat: crate::build::mint::staged_for_mint_zat(&o.wallet)?,
         })
     })
 }
@@ -1804,6 +1961,30 @@ pub fn receive_address(kind: ReceiveKind, fresh: bool) -> Result<AddressPair, Ye
                 .meta_u64("sapling_diversifier")
                 .map_err(store_err)?;
             shielded_pair(o, index)
+        }
+        ReceiveKind::PqFalcon | ReceiveKind::PqSlh => {
+            let row = o.wallet.receive_address(fresh)?;
+            let (id, name) = if kind == ReceiveKind::PqFalcon {
+                (
+                    o.wallet.falcon_holder_id(&row).ok_or_else(|| {
+                        YewError::new(ErrorKind::Other, "this key has no post-quantum pair")
+                    })?,
+                    "FN-DSA-512",
+                )
+            } else {
+                (o.wallet.pq_owner_id(row.index), "SLH-DSA-SHA2-128s")
+            };
+            let address = keys::encode_pq_yec(o.wallet.network, &id).ok_or_else(|| {
+                YewError::new(ErrorKind::Other, "the scheme has no address version")
+            })?;
+            Ok(AddressPair {
+                ye: String::new(),
+                s: row.address_s.clone(),
+                path: format!("m/44'/347'/0'/{}/{} ({name})", row.chain, row.index),
+                covered_by_seed: true,
+                address,
+                kind,
+            })
         }
         _ => {
             let row = o.wallet.receive_address(fresh)?;
@@ -2171,6 +2352,308 @@ pub fn move_confirm(preview_id: String) -> Result<SendResult, YewError> {
     send_yec_confirm(preview_id)
 }
 
+/// One of the wallet's own post-quantum addresses holding plain YEC (a send source, beta2 D-8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PqSource {
+    /// The address (`sqf…`/`sqs…`, `tqf…`/`tqs…`, `rqf…`/`rqs…`).
+    pub address: String,
+    /// The scheme number (1 SLH-DSA-SHA2-128s, 2 FN-DSA-512).
+    pub scheme: u8,
+    /// The scheme's name, as the node lists it.
+    pub scheme_name: String,
+    /// Its spendable `PQ_OWNED` YEC, zat (confirmed, not being moved).
+    pub balance_zat: i64,
+}
+
+/// The wallet's post-quantum addresses that hold spendable plain YEC, largest first (the send
+/// screen's source chooser). Empty on a server without Yellowback: it lists no PQ coin.
+pub fn pq_sources() -> Result<Vec<PqSource>, YewError> {
+    with_open(|o| {
+        let mut by: HashMap<Vec<u8>, i64> = HashMap::new();
+        for u in o.wallet.spendable_utxos()? {
+            if u.class == UtxoClass::PqOwned && u.height > 0 {
+                *by.entry(u.script.clone()).or_default() += u.value;
+            }
+        }
+        let mut out: Vec<PqSource> = by
+            .into_iter()
+            .filter_map(|(script, balance_zat)| {
+                let id = crate::pq::pqpkh_of(&script)?;
+                Some(PqSource {
+                    address: keys::encode_pq_yec(o.wallet.network, &id)?,
+                    scheme: id.scheme,
+                    scheme_name: keys::pq_scheme_name(id.scheme)
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    balance_zat,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            b.balance_zat
+                .cmp(&a.balance_zat)
+                .then(a.address.cmp(&b.address))
+        });
+        Ok(out)
+    })
+}
+
+/// A send from a post-quantum address, before confirmation (beta2 D-8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PqSendPreviewInfo {
+    /// Pass to [`pq_send_confirm`].
+    pub preview_id: String,
+    /// The source address.
+    pub from: String,
+    /// The source's scheme name (`SLH-DSA-SHA2-128s`, `FN-DSA-512`).
+    pub scheme_name: String,
+    /// The recipient as given.
+    pub to: String,
+    /// The amount actually sent, zat.
+    pub amount_zat: i64,
+    /// The amount was raised by one zat off `TOKEN_VALUE`.
+    pub amount_bumped: bool,
+    /// The fee, zat: priced on the transaction's size (an SLH-DSA input carries a ~7.9 KB
+    /// signature, a Falcon one ~1.6 KB).
+    pub fee_zat: i64,
+    /// The change back to the source address, zat (D-4).
+    pub change_zat: i64,
+    /// Number of post-quantum inputs.
+    pub inputs: u32,
+    /// The signed transaction's size, bytes.
+    pub size_bytes: u32,
+    /// Milliseconds the signatures took on this device; `None` where the platform cannot
+    /// measure it (the browser).
+    pub sign_millis: Option<u64>,
+    /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
+    /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
+    /// the server). Show it next to the fee.
+    pub fee_note: Option<String>,
+    /// Set exactly when [`PqSendPreviewInfo::fee_note`] is: pass it as `accept_unusual_fee` to
+    /// [`pq_send_confirm`] after the separate confirmation; without it the confirm refuses.
+    pub unusual_fee_ack: Option<String>,
+    /// The YEC price the server's fee terms rest on, µUSD per YEC (`None`: none reported).
+    pub fee_price_micro_usd: Option<i64>,
+    /// `nExpiryHeight`.
+    pub expiry_height: u32,
+    /// The txid the transaction will have.
+    pub txid: String,
+    /// The send is from the private (Sapling) balance to a post-quantum address
+    /// ([`private_pq_send_preview`]): `from` is empty, `scheme_name` is the recipient's,
+    /// `inputs` counts the notes spent, `change_zat` goes back to the private balance, and the
+    /// amount and the recipient become visible on the chain (beta2 D-5: show the private ->
+    /// public notice).
+    pub from_private: bool,
+}
+
+/// Plan and sign a send of `zat` from the own post-quantum address `from` to `to` (ECC `s…`,
+/// post-quantum, or a private `ys1…` address, beta2 item 5: proven here, so it needs the Sapling
+/// parameters, [`ErrorKind::ParamsMissing`] otherwise), after a sync (`build::pq_send`, the
+/// planner yewd's `z_sendmany` uses). Nothing is broadcast. Refusals carry the node's text.
+pub fn pq_send_preview(from: String, to: String, zat: i64) -> Result<PqSendPreviewInfo, YewError> {
+    with_open_async(|o| {
+        Box::pin(async move {
+            let r = o.sync().await?;
+            // beta2 item 5: a private (Sapling) recipient is proven here, so the parameters
+            // must be present (download, then preview again)
+            let p = if crate::shielded_keys::is_sapling_address(o.wallet.network, to.trim()) {
+                if !sapling_params::status(&o.params_dir).present() {
+                    return Err(YewError::new(
+                        ErrorKind::ParamsMissing,
+                        "Private sending needs a one-time download of 52 MB (the Sapling proving parameters).",
+                    ));
+                }
+                let side = crate::build::pq_send::SaplingSide::of(&o.wallet, &o.params_dir)?;
+                crate::build::pq_send::build_pq_to_sapling(
+                    &o.wallet,
+                    &side,
+                    &from,
+                    &to,
+                    zat,
+                    r.tip,
+                    r.branch_id,
+                )?
+            } else {
+                crate::build::pq_send::build_pq_send(
+                    &o.wallet,
+                    &from,
+                    &to,
+                    zat,
+                    r.tip,
+                    r.branch_id,
+                )?
+            };
+            let txid = txid_hex(&p.txid);
+            let out = PqSendPreviewInfo {
+                preview_id: format!("q{txid}"),
+                from: p.from.clone(),
+                scheme_name: keys::pq_scheme_name(p.scheme)
+                    .unwrap_or("unknown")
+                    .to_string(),
+                to: p.to.clone(),
+                amount_zat: p.amount,
+                amount_bumped: p.amount_bumped,
+                fee_zat: p.fee,
+                change_zat: p.change,
+                inputs: p.inputs.len() as u32,
+                size_bytes: p.raw.len() as u32,
+                sign_millis: p.sign_millis,
+                fee_note: p.fee_note.clone(),
+                unusual_fee_ack: p.fee_guard.ack.clone(),
+                fee_price_micro_usd: price_opt(p.fee_guard.reported_price_micro_usd),
+                expiry_height: p.expiry_height,
+                txid,
+                from_private: false,
+            };
+            o.previews
+                .insert(out.preview_id.clone(), Preview::Pq(Box::new(p)));
+            Ok(out)
+        })
+    })
+}
+
+/// Plan, prove and authorize a send of `zat` from the private (Sapling) balance to the
+/// post-quantum address `to` (`sqf…`/`sqs…` of this network), after a sync of both pools
+/// (`build::sapling_pq`; beta2 D-2, D-8). Proven here, so it needs the Sapling parameters
+/// ([`ErrorKind::ParamsMissing`] otherwise). The amount and the recipient become visible on the
+/// chain (`from_private` set: D-5). Confirm with [`pq_send_confirm`]. Nothing is broadcast.
+///
+/// The notes' transactions are read from the wallet's own store; one the store lacks is fetched
+/// from the server only with `allow_note_lookup` (the user's go-ahead after
+/// [`ErrorKind::NoteLookupNeeded`], review YEW-REVIEW-8 M1).
+pub fn private_pq_send_preview(
+    to: String,
+    zat: i64,
+    allow_note_lookup: bool,
+) -> Result<PqSendPreviewInfo, YewError> {
+    with_open_async(|o| {
+        Box::pin(async move {
+            let r = o.sync().await?;
+            o.sync_shielded(yec_private::no_progress()).await?;
+            if !sapling_params::status(&o.params_dir).present() {
+                return Err(YewError::new(
+                    ErrorKind::ParamsMissing,
+                    "Private sending needs a one-time download of 52 MB (the Sapling proving parameters).",
+                ));
+            }
+            let plan = crate::build::sapling_pq::plan_sapling_to_pq(
+                &mut o.wallet,
+                &to,
+                zat,
+                r.tip,
+                r.branch_id,
+            )?;
+            // the notes' plaintexts are decrypted again from their transactions (the store keeps
+            // `rcm` only, the builder spends ZIP-212 notes by their `rseed`): from the store,
+            // the server only with the user's go-ahead (review YEW-REVIEW-8 M1)
+            ensure_conn(o).await?;
+            let fetched = crate::build::sapling_pq::note_txs(
+                &mut o.conn.as_mut().expect("connected").compact,
+                o.wallet.shielded()?,
+                plan.note_txids(),
+                allow_note_lookup,
+            )
+            .await?;
+            let side = crate::build::pq_send::SaplingSide::of(&o.wallet, &o.params_dir)?;
+            let p =
+                crate::build::sapling_pq::build_sapling_to_pq(&o.wallet, &side, plan, &fetched)?;
+            let txid = txid_hex(&p.txid);
+            let out = PqSendPreviewInfo {
+                preview_id: format!("zq{txid}"),
+                from: String::new(),
+                scheme_name: keys::pq_scheme_name(p.id.scheme)
+                    .unwrap_or("unknown")
+                    .to_string(),
+                to: p.to.clone(),
+                amount_zat: p.amount,
+                amount_bumped: p.amount_bumped,
+                fee_zat: p.fee,
+                change_zat: p.change,
+                inputs: p.notes,
+                size_bytes: p.raw.len() as u32,
+                sign_millis: p.prove_millis,
+                fee_note: p.fee_note.clone(),
+                unusual_fee_ack: p.fee_guard.ack.clone(),
+                fee_price_micro_usd: price_opt(p.fee_guard.reported_price_micro_usd),
+                expiry_height: p.expiry_height,
+                txid,
+                from_private: true,
+            };
+            o.previews
+                .insert(out.preview_id.clone(), Preview::SaplingPq(Box::new(p)));
+            Ok(out)
+        })
+    })
+}
+
+/// Broadcast a [`pq_send_preview`] (or a [`private_pq_send_preview`]) through both gate layers (the node's dry run must say `ok,
+/// burned 0`; a server without Yellowback refuses it). A send whose outcome is unknown says
+/// `…; status unknown, txid <txid>: check before sending again`. A flagged fee
+/// ([`PqSendPreviewInfo::unusual_fee_ack`]) needs that acknowledgement as `accept_unusual_fee`;
+/// without it the call refuses and the preview stays.
+pub fn pq_send_confirm(
+    preview_id: String,
+    accept_unusual_fee: Option<String>,
+) -> Result<SendResult, YewError> {
+    with_open_async(|o| {
+        Box::pin(async move {
+            match o.previews.get(&preview_id) {
+                Some(Preview::Pq(p)) => {
+                    crate::build::terms::require_ack(&p.fee_guard, accept_unusual_fee.as_deref())?
+                }
+                Some(Preview::SaplingPq(p)) => {
+                    crate::build::terms::require_ack(&p.fee_guard, accept_unusual_fee.as_deref())?
+                }
+                _ => {}
+            }
+            if let Some(Preview::SaplingPq(_)) = o.previews.get(&preview_id) {
+                let Some(Preview::SaplingPq(p)) = o.previews.remove(&preview_id) else {
+                    unreachable!("matched above")
+                };
+                ensure_conn(o).await?;
+                let Open { wallet, conn, .. } = o;
+                let conn = conn.as_mut().expect("connected");
+                let (txid, v) = crate::build::sapling_pq::broadcast(
+                    wallet,
+                    &mut conn.compact,
+                    &mut conn.validator,
+                    &p,
+                    accept_unusual_fee.as_deref(),
+                )
+                .await?;
+                return Ok(SendResult {
+                    txid,
+                    verdict: v.verdict,
+                });
+            }
+            let p = match o.previews.remove(&preview_id) {
+                Some(Preview::Pq(p)) => p,
+                _ => {
+                    return Err(YewError::new(
+                        ErrorKind::PreviewExpired,
+                        "This preview is no longer valid. Start the send again.",
+                    ))
+                }
+            };
+            ensure_conn(o).await?;
+            let Open { wallet, conn, .. } = o;
+            let conn = conn.as_mut().expect("connected");
+            let (txid, v) = crate::build::pq_send::broadcast(
+                wallet,
+                &mut conn.compact,
+                &mut conn.validator,
+                &p,
+                accept_unusual_fee.as_deref(),
+            )
+            .await?;
+            Ok(SendResult {
+                txid,
+                verdict: v.verdict,
+            })
+        })
+    })
+}
+
 /// Broadcast a YEC preview through the gate (D-W-5). A private send is proved and signed
 /// here (seconds), with the proving parameters verified first ([`ErrorKind::ParamsMissing`]
 /// when they are not downloaded: the preview stays valid, download, then confirm again).
@@ -2379,6 +2862,9 @@ pub fn send_yed_preview(recipients: Vec<Recipient>) -> Result<YedPreview, YewErr
                     yed_out_cents: v.yed_out,
                     accepted: crate::gate::accept(&v, 0).is_ok(),
                 },
+                fee_note: p.fee_guard.note.clone(),
+                unusual_fee_ack: p.fee_guard.ack.clone(),
+                fee_price_micro_usd: price_opt(p.fee_guard.reported_price_micro_usd),
             };
             o.previews.insert(txid, Preview::Yed(p));
             Ok(out)
@@ -2386,10 +2872,18 @@ pub fn send_yed_preview(recipients: Vec<Recipient>) -> Result<YedPreview, YewErr
     })
 }
 
-/// Broadcast a YED preview through the gate (D-W-5): both layers again on the same bytes.
-pub fn send_yed_confirm(preview_id: String) -> Result<SendResult, YewError> {
+/// Broadcast a YED preview through the gate (D-W-5): both layers again on the same bytes. A
+/// preview whose fee is flagged ([`YedPreview::unusual_fee_ack`]) is confirmed only with that
+/// acknowledgement as `accept_unusual_fee`; without it the call refuses and the preview stays.
+pub fn send_yed_confirm(
+    preview_id: String,
+    accept_unusual_fee: Option<String>,
+) -> Result<SendResult, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
+            if let Some(Preview::Yed(p)) = o.previews.get(&preview_id) {
+                crate::build::terms::require_ack(&p.fee_guard, accept_unusual_fee.as_deref())?;
+            }
             let p = match o.previews.remove(&preview_id) {
                 Some(Preview::Yed(p)) => p,
                 _ => {
@@ -2402,8 +2896,14 @@ pub fn send_yed_confirm(preview_id: String) -> Result<SendResult, YewError> {
             ensure_conn(o).await?;
             let Open { wallet, conn, .. } = o;
             let conn = conn.as_mut().expect("connected");
-            let (txid, v) =
-                yed_transfer::broadcast(wallet, &mut conn.compact, &mut conn.validator, &p).await?;
+            let (txid, v) = yed_transfer::broadcast(
+                wallet,
+                &mut conn.compact,
+                &mut conn.validator,
+                &p,
+                accept_unusual_fee.as_deref(),
+            )
+            .await?;
             Ok(SendResult {
                 txid,
                 verdict: v.verdict,
@@ -2528,7 +3028,23 @@ pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
                 yellowback_usable: usable,
                 ..event(SyncStage::Scanning, "Scanning addresses".into(), tip, 5)
             });
-            let r = o.sync().await?;
+            // review YEW-REVIEW-5 L1: the provenance checks (one GetTransaction per creating
+            // transaction, four at a time) report through the same stream
+            let check_sink = inner.clone();
+            let checking: sync::CheckProgress = Arc::new(move |done: usize, total: usize| {
+                let _ = check_sink.add(SyncEvent {
+                    stage: SyncStage::Scanning,
+                    message: format!("Checking where your coins came from: {done} of {total}"),
+                    tip,
+                    sync_height: 0,
+                    yellowback_usable: usable,
+                    percent: 5 + (done * 4 / total.max(1)) as i32,
+                    shielded_height: 0,
+                    shielded_sendable: false,
+                    shielded_message: String::new(),
+                });
+            });
+            let r = o.sync_with(Some(checking)).await?;
             emit(SyncEvent {
                 yellowback_usable: r.yellowback,
                 ..event(
@@ -2944,7 +3460,7 @@ pub fn mint_availability() -> Result<MintAvailability, YewError> {
 /// The mint estimate (after a sync): collateral, fees, payee, heights, term class, attestor
 /// seqs, each checked against the network's rules (audit G-1, G-2). Nothing is signed. An
 /// amount outside `[MIN_MINT, MAX_MINT]` is [`ErrorKind::Input`] (audit G-9).
-pub fn mint_estimate(cents: i64, lock_blocks: u32) -> Result<MintEstimate, YewError> {
+pub fn mint_estimate(cents: i64, lock_blocks: u32, from: String) -> Result<MintEstimate, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
             if cents <= 0 || cents > u32::MAX as i64 {
@@ -2954,11 +3470,28 @@ pub fn mint_estimate(cents: i64, lock_blocks: u32) -> Result<MintEstimate, YewEr
                 ));
             }
             let r = o.sync().await?;
-            let Open { wallet, conn, .. } = o;
+            let source = mint_source_of(o.wallet.network, &from)?;
+            if source == crate::build::mint::MintSource::Sapling {
+                o.sync_shielded(yec_private::no_progress()).await?;
+            }
+            let Open {
+                wallet,
+                conn,
+                mint_estimates,
+                ..
+            } = o;
             let conn = conn.as_mut().expect("connected");
             let e = wallet
-                .mint_estimate(&mut conn.validator, cents as u64, lock_blocks, r.tip)
+                .mint_estimate(
+                    &mut conn.validator,
+                    cents as u64,
+                    lock_blocks,
+                    r.tip,
+                    source,
+                )
                 .await?;
+            // review YEW-REVIEW-10 L2: the start takes its terms from the estimate issued here
+            mint_estimates.issue(&e);
             Ok(MintEstimate {
                 cents: e.cents as i64,
                 lock_blocks: e.lock_blocks,
@@ -2983,6 +3516,13 @@ pub fn mint_estimate(cents: i64, lock_blocks: u32) -> Result<MintEstimate, YewEr
                 p_mint_micro_usd: if e.p_mint > 0 { Some(e.p_mint) } else { None },
                 armed: e.armed,
                 bundle_seqs: e.bundle_seqs.iter().map(|s| *s as u32).collect(),
+                fee_note: e.fee_guard.note.clone(),
+                unusual_fee_ack: e.fee_guard.ack.clone(),
+                fee_price_micro_usd: price_opt(e.fee_guard.reported_price_micro_usd),
+                from: from.trim().to_string(),
+                carrier_fee_zat: e.carrier_fee_zat,
+                carrier_fee_note: e.carrier_fee_guard.as_ref().and_then(|g| g.note.clone()),
+                unusual_carrier_fee_ack: e.carrier_fee_guard.as_ref().and_then(|g| g.ack.clone()),
             })
         })
     })
@@ -2990,7 +3530,10 @@ pub fn mint_estimate(cents: i64, lock_blocks: u32) -> Result<MintEstimate, YewEr
 
 /// Start a mint (after a sync): verify the bundle, fund the carrier through the gate, record
 /// the row. `confirmed` is the estimate the user confirmed: a server answer that differs in
-/// collateral, fee, payee or class is refused (`terms-changed`, audit G-2). Returns the row
+/// collateral, fee, payee or class is refused (`terms-changed`, audit G-2). The start takes its
+/// terms from the estimate this wallet issued for `(cents, lock_blocks, from)` (review
+/// YEW-REVIEW-10 L2): none issued is [`ErrorKind::PreviewExpired`], terms that differ from it (a
+/// raised carrier fee included) are refused before anything is fetched. Returns the row
 /// (`CARRIER_SENT`); [`mint_finish`] sends the MINT once a sync has seen the carrier confirm.
 pub fn mint_start(
     cents: i64,
@@ -3005,13 +3548,63 @@ pub fn mint_start(
                     "Enter an amount in dollars to mint.",
                 ));
             }
+            let source = mint_source_of(o.wallet.network, &confirmed.from)?;
+            // review YEW-REVIEW-10 L2: the terms (the carrier fee cap and the source included)
+            // are those of the estimate the core issued for this amount, lock and source; the
+            // screen's must equal them, and only its acknowledgement tokens are taken
+            let issued = o
+                .mint_estimates
+                .latest_for(cents as u64, lock_blocks, source)
+                .ok_or_else(|| {
+                    YewError::new(
+                        ErrorKind::PreviewExpired,
+                        "Estimate the mint again: a start takes the terms of an estimate this wallet made.",
+                    )
+                })?;
+            let terms = crate::build::mint::terms_from_issued(
+                issued,
+                &crate::build::mint::ConfirmedTerms {
+                    collateral_zat: confirmed.collateral_zat,
+                    fee_zat: confirmed.fee_zat,
+                    payee: confirmed.payee,
+                    term_class: confirmed.term_class,
+                    accept_unusual_fee: confirmed.accept_unusual_fee,
+                    carrier_fee_zat: Some(confirmed.carrier_fee_zat),
+                    accept_unusual_carrier_fee: confirmed.accept_unusual_carrier_fee,
+                },
+            )
+            .map_err(|e| YewError::from(WalletError::Mint(e)))?;
             let r = o.sync().await?;
-            let terms = crate::build::mint::ConfirmedTerms {
-                collateral_zat: confirmed.collateral_zat,
-                fee_zat: confirmed.fee_zat,
-                payee: confirmed.payee,
-                term_class: confirmed.term_class,
-            };
+            if source == crate::build::mint::MintSource::Sapling {
+                if !sapling_params::status(&o.params_dir).present() {
+                    return Err(YewError::new(
+                        ErrorKind::ParamsMissing,
+                        "Funding a mint from the private balance needs a one-time download of 52 MB (the Sapling proving parameters).",
+                    ));
+                }
+                o.sync_shielded(yec_private::no_progress()).await?;
+                let Open {
+                    wallet,
+                    conn,
+                    params_dir,
+                    ..
+                } = &mut *o;
+                let conn = conn.as_mut().expect("connected");
+                let id = crate::build::mint_sapling::start_from_sapling(
+                    wallet,
+                    &mut conn.compact,
+                    &mut conn.validator,
+                    cents as u64,
+                    lock_blocks,
+                    Some(&terms),
+                    r.tip,
+                    r.branch_id,
+                    params_dir,
+                    confirmed.allow_note_lookup,
+                )
+                .await?;
+                return row_status(o, id);
+            }
             let id = {
                 let Open { wallet, conn, .. } = &mut *o;
                 let conn = conn.as_mut().expect("connected");
@@ -3024,6 +3617,7 @@ pub fn mint_start(
                         Some(&terms),
                         r.tip,
                         r.branch_id,
+                        source,
                     )
                     .await?
             };
@@ -3051,8 +3645,14 @@ pub fn mints() -> Result<Vec<MintStatus>, YewError> {
 
 /// Send the MINT (or, for a claim row, the CLAIM) over the confirmed carrier (after a sync;
 /// both gate layers). The row must be `CARRIER_CONFIRMED` with the window open; a lapsed
-/// row is refused with `carrier-lapsed`. Returns the row (`MAIN_SENT`).
-pub fn mint_finish(mint_id: i64) -> Result<MintStatus, YewError> {
+/// row is refused with `carrier-lapsed`. Returns the row (`MAIN_SENT`). A main fee above what the
+/// start accepted is refused (`unusual-fee: …`) with a new acknowledgement in the message
+/// (`accept-unusual-fee:<fee>:row:<id>`); calling again with it in `accept_unusual_fee` pays that
+/// fee (review YEW-REVIEW-5 M2).
+pub fn mint_finish(
+    mint_id: i64,
+    accept_unusual_fee: Option<String>,
+) -> Result<MintStatus, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
             let r = o.sync().await?;
@@ -3066,6 +3666,7 @@ pub fn mint_finish(mint_id: i64) -> Result<MintStatus, YewError> {
                         mint_id,
                         r.tip,
                         r.branch_id,
+                        accept_unusual_fee.as_deref(),
                     )
                     .await?;
             }
@@ -3255,6 +3856,9 @@ pub fn release_preview(intent: String) -> Result<ReleasePreview, YewError> {
                 recipient_address: p.recipient_address.clone(),
                 fee_zat: p.fee,
                 txid: id.clone(),
+                fee_note: p.fee_guard.note.clone(),
+                unusual_fee_ack: p.fee_guard.ack.clone(),
+                fee_price_micro_usd: price_opt(p.fee_guard.reported_price_micro_usd),
             };
             o.previews.insert(id, Preview::Release(p));
             Ok(out)
@@ -3262,10 +3866,18 @@ pub fn release_preview(intent: String) -> Result<ReleasePreview, YewError> {
     })
 }
 
-/// Broadcast a release preview through both gate layers.
-pub fn release_confirm(preview_id: String) -> Result<ReleaseResult, YewError> {
+/// Broadcast a release preview through both gate layers. A flagged fee
+/// ([`ReleasePreview::unusual_fee_ack`]) needs that acknowledgement as `accept_unusual_fee`;
+/// without it the call refuses and the preview stays.
+pub fn release_confirm(
+    preview_id: String,
+    accept_unusual_fee: Option<String>,
+) -> Result<ReleaseResult, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
+            if let Some(Preview::Release(p)) = o.previews.get(&preview_id) {
+                crate::build::terms::require_ack(&p.fee_guard, accept_unusual_fee.as_deref())?;
+            }
             let p = match o.previews.remove(&preview_id) {
                 Some(Preview::Release(p)) => p,
                 _ => {
@@ -3279,7 +3891,12 @@ pub fn release_confirm(preview_id: String) -> Result<ReleaseResult, YewError> {
             let Open { wallet, conn, .. } = o;
             let conn = conn.as_mut().expect("connected");
             let (sent, v) = wallet
-                .release_confirm(&mut conn.compact, &mut conn.validator, &p)
+                .release_confirm(
+                    &mut conn.compact,
+                    &mut conn.validator,
+                    &p,
+                    accept_unusual_fee.as_deref(),
+                )
                 .await?;
             Ok(ReleaseResult {
                 txid: sent,
@@ -3297,11 +3914,15 @@ pub fn claimable() -> Result<Vec<ClaimableItem>, YewError> {
             ensure_conn(o).await?;
             let Open { wallet, conn, .. } = o;
             let conn = conn.as_mut().expect("connected");
+            let g = crate::build::mint::main_fee_guard(wallet, "claim")?;
             Ok(wallet
                 .claimable(&mut conn.validator)
                 .await?
                 .into_iter()
                 .map(|c| ClaimableItem {
+                    fee_note: g.note.clone(),
+                    unusual_fee_ack: g.ack.clone(),
+                    fee_price_micro_usd: price_opt(g.reported_price_micro_usd),
                     vault_txid: c.vault_txid,
                     owner_address: c.owner_address,
                     cents: c.minted_cents as i64,
@@ -3345,6 +3966,7 @@ pub fn claim(vault_txid: String, confirmed: ClaimTerms) -> Result<MintStatus, Ye
     let bounds = crate::build::terms::ClaimBounds {
         max_burn_cents: confirmed.max_burn_cents as u64,
         min_out_zat: confirmed.min_out_zat,
+        accept_unusual_fee: confirmed.accept_unusual_fee,
     };
     with_open_async(|o| {
         Box::pin(async move {
@@ -3400,13 +4022,17 @@ mod tests {
         assert_eq!(new_shielded_address().unwrap_err().kind, ErrorKind::Locked);
         assert_eq!(params_status().unwrap_err().kind, ErrorKind::Locked);
         assert_eq!(history(0, 10).unwrap_err().kind, ErrorKind::Locked);
-        assert_eq!(mint_estimate(100, 10).unwrap_err().kind, ErrorKind::Locked);
+        assert_eq!(
+            mint_estimate(100, 10, String::new()).unwrap_err().kind,
+            ErrorKind::Locked
+        );
         assert_eq!(vaults().unwrap_err().kind, ErrorKind::Locked);
         assert_eq!(mints().unwrap_err().kind, ErrorKind::Locked);
         // A malformed vault txid is refused before the wallet is looked at.
         let terms = ClaimTerms {
             max_burn_cents: 10_000,
             min_out_zat: 1,
+            accept_unusual_fee: None,
         };
         assert_eq!(
             claim("x".into(), terms.clone()).unwrap_err().kind,
@@ -3416,6 +4042,7 @@ mod tests {
         let unbounded = ClaimTerms {
             max_burn_cents: 0,
             min_out_zat: 0,
+            accept_unusual_fee: None,
         };
         assert_eq!(
             claim("ab".repeat(32), unbounded).unwrap_err().kind,
@@ -3604,11 +4231,32 @@ mod tests {
         assert!(mints().unwrap().is_empty());
         assert!(vaults().unwrap().is_empty());
         assert_eq!(mint_status(7).unwrap_err().kind, ErrorKind::Input);
-        assert_eq!(mint_estimate(0, 10).unwrap_err().kind, ErrorKind::Input);
+        assert_eq!(
+            mint_estimate(0, 10, String::new()).unwrap_err().kind,
+            ErrorKind::Input
+        );
         // Above u32 (audit G-9): refused before any network call.
         assert_eq!(
-            mint_estimate(u32::MAX as i64 + 1, 48).unwrap_err().kind,
+            mint_estimate(u32::MAX as i64 + 1, 48, String::new())
+                .unwrap_err()
+                .kind,
             ErrorKind::Input
+        );
+        // review YEW-REVIEW-10 L2: a start needs an estimate this wallet issued (none yet)
+        let terms = MintTerms {
+            collateral_zat: 1_000,
+            fee_zat: 0,
+            payee: String::new(),
+            term_class: "A".into(),
+            accept_unusual_fee: None,
+            from: String::new(),
+            carrier_fee_zat: 1_000,
+            accept_unusual_carrier_fee: None,
+            allow_note_lookup: false,
+        };
+        assert_eq!(
+            mint_start(100, 48, terms).unwrap_err().kind,
+            ErrorKind::PreviewExpired
         );
         assert_eq!(
             send_yec_confirm("nope".into()).unwrap_err().kind,
@@ -4000,17 +4648,23 @@ mod tests {
         // the node's regtest pair (lightwalletd-dd q/pqaddr pqPlainVectors): rq… is a YEC address
         let n = validate_address(
             NetworkId::Regtest,
-            "rq5MXCssfNHhhz8WuNL5bKAmUKc1k1Wx7TpG2fM8ks9Gz5cPeCqKa".into(),
+            "rqf37MAujTiHQadywBQeNWk42bweehqf1UdcCrXg4oAqhqZQhCebM".into(),
         );
         assert!(n.valid && n.kind == "pq_yec" && !n.yellowback_form, "{n:?}");
         let m = validate_address(
             NetworkId::Mainnet,
-            "sq4ekeYR7pAE7ByLpq428jfiHrrsVyMnSTs58MNJeFMXDFL63vTbT".into(),
+            "sqf3ARYKcaUk1YK34TAkwvGjSQRuLkLH2sCqnofzQ1Fr59eA2Past".into(),
         );
         assert!(m.valid && m.kind == "pq_yec", "{m:?}");
+        // the pre-D-9 form of the same key (D-9: refused, never read as an address)
+        let old = validate_address(
+            NetworkId::Mainnet,
+            "sq4ekeYR7pAE7ByLpq428jfiHrrsVyMnSTs58MNJeFMXDFL63vTbT".into(),
+        );
+        assert!(!old.valid && old.kind.is_empty(), "{old:?}");
         assert!(validate_address(
             NetworkId::Regtest,
-            "sq4ekeYR7pAE7ByLpq428jfiHrrsVyMnSTs58MNJeFMXDFL63vTbT".into()
+            "sqf3ARYKcaUk1YK34TAkwvGjSQRuLkLH2sCqnofzQ1Fr59eA2Past".into()
         )
         .kind
         .is_empty());

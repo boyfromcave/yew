@@ -21,7 +21,9 @@ import '../term_classes.dart';
 import '../theme.dart';
 import '../trust_text.dart';
 import '../widgets/move_public_hint.dart';
+import '../widgets/note_lookup.dart';
 import '../widgets/preview_card.dart';
+import '../widgets/unusual_fee.dart';
 import 'mint_progress.dart';
 import 'receive.dart';
 
@@ -41,6 +43,9 @@ class MintScreen extends StatefulWidget {
   State<MintScreen> createState() => _MintScreenState();
 }
 
+/// The mint's "Fund from" value naming the private (Sapling) balance (the core's `private`).
+const String mintFromPrivate = 'private';
+
 class _MintScreenState extends State<MintScreen> {
   final _amount = TextEditingController();
   late final TextEditingController _lock;
@@ -49,6 +54,10 @@ class _MintScreenState extends State<MintScreen> {
   String? _error;
   bool _needYec = false;
   MintEstimate? _estimate;
+
+  /// Where the YEC comes from (beta2 D-3): '' = the public balance, else one of the wallet's
+  /// post-quantum addresses holding YEC.
+  String _from = '';
   MintAvailability? _avail;
   String? _availError;
   bool _checking = true;
@@ -142,7 +151,7 @@ class _MintScreenState extends State<MintScreen> {
       _needYec = false;
     });
     try {
-      final e = await app.api.mintEstimate(cents: cents, lockBlocks: lock);
+      final e = await app.api.mintEstimate(cents: cents, lockBlocks: lock, from: _from);
       setState(() => _estimate = e);
     } catch (e) {
       setState(() {
@@ -162,14 +171,44 @@ class _MintScreenState extends State<MintScreen> {
     setState(() => _busy = true);
     try {
       // The terms shown are the terms confirmed: the core refuses a server answer that differs.
-      final row = await app.api.mintStart(
-        cents: e.cents,
-        lockBlocks: e.lockBlocks,
-        confirmed: MintTerms(collateralZat: e.collateralZat, feeZat: e.feeZat, payee: e.payee, termClass: e.termClass),
-      );
+      // review YEW-REVIEW-4 M2: an unusual MINT fee needs its own confirmation
+      final ack = await acceptUnusualFee(context, note: e.feeNote, ack: e.unusualFeeAck);
+      // beta2 D-3: a post-quantum source's carrier fee rests on the server's terms
+      if (!mounted) return;
+      final carrierAck = await acceptUnusualFee(context, note: e.carrierFeeNote, ack: e.unusualCarrierFeeAck);
+      Future<MintStatus> start(bool allowLookup) => app.api.mintStart(
+            cents: e.cents,
+            lockBlocks: e.lockBlocks,
+            confirmed: MintTerms(
+              collateralZat: e.collateralZat,
+              feeZat: e.feeZat,
+              payee: e.payee,
+              termClass: e.termClass,
+              acceptUnusualFee: ack,
+              from: e.from,
+              carrierFeeZat: e.carrierFeeZat,
+              acceptUnusualCarrierFee: carrierAck,
+              allowNoteLookup: allowLookup,
+            ),
+          );
+      MintStatus row;
+      try {
+        row = await start(false);
+      } catch (err) {
+        // review YEW-REVIEW-8 M1: from the private balance, asking the server for note
+        // transactions the wallet does not hold yet needs the user's go-ahead
+        if (kindOf(err) != ErrorKind.noteLookupNeeded) rethrow;
+        if (!mounted || !await askNoteLookup(context, messageOf(err))) {
+          setState(() => _busy = false);
+          return;
+        }
+        row = await start(true);
+      }
       await app.refresh();
       if (!mounted) return;
       Navigator.of(context).pushReplacement(MaterialPageRoute<void>(builder: (_) => MintProgressScreen(mintId: row.mintId)));
+    } on UnusualFeeDeclined {
+      return;
     } catch (err) {
       setState(() {
         _error = messageOf(err);
@@ -181,6 +220,19 @@ class _MintScreenState extends State<MintScreen> {
       if (mounted) setState(() => _busy = false);
     }
   }
+
+  /// The source the estimate was asked for, as the "Not enough YEC" line names it.
+  static String _sourceName(String from) => from.isEmpty
+      ? 'your public balance'
+      : from == mintFromPrivate
+          ? 'your private balance'
+          : 'the post-quantum address ${shorten(from, head: 6, tail: 4)}';
+
+  /// beta2 D-3: the private balance can fund the mint itself; said beside "Move YEC to public"
+  /// when the "Fund from" chooser offers it.
+  static String? _privateSourceHint(Balances b) => b.yecShieldedSpendableZat > 0
+      ? 'Or choose "Private · ${formatYec(b.yecShieldedSpendableZat)} YEC" under Fund from: this mint can be funded from your private balance.'
+      : null;
 
   @override
   Widget build(BuildContext context) {
@@ -263,6 +315,45 @@ class _MintScreenState extends State<MintScreen> {
               },
               decoration: const InputDecoration(labelText: 'Lock, in blocks', helperText: 'Redeem at any time after the lock; a liquidator may claim once the grace period after it has passed'),
             ),
+            // beta2 D-3: fund the mint from the public balance, the private balance or a post-quantum address
+            if (app.pqSources.isNotEmpty || app.balances.yecShieldedSpendableZat > 0) ...[
+              const SizedBox(height: 12),
+              KeyedSubtree(
+                key: ValueKey('mint-from-${app.pqSources.map((s) => s.address).join(',')}-${app.balances.yecShieldedSpendableZat > 0}'),
+                child: DropdownButtonFormField<String>(
+                  key: const Key('mint-from'),
+                  initialValue: app.pqSources.any((s) => s.address == _from) || (_from == mintFromPrivate && app.balances.yecShieldedSpendableZat > 0) ? _from : '',
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Fund from'),
+                  items: [
+                    DropdownMenuItem<String>(
+                      value: '',
+                      child: Text('Public · ${formatYec(app.balances.yecZat + app.balances.yecReservedZat)} YEC', overflow: TextOverflow.ellipsis),
+                    ),
+                    if (app.balances.yecShieldedSpendableZat > 0)
+                      DropdownMenuItem<String>(
+                        value: mintFromPrivate,
+                        child: Text('Private · ${formatYec(app.balances.yecShieldedSpendableZat)} YEC', overflow: TextOverflow.ellipsis),
+                      ),
+                    for (final s in app.pqSources)
+                      DropdownMenuItem<String>(
+                        value: s.address,
+                        child: Text(
+                          'Post-quantum ${s.schemeName} · ${shorten(s.address, head: 6, tail: 4)} · ${formatYec(s.balanceZat)} YEC',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                  ],
+                  onChanged: e != null
+                      ? null
+                      : (v) => setState(() {
+                          _from = v ?? '';
+                          _estimate = null;
+                          _error = null;
+                        }),
+                ),
+              ),
+            ],
             const SizedBox(height: 16),
             if (e == null)
               FilledButton(
@@ -289,7 +380,8 @@ class _MintScreenState extends State<MintScreen> {
                           icon: const Icon(Icons.qr_code_2_rounded),
                           label: const Text('Show my receive address'),
                         ),
-                        if (app.balances.yecShieldedZat > 0) MovePublicHint(what: 'Minting', privateZat: app.balances.yecShieldedZat),
+                        if (_from.isEmpty && app.balances.yecShieldedZat > 0)
+                          MovePublicHint(what: 'Minting from the public balance', privateZat: app.balances.yecShieldedZat, orText: _privateSourceHint(app.balances)),
                       ],
                     ],
                   ),
@@ -309,13 +401,19 @@ class _MintScreenState extends State<MintScreen> {
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
                   child: Text(
-                    'Not enough YEC: this mint needs ${formatYec(e.totalZat)} YEC and the wallet has ${formatYec(e.availableZat)} public YEC.',
+                    'Not enough YEC: this mint needs ${formatYec(e.totalZat)} YEC and ${_sourceName(e.from)} has ${formatYec(e.availableZat)} YEC.',
                     key: const Key('unaffordable'),
                     style: t.bodySmall?.copyWith(color: c.danger),
                   ),
                 ),
-              if (!e.affordable && app.balances.yecShieldedZat > 0)
-                MovePublicHint(what: 'Minting', privateZat: app.balances.yecShieldedZat, shortfallZat: e.totalZat - e.availableZat),
+              // Moving private YEC to public helps only a mint funded from the public balance.
+              if (!e.affordable && e.from.isEmpty && app.balances.yecShieldedZat > 0)
+                MovePublicHint(
+                  what: 'Minting from the public balance',
+                  privateZat: app.balances.yecShieldedZat,
+                  shortfallZat: e.totalZat - e.availableZat,
+                  orText: _privateSourceHint(app.balances),
+                ),
               const SizedBox(height: 8),
               TextButton(key: const Key('cancel'), onPressed: _reset, child: const Text('Change the amount')),
               const SizedBox(height: 8),
@@ -403,6 +501,23 @@ class MintEstimateCard extends StatelessWidget {
             if (e.attestFeeZat > 0) PreviewRow('Attestor fee', '${formatYec(e.attestFeeZat)} YEC'),
             PreviewRow('Carrier + token', '${formatYec(e.carrierZat + e.tokenZat)} YEC'),
             PreviewRow('Network fees', '${formatYec(e.networkFeeZat)} YEC (two transactions)', key: const Key('network-fees')),
+            if (e.from.isNotEmpty) ...[
+              PreviewRow('Funded from', e.from == mintFromPrivate ? 'your private balance' : 'post-quantum · ${shorten(e.from, head: 6, tail: 4)}', key: const Key('mint-funded-from')),
+              PreviewRow('Carrier fee', e.from == mintFromPrivate ? '${formatYec(e.carrierFeeZat)} YEC (spends private notes)' : '${formatYec(e.carrierFeeZat)} YEC (priced on its signature size)', key: const Key('carrier-fee')),
+              if (e.from == mintFromPrivate)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    'This mint leaves your private balance: the carrier funding pays the carrier and the YEC the mint needs to a public key of this wallet, visible on the chain. The change stays private.',
+                    key: Key('mint-private-notice'),
+                  ),
+                ),
+              if (e.carrierFeeNote != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(e.carrierFeeNote!, key: const Key('carrier-fee-note'), style: Theme.of(context).textTheme.bodySmall?.copyWith(color: c.danger)),
+                ),
+            ],
             PreviewRow('Total YEC needed', '${formatYec(e.totalZat)} YEC', emphasis: true),
             const Divider(height: 20),
             PreviewRow('Price at R', e.pMintMicroUsd == null ? 'unavailable' : formatUsdPerYec(e.pMintMicroUsd!)),

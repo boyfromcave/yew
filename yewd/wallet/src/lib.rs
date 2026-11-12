@@ -26,10 +26,12 @@ pub mod admin;
 pub mod armed;
 pub mod attest;
 pub mod build;
+pub mod bytype;
 pub mod claim;
 pub mod json;
 pub mod keys;
 pub mod legacy;
+pub mod lockfrom;
 pub mod mint;
 pub mod node;
 pub mod raw;
@@ -118,6 +120,8 @@ pub mod code {
     pub const WALLET_INSUFFICIENT_FUNDS: i64 = -6;
     pub const INVALID_PARAMETER: i64 = -8;
     pub const WALLET_INVALID_ACCOUNT_NAME: i64 = -11;
+    /// ycashd's `RPC_WALLET_ACCOUNTS_UNSUPPORTED` (the same -11).
+    pub const WALLET_ACCOUNTS_UNSUPPORTED: i64 = -11;
     pub const WALLET_UNLOCK_NEEDED: i64 = -13;
     pub const WALLET_PASSPHRASE_INCORRECT: i64 = -14;
     pub const WALLET_WRONG_ENC_STATE: i64 = -15;
@@ -418,7 +422,7 @@ impl Wallet {
     ) -> Result<Wallet, String> {
         let path = dir.join("wallet.json");
         let st = match State::load(&path)? {
-            Some(s) => {
+            Some(mut s) => {
                 if s.network != network.chain_name() {
                     return Err(format!(
                         "{} is a {} wallet, asked for {}",
@@ -426,6 +430,18 @@ impl Wallet {
                         s.network,
                         network.chain_name()
                     ));
+                }
+                // D-9: a book from before the scheme-visible prefixes is rewritten once.
+                let m = s.migrate_pq_book(network);
+                for w in &m.warnings {
+                    eprintln!("yewd: {w}");
+                }
+                if m.rewritten > 0 {
+                    // as before D-9, a wallet on a datadir it cannot write still opens: the
+                    // rewritten book is kept in memory and written at the next save that succeeds
+                    if let Err(e) = s.save(&path) {
+                        eprintln!("yewd: could not save the rewritten address book ({e}); continuing with it in memory");
+                    }
                 }
                 s
             }
@@ -778,7 +794,22 @@ impl Wallet {
 
     /// Bring the wallet to the node's best block and mempool (the barrier, H1/H2). Returns
     /// whether anything changed.
+    /// Sync with the node; while the wallet has not held YED, a sync that saw something new also
+    /// asks the node's index whether any of the wallet's outputs is a YED token (the write-once
+    /// "has held YED" marker, beta2; a failing or absent index answer leaves it unset).
     pub async fn sync(&mut self, node: &dyn Node) -> Result<bool, RpcError> {
+        let changed = self.sync_chain(node).await?;
+        if changed && !self.st.yed_held {
+            if let Ok(t) = self.tokens(node).await {
+                if !t.is_empty() {
+                    self.mark_yed_held();
+                }
+            }
+        }
+        Ok(changed)
+    }
+
+    async fn sync_chain(&mut self, node: &dyn Node) -> Result<bool, RpcError> {
         let mut changed = false;
         if !self.chain_read {
             self.refresh_chain(node).await?;

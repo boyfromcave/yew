@@ -6,6 +6,9 @@ import qrcode from "qrcode-generator";
 
 export function errorCard(text: string, kind = ""): HTMLElement | null {
   if (!text) return null;
+  // a broadcast whose outcome is unknown ("…; status unknown, txid …: check before sending again"):
+  // the core's text stands as it is, and no hint may suggest that nothing was sent
+  if (text.includes("status unknown, txid")) return h("div", { class: "card error", role: "alert" }, h("p", null, text), h("p", { class: "small" }, "This transaction may have reached the network: look up its txid before you send again."));
   const hint = kind === "gate" ? "The node refused this transaction; nothing was sent." : kind === "network" ? "The server did not answer." : kind === "params" ? "Fetch the private sending files in Settings." : "";
   return h("div", { class: "card error", role: "alert" }, h("p", null, text), hint ? h("p", { class: "small" }, hint) : null);
 }
@@ -14,6 +17,16 @@ export function row(k: string, v: string): HTMLElement { return h("div", { class
 
 export function previewCard(title: string, rows: [string, string][], warning?: string): HTMLElement {
   return h("div", { class: "card preview" }, h("h3", null, title), rows.map(([k, v]) => row(k, v)), warning ? h("p", { class: "warn" }, warning) : null);
+}
+
+/** Review YEW-REVIEW-4 M2 / YEW-REVIEW-5 L4: an unusual fee's note and its own confirmation step. The
+ *  slider stays disabled until the user presses "Pay this fee"; only then does the view-model pass the
+ *  core's acknowledgement back with confirm. */
+export function unusualFeeCard(note: string | null | undefined, accepted: boolean, onAccept: () => void): HTMLElement | null {
+  if (!note) return null;
+  return h("div", { class: "card error", role: "alert" }, h("h3", null, "Unusual fee"), h("p", null, note),
+    accepted ? h("p", { class: "small" }, "You accepted this fee. Slide to confirm.")
+      : h("div", { class: "actions" }, h("button", { on: { click: onAccept } }, "Pay this fee")));
 }
 
 /** Slide to confirm: a range input dragged to the end fires `onConfirm` once, else snaps back. */

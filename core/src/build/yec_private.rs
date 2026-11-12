@@ -153,6 +153,28 @@ pub fn plan_yec_send(
     })
 }
 
+/// What a build without the combined private and post-quantum builder (the browser) says when a
+/// post-quantum recipient cannot be paid from the public balance (review YEW-REVIEW-10 L4).
+pub const PQ_FROM_PRIVATE_UNAVAILABLE: &str = "This browser wallet cannot pay a post-quantum address from the private balance; use the mobile app or move funds to a public address first.";
+
+/// True when `e`, [`plan_yec_send`]'s refusal of a send to `to`, is the public balance falling
+/// short for a post-quantum recipient while the private balance holds spendable YEC: the case a
+/// build without the hybrid builder explains with [`PQ_FROM_PRIVATE_UNAVAILABLE`] instead of an
+/// insufficient-funds error (review YEW-REVIEW-10 L4). Reads the store only.
+pub fn pq_recipient_needs_private(wallet: &Wallet, to: &str, e: &WalletError) -> bool {
+    matches!(
+        e,
+        WalletError::Coins(crate::coins::CoinError::Insufficient { .. })
+    ) && matches!(
+        crate::keys::parse_yec_destination(wallet.network, to.trim()),
+        Ok(crate::keys::YecDestination::Pq(_))
+    ) && wallet
+        .shielded
+        .as_ref()
+        .and_then(|sh| sh.balance().ok())
+        .is_some_and(|b| b.spendable_zat > 0)
+}
+
 /// Confirm a planned send: the transparent path exactly as `yec_send::broadcast`; the shielded
 /// path checks the server's next-block branch id against the wallet's Ycash parameters, proves
 /// and signs with the parameters in `params_dir` (verified against their pins), runs both gate
@@ -320,6 +342,9 @@ mod tests {
         let t = keys::encode_p2pkh(Network::Regtest, &[3; 20]);
         let e = plan_yec_send(&mut w, &t, 1_000, false, None, 100, 1).unwrap_err();
         assert!(matches!(e, WalletError::Coins(_)), "{e}");
+        // review YEW-REVIEW-10 L4: a short public balance for a transparent recipient, or with
+        // no private YEC, is the plain insufficient-funds error
+        assert!(!pq_recipient_needs_private(&w, &t, &e));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

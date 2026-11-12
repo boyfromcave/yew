@@ -16,6 +16,7 @@ import '../state/app_scope.dart';
 import '../theme.dart';
 import '../widgets/preview_card.dart';
 import '../widgets/slide_to_confirm.dart';
+import '../widgets/unusual_fee.dart';
 
 /// CAN-1: where the YED a claim burned goes if the attestor set cancels the claim.
 String refundText(ClaimIntent i, {bool done = false}) {
@@ -130,9 +131,13 @@ class _ReleaseScreenState extends State<ReleaseScreen> {
   Future<void> _confirm() async {
     final app = AppScope.read(context);
     try {
-      final r = await app.api.releaseConfirm(previewId: _preview!.previewId);
+      // review YEW-REVIEW-4 M2: an unusual fee needs its own confirmation
+      final ack = await acceptUnusualFee(context, note: _preview!.feeNote, ack: _preview!.unusualFeeAck);
+      final r = await app.api.releaseConfirm(previewId: _preview!.previewId, acceptUnusualFee: ack);
       await app.refresh();
       setState(() => _result = r);
+    } on UnusualFeeDeclined {
+      return;
     } catch (e) {
       setState(() {
         _error = messageOf(e);

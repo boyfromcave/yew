@@ -79,6 +79,7 @@ pub fn served(method: &str) -> bool {
         || crate::admin::SERVED.contains(&method)
         || crate::zsend::SERVED.contains(&method)
         || crate::legacy::SERVED.contains(&method)
+        || crate::bytype::SERVED.contains(&method)
 }
 
 /// Every served wallet method, S1's reads and S2's builders.
@@ -94,6 +95,7 @@ pub fn all_served() -> Vec<&'static str> {
         .chain(crate::admin::SERVED)
         .chain(crate::zsend::SERVED)
         .chain(crate::legacy::SERVED)
+        .chain(crate::bytype::SERVED)
         .copied()
         .collect()
 }
@@ -222,6 +224,15 @@ fn hash_hex(b: &[u8]) -> String {
     hex::encode(b)
 }
 
+/// The schemes a balance split reports, always both and in this order (beta2 item 15; ycashd's
+/// `PQ_BALANCE_SCHEMES`): SLH-DSA-SHA2-128s, then FN-DSA-512.
+pub(crate) use yew_core::build::any_to_any::PQ_BALANCE_SCHEMES;
+
+/// ycashd's `PQSchemeName`: the registry's names, `"unknown"` for anything else.
+pub(crate) fn pq_scheme_name(scheme: u8) -> &'static str {
+    ykeys::pq_scheme_name(scheme).unwrap_or("unknown")
+}
+
 impl Wallet {
     // ------------------------------------------------------------------ chain views
 
@@ -297,21 +308,33 @@ impl Wallet {
     }
 
     /// `GetAvailableCredit` of one wallet transaction: its own unspent outputs, nothing for an
-    /// immature coinbase.
+    /// immature coinbase. The total of [`Self::available_credit_split`], so the ECC and
+    /// post-quantum parts add up to it by construction.
     fn available_credit(&self, txid: &str, asof: Option<u32>) -> i64 {
-        let Some(p) = self.parsed(txid) else { return 0 };
+        self.available_credit_split(txid, asof).0
+    }
+
+    /// `GetAvailableCredit` of one wallet transaction and its post-quantum part by scheme (index
+    /// = scheme byte): the `TX_PQPKH` outputs among the counted ones (ycashd's `GetWalletBalanceSplit`, beta2
+    /// item 15).
+    fn available_credit_split(&self, txid: &str, asof: Option<u32>) -> (i64, [i64; 3]) {
+        let Some(p) = self.parsed(txid) else {
+            return (0, [0; 3]);
+        };
         if self.immature(p.coinbase, self.tx_depth(txid, asof)) {
-            return 0;
+            return (0, [0; 3]);
         }
-        p.tx.vout
-            .iter()
-            .enumerate()
-            .filter(|(n, o)| {
-                self.book.owns_script(&o.script_pubkey).is_some()
-                    && !self.spent_at(txid, *n as u32, asof)
-            })
-            .map(|(_, o)| o.value)
-            .sum()
+        // the split by type: the YEW core's (one implementation with the app, beta2 D-8)
+        let mut split = yew_core::build::any_to_any::TypeSplit::default();
+        for (n, o) in p.tx.vout.iter().enumerate() {
+            if self.book.owns_script(&o.script_pubkey).is_none()
+                || self.spent_at(txid, n as u32, asof)
+            {
+                continue;
+            }
+            split.add(&o.script_pubkey, o.value);
+        }
+        (split.transparent, split.pq)
     }
 
     /// `GetBalance(asOfHeight, ISMINE_SPENDABLE, min_depth)`.
@@ -321,6 +344,33 @@ impl Wallet {
             .keys()
             .filter(|t| self.trusted(t, asof) && self.tx_depth(t, asof) >= min_depth)
             .map(|t| self.available_credit(t, asof))
+            .sum()
+    }
+
+    /// The part of [`Wallet::balance`] that is `reserved` outputs: each one an own, unspent
+    /// output of a transaction `balance` counts (trusted, depth >= `min_depth`, mature).
+    pub(crate) fn reserved_credit(
+        &self,
+        reserved: &BTreeSet<(String, u32)>,
+        asof: Option<u32>,
+        min_depth: i64,
+    ) -> i64 {
+        reserved
+            .iter()
+            .filter(|(t, n)| {
+                self.st.wtx.contains_key(t)
+                    && self.trusted(t, asof)
+                    && self.tx_depth(t, asof) >= min_depth
+                    && !self.spent_at(t, *n, asof)
+            })
+            .filter_map(|(t, n)| {
+                let p = self.parsed(t)?;
+                if self.immature(p.coinbase, self.tx_depth(t, asof)) {
+                    return None;
+                }
+                let o = p.tx.vout.get(*n as usize)?;
+                self.book.owns_script(&o.script_pubkey).map(|_| o.value)
+            })
             .sum()
     }
 
@@ -365,18 +415,20 @@ impl Wallet {
             self.ensure_unlocked()?;
         }
         match method {
-            "getbalance" => self.getbalance(p),
+            "getbalance" => self.getbalance(node, p).await,
             "getnewaddress" => self.getnewaddress(p),
             "getreceivedbyaddress" => self.getreceivedbyaddress(p),
             "gettransaction" => self.gettransaction(p),
             "getwalletinfo" => self.getwalletinfo(p),
             "listlockunspent" => self.listlockunspent(p),
-            "listunspent" => self.listunspent(p),
+            "listunspent" => self.listunspent(node, p).await,
             "z_getbalance" => self.z_getbalance(p),
             "z_getnewaddress" => self.z_getnewaddress(p),
             "z_listunspent" => self.z_listunspent(p),
             "vault_getnewowner" => self.vault_getnewowner(p),
             "set_listsigned" => self.set_listsigned(p),
+            // yewd's own (review YEW-REVIEW-3 L1); the façade routes it without the barrier
+            "clearunknownsubmission" => self.clear_unknown_submission(p),
             "yed_getnewaddress" => self.yed_getnewaddress(node, p).await,
             "yed_validateaddress" => self.yed_validateaddress(node, p).await,
             "yed_getbalance" => self.yed_getbalance(node, p).await,
@@ -392,15 +444,20 @@ impl Wallet {
             m if crate::attest::SERVED.contains(&m) => self.attest_call(node, m, p).await,
             m if crate::admin::SERVED.contains(&m) => self.admin_call(node, m, p).await,
             m if crate::zsend::SERVED.contains(&m) => self.zsend_call(node, m, p).await,
-            m if crate::legacy::SERVED.contains(&m) => self.legacy_call(m, p).await,
+            m if crate::legacy::SERVED.contains(&m) => self.legacy_call(node, m, p).await,
+            m if crate::bytype::SERVED.contains(&m) => self.bytype_call(node, m, p).await,
             _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
         }
     }
 
     // ------------------------------------------------------------------ stock reads
 
-    /// `getbalance ( "(dummy)" minconf includeWatchonly inZat asOfHeight )`.
-    fn getbalance(&self, p: &[Value]) -> Result<J, RpcError> {
+    /// `getbalance ( "(dummy)" minconf includeWatchonly inZat asOfHeight )`. Review YEW-REVIEW-4
+    /// L3: the outputs [`Wallet::yed_reserved`] holds back from plain YEC spends (the listed YED
+    /// tokens, and every own output of exactly `TOKEN_VALUE` while Yellowback is not live) are
+    /// left out, as `z_gettotalbalance` leaves them out, and an index that cannot be read fails
+    /// the call as it fails that one: no balance promises coins the wallet will refuse to spend.
+    async fn getbalance(&self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
         arity("getbalance", p, 5)?;
         if let Some(d) = p_str(p, 0)? {
             if d != "*" && !d.is_empty() {
@@ -412,16 +469,16 @@ impl Wallet {
         let asof = as_of(p, 4)?;
         let min_depth = minconf(p, 1, 0)?;
         let _watch = p_bool(p, 2, false)?;
-        let b = self.balance(asof, min_depth);
-        Ok(if p_bool(p, 3, false)? {
-            J::Int(b)
-        } else {
-            J::Amount(b)
-        })
+        let in_zat = p_bool(p, 3, false)?;
+        let reserved = self.yed_reserved(node).await?;
+        let b = self.balance(asof, min_depth) - self.reserved_credit(&reserved, asof, min_depth);
+        Ok(if in_zat { J::Int(b) } else { J::Amount(b) })
     }
 
     /// `listunspent ( minconf maxconf ["address",...] includeUnsafe queryOptions asOfHeight )`.
-    fn listunspent(&self, p: &[Value]) -> Result<J, RpcError> {
+    /// Review YEW-REVIEW-4 L3: the outputs [`Wallet::yed_reserved`] holds back are not listed
+    /// (as `z_gettotalbalance` does not count them).
+    async fn listunspent(&self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
         arity("listunspent", p, 6)?;
         let asof = as_of(p, 5)?;
         let min = minconf(p, 0, 1)?;
@@ -456,11 +513,16 @@ impl Wallet {
                 return Err(invalid("queryOptions must be set to {}"));
             }
         }
+        let reserved = self.yed_reserved(node).await?;
         let mut rows = Vec::new();
         let mut coins = self.available_coins(asof);
         coins.sort_by(|a, b| (&a.0.txid, a.0.vout).cmp(&(&b.0.txid, b.0.vout)));
         for (c, d) in coins {
-            if d < min || d > max || (!filter.is_empty() && !filter.contains(&c.script)) {
+            if d < min
+                || d > max
+                || (!filter.is_empty() && !filter.contains(&c.script))
+                || reserved.contains(&(c.txid.clone(), c.vout))
+            {
                 continue;
             }
             let mut o = J::obj()
@@ -714,13 +776,38 @@ impl Wallet {
     /// `getwalletinfo`.
     fn getwalletinfo(&self, p: &[Value]) -> Result<J, RpcError> {
         arity("getwalletinfo", p, 1)?;
-        let unconfirmed: i64 = self
-            .st
-            .wtx
-            .keys()
-            .filter(|t| !self.trusted(t, None) && self.tx_depth(t, None) == 0)
-            .map(|t| self.available_credit(t, None))
-            .sum();
+        // One pass (ycashd's GetWalletBalanceSplit, beta2 item 15): balance = the available
+        // credit of every trusted transaction, unconfirmed = that of every untrusted one in the
+        // mempool, each with its post-quantum part by scheme.
+        let (mut balance, mut unconfirmed) = (0i64, 0i64);
+        let (mut pq_bal, mut pq_unc) = ([0i64; 3], [0i64; 3]);
+        for t in self.st.wtx.keys() {
+            let (sum, into) = if self.trusted(t, None) {
+                (&mut balance, &mut pq_bal)
+            } else if self.tx_depth(t, None) == 0 {
+                (&mut unconfirmed, &mut pq_unc)
+            } else {
+                continue;
+            };
+            let (credit, pq) = self.available_credit_split(t, None);
+            *sum += credit;
+            for (a, b) in into.iter_mut().zip(pq) {
+                *a += b;
+            }
+        }
+        let pq_total = |v: &[i64; 3]| v[1] + v[2];
+        let by_scheme = J::Arr(
+            PQ_BALANCE_SCHEMES
+                .iter()
+                .map(|&s| {
+                    J::obj()
+                        .with("pqscheme", s as i64)
+                        .with("pqschemename", pq_scheme_name(s))
+                        .with("balance_pq", J::Amount(pq_bal[s as usize]))
+                        .with("unconfirmed_balance_pq", J::Amount(pq_unc[s as usize]))
+                })
+                .collect(),
+        );
         let immature: i64 = self
             .coins
             .iter()
@@ -735,9 +822,18 @@ impl Wallet {
         let (shielded, shielded_unconfirmed) = self.shielded_balances();
         let o = J::obj()
             .with("walletversion", 60_000i64)
-            .with("balance", J::Amount(self.balance(None, 0)))
+            .with("balance", J::Amount(balance))
             .with("unconfirmed_balance", J::Amount(unconfirmed))
             .with("immature_balance", J::Amount(immature))
+            // the split by address type (beta2 item 15): ECC = the figure minus its PQ part
+            .with("balance_ecc", J::Amount(balance - pq_total(&pq_bal)))
+            .with("balance_pq", J::Amount(pq_total(&pq_bal)))
+            .with(
+                "unconfirmed_balance_ecc",
+                J::Amount(unconfirmed - pq_total(&pq_unc)),
+            )
+            .with("unconfirmed_balance_pq", J::Amount(pq_total(&pq_unc)))
+            .with("pq_by_scheme", by_scheme)
             .with("shielded_balance", format_money(shielded))
             .with(
                 "shielded_unconfirmed_balance",
@@ -753,6 +849,8 @@ impl Wallet {
         }
         o.push("paytxfee", J::Amount(self.opts.paytxfee));
         o.push("mnemonic_seedfp", J::Str(self.st.public.seed_fp.clone()));
+        // beta2: the C++ lines' "has held YED" marker
+        o.push("yed_held", J::Bool(self.st.yed_held));
         if !self.st.public.imported.is_empty()
             || self
                 .st
@@ -916,17 +1014,31 @@ impl Wallet {
             .map_err(|e| RpcError::new(code::WALLET_ERROR, e))
     }
 
-    /// `getnewaddress ( "" "type" )`.
+    /// `getnewaddress ( "type" )` or `getnewaddress ( "" "type" )` (beta2 item 10, ycash6
+    /// c33854654 / ycash-dd#164): the first slot is the address type or the old placeholder `""`;
+    /// a type given first takes no second argument; any other first string, a type name in
+    /// another case too, is refused with the node's "Accounts are unsupported" error. The
+    /// arguments are judged before any key is issued.
     fn getnewaddress(&mut self, p: &[Value]) -> Result<J, RpcError> {
         arity("getnewaddress", p, 2)?;
-        if let Some(d) = p_str(p, 0)? {
-            if !d.is_empty() {
-                return Err(invalid(
-                    "dummy first argument must be excluded or set to \"\".",
+        let second = p.get(1).filter(|v| !v.is_null());
+        let typ = match p_str(p, 0)? {
+            Some(t @ ("p2pkh" | "pq" | "pqslh")) => {
+                if second.is_some() {
+                    return Err(invalid(
+                        "the address type is given first, so there is no second argument (getnewaddress pq, or getnewaddress \"\" pq)",
+                    ));
+                }
+                t
+            }
+            Some(d) if !d.is_empty() => {
+                return Err(RpcError::new(
+                    code::WALLET_ACCOUNTS_UNSUPPORTED,
+                    "Accounts are unsupported; the first argument is the address type, \"p2pkh\", \"pq\" or \"pqslh\" (lower case), or \"\" followed by the type",
                 ));
             }
-        }
-        let typ = p_str(p, 1)?.unwrap_or("p2pkh");
+            _ => p_str(p, 1)?.unwrap_or("p2pkh"),
+        };
         if typ == "pq" || typ == "pqslh" {
             if !self.vault_active_next() {
                 return Err(invalid(
@@ -1030,11 +1142,15 @@ impl Wallet {
         arity("z_getbalance", p, 3)?;
         let a = p_str(p, 0)?.unwrap_or("");
         let min = minconf(p, 1, 1)?;
+        // A transparent address, ECC or post-quantum (beta2 item 15, finding L-3: a PQ address of
+        // the wallet answers its balance), that the wallet does not hold is refused (the lead
+        // architect's decision 2026-11-11, ycash-dd 322be29c5); a foreign Sapling address keeps
+        // ycashd 6.x's string.
         let total: i64 = if let Some(script) = parse_taddr_script(self.network, a) {
             if self.book.owns_script(&script).is_none() {
                 return Err(RpcError::new(
                     code::INVALID_ADDRESS_OR_KEY,
-                    "From address does not belong to this node.",
+                    "From address does not belong to this node, transparent or post-quantum key or watch-only script not found.",
                 ));
             }
             self.available_coins(None)
@@ -1170,9 +1286,36 @@ impl Wallet {
                 serde_json::json!([chunk, 0, 1_000_000, 0]),
             )
             .await?;
-            out.extend(v.as_array().cloned().unwrap_or_default());
+            // review YEW-REVIEW-3 L3: an answer that is not a list is an error, never "no tokens"
+            let Some(a) = v.as_array() else {
+                return Err(RpcError::new(
+                    code::MISC_ERROR,
+                    format!("yed_listtokens answered something that is not a list: {v}"),
+                ));
+            };
+            out.extend(a.iter().cloned());
         }
         Ok(out)
+    }
+
+    /// The scripts at which the node's Yellowback index holds a YED token of this wallet (ycashd's
+    /// `YedHolderScripts`, beta2: the `yed_holder` mark of `listreceivedbyaddress` and
+    /// `validateaddress`). Empty when the node serves no `yed_*` (no `-yellowback`).
+    pub(crate) async fn yed_holder_scripts(&self, node: &dyn Node) -> BTreeSet<Vec<u8>> {
+        let Ok(tokens) = self.tokens(node).await else {
+            return BTreeSet::new();
+        };
+        tokens
+            .iter()
+            .filter_map(|t| {
+                let txid = t["txid"].as_str()?;
+                let vout = t["vout"].as_u64()? as u32;
+                self.coins
+                    .iter()
+                    .find(|c| c.txid == txid && c.vout == vout)
+                    .map(|c| c.script.clone())
+            })
+            .collect()
     }
 
     /// The node's Yellowback index height (`yed_getinfo.height`) and its Falcon flag.
@@ -1223,6 +1366,8 @@ impl Wallet {
                         purpose: "yed".into(),
                     },
                 );
+                // a holder key: the wallet has held YED from here on (not a pqowner key)
+                self.st.yed_held = true;
             } else {
                 self.st.owners.insert(pqkeyid_hex(&id));
             }
@@ -1242,6 +1387,7 @@ impl Wallet {
                 purpose: "yed".into(),
             },
         );
+        self.st.yed_held = true;
         self.persist()?;
         Ok(J::Str(ykeys::encode_yellowback(self.network, &h)))
     }
@@ -1724,6 +1870,7 @@ impl Wallet {
                 yew_core::payload::PayloadType::Equivocation => "equivocation",
                 yew_core::payload::PayloadType::AttestorRegister => "register",
                 yew_core::payload::PayloadType::AttestorRevive => "revive",
+                yew_core::payload::PayloadType::CancelCosign => "cancelcosign",
                 yew_core::payload::PayloadType::Transfer => "send",
             };
             let o = J::obj()
@@ -1998,15 +2145,21 @@ impl Wallet {
             }
             "yed_getinfo" => {
                 // the wallet half of yed_getinfo (ENABLE_WALLET): the overlay's lock count (H10)
+                // yed_getinfo never refuses while the index is unhealthy (its `healthy` says so);
+                // when the YED outpoint set cannot be read, protectedByIndex is false: the count
+                // below is then not a statement that nothing is held
                 let mut o = raw_obj(result).map_err(bad)?;
-                let locked = self
-                    .yed_reserved(node)
-                    .await?
-                    .into_iter()
-                    .filter(|(t, n)| self.st.locks.contains(&format!("{t}:{n}")))
-                    .count();
+                let (locked, protected) = match self.yed_reserved(node).await {
+                    Ok(r) => (
+                        r.into_iter()
+                            .filter(|(t, n)| self.st.locks.contains(&format!("{t}:{n}")))
+                            .count(),
+                        true,
+                    ),
+                    Err(_) => (0, false),
+                };
                 o.insert("lockedOutputs".into(), locked.to_string());
-                o.insert("protectedByIndex".into(), "true".into());
+                o.insert("protectedByIndex".into(), protected.to_string());
                 Ok(write_raw_obj(&o))
             }
             "validateaddress" => {
@@ -2034,6 +2187,17 @@ impl Wallet {
                             .and_then(|s| self.address_book_label(s))
                             .unwrap_or_default();
                         o.insert("account".into(), J::Str(label).text());
+                        // beta2: a YED holder key of this wallet (ycash-dd 322be29c5)
+                        let holders = self.yed_holder_scripts(node).await;
+                        if script.as_ref().is_some_and(|s| holders.contains(s)) {
+                            o.insert("yed_holder".into(), "true".into());
+                        }
+                    }
+                    // beta2 item 15: the scheme's name beside its number (ycashd's misc.cpp),
+                    // when the backend answered only the number
+                    if let Some(n) = o.get("pqscheme").and_then(|v| v.parse::<u8>().ok()) {
+                        o.entry("pqschemename".into())
+                            .or_insert_with(|| J::Str(pq_scheme_name(n).into()).text());
                     }
                     // a redeem script this wallet knows (addmultisigaddress): DescribeAddressVisitor
                     if let Some(redeem) = self.st.scripts.get(a).and_then(|h| hex::decode(h).ok()) {

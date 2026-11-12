@@ -439,6 +439,13 @@ fn percent_of(s: &WalletSummary<AccountUuid>) -> u8 {
 }
 
 impl Shielded {
+    /// The account's extended spending key, a transient copy (beta2 item 5: the output viewing
+    /// key of a post-quantum -> Sapling send's output, `build::pq_send`). Never stored.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn extended_spending_key(&self) -> sapling_crypto::zip32::ExtendedSpendingKey {
+        self.account.extended_spending_key()
+    }
+
     /// Open (creating if needed) the store under `dir` for `account` on `network`. Offline:
     /// the light client connects at the first [`Shielded::sync`]. A store holding another
     /// seed's account is refused.
@@ -1317,6 +1324,423 @@ impl Shielded {
             .map(|h| u32::from(h) as u64)
             .unwrap_or(1)
     }
+
+    /// How many notes [`Shielded::select_spends`] would select for `amount_zat` plus
+    /// `fee_of(notes)`, the fee settled and the notes' total, without their paths (read-only: a
+    /// quote, e.g. a mint estimate's carrier fee from the private balance). Nothing is locked.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn quote_spends(
+        &self,
+        amount_zat: u64,
+        fee_of: impl Fn(usize) -> u64,
+    ) -> Result<(usize, u64, u64), ShieldedError> {
+        let (notes, total, fee, _, _) = self.pick_notes(amount_zat, fee_of)?;
+        Ok((notes.len(), fee, total))
+    }
+
+    /// The creating transactions (txids, internal order, deduplicated) of every note the store
+    /// would select from now: the selection of [`Shielded::select_spends`] for the whole
+    /// spendable balance, no fee (read-only; review YEW-REVIEW-9 L2: an upper bound of the notes
+    /// any spend can take, known before its amount is). Empty when nothing is spendable; a store
+    /// whose balance and selection disagree (`Insufficient`) also answers empty, so the caller's
+    /// later per-spend check still runs.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn spendable_note_txids(&self) -> Result<Vec<[u8; 32]>, ShieldedError> {
+        let b = self.balance()?;
+        if b.spendable_zat == 0 {
+            return Ok(Vec::new());
+        }
+        let notes = match self.pick_notes(b.spendable_zat, |_| 0) {
+            Ok((notes, ..)) => notes,
+            Err(ShieldedError::Insufficient { .. }) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let mut t: Vec<[u8; 32]> = notes.iter().map(|n| *n.txid().as_ref()).collect();
+        t.sort();
+        t.dedup();
+        Ok(t)
+    }
+
+    /// The selection half of [`Shielded::select_spends`] (the store's own selection, the fee
+    /// settled in a few rounds).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::type_complexity)]
+    fn pick_notes(
+        &self,
+        amount_zat: u64,
+        fee_of: impl Fn(usize) -> u64,
+    ) -> Result<
+        (
+            Vec<
+                zcash_client_backend::wallet::ReceivedNote<
+                    zcash_client_sqlite::ReceivedNoteId,
+                    sapling_crypto::Note,
+                >,
+            >,
+            u64,
+            u64,
+            BlockHeight,
+            BlockHeight,
+        ),
+        ShieldedError,
+    > {
+        use zcash_client_backend::data_api::{InputSource, TargetValue};
+        let id = self
+            .account_id()?
+            .ok_or(ShieldedError::NotSynced { scanned: 0, tip: 0 })?;
+        let b = self.balance()?;
+        let not_synced = ShieldedError::NotSynced {
+            scanned: b.scanned_height,
+            tip: b.tip_height,
+        };
+        if !b.sendable {
+            return Err(not_synced);
+        }
+        let (target, anchor_height) = self
+            .store()?
+            .get_target_and_anchor_heights(policy().trusted())
+            .map_err(store_err)?
+            .ok_or(not_synced)?;
+        // the fee rises with the number of notes only: settle it in a few rounds
+        let mut fee = fee_of(1);
+        let mut chosen = None;
+        for _ in 0..6 {
+            let need = amount_zat
+                .checked_add(fee)
+                .ok_or_else(|| ShieldedError::Propose("amount out of range".into()))?;
+            let notes = self
+                .store()?
+                .select_spendable_notes(
+                    id,
+                    TargetValue::AtLeast(zat(need)?),
+                    &[ShieldedProtocol::Sapling],
+                    target,
+                    policy(),
+                    &[],
+                )
+                .map_err(store_err)?
+                .take_sapling();
+            let total: u64 = notes.iter().map(|n| n.note().value().inner()).sum();
+            if total < need {
+                return Err(ShieldedError::Insufficient {
+                    available: b.spendable_zat,
+                    required: need,
+                });
+            }
+            let f = fee_of(notes.len());
+            if f == fee {
+                chosen = Some((notes, total));
+                break;
+            }
+            fee = f;
+        }
+        let (notes, total_zat) =
+            chosen.ok_or_else(|| ShieldedError::Propose("the fee did not settle".into()))?;
+        Ok((notes, total_zat, fee, target.into(), anchor_height))
+    }
+
+    /// Spendable notes covering `amount_zat` plus the fee `fee_of(number of notes)`, each with
+    /// its Merkle path at the anchor, for a transaction the hybrid builder makes
+    /// (`build::sapling_pq`: a Sapling -> post-quantum send). Not a new witness store: the
+    /// notes come from the store's own selection (`select_spendable_notes`, what
+    /// [`Shielded::plan`]'s proposal calls) at the store's target and anchor heights
+    /// (`get_target_and_anchor_heights` under the same confirmation policy), and the paths from
+    /// the store's commitment tree exactly as `create_proposed_transactions` takes them
+    /// (`root_at_checkpoint_id` and `witness_at_checkpoint_id_caching` at the anchor height).
+    /// Refuses before the scan reaches the tip. Nothing is locked or stored.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn select_spends(
+        &mut self,
+        amount_zat: u64,
+        fee_of: impl Fn(usize) -> u64,
+    ) -> Result<NoteSpends, ShieldedError> {
+        use zcash_client_backend::data_api::WalletCommitmentTrees;
+        let (notes, total_zat, fee, target, anchor_height) = self.pick_notes(amount_zat, fee_of)?;
+        type TreeErr<T> = zcash_client_backend::data_api::error::Error<
+            std::convert::Infallible,
+            T,
+            std::convert::Infallible,
+            std::convert::Infallible,
+            std::convert::Infallible,
+            std::convert::Infallible,
+        >;
+        let (anchor, paths) = self
+            .store_mut()?
+            .with_sapling_tree_mut(|tree| {
+                let anchor = tree.root_at_checkpoint_id(&anchor_height)?;
+                let mut paths = Vec::with_capacity(notes.len());
+                for n in &notes {
+                    paths.push(tree.witness_at_checkpoint_id_caching(
+                        n.note_commitment_tree_position(),
+                        &anchor_height,
+                    )?);
+                }
+                Ok::<_, TreeErr<_>>((anchor, paths))
+            })
+            .map_err(|e| store_err(format!("the note paths: {e:?}")))?;
+        // a pruned checkpoint (as `create_proposed_transactions` refuses it)
+        let pruned = || store_err(format!("no note path at the anchor height {anchor_height}"));
+        let anchor = sapling_crypto::Anchor::from(anchor.ok_or_else(pruned)?);
+        let paths = paths
+            .into_iter()
+            .map(|p| p.ok_or_else(pruned))
+            .collect::<Result<Vec<_>, _>>()?;
+        let notes = notes
+            .iter()
+            .zip(paths)
+            .map(|(n, path)| SelectedNote {
+                txid: *n.txid().as_ref(),
+                output_index: n.output_index(),
+                cmu: n.note().cmu().to_bytes(),
+                value: n.note().value().inner(),
+                internal: n.spending_key_scope() == zip32::Scope::Internal,
+                position: u64::from(n.note_commitment_tree_position()),
+                path: path
+                    .path_elems()
+                    .iter()
+                    .map(|e| hex::encode(e.to_bytes()))
+                    .collect(),
+            })
+            .collect();
+        Ok(NoteSpends {
+            notes,
+            anchor: hex::encode(anchor.to_bytes()),
+            total_zat,
+            fee_zat: fee,
+            target_height: u32::from(target),
+        })
+    }
+
+    /// The raw bytes of those of `txids` (internal order) the store holds: memo enhancement
+    /// (`decrypt_and_store_transaction` on every transaction that paid the wallet a note) and
+    /// [`Shielded::record_sent`] keep each full transaction. No network request (review
+    /// YEW-REVIEW-8 M1: the notes a spend takes are not revealed to the server by fetching their
+    /// transactions just before it).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn stored_transactions(
+        &self,
+        txids: &[[u8; 32]],
+    ) -> Result<std::collections::HashMap<[u8; 32], Vec<u8>>, ShieldedError> {
+        let mut out = std::collections::HashMap::new();
+        for t in txids {
+            if let Some(tx) = self
+                .store()?
+                .get_transaction(TxId::from_bytes(*t))
+                .map_err(store_err)?
+            {
+                let mut raw = Vec::new();
+                tx.write(&mut raw).map_err(store_err)?;
+                out.insert(*t, raw);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Record a transaction this wallet built outside the store's own builder (the hybrid
+    /// builder's Sapling -> post-quantum send) once it has been handed to the server: the store
+    /// decrypts it with the account's keys as it does a fetched transaction (the memo enhancement
+    /// path, `decrypt_and_store_transaction`), so its notes count as spent and its Sapling change
+    /// as pending until it is mined or expires.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn record_sent(&mut self, raw: &[u8], branch_id: u32) -> Result<(), ShieldedError> {
+        let branch = BranchId::try_from(branch_id)
+            .map_err(|_| store_err(format!("branch id {branch_id:08x}")))?;
+        let tx = ZTransaction::read(raw, branch).map_err(store_err)?;
+        let params = self.params;
+        decrypt_and_store_transaction(&params, self.store_mut()?, &tx, None).map_err(store_err)?;
+        Ok(())
+    }
+}
+
+/// A test chain for the store (no server): the account registered at `birthday`, notes of
+/// `values` to its default address in the block at `birthday`, empty blocks up to `tip`, all
+/// scanned by the store's own scanner (`scan_cached_blocks`), so the store selects the notes and
+/// its commitment tree gives their paths exactly as after a real sync.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl Shielded {
+    pub(crate) fn receive_for_test(
+        &mut self,
+        birthday: u32,
+        tip: u32,
+        values: &[u64],
+        params_dir: &Path,
+    ) -> Vec<u8> {
+        use zcash_client_backend::data_api::chain::{
+            error::Error as ChainError, scan_cached_blocks, BlockSource, ChainState,
+        };
+        use zcash_client_backend::data_api::{AccountBirthday, AccountPurpose};
+        use zcash_client_backend::proto::compact_formats as cf;
+        let usk = x402_ycash_light::keys::usk_from_extsk(&self.account.extended_spending_key());
+        let ufvk = x402_ycash_light::keys::ufvk(&usk);
+        let hash = |h: u32| {
+            let mut b = [0u8; 32];
+            b[..4].copy_from_slice(&h.to_le_bytes());
+            b[31] = 0xaa;
+            b
+        };
+        let prior = ChainState::empty(
+            BlockHeight::from_u32(birthday - 1),
+            zcash_primitives::block::BlockHash(hash(birthday - 1)),
+        );
+        // the paying transaction, proven by the hybrid builder: Sapling outputs to the account's
+        // default address, nothing transparent (its balance does not matter to a scan)
+        let (_, own) = self.account.default_address();
+        let part = crate::sapling_part::SaplingPart {
+            target_height: birthday,
+            vault_height: None,
+            spends: Vec::new(),
+            outputs: values
+                .iter()
+                .map(|v| crate::sapling_part::SaplingOut::Shielded {
+                    address: own.clone(),
+                    value: *v as i64,
+                    memo: String::new(),
+                    own: true,
+                })
+                .collect(),
+            anchor: String::new(),
+            params_dir: params_dir.display().to_string(),
+        };
+        let mut t = crate::tx::Transaction::new_v4();
+        t.expiry_height = birthday + 40;
+        let h = crate::build::hybrid::sapling_prepare(
+            self.account.extended_spending_key(),
+            self.network,
+            &part,
+            &t,
+            crate::params::VAULT_BRANCH_ID,
+            OsRng,
+        )
+        .expect("prepare");
+        let raw = crate::build::hybrid::finish_signed(Some(h), &t, OsRng).expect("finish");
+        let ztx = ZTransaction::read(
+            &raw[..],
+            BranchId::try_from(crate::params::VAULT_BRANCH_ID).unwrap(),
+        )
+        .expect("parse");
+        let outputs: Vec<cf::CompactSaplingOutput> = ztx
+            .sapling_bundle()
+            .expect("sapling")
+            .shielded_outputs()
+            .iter()
+            .map(|o| cf::CompactSaplingOutput {
+                cmu: o.cmu().to_bytes().to_vec(),
+                ephemeral_key: o.ephemeral_key().0.to_vec(),
+                ciphertext: o.enc_ciphertext()[..52].to_vec(),
+            })
+            .collect();
+        let mut size = 0u32;
+        let mut blocks = Vec::new();
+        for h in birthday..=tip {
+            let mut vtx = Vec::new();
+            if h == birthday {
+                size += outputs.len() as u32;
+                vtx.push(cf::CompactTx {
+                    index: 1,
+                    txid: ztx.txid().as_ref().to_vec(),
+                    outputs: outputs.clone(),
+                    ..Default::default()
+                });
+            }
+            blocks.push(cf::CompactBlock {
+                height: h as u64,
+                hash: hash(h).to_vec(),
+                prev_hash: hash(h - 1).to_vec(),
+                time: 1_600_000_000 + h,
+                vtx,
+                chain_metadata: Some(cf::ChainMetadata {
+                    sapling_commitment_tree_size: size,
+                    orchard_commitment_tree_size: 0,
+                }),
+                ..Default::default()
+            });
+        }
+        struct Src(Vec<cf::CompactBlock>);
+        impl BlockSource for Src {
+            type Error = std::convert::Infallible;
+            fn with_blocks<F, E>(
+                &self,
+                from: Option<BlockHeight>,
+                limit: Option<usize>,
+                mut f: F,
+            ) -> Result<(), ChainError<E, Self::Error>>
+            where
+                F: FnMut(cf::CompactBlock) -> Result<(), ChainError<E, Self::Error>>,
+            {
+                let from = from.map_or(0, |h| u32::from(h) as u64);
+                for b in self
+                    .0
+                    .iter()
+                    .filter(|b| b.height >= from)
+                    .take(limit.unwrap_or(usize::MAX))
+                {
+                    f(b.clone())?;
+                }
+                Ok(())
+            }
+        }
+        let params = self.params;
+        let db = self.store_mut().expect("store");
+        db.import_account_ufvk(
+            "yew-test",
+            &ufvk,
+            &AccountBirthday::from_parts(prior.clone(), None),
+            AccountPurpose::Spending { derivation: None },
+            None,
+        )
+        .expect("account");
+        db.update_chain_tip(BlockHeight::from_u32(tip))
+            .expect("tip");
+        scan_cached_blocks(
+            &params,
+            &Src(blocks),
+            db,
+            BlockHeight::from_u32(birthday),
+            &prior,
+            (tip - birthday + 1) as usize,
+        )
+        .expect("scan");
+        raw
+    }
+}
+
+/// Notes and their paths for a hybrid spend ([`Shielded::select_spends`]).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug)]
+pub struct NoteSpends {
+    /// The selected notes with their Merkle paths at [`NoteSpends::anchor`].
+    pub notes: Vec<SelectedNote>,
+    /// The anchor (the tree's root at the anchor height), hex.
+    pub anchor: String,
+    /// The notes' total, zat.
+    pub total_zat: u64,
+    /// The fee settled for this many notes, zat.
+    pub fee_zat: u64,
+    /// The height the transaction is built for (the store's tip + 1).
+    pub target_height: u32,
+}
+
+/// One selected note as the store holds it. The store keeps a note's `rcm`, not the ZIP-212
+/// `rseed` it was derived from (`zcash_client_sqlite` reads every note back as pre-ZIP-212),
+/// and the hybrid builder spends only post-ZIP-212 notes; so the note plaintext is decrypted
+/// again from its transaction (`build::sapling_pq::note_spends`), bound to this commitment.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectedNote {
+    /// The transaction that created it (internal order).
+    pub txid: [u8; 32],
+    /// Its index among that transaction's Sapling outputs.
+    pub output_index: u16,
+    /// Its note commitment (`cmu`), as the store and the tree hold it.
+    pub cmu: [u8; 32],
+    /// Its value, zat.
+    pub value: u64,
+    /// Received on the account's internal (change) scope.
+    pub internal: bool,
+    /// Its position in the commitment tree.
+    pub position: u64,
+    /// Its Merkle path at the anchor, 32 nodes hex (leaf to root).
+    pub path: Vec<String>,
 }
 
 /// The browser's storage setup (yew/web plan W0.1/W0.5): SQLite on OPFS through the sahpool

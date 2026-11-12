@@ -141,3 +141,78 @@ class YedPreviewCard extends StatelessWidget {
     );
   }
 }
+
+/// The preview of a send from an own post-quantum address (beta2 D-8): the fee is priced on the
+/// transaction's size, and a post-quantum signature is large (SLH-DSA ~7.9 KB, FN-DSA-512 ~1.6 KB
+/// per input), so the card shows the size and the signing time next to the fee, before the
+/// slider. The change goes back to the source address.
+class PqSendPreviewCard extends StatelessWidget {
+  const PqSendPreviewCard(this.p, {super.key});
+  final PqSendPreviewInfo p;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = yewColors(context);
+    final t = Theme.of(context).textTheme;
+    final slh = p.schemeName.startsWith('SLH');
+    // no clock in the browser: the core reports no time rather than 0 (review YEW-REVIEW-3 L5)
+    final ms = p.signMillis;
+    final signing = ms == null
+        ? 'not measured on this device'
+        : '${(ms.toInt() / 1000).toStringAsFixed(ms.toInt() < 1000 ? 2 : 1)} s on this device';
+    return Card(
+      key: const Key('pq-preview'),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            PreviewRow('To', shorten(p.to, head: 14, tail: 8)),
+            PreviewRow('Amount', '${formatYec(p.amountZat)} YEC', emphasis: true, color: c.yec),
+            if (p.amountBumped) const PreviewRow('', 'Raised by 1 zat: exactly 0.0001 YEC would look like a YED token'),
+            PreviewRow('From', p.fromPrivate ? 'your private balance' : 'post-quantum ${p.schemeName} · ${shorten(p.from, head: 6, tail: 4)}'),
+            PreviewRow('Fee', '${formatYec(p.feeZat)} YEC', key: const Key('pq-fee'), color: p.feeNote != null ? c.danger : null, emphasis: p.feeNote != null),
+            // review YEW-REVIEW-3 M1: a fee above the unusual threshold rests on the server's price
+            if (p.feeNote != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(p.feeNote!, key: const Key('pq-fee-note'), style: t.bodySmall?.copyWith(color: c.danger)),
+              ),
+            PreviewRow('Size', '${p.sizeBytes} bytes · ${p.inputs} ${p.fromPrivate ? 'note' : 'input'}${p.inputs == 1 ? '' : 's'}'),
+            PreviewRow(p.fromPrivate ? 'Proving' : 'Signing', signing, key: const Key('pq-signing')),
+            if (p.changeZat > 0) PreviewRow('Change', p.fromPrivate ? '${formatYec(p.changeZat)} YEC back to your private balance' : '${formatYec(p.changeZat)} YEC back to the same address'),
+            PreviewRow('Expires', 'height ${p.expiryHeight}'),
+            // beta2 D-5: the private -> public notice, in the words of the private -> public send
+            if (p.fromPrivate)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Row(
+                  key: const Key('reveals'),
+                  children: [
+                    const Icon(Icons.lock_open_rounded, size: 18, color: YecPreviewCard.amber),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'This payment leaves your private balance',
+                        style: t.bodyMedium?.copyWith(color: YecPreviewCard.amber, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            if (!p.fromPrivate)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                slh
+                    ? 'An SLH-DSA signature is about 7.9 KB per input, so this send is large: its fee is higher than a public send\'s and signing takes longer.'
+                    : 'An FN-DSA-512 signature is about 1.6 KB per input: the fee is priced on that size.',
+                key: const Key('pq-size-note'),
+                style: t.bodySmall?.copyWith(color: c.pending),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

@@ -92,7 +92,7 @@ async function main() {
       case "history": unsub = renderHistory(body, history); break;
       case "settings": unsub = renderSettings(body, settings, meta, version, () => { open = false; home.stopAutoSync(); route(); }); break;
       case "yellowback": unsub = renderYellowback(body, yb, home.state.balances?.yedCents ?? "0"); break;
-      case "mint": unsub = renderMint(body, yb); break;
+      case "mint": unsub = renderMint(body, yb, () => home.state.balances); break;
       case "vault": unsub = renderVault(body, yb, r.arg); break;
       case "claimable": unsub = renderClaimable(body, yb); break;
       default: unsub = renderHome(body, home); home.load();

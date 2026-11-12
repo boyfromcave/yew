@@ -253,6 +253,23 @@ class YewdS1(YellowbackTestFramework):
         self.report['vault'].update(['vault_getnewowner'])
         self.report['stock'].add('getnewaddress "" "pq"')
 
+        print('K-25 amended for beta2: z_gettotalbalance and listaddresses, by address type')
+        tb = y.z_gettotalbalance()
+        self.same_keys(tb, user.z_gettotalbalance(), 'z_gettotalbalance')
+        assert_equal(Decimal(tb['transparent']), Decimal(tb['transparent_ecc']) + Decimal(tb['transparent_pq']))
+        assert_equal(sum(Decimal(s['transparent_pq']) for s in tb['pq_by_scheme']), Decimal(tb['transparent_pq']))
+        assert_greater_than(Decimal(tb['transparent_pq']), Decimal(0))
+        upq = user.getnewaddress('', 'pq')
+        ula = user.listaddresses()
+        la = y.listaddresses()
+        pq_rows = [e for src in la for e in src.get('pq', [])]
+        assert pq in [e['address'] for e in pq_rows], la
+        upq_rows = [e for src in ula for e in src.get('pq', []) if e['address'] == upq]
+        self.same_keys(pq_rows[0], upq_rows[0], 'listaddresses.pq', ycashd_only=('yed_holder',), yewd_only=('yed_holder',))
+        for src in la:
+            assert src['source'] in [u['source'] for u in ula] or src['source'] in ('imported', 'legacy_random'), src
+        self.report['stock'].update(['z_gettotalbalance', 'listaddresses'])
+
         print('Sapling: z_getnewaddress (a diversified address of the one account), a note with a memo')
         self.zaddr = y.z_getnewaddress()
         z2 = y.z_getnewaddress()

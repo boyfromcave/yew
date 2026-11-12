@@ -1451,6 +1451,8 @@ impl Wallet {
                 "setid and cancelsetid must be confirmed sets",
             ));
         }
+        // beta2 D-3: the funding address (absent or "": the wallet's transparent P2PKH coins)
+        let from = self.parse_lock_from(field(o, "from"))?;
         if new_owner {
             owner = self.new_pq(1)?;
             self.st.owners.insert(pqkeyid_hex(&owner));
@@ -1463,9 +1465,20 @@ impl Wallet {
             value: amount,
             script_pubkey: spk.clone(),
         });
-        self.fund(node, &mut tx, 0, VAULT_RPC_FEE, FundMode::LargestFirst)
-            .await?;
-        let txid = self.sign_send(node, &tx, next, amount).await?;
+        let txid = match &from {
+            None => {
+                self.fund(node, &mut tx, 0, VAULT_RPC_FEE, FundMode::LargestFirst)
+                    .await?;
+                self.sign_send(node, &tx, next, amount).await?
+            }
+            Some(f) => match self.fund_lock_from(node, &tx, f, next).await? {
+                crate::lockfrom::Funded::Coins(signed) => {
+                    let cap = self.max_tx_fee(node).await;
+                    self.broadcast(node, &signed, Some(cap)).await?
+                }
+                crate::lockfrom::Funded::Sapling(hexs) => self.broadcast_hex(node, &hexs).await?,
+            },
+        };
         Ok(J::obj()
             .with("txid", txid.clone())
             .with("vout", 0i64)

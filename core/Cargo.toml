@@ -136,6 +136,12 @@ zcash_proofs = { version = "=0.28.0", git = "https://github.com/boyfromcave/libr
 # `core/src/sapling_params.rs`): rustls through `tokio-rustls` (the version tonic's TLS already
 # links) with the Mozilla roots above; the SHA-256 pins, not the transport, are the integrity check.
 tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring"] }
+# review YEW-PORT-5 R3: the hybrid builder moved from yewd's signer (core/src/build/hybrid.rs,
+# native only), at the versions both Cargo.lock files already hold (no new crate, no new version).
+hex = "=0.4.3"
+incrementalmerkletree = "=0.8.2"
+orchard = { version = "=0.14.0", default-features = false }
+rand_core = { version = "=0.6.4", features = ["getrandom"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }

@@ -107,7 +107,12 @@ Three rules explain most of the design:
    every input is a class the transaction may spend, then asks the server's node to validate
    the exact bytes (`ValidateRawTransaction`) and refuses unless the verdict is `ok`, the burn
    equals what was planned and the node would accept it. There is no override, flag or test
-   hook that skips it. This is what stands between a client bug and burned YED.
+   hook that skips it. This is what stands between a client bug and burned YED. A plain YEC
+   spend (public, shielding, or from a post-quantum address) adds a third check that does not
+   rest on the server's word: the transaction that created each input is fetched, its txid
+   recomputed from the bytes, and its Yellowback payload parsed on the device; an input that a
+   MINT, TRANSFER or REDEEM assigns YED to, or whose creating transaction cannot be fetched and
+   verified, is refused (`gate::confirm_provenance`).
 3. **Every UTXO has one class.** On Ycash a YED holding is a 10,000-zat transparent output whose
    dollars live in a payload; spending it as plain YEC burns it. So `coins.rs` classifies every
    output (`YEC`, `FEE_RESERVE`, `TOKEN`, `PENDING_TOKEN`, `VAULT`, `CARRIER`, `HELD`,
@@ -116,6 +121,18 @@ Three rules explain most of the design:
    sees two balances; a UTXO list exists only in `yew-cli coins`.
 
 Other things worth knowing before reading code:
+
+- **What the has-held-YED marker does not cover** (review YEW-REVIEW-3 L4; as the C++ lines'
+  `doc/yellowback.md`). A wallet that has held YED refuses a plain YEC spend of transparent coins
+  on a server without Yellowback (`gate::refuse_held_absent`, `Wallet::has_held_yed`). The marker
+  is wallet state, not part of the seed: it is written only at a sync against a server where
+  Yellowback is live (a token of the wallet's own, a pending token, a mint). A wallet restored
+  from its seed and synced against a server without Yellowback is unmarked, so nothing refuses
+  there; it sees its YED outputs as ordinary 10,000-zat outputs, and only the class rule (every
+  own output of exactly `TOKEN_VALUE` is `HELD`) keeps them from being spent as YEC. YED assigned
+  to an output of any other value is not covered by that rule. **Restore only against a server
+  with Yellowback:** there the first sync lists the tokens and sets the marker. The app has no
+  override (yewd's `-yellowback=0` has no counterpart here).
 
 - **Sync is per address, not per block.** The wallet derives its addresses
   (`m/44'/347'/0'/{0,1}/i`, Ywallet-compatible, gap limit 20), asks the server for their UTXOs
@@ -182,7 +199,7 @@ app/test/               widget tests over test/fake_wallet_api.dart
 app/integration_test/   m1 (send/receive), m2 (mint/vault/claim) and s3 (private screens + screenshots) flows against a devnet
 proto/                  the three lightwalletd-dd .proto files + PIN (the commit they came from)
 scripts/                build, run, devnet and CI check scripts (listed below)
-docs/                   trust.md, design-notes.md, security-review.md, release.md, licenses.md
+docs/                   trust.md, address-types.md, design-notes.md, security-review.md, release.md, licenses.md
 flutter_rust_bridge.yaml   codegen config
 .github/workflows/      ci.yml (build, tests, checks); semgrep.yml, codeql.yml, secops.yml, code-scanning.yml (SECURITY-CI.md); devnet-nightly.yml
 ```
@@ -429,6 +446,7 @@ Everything below needs a device, an account, a public server or a decision:
 
 ## Further reading
 
+- [docs/address-types.md](docs/address-types.md) — sends between address types (app and web), what is daemon only, the light-client safety layers, privacy, known limitations
 - [docs/design-notes.md](docs/design-notes.md) — the rules behind the code and the devnet evidence, phase by phase
 - [docs/security-review.md](docs/security-review.md) — findings, fixes, deferrals
 - [docs/release.md](docs/release.md) — reproducible build, endpoints, store checklist, testnet plan

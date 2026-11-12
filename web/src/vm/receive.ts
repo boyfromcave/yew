@@ -1,4 +1,5 @@
-// Receive (receive.dart): Private / Public / YED; the address, a QR, a new private address.
+// Receive (receive.dart): Private / Public (ECC) / PQ · FN-DSA-512 (sqf…) / PQ · SLH-DSA (sqs…) / YED;
+// the address, a QR, a new private address.
 import type { AddressKind, Core } from "../core";
 import { messageOf } from "../core";
 import { Vm } from "./base";

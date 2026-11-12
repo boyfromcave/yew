@@ -16,6 +16,7 @@ import '../format.dart';
 import '../state/app_scope.dart';
 import '../theme.dart';
 import '../widgets/preview_card.dart';
+import '../widgets/unusual_fee.dart';
 
 class MintProgressScreen extends StatefulWidget {
   const MintProgressScreen({super.key, required this.mintId});
@@ -68,7 +69,26 @@ class _MintProgressScreenState extends State<MintProgressScreen> {
     await _finish();
   }
 
-  Future<void> _finish() => _step((api) => api.mintFinish(mintId: widget.mintId));
+  Future<void> _finish() => _step((api) async {
+        try {
+          return await api.mintFinish(mintId: widget.mintId);
+        } catch (e) {
+          // review YEW-REVIEW-5 M2: the main fee rose above what the start accepted. Nothing was
+          // sent; the core's message carries a new acknowledgement, given back only from the
+          // separate dialog (declining leaves the error shown and the row as it was).
+          final m = messageOf(e);
+          final ack = RegExp(r'accept-unusual-fee:\d+:row:\d+').firstMatch(m)?.group(0);
+          if (!m.startsWith('unusual-fee:') || ack == null || !mounted) rethrow;
+          final note = m.contains(' To pay it,') ? m.substring(0, m.indexOf(' To pay it,')) : m;
+          final String? accepted;
+          try {
+            accepted = await acceptUnusualFee(context, note: note.replaceFirst('unusual-fee: ', ''), ack: ack);
+          } on UnusualFeeDeclined {
+            throw e; // declined: the refusal stays on screen, nothing is sent
+          }
+          return api.mintFinish(mintId: widget.mintId, acceptUnusualFee: accepted);
+        }
+      });
 
   Future<void> _sweep() => _step((api) => api.mintSweep(mintId: widget.mintId));
 

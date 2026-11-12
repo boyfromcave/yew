@@ -86,6 +86,34 @@ void main() {
     expect(find.byKey(const Key('done')), findsOneWidget);
   });
 
+  testWidgets('a finish fee above what the start accepted needs its own confirmation (review YEW-REVIEW-5 M2)', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.mintsAnswer = [h.api.mintRow(id: 4, state: 'CARRIER_CONFIRMED')];
+    h.api.mintFinishError = 'unusual-fee: the fee changed after you confirmed, so nothing was sent. It is now 0.5 YEC for 900 bytes. You accepted 0.1 YEC for 900 bytes at the start (0.1 YEC at this size). To pay it, confirm again with the acknowledgement accept-unusual-fee:50000000:row:4; otherwise the carrier lapses at the end of its window and can then be swept back.';
+    await h.pump(tester);
+    await tester.tap(find.byKey(const Key('tab-yellowback')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('mint-4')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('unusual-fee-dialog')), findsOneWidget);
+    expect(find.textContaining('You accepted 0.1 YEC'), findsOneWidget);
+    expect(find.textContaining('accept-unusual-fee:'), findsNothing);
+    // declined: nothing more is sent, the refusal stays
+    await tester.tap(find.byKey(const Key('unusual-fee-cancel')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls.where((c) => c.startsWith('mintFinish 4 ')), isEmpty);
+    expect(find.text('CARRIER_CONFIRMED'), findsOneWidget);
+    // a later attempt, accepted: the acknowledgement goes back with the finish
+    h.api.mintsAnswer = [h.api.mintRow(id: 4, state: 'CARRIER_CONFIRMED', tip: 485)];
+    await tester.tap(find.byKey(const Key('sync')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('unusual-fee-dialog')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('unusual-fee-accept')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('mintFinish 4 accept-unusual-fee:50000000:row:4'));
+    expect(find.text('MAIN_SENT'), findsOneWidget);
+  });
+
   testWidgets('a lapsed row shows "window closed, sweeping carrier" and the sweep action', (tester) async {
     final h = Harness(withWallet: true);
     h.api.mintsAnswer = [h.api.mintRow(id: 5, state: 'LAPSED', tip: 530)];
@@ -122,15 +150,91 @@ void main() {
 
   testWidgets('an unaffordable estimate disables the start and says how much YEC is missing', (tester) async {
     final h = Harness(withWallet: true);
-    h.api.balancesAnswer = const Balances(yecZat: 100000, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0, priceMicroUsd: 520000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false, yecPqZat: 0, pqCoins: []);
+    h.api.balancesAnswer = const Balances(yecZat: 100000, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0, priceMicroUsd: 520000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false, yecPqZat: 0, yecPqSlhZat: 0, yecPqFalconZat: 0, yecStagedForMintZat: 0, pqCoins: []);
     await openMint(tester, h);
     await tester.enterText(find.byKey(const Key('amount')), '25');
     await tester.tap(find.byKey(const Key('estimate')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('unaffordable')), findsOneWidget);
-    expect(find.textContaining('needs 0.95023000 YEC and the wallet has 0.00100000'), findsOneWidget);
+    expect(find.text('Not enough YEC: this mint needs 0.95023000 YEC and your public balance has 0.00100000 YEC.'), findsOneWidget);
+    // no private balance: nothing to move, no "Fund from" chooser to point at
+    expect(find.byKey(const Key('mint-from')), findsNothing);
+    expect(find.byKey(const Key('move-public')), findsNothing);
     await tester.tap(find.byKey(const Key('start')));
     await tester.pumpAndSettle();
     expect(h.api.calls.where((c) => c.startsWith('mintStart')), isEmpty);
+  });
+
+  testWidgets('beta2 D-3: the mint is funded from a chosen post-quantum address; the carrier fee is shown and passed back', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.pqSourcesAnswer = const [
+      PqSource(address: fakePqSlh, scheme: 1, schemeName: 'SLH-DSA-SHA2-128s', balanceZat: 300000000),
+    ];
+    await openMint(tester, h);
+    // each source with its balance
+    await tester.tap(find.byKey(const Key('mint-from')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Public · 1.50105'), findsWidgets);
+    await tester.tap(find.textContaining('Post-quantum SLH-DSA-SHA2-128s').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('amount')), '25');
+    await tester.tap(find.byKey(const Key('estimate')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('mintEstimate 2500 48 from $fakePqSlh'));
+    await tester.scrollUntilVisible(find.byKey(const Key('carrier-fee')), 200, scrollable: find.byType(Scrollable).first);
+    expect(find.byKey(const Key('mint-funded-from')), findsOneWidget);
+    expect(find.textContaining('priced on its signature size'), findsOneWidget);
+    await tester.scrollUntilVisible(find.byKey(const Key('start')), 200, scrollable: find.byType(Scrollable).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('start')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('mintStart from $fakePqSlh carrier 18000'));
+  });
+
+  testWidgets('beta2 D-3: the mint is funded from the private balance; the notice and the carrier fee are shown and passed back', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.balancesAnswer = const Balances(yecZat: 150105000, yecReservedZat: 0, yecPendingZat: 0, yedCents: 0, yedPendingCents: 0, priceMicroUsd: 520000, heldCount: 0, syncHeight: 484, yedSendMinZat: 21000, yecShieldedZat: 400000000, yecShieldedSpendableZat: 400000000, yecShieldedPendingZat: 0, shieldedScannedHeight: 484, shieldedSendable: true, yecPqZat: 0, yecPqSlhZat: 0, yecPqFalconZat: 0, yecStagedForMintZat: 0, pqCoins: []);
+    await openMint(tester, h);
+    // the chooser appears for the private balance alone
+    await tester.tap(find.byKey(const Key('mint-from')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Private · 4.00').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('amount')), '25');
+    await tester.tap(find.byKey(const Key('estimate')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('mintEstimate 2500 48 from private'));
+    await tester.scrollUntilVisible(find.byKey(const Key('mint-private-notice')), 200, scrollable: find.byType(Scrollable).first);
+    expect(find.text('your private balance'), findsOneWidget);
+    expect(find.textContaining('spends private notes'), findsOneWidget);
+    await tester.scrollUntilVisible(find.byKey(const Key('start')), 200, scrollable: find.byType(Scrollable).first);
+    await tester.pumpAndSettle();
+    // review YEW-REVIEW-8 M1: notes the wallet's store lacks need the go-ahead; cancel sends nothing
+    h.api.noteLookupText = 'To spend older notes the app must ask the server for up to 1 transaction; the server can then tell which notes this payment spends. Nothing was sent.';
+    await tester.tap(find.byKey(const Key('start')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('note-lookup-dialog')), findsOneWidget);
+    expect(find.text(h.api.noteLookupText!), findsOneWidget);
+    await tester.tap(find.byKey(const Key('note-lookup-cancel')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, isNot(contains('mintStart lookup')));
+    expect(h.state.mints, isEmpty);
+    await tester.tap(find.byKey(const Key('start')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('note-lookup-accept')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('mintStart from private carrier 18000'));
+    expect(h.api.calls, contains('mintStart lookup'));
+  });
+
+  testWidgets('without post-quantum coins there is no funding chooser and the public balance funds the mint', (tester) async {
+    final h = Harness(withWallet: true);
+    await openMint(tester, h);
+    expect(find.byKey(const Key('mint-from')), findsNothing);
+    await tester.enterText(find.byKey(const Key('amount')), '25');
+    await tester.tap(find.byKey(const Key('estimate')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('mintEstimate 2500 48'));
+    expect(find.byKey(const Key('carrier-fee')), findsNothing);
   });
 }

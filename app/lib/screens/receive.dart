@@ -4,7 +4,9 @@
 
 // Receive (plan §5.1; yew-shielded plan §3): one QR. The private `ys1…` address by default once
 // the private balance has synced; a toggle to the public `s…` address and to the YED `yb…`
-// form; copy; "new address" (a new private address on the private tab).
+// form; copy; "new address" (a new private address on the private tab). Where the server offers
+// Yellowback, a post-quantum tab (beta2 D-8, D-9) shows the receive key's FN-DSA-512 `sqf…` or
+// SLH-DSA `sqs…` address, the scheme named beside the prefix.
 import 'package:flutter/material.dart';
 
 import '../api/wallet_api.dart';
@@ -34,10 +36,16 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
     final t = Theme.of(context).textTheme;
     final kind = _kind ?? widget.kind ?? (z != null && app.balances.shieldedScannedHeight > 0 ? ReceiveKind.shielded : ReceiveKind.yed);
     final private = kind == ReceiveKind.shielded;
+    final pqF = app.receivePqFalcon;
+    final pqS = app.receivePqSlh;
+    final hasPq = pqF != null || pqS != null;
+    final pq = kind == ReceiveKind.pqFalcon || kind == ReceiveKind.pqSlh;
     final String? data = switch (kind) {
       ReceiveKind.shielded => z?.address,
       ReceiveKind.transparent => a?.s,
       ReceiveKind.yed => a?.ye,
+      ReceiveKind.pqFalcon => pqF?.address,
+      ReceiveKind.pqSlh => pqS?.address,
     };
     return Scaffold(
       appBar: AppBar(title: const Text('Receive')),
@@ -54,11 +62,26 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                         if (z != null) const ButtonSegment(value: ReceiveKind.shielded, label: Text('Private'), icon: Icon(Icons.lock_rounded)),
                         const ButtonSegment(value: ReceiveKind.transparent, label: Text('Public')),
                         const ButtonSegment(value: ReceiveKind.yed, label: Text('YED')),
+                        if (hasPq) ButtonSegment(value: pqF != null ? ReceiveKind.pqFalcon : ReceiveKind.pqSlh, label: const Text('PQ'), icon: const Icon(Icons.shield_outlined)),
                       ],
-                      selected: {kind},
+                      selected: {pq ? (pqF != null ? ReceiveKind.pqFalcon : ReceiveKind.pqSlh) : kind},
                       onSelectionChanged: (s) => setState(() => _kind = s.first),
                     ),
                   ),
+                  if (pq) ...[
+                    const SizedBox(height: 12),
+                    Center(
+                      child: SegmentedButton<ReceiveKind>(
+                        key: const Key('pq-scheme'),
+                        segments: [
+                          if (pqF != null) const ButtonSegment(value: ReceiveKind.pqFalcon, label: Text('FN-DSA-512 · sqf…')),
+                          if (pqS != null) const ButtonSegment(value: ReceiveKind.pqSlh, label: Text('SLH-DSA · sqs…')),
+                        ],
+                        selected: {kind},
+                        onSelectionChanged: (s) => setState(() => _kind = s.first),
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 20),
                   if (data != null)
                     AddressQr(
@@ -69,10 +92,14 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                         ReceiveKind.yed => a.ye.length == 53
                             ? 'Send YED here: your post-quantum (Falcon) YED address. YED only: send YEC to your public address.'
                             : 'Send YED or YEC here: the same key as your public address. A vault-owner address (53 characters) is never a receive address.',
+                        ReceiveKind.pqFalcon =>
+                          'Send YEC here: your post-quantum FN-DSA-512 (Falcon) address. YEC only, public on the chain. Spending from it signs with a ~1.6 KB signature.',
+                        ReceiveKind.pqSlh =>
+                          'Send YEC here: your post-quantum SLH-DSA address. YEC only, public on the chain. Spending from it signs with a ~7.9 KB signature, so its fees are the largest and signing is slower.',
                       },
                     ),
                   const SizedBox(height: 16),
-                  if (!private) Text(a.path, textAlign: TextAlign.center, style: t.bodySmall?.copyWith(color: c.pending)),
+                  if (!private) Text(pq ? ((kind == ReceiveKind.pqFalcon ? pqF : pqS)?.path ?? '') : a.path, textAlign: TextAlign.center, style: t.bodySmall?.copyWith(color: c.pending)),
                   const SizedBox(height: 16),
                   TextButton.icon(
                     key: const Key('new-address'),

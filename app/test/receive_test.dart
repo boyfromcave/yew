@@ -30,4 +30,34 @@ void main() {
     await tester.pumpAndSettle();
     expect(h.api.fresh, 1);
   });
+
+  // beta2 D-8, D-9: the post-quantum tab, the scheme visible in the label and the prefix.
+  testWidgets('receive offers the post-quantum addresses with the scheme named', (tester) async {
+    final h = Harness(withWallet: true);
+    await h.pump(tester);
+    await tester.tap(find.byKey(const Key('receive')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('PQ'));
+    await tester.pumpAndSettle();
+    expect(find.text(fakePqFalcon), findsOneWidget);
+    expect(fakePqFalcon.startsWith('rqf'), isTrue);
+    expect(find.text('FN-DSA-512 · sqf…'), findsOneWidget);
+    expect(find.textContaining('post-quantum FN-DSA-512 (Falcon) address'), findsOneWidget);
+    expect(find.text("m/44'/347'/0'/0/0 (FN-DSA-512)"), findsOneWidget);
+    await tester.tap(find.text('SLH-DSA · sqs…'));
+    await tester.pumpAndSettle();
+    expect(find.text(fakePqSlh), findsOneWidget);
+    expect(find.text(fakePqFalcon), findsNothing);
+    expect(find.textContaining('~7.9 KB signature, so its fees are the largest'), findsOneWidget);
+  });
+
+  testWidgets('without Yellowback on the server the post-quantum tab is hidden', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.yellowbackPresent = false;
+    await h.pump(tester);
+    await tester.tap(find.byKey(const Key('receive')));
+    await tester.pumpAndSettle();
+    expect(find.text('PQ'), findsNothing);
+    expect(find.text(fakePqFalcon), findsNothing);
+  });
 }

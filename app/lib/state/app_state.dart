@@ -63,7 +63,7 @@ class AppState extends ChangeNotifier {
     shieldedScannedHeight: 0,
     shieldedSendable: false,
     yecPqZat: 0,
-    pqCoins: [],
+    yecPqSlhZat: 0, yecPqFalconZat: 0, yecStagedForMintZat: 0, pqCoins: [],
   );
   Status? status;
   List<HistoryItem> history = const [];
@@ -83,6 +83,14 @@ class AppState extends ChangeNotifier {
 
   /// The private (`ys1…`) receive address; null until the core has one.
   AddressPair? receivePrivate;
+
+  /// The receive key's post-quantum pairs (`sqf…` FN-DSA-512, `sqs…` SLH-DSA; beta2 D-8, D-9);
+  /// null on a server without Yellowback (it lists no post-quantum coin) or when the core has none.
+  AddressPair? receivePqFalcon;
+  AddressPair? receivePqSlh;
+
+  /// The post-quantum addresses holding spendable YEC (the Send screen's sources).
+  List<PqSource> pqSources = const [];
   StreamSubscription<SyncEvent>? _sync;
 
   /// Read settings and whether a seed exists (first frame).
@@ -214,6 +222,7 @@ class AppState extends ChangeNotifier {
         receivePrivate =
             null; // the private side is unavailable; public receive still works
       }
+      await _refreshPq();
       history = (await api.history(page: 0, pageSize: 200)).rows;
       mints = await api.mints();
       vaults = await api.vaults();
@@ -289,10 +298,31 @@ class AppState extends ChangeNotifier {
     status = null;
   }
 
-  /// A fresh receive address ("new address" on Receive).
+  /// A fresh receive address ("new address" on Receive), with its post-quantum pairs.
   Future<void> newReceiveAddress() async {
     receive = await api.receiveAddress(fresh: true);
+    await _refreshPq();
     notifyListeners();
+  }
+
+  /// The post-quantum receive pairs and sources: only where the server offers Yellowback (the
+  /// capability that lists post-quantum coins); a failure hides them, public receive still works.
+  Future<void> _refreshPq() async {
+    if (!yellowbackUsable) {
+      receivePqFalcon = null;
+      receivePqSlh = null;
+      pqSources = const [];
+      return;
+    }
+    try {
+      receivePqFalcon = await api.receiveAddress(kind: ReceiveKind.pqFalcon, fresh: false);
+      receivePqSlh = await api.receiveAddress(kind: ReceiveKind.pqSlh, fresh: false);
+      pqSources = await api.pqSources();
+    } catch (_) {
+      receivePqFalcon = null;
+      receivePqSlh = null;
+      pqSources = const [];
+    }
   }
 
   /// A new private address of the same private balance ("New private address" on Receive).
@@ -317,8 +347,8 @@ class AppState extends ChangeNotifier {
   /// Public YEC: available plus the part kept for YED fees.
   int get publicYecZat => balances.yecZat + balances.yecReservedZat;
 
-  /// All YEC, private and public (the Home total).
-  int get totalYecZat => publicYecZat + balances.yecShieldedZat;
+  /// All YEC, private, public and at the post-quantum addresses (the Home total).
+  int get totalYecZat => publicYecZat + balances.yecShieldedZat + balances.yecPqZat;
 
   /// The rows still moving (the Yellowback screen's "in progress" list).
   List<MintStatus> get mintsInProgress => mints

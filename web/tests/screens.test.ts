@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { MOCK_SEED, MockCore } from "../src/mock";
 import { OnboardingVm } from "../src/vm/onboarding";
 import { HomeVm } from "../src/vm/home";
-import { SendVm } from "../src/vm/send";
+import { SendVm, destinationMismatch } from "../src/vm/send";
 import { ReceiveVm } from "../src/vm/receive";
 import { HistoryVm } from "../src/vm/history";
 import { SettingsVm } from "../src/vm/settings";
@@ -66,6 +66,7 @@ describe("home", () => {
     const core = await openWallet(); const vm = new HomeVm(core);
     await vm.attach(); await vm.load();
     expect(vm.state.balances?.yedCents).toBe("12500"); expect(vm.state.network).toBe("regtest");
+    const b = vm.state.balances!; expect(BigInt(b.pqSlhZat) + BigInt(b.pqFalconZat)).toBe(BigInt(b.pqZat)); expect(b.stagedForMintZat).toBe("0");
     await vm.sync(); expect(vm.state.progress?.pct).toBe(100); expect(vm.state.syncing).toBe(false);
   });
 });
@@ -76,6 +77,13 @@ describe("send", () => {
     await vm.setTo("ye1Recipient000000000000000000000000"); vm.state.amount = "25.00";
     await vm.preview(); expect(vm.state.yed?.verdict).toContain("ok"); expect(core.broadcasts).toHaveLength(0);
     await vm.confirm(); expect(vm.state.txid).toHaveLength(64); expect(core.broadcasts).toHaveLength(1);
+  });
+  it("YED: an unusual fee shows its note and needs its own step before confirm passes the ack (review YEW-REVIEW-5 L4)", async () => {
+    const core = await openWallet(); core.unusualYedFee = "Unusual fee: 2 YEC, 5.0× the usual."; const vm = new SendVm(core, "yed");
+    await vm.setTo("ye1Recipient000000000000000000000000"); vm.state.amount = "25.00";
+    await vm.preview(); expect(vm.feeNote).toContain("Unusual fee"); expect(vm.state.feeAccepted).toBe(false);
+    await vm.confirm(); expect(vm.state.error).toContain("Pay this fee"); expect(core.broadcasts).toHaveLength(0);
+    vm.acceptFee(); await vm.confirm(); expect(vm.state.error).toBe(""); expect(core.broadcasts).toHaveLength(1);
   });
   it("YED to a private address is refused before the core is asked", async () => {
     const vm = new SendVm(await openWallet(), "yed");
@@ -95,6 +103,36 @@ describe("send", () => {
     const vm = new SendVm(await openWallet(), "yed"); vm.state.yed = { previewId: "stale" } as unknown as import("../src/core").YedPreview;
     await vm.confirm(); expect(vm.state.errorKind).toBe("gate"); expect(vm.state.txid).toBe("");
   });
+  it("From a post-quantum address (beta2 D-8): the preview shows fee, size and \"not measured\" signing; confirm is the only broadcast", async () => {
+    const core = await openWallet(); const vm = new SendVm(core, "yec");
+    await vm.loadSources(); expect(vm.state.sources.map((x) => x.schemeName)).toEqual(["FN-DSA-512", "SLH-DSA-SHA2-128s"]);
+    vm.setFrom(vm.state.sources[1].address);
+    await vm.setTo("rqf1RecipientFalcon00000000000000000000000000000000000"); vm.state.amount = "0.1";
+    await vm.preview(); expect(vm.state.error).toBe(""); expect(vm.state.pq?.schemeName).toBe("SLH-DSA-SHA2-128s");
+    expect(vm.state.pq?.signMillis).toBeNull(); expect(vm.state.pq?.sizeBytes).toBeGreaterThan(8000); expect(core.broadcasts).toHaveLength(0);
+    await vm.confirm(); expect(vm.state.txid).toHaveLength(64); expect(core.broadcasts).toHaveLength(1); expect(vm.state.pq).toBeNull();
+  });
+  it("a post-quantum source to ys1… and private → post-quantum are named unavailable, never sent (browser build)", async () => {
+    const core = await openWallet(); const vm = new SendVm(core, "yec");
+    await vm.loadSources(); expect(vm.unavailableReason("private_to_pq")).toContain("only the app");
+    vm.setFrom(vm.state.sources[0].address);
+    await vm.setTo("ys1qprivaterecipient00000000000000000000"); expect(vm.blockedReason).toContain("only the app");
+    vm.state.amount = "0.1"; await vm.preview(); expect(vm.state.errorKind).toBe("unsupported"); expect(vm.state.pq).toBeNull(); expect(core.broadcasts).toHaveLength(0);
+    vm.setFrom(""); expect(vm.blockedReason).toBeNull(); expect(vm.toPrivate).toBe(true);
+  });
+  it("a post-quantum send's unusual fee needs its own step (the ack goes back only after it)", async () => {
+    const core = await openWallet(); core.unusualPqFee = "Unusual fee: 0.84 YEC, 4.0× the usual."; const vm = new SendVm(core, "yec");
+    await vm.loadSources(); vm.setFrom(vm.state.sources[0].address);
+    await vm.setTo("s1PublicRecipient0000000000000000000"); vm.state.amount = "0.1"; await vm.preview();
+    expect(vm.feeNote).toContain("Unusual fee"); await vm.confirm(); expect(vm.state.error).toContain("Pay this fee"); expect(core.broadcasts).toHaveLength(0);
+    vm.acceptFee(); await vm.confirm(); expect(vm.state.error).toBe(""); expect(core.broadcasts).toHaveLength(1);
+  });
+  it("post-quantum forms are asset-bound (D-Q-20/D-Q-21)", async () => {
+    expect(destinationMismatch("yec", "pq")).toContain("YED address"); expect(destinationMismatch("yed", "pq_yec")).toContain("receives YEC");
+    const vm = new SendVm(await openWallet(), "yec");
+    await vm.setTo("yrf1FalconHolder0000000000000000000000000000000000000"); vm.state.amount = "0.1";
+    await vm.preview(); expect(vm.state.error).toContain("sqf… or sqs…"); expect(vm.state.yec).toBeNull();
+  });
   it("move: shield needs the params", async () => {
     const core = await openWallet(); const vm = new SendVm(core, "yec");
     await vm.movePreview("to_private", "1"); expect(vm.state.errorKind).toBe("params");
@@ -108,6 +146,9 @@ describe("receive / history / settings", () => {
     await vm.show("shielded"); expect(vm.state.address.startsWith("ys1")).toBe(true);
     await vm.show("yed"); expect(vm.state.address.startsWith("ye")).toBe(true);
     await vm.show("transparent"); expect(vm.state.address.startsWith("s1")).toBe(true);
+    await vm.show("pq_falcon"); expect(vm.state.address.startsWith("rqf")).toBe(true);
+    await vm.show("pq_slh"); expect(vm.state.address.startsWith("rqs")).toBe(true);
+    await vm.show("transparent");
     const a = vm.state.address; await vm.fresh(); expect(vm.state.kind).toBe("shielded"); expect(vm.state.address).not.toBe(a);
   });
   it("history pages and memos", async () => {
@@ -138,6 +179,30 @@ describe("yellowback", () => {
     expect(vm.state.step?.mintId).toBe(vm.state.mintId); expect(vm.state.mintStatus?.inProgress).toBe(true); // the MINT is staged, not sent
     await vm.mintStepConfirm(); expect(core.broadcasts).toHaveLength(2); expect(vm.state.mintStatus?.state).toBe("DONE"); expect(vm.state.mintStatus?.inProgress).toBe(false);
     await vm.load(); expect(vm.state.vaults).toHaveLength(2);
+  });
+  it("mint \"Fund from\" a post-quantum address (beta2 D-3): the estimate names the source and its carrier fee; start passes only the core's estimate id", async () => {
+    const core = await openWallet(); const vm = new YellowbackVm(core);
+    await vm.loadSources(); expect(vm.unavailableReason("mint_from_private")).toContain("only the app");
+    const src = vm.state.sources[0]; vm.setFrom(src.address);
+    await vm.estimate("1", 100); const e = vm.state.estimate!; expect(e.from).toBe(src.address); expect(e.carrierFeeZat).toBe("20000"); expect(e.availableZat).toBe(src.balanceZat);
+    await vm.mintStart(); const st = core.lastMintStart!; expect(st.args).toBe(2); expect(Object.keys(st.acks ?? {})).toEqual(["acceptUnusualCarrierFee"]);
+    expect(st.estimate.estimateId).toBe(e.estimateId); expect(st.estimate.from).toBe(src.address); expect(st.estimate.carrierFeeZat).toBe("20000");
+    expect(core.broadcasts).toHaveLength(0);
+  });
+  it("mint start: an estimate id the core did not issue is refused (review YEW-REVIEW-10 L2)", async () => {
+    const core = await openWallet(); const vm = new YellowbackVm(core);
+    await expect(core.mint_start("e999")).rejects.toThrow(/^invalid: This estimate is no longer valid/);
+    await vm.estimate("1", 100); (vm as unknown as { set(p: object): void }).set({ estimate: { ...vm.state.estimate!, estimateId: "forged", carrierFeeZat: "99999999" } });
+    await vm.mintStart(); expect(vm.state.error).toContain("no longer valid"); expect(vm.state.mint).toBeNull(); expect(core.lastMintStart).toBeUndefined();
+  });
+  it("mint finish: a fee above what the start accepted is asked for, then confirmed with the new ack (review YEW-REVIEW-5 M2, L4)", async () => {
+    const core = await openWallet(); const vm = new YellowbackVm(core);
+    await vm.estimate("100", 100); await vm.mintStart(); await vm.mintConfirm();
+    core.finishFeeAck = `accept-unusual-fee:50000000:row:${vm.state.mintId}`;
+    await vm.mintStepConfirm(); expect(core.broadcasts).toHaveLength(1); expect(vm.state.error).toBe("");
+    expect(vm.state.finishFee?.ack).toBe(core.finishFeeAck); expect(vm.state.finishFee?.note).toContain("You accepted 0.1 YEC");
+    await vm.acceptFinishFee(); expect(vm.state.error).toContain("Pay this fee"); expect(core.broadcasts).toHaveLength(1);
+    vm.acceptFee(); await vm.acceptFinishFee(); expect(core.broadcasts).toHaveLength(2); expect(vm.state.mintStatus?.state).toBe("DONE");
   });
   it("redeem: preview shows the burn and the collateral returned; confirm closes the vault", async () => {
     const core = await openWallet(); const vm = new YellowbackVm(core); await vm.load();

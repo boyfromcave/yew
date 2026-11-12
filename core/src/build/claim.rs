@@ -307,10 +307,18 @@ pub async fn start(
         )));
     }
     super::redeem::check_no_pending_spend(&v)?;
+    // YEW-PORT-6 item 2 / review YEW-REVIEW-4 M2: a flagged CLAIM fee needs its own acknowledgement
+    let fee_guard = mint::main_fee_guard(wallet, "claim")?;
+    terms::require_ack(
+        &fee_guard,
+        bounds.and_then(|b| b.accept_unusual_fee.as_deref()),
+    )?;
     // The vault's script terms and debt, as the node reports them, checked (audit G-1); its V
     // script must be the YED vault this wallet rebuilds (U-23) — the one the claim spends.
     terms::check_vault(wallet.network, &v)?;
     let vt = mint::vault_terms_now(wallet, yb).await?;
+    // review YEW-REVIEW-6 M1: the refresh must not have raised the fee the user confirmed
+    mint::check_fee_not_raised(wallet, &fee_guard, "claim")?;
     let yv = terms::check_vault_script(&vt, &v)?;
     if v.minted_cents.max(0) as u64 != entry.minted_cents
         || v.collateral_zat != entry.collateral_zat
@@ -446,9 +454,11 @@ pub async fn start(
         r,
         tip,
         branch_id,
+        mint::CarrierFunding::Ecc,
         persist_row,
     )
     .await?;
+    mint::note_fee_ack(wallet, id, &fee_guard)?;
     Ok(id)
 }
 
@@ -760,6 +770,7 @@ pub async fn finish(
     validator: &mut Validator,
     m: &MintRow,
     branch_id: u32,
+    accept_unusual_fee: Option<&str>,
 ) -> Result<Finished, WalletError> {
     let owner = m.owner.filter(|o| o.is_known()).ok_or_else(|| {
         WalletError::Other("the claim row's vault owner is not post-quantum".into())
@@ -881,6 +892,7 @@ pub async fn finish(
                 &terms::ClaimBounds {
                     max_burn_cents,
                     min_out_zat,
+                    accept_unusual_fee: None,
                 },
                 debt,
                 terms::claimant_take(
@@ -917,6 +929,8 @@ pub async fn finish(
         }
         break (plan, tx, funding);
     };
+    let priced: Vec<Utxo> = yed_inputs.iter().chain(funding.iter()).cloned().collect();
+    mint::check_main_fee(wallet, m.id, network_fee, &priced, accept_unusual_fee)?;
     let raw = tx.serialize()?;
     let txid = tx.txid()?;
     let (_, validation) = gate::confirm_burning(
@@ -928,6 +942,15 @@ pub async fn finish(
     )
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
+    // layer 3 on the YEC fee inputs (not the named vault, the TOKENs or the carrier): no input spent as plain YEC carries YED by its creating transaction
+    gate::confirm_provenance(
+        client,
+        gate::Path::Claim(vault_out),
+        &raw,
+        |op| wallet.store.utxo_class(op).ok().flatten(),
+        |op| wallet.store.utxo_txout(op).ok().flatten(),
+    )
+    .await?;
     let mut locked = yed_inputs.clone();
     locked.extend(funding.iter().cloned());
     locked.push(Utxo {

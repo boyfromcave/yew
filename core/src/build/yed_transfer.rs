@@ -120,6 +120,9 @@ pub struct YedTransferPreview {
     pub raw: Vec<u8>,
     /// Its txid (internal order).
     pub txid: [u8; 32],
+    /// The fee guard (review YEW-REVIEW-4 M2): [`broadcast`] refuses a flagged fee without its
+    /// acknowledgement.
+    pub fee_guard: super::terms::FeeGuard,
 }
 
 /// The output of [`assemble`].
@@ -378,6 +381,20 @@ pub fn build_yed_transfer(
     gate::check(gate::Path::YedTransfer, &a.raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
     })?;
+    // review YEW-REVIEW-4 M2: bounded and flagged as every fee from the server's terms
+    let (size, conventional) = super::terms::yed_priced_size(
+        yed_inputs
+            .iter()
+            .chain(a.yec_inputs.iter())
+            .map(|u| u.script.as_slice()),
+    );
+    let fee_guard = wallet.guard_fee(
+        super::terms::FeeKind::Yed,
+        a.fee,
+        size.max(a.raw.len()),
+        conventional,
+        &txid_hex(&a.txid),
+    )?;
     Ok(YedTransferPreview {
         recipients: recipients.to_vec(),
         yed_inputs,
@@ -395,6 +412,7 @@ pub fn build_yed_transfer(
         expiry_height: a.expiry_height,
         raw: a.raw,
         txid: a.txid,
+        fee_guard,
     })
 }
 
@@ -406,12 +424,24 @@ pub async fn broadcast(
     client: &mut CompactClient,
     validator: &mut Validator,
     preview: &YedTransferPreview,
+    accept_unusual_fee: Option<&str>,
 ) -> Result<(String, Validation), WalletError> {
+    // YEW-PORT-6 item 2: a flagged fee is never confirmed by the normal button
+    super::terms::require_ack(&preview.fee_guard, accept_unusual_fee)?;
     let (_, validation) = gate::confirm(validator, gate::Path::YedTransfer, &preview.raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
     })
     .await?;
     let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
+    // layer 3 on the YEC fee inputs (not the TOKEN inputs, spent as YED): no input spent as plain YEC carries YED by its creating transaction
+    gate::confirm_provenance(
+        client,
+        gate::Path::YedTransfer,
+        &preview.raw,
+        |op| wallet.store.utxo_class(op).ok().flatten(),
+        |op| wallet.store.utxo_txout(op).ok().flatten(),
+    )
+    .await?;
     let reply = client.send_transaction(preview.raw.clone()).await?;
     let txid_str = txid_hex(&preview.txid);
     if !reply.is_empty() && reply != txid_str {

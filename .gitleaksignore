@@ -55,3 +55,30 @@ ca3961f241413119b4a41a7ffd48fc429eadc427:core/tests/vectors/pq_vectors.json:gene
 ca3961f241413119b4a41a7ffd48fc429eadc427:core/tests/vectors/pq_vectors.json:generic-api-key:33
 ca3961f241413119b4a41a7ffd48fc429eadc427:core/tests/vectors/pq_vectors.json:generic-api-key:44
 ca3961f241413119b4a41a7ffd48fc429eadc427:core/tests/vectors/pq_vectors.json:generic-api-key:55
+
+# core/tests/vectors/pq_address_vectors.json: the shared post-quantum address vectors (quantum spec 4.1, D-9): public key hashes and
+# addresses, no secrets; matched by generic-api-key. Checked 2026-11-12.
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:51
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:60
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:105
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:114
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:159
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:168
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:213
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:222
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:267
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:276
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:321
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:330
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:375
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:384
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:429
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:438
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:483
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:492
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:537
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:546
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:591
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:600
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:645
+ab470481cb4f9b6b4da07fc42c234c003c96d42b:core/tests/vectors/pq_address_vectors.json:generic-api-key:654

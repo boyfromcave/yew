@@ -17,7 +17,7 @@ carries for it, as `yew-web-plan.md` does for `web/`. Usage and the command-line
 | K-22 | the name is `yewd`, the home is `yew/yewd/` | one core, one CI, one release train; crates `yewd-facade` (binary `yewd`), `yewd-wallet`, `yewd-signer` (binary `yewd-signer`), `yewd-proto`; yew-core by path |
 | K-23 | lightwalletd-dd for what yew-core already reads, node JSON-RPC for the rest, indexer streams as wake-ups | no yew-core change for S1 |
 | K-24 | a separate signer process; the façade holds public material only | `yewd-signer`, Unix socket with a peer-UID check (S2) |
-| K-25 | exactly what parity needs: the 47, R7, the 34 stock wallet RPCs, three raw helpers | the method table (`yewd/facade/src/methods.rs`); the rest of ycashd's wallet table answers `-32601` "not served" |
+| K-25 | exactly what parity needs: the 47, R7, the 34 stock wallet RPCs, three raw helpers; **amended for beta2, 2026-11-11**: two more read-only stock RPCs, `z_gettotalbalance` and `listaddresses` (balances and addresses by type, beta2 item 37 decision 1) | the method table (`yewd/facade/src/methods.rs`, `BETA2_WALLET`; `yewd/wallet/src/bytype.rs`); the rest of ycashd's wallet table answers `-32601` "not served" |
 | K-26 | reject-reason parity and regtest `setmocktime` are added to kogany (W7-e) | nothing in `yew` |
 
 ## 1. Rules (workspace plan §4.3)
@@ -174,6 +174,15 @@ refusals and its preview) and 18 of the 25 R6 RPCs (`wallet/src/yed.rs`: `yed_se
 `sendtoaddress`, `sendmany`, `lockunspent`, `fundrawtransaction`, `signrawtransaction`,
 `getrawchangeaddress` (16/34 with S1's reads). Not yet: `z_sendmany` and its three operation RPCs,
 a Sapling `from`/`to` of `yed_mint`/`yed_redeem` (the Sapling build in the signer, below).
+
+**Note for the future `yed_buildcancel` builder (review YEW-REVIEW-5 L3).** The YEW core's layer 3
+treats every output at index 1 or above of a transaction carrying CANCEL_COSIGN (0x09) as carrying
+YED (CAN-1 re-issues the burn to the lowest such output paying the claimant's refund script, at any
+value; `gate::output_provenance`), so it holds such an output if it is the wallet's own coin. A
+legitimate cancel pays the vault at `vout[0]`, the refund at `vout[1]`, then the **canceller's**
+change. A yewd (or YEW) cancel builder must therefore record its own change output of the cancel
+as plain YEC by the wallet that built it (the outpoint and the reason, before broadcast, as the
+other builders record their change), or the sync's provenance check holds that change for good.
 
 **How the builders bind yew-core (F-S2-2).** yew-core's builders take its `Wallet` (the seed, the
 SQLite store, the gRPC client) and sign in-process, so the façade cannot call them without breaking
