@@ -3,7 +3,7 @@
 // staged) → confirm (funds it; answers the mintId) → finish (the MINT, staged) → confirm;
 // redeem and claim = preview → confirm. Every broadcast is confirm(previewId) (W2: the real
 // core stages the mint steps too, so one rule covers every broadcast).
-import type { ClaimPreview, ClaimableItem, Core, MintAvailability, MintEstimate, MintStart, MintStatus, MintStep, RedeemPreview, Vault } from "../core";
+import type { ClaimPreview, ClaimableItem, Core, MintAvailability, MintEstimate, MintStart, MintStatus, MintStep, PqSource, RedeemPreview, Unavailable, Vault } from "../core";
 import { kindOf, messageOf } from "../core";
 import { parseYedCents } from "../format";
 import { Vm } from "./base";
@@ -19,6 +19,10 @@ export interface YellowbackState {
   /** Review YEW-REVIEW-5 M2: the finish's main fee rose above what the start accepted; the core's text and
    *  the new acknowledgement it needs back. */
   finishFee: { note: string; ack: string } | null;
+  /** beta2 D-3: the mint's funding source ("" = the public balance, else one of `sources`' addresses). */
+  from: string; sources: PqSource[]; unavailable: Unavailable[];
+  /** The user pressed "Pay this fee" for the estimate's unusual carrier fee (its own confirmation). */
+  carrierFeeAccepted: boolean;
 }
 
 /** The acknowledgement in a finish refusal (`unusual-fee: … accept-unusual-fee:<fee>:row:<id> …`). */
@@ -31,13 +35,23 @@ export function finishAck(message: string): { note: string; ack: string } | null
 
 export class YellowbackVm extends Vm<YellowbackState> {
   constructor(private core: Core) {
-    super({ vaults: [], claimable: [], busy: false, error: "", errorKind: "", availability: null, estimate: null, mint: null, mintId: null, mintStatus: null, step: null, redeem: null, claim: null, txid: "", feeAccepted: false, finishFee: null });
+    super({ vaults: [], claimable: [], busy: false, error: "", errorKind: "", availability: null, estimate: null, mint: null, mintId: null, mintStatus: null, step: null, redeem: null, claim: null, txid: "", feeAccepted: false, finishFee: null, from: "", sources: [], unavailable: [], carrierFeeAccepted: false });
   }
   private async run(f: () => Promise<void>) {
     this.set({ busy: true, error: "", errorKind: "" });
     try { await f(); } catch (e) { this.set({ error: messageOf(e), errorKind: kindOf(e) }); } finally { this.set({ busy: false }); }
   }
-  reset() { this.set({ estimate: null, mint: null, mintId: null, mintStatus: null, step: null, redeem: null, claim: null, txid: "", error: "", errorKind: "", feeAccepted: false, finishFee: null }); }
+  reset() { this.set({ estimate: null, mint: null, mintId: null, mintStatus: null, step: null, redeem: null, claim: null, txid: "", error: "", errorKind: "", feeAccepted: false, finishFee: null, carrierFeeAccepted: false }); }
+  /** The "Fund from" chooser: the post-quantum sources and the shapes this build cannot run. */
+  async loadSources() {
+    try {
+      const [sources, unavailable] = await Promise.all([this.core.pq_sources(), this.core.unavailable_shapes()]);
+      this.set({ sources, unavailable, from: sources.some((x) => x.address === this.state.from) ? this.state.from : "" });
+    } catch (e) { this.set({ error: messageOf(e), errorKind: kindOf(e) }); }
+  }
+  setFrom(from: string) { this.set({ from, estimate: null, mint: null, error: "", errorKind: "", carrierFeeAccepted: false }); }
+  unavailableReason(shape: Unavailable["shape"]): string | null { return this.state.unavailable.find((u) => u.shape === shape)?.reason ?? null; }
+  acceptCarrierFee() { this.set({ carrierFeeAccepted: true }); }
   /** The user's own confirmation of the shown unusual fee (estimate, claim, or the finish's new fee). */
   acceptFee() { this.set({ feeAccepted: true }); }
   /** The acknowledgement confirm passes back: only after acceptFee(); an unaccepted flagged fee refuses here. */
@@ -55,14 +69,21 @@ export class YellowbackVm extends Vm<YellowbackState> {
     return this.run(async () => {
       const cents = parseYedCents(amount); if (cents === null || cents <= 0n) throw new Error("invalid: enter an amount in dollars, like 25.00");
       if (!Number.isInteger(lockBlocks) || lockBlocks <= 0) throw new Error("invalid: the lock is a number of blocks");
-      this.set({ estimate: await this.core.mint_estimate(cents.toString(), lockBlocks), mint: null, mintId: null, mintStatus: null, step: null, txid: "", feeAccepted: false, finishFee: null });
+      this.set({ estimate: await this.core.mint_estimate(cents.toString(), lockBlocks, this.state.from), mint: null, mintId: null, mintStatus: null, step: null, txid: "", feeAccepted: false, finishFee: null, carrierFeeAccepted: false });
     });
   }
   /** Start: the carrier preview for the estimate the user saw. */
   mintStart() {
     return this.run(async () => {
       const e = this.state.estimate; if (!e) throw new Error("invalid: estimate first");
-      this.set({ mint: await this.core.mint_start(e.cents, e.lockBlocks) });
+      // the carrier fee's own confirmation goes with the start (the core refuses a flagged one without it)
+      if (e.unusualCarrierFeeAck && !this.state.carrierFeeAccepted) throw new Error("invalid: the carrier fee is unusual; press \"Pay this fee\" first");
+      // the terms the user saw: a server answer that differs is refused (audit G-2), and the carrier
+      // funding may not pay more than the fee shown (beta2 D-3)
+      this.set({ mint: await this.core.mint_start(e.cents, e.lockBlocks, {
+        collateralZat: e.collateralZat, feeZat: e.feeZat, payee: e.payee, termClass: e.termClass, from: e.from,
+        carrierFeeZat: e.carrierFeeZat, acceptUnusualCarrierFee: e.unusualCarrierFeeAck ?? null,
+      }) });
     });
   }
   /** Confirm the carrier (funded and broadcast by the core; the mintId comes back), then stage the finish. */

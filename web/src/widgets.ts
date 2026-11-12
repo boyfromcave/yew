@@ -6,6 +6,9 @@ import qrcode from "qrcode-generator";
 
 export function errorCard(text: string, kind = ""): HTMLElement | null {
   if (!text) return null;
+  // a broadcast whose outcome is unknown ("…; status unknown, txid …: check before sending again"):
+  // the core's text stands as it is, and no hint may suggest that nothing was sent
+  if (text.includes("status unknown, txid")) return h("div", { class: "card error", role: "alert" }, h("p", null, text), h("p", { class: "small" }, "This transaction may have reached the network: look up its txid before you send again."));
   const hint = kind === "gate" ? "The node refused this transaction; nothing was sent." : kind === "network" ? "The server did not answer." : kind === "params" ? "Fetch the private sending files in Settings." : "";
   return h("div", { class: "card error", role: "alert" }, h("p", null, text), hint ? h("p", { class: "small" }, hint) : null);
 }

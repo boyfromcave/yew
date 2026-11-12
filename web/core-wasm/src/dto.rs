@@ -57,9 +57,25 @@ pub struct Balances {
     pub shielded_pending_zat: String,
     pub shielded_scanned_height: u64,
     pub shielded_sendable: bool,
+    /// YEC at the wallet's own post-quantum keys (class `PQ_OWNED`; beta2 D-8): in neither YEC
+    /// balance above, spendable only from a post-quantum source.
+    pub pq_zat: String,
+    /// [`Balances::pq_zat`] at SLH-DSA-SHA2-128s keys (`sqs…`).
+    pub pq_slh_zat: String,
+    /// [`Balances::pq_zat`] at FN-DSA-512 keys (`sqf…`).
+    pub pq_falcon_zat: String,
+    /// YEC staged for mints in progress (locked to the mint; `build::mint::staged_for_mint_zat`):
+    /// in no balance above, never in a spendable total.
+    pub staged_for_mint_zat: String,
 }
 
-pub fn balances(b: &CoreBalances, z: &ShieldedBalance, held: u64, sync_height: u64) -> Balances {
+pub fn balances(
+    b: &CoreBalances,
+    z: &ShieldedBalance,
+    held: u64,
+    sync_height: u64,
+    staged_for_mint_zat: i64,
+) -> Balances {
     Balances {
         yec_zat: amt(b.yec_zat),
         yec_reserved_zat: amt(b.yec_reserved_zat),
@@ -76,6 +92,12 @@ pub fn balances(b: &CoreBalances, z: &ShieldedBalance, held: u64, sync_height: u
         shielded_pending_zat: amt((z.pending_change_zat + z.pending_incoming_zat) as i64),
         shielded_scanned_height: z.scanned_height,
         shielded_sendable: z.sendable,
+        pq_zat: amt(b.yec_pq_zat),
+        pq_slh_zat: amt(b
+            .yec_pq_by_scheme
+            .scheme(yew_core::pq::SCHEME_SLH_DSA_SHA2_128S)),
+        pq_falcon_zat: amt(b.yec_pq_by_scheme.scheme(yew_core::pq::SCHEME_FN_DSA_512)),
+        staged_for_mint_zat: amt(staged_for_mint_zat),
     }
 }
 
@@ -408,9 +430,20 @@ pub struct MintEstimate {
     pub unusual_fee_ack: Option<String>,
     /// The YEC price the server's fee terms rest on, µUSD per YEC (`null`: none reported).
     pub fee_price_micro_usd: Option<String>,
+    /// The funding source the estimate is for (beta2 D-3): empty = the public balance, else one
+    /// of the wallet's post-quantum addresses (`api::MintEstimate::from`).
+    pub from: String,
+    /// The carrier funding transaction's fee (from a post-quantum address: priced on its
+    /// signatures' size); included in `networkFeeZat`.
+    pub carrier_fee_zat: String,
+    /// Set when the carrier fee is unusual: the separate confirmation's text.
+    pub carrier_fee_note: Option<String>,
+    /// Set exactly when `carrierFeeNote` is: pass it in the terms as `acceptUnusualCarrierFee`
+    /// after the separate confirmation.
+    pub unusual_carrier_fee_ack: Option<String>,
 }
 
-pub fn mint_estimate(e: &CoreMintEstimate) -> MintEstimate {
+pub fn mint_estimate(e: &CoreMintEstimate, from: &str) -> MintEstimate {
     MintEstimate {
         cents: amt(e.cents as i64),
         lock_blocks: e.lock_blocks,
@@ -426,7 +459,7 @@ pub fn mint_estimate(e: &CoreMintEstimate) -> MintEstimate {
         payee: e.payee.clone(),
         carrier_zat: amt(params::CARRIER_VALUE),
         token_zat: amt(params::TOKEN_VALUE),
-        network_fee_zat: amt(2 * params::FEE_ZAT),
+        network_fee_zat: amt(e.network_fee_zat),
         total_zat: amt(e.total_zat),
         available_zat: amt(e.available_zat),
         affordable: e.affordable(),
@@ -437,6 +470,10 @@ pub fn mint_estimate(e: &CoreMintEstimate) -> MintEstimate {
         unusual_fee_ack: e.fee_guard.ack.clone(),
         fee_price_micro_usd: (e.fee_guard.reported_price_micro_usd > 0)
             .then(|| amt(e.fee_guard.reported_price_micro_usd)),
+        from: from.trim().to_string(),
+        carrier_fee_zat: amt(e.carrier_fee_zat),
+        carrier_fee_note: e.carrier_fee_guard.as_ref().and_then(|g| g.note.clone()),
+        unusual_carrier_fee_ack: e.carrier_fee_guard.as_ref().and_then(|g| g.ack.clone()),
     }
 }
 
@@ -895,6 +932,29 @@ pub fn validate_address(network: Network, address: &str) -> AddressCheck {
             message: String::new(),
         };
     }
+    // the post-quantum forms (`api::validate_address`): a YED holder (`ybf…`, Falcon), a vault
+    // owner (`ybs…`, not a destination), plain YEC (`sqf…`/`sqs…`)
+    if let Ok(id) = keys::parse_pq_address(network, address) {
+        let falcon = id.scheme == yew_core::pq::SCHEME_FN_DSA_512;
+        return AddressCheck {
+            valid: falcon,
+            kind: if falcon { "pq" } else { "pq_owner" }.into(),
+            yellowback_form: true,
+            message: if falcon {
+                String::new()
+            } else {
+                keys::KeyError::PqOwnerAddress(address.into()).to_string()
+            },
+        };
+    }
+    if keys::parse_pq_yec_address(network, address).is_ok() {
+        return AddressCheck {
+            valid: true,
+            kind: "pq_yec".into(),
+            yellowback_form: false,
+            message: String::new(),
+        };
+    }
     match keys::parse_address(network, address) {
         Ok(a) => AddressCheck {
             valid: true,
@@ -912,4 +972,75 @@ pub fn validate_address(network: Network, address: &str) -> AddressCheck {
             message: e.to_string(),
         },
     }
+}
+
+/// One of the wallet's own post-quantum addresses holding plain YEC (`api::PqSource`).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PqSource {
+    pub address: String,
+    pub scheme: u8,
+    pub scheme_name: String,
+    pub balance_zat: String,
+}
+
+/// A send from a post-quantum address before confirmation (`api::PqSendPreviewInfo`).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PqSendPreview {
+    pub preview_id: String,
+    pub from: String,
+    pub scheme_name: String,
+    pub to: String,
+    pub amount_zat: String,
+    pub amount_bumped: bool,
+    pub fee_zat: String,
+    pub change_zat: String,
+    pub inputs: u32,
+    pub size_bytes: u32,
+    /// `null` in the browser: no clock to measure the signing with ("not measured").
+    pub sign_millis: Option<u64>,
+    pub fee_note: Option<String>,
+    pub unusual_fee_ack: Option<String>,
+    pub fee_price_micro_usd: Option<String>,
+    pub expiry_height: u32,
+    pub txid: String,
+    /// Always false here: a send from the private balance to a post-quantum address is built
+    /// by the hybrid builder, which the browser build does not have.
+    pub from_private: bool,
+}
+
+pub fn pq_send_preview(id: String, p: &yew_core::build::pq_send::PqSendPreview) -> PqSendPreview {
+    PqSendPreview {
+        preview_id: id,
+        from: p.from.clone(),
+        scheme_name: keys::pq_scheme_name(p.scheme)
+            .unwrap_or("unknown")
+            .to_string(),
+        to: p.to.clone(),
+        amount_zat: amt(p.amount),
+        amount_bumped: p.amount_bumped,
+        fee_zat: amt(p.fee),
+        change_zat: amt(p.change),
+        inputs: p.inputs.len() as u32,
+        size_bytes: p.raw.len() as u32,
+        sign_millis: p.sign_millis,
+        fee_note: p.fee_note.clone(),
+        unusual_fee_ack: p.fee_guard.ack.clone(),
+        fee_price_micro_usd: (p.fee_guard.reported_price_micro_usd > 0)
+            .then(|| amt(p.fee_guard.reported_price_micro_usd)),
+        expiry_height: p.expiry_height,
+        txid: txid_hex(&p.txid),
+        from_private: false,
+    }
+}
+
+/// A shape the app supports that this build cannot run (beta2 D-8), and why.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Unavailable {
+    /// `pq_to_private`, `private_to_pq`, `mint_from_private`.
+    pub shape: &'static str,
+    /// One line for the screen.
+    pub reason: &'static str,
 }

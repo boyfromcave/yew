@@ -1253,6 +1253,26 @@ pub(crate) fn release_staged_locks(wallet: &Wallet) -> Result<u32, WalletError> 
     Ok(n)
 }
 
+/// The YEC staged for mints in progress, zat: the wallet's outputs locked
+/// `staged-for-mint:<id>` ([`record_staged_output`]). In no balance and in no selection; a
+/// balance screen shows it on its own, never in the spendable total (beta2 D-8). Read-only.
+pub fn staged_for_mint_zat(wallet: &Wallet) -> Result<i64, WalletError> {
+    let staged: std::collections::HashSet<OutPoint> = wallet
+        .store
+        .locks()?
+        .into_iter()
+        .filter(|l| l.reason.starts_with(STAGED_FOR_MINT))
+        .map(|l| l.outpoint)
+        .collect();
+    Ok(wallet
+        .store
+        .utxos()?
+        .iter()
+        .filter(|u| staged.contains(&u.outpoint))
+        .map(|u| u.value)
+        .sum())
+}
+
 /// [`carrier_step`] from a post-quantum source: [`plan_pq_funding`], each input signed with
 /// the source's key through the existing `Transaction::sign_pqpkh_input` and checked against
 /// its digest, the signed size re-priced, the fee bounded by this build's limit and by the
@@ -2674,6 +2694,7 @@ mod tests {
         w.store.replace_utxos(std::slice::from_ref(&utxo)).unwrap();
         // locked to the row: not spendable, not in the balance; the finish still finds it
         assert!(w.spendable_utxos().unwrap().is_empty());
+        assert_eq!(staged_for_mint_zat(&w).unwrap(), staged_value);
         assert_eq!(release_staged_locks(&w).unwrap(), 0);
         assert_eq!(
             staged_input(&w, id, &w.store.utxos().unwrap()).unwrap(),
@@ -2684,6 +2705,7 @@ mod tests {
             .set_mint_state(id, MintState::Lapsed, None, None, "test")
             .unwrap();
         assert_eq!(release_staged_locks(&w).unwrap(), 1);
+        assert_eq!(staged_for_mint_zat(&w).unwrap(), 0);
         assert_eq!(w.spendable_utxos().unwrap(), vec![utxo.clone()]);
         let (yec, _) = coins::yec_balances(&w.spendable_utxos().unwrap());
         assert_eq!(yec, staged_value);

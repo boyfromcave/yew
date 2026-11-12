@@ -6,7 +6,9 @@
 // are numbers. Nothing here constructs bytes; the screens render these DTOs and send intents,
 // as app/lib does for Flutter. W2 reconciled the names to the real core (plan §5 W2).
 
-export type AddressKind = "shielded" | "transparent" | "yed";
+/** `pq_falcon` / `pq_slh`: the plain-YEC post-quantum forms paired with the receive key (beta2 D-8, D-9):
+ *  `sqf…` FN-DSA-512, `sqs…` SLH-DSA-SHA2-128s (testnet `tq…`, regtest `rq…`). */
+export type AddressKind = "shielded" | "transparent" | "yed" | "pq_falcon" | "pq_slh";
 export type MoveDirection = "to_private" | "to_public";
 
 export interface Status { version: string; server: string | null; network: string | null; tip: number | null; yellowbackUsable: boolean | null; branchId: string | null }
@@ -19,6 +21,10 @@ export interface Balances {
   /** Price in cents per YEC (the server's `GetPrice.pMint`); null when undefined. */
   priceCents: string | null; priceMicroUsd: string | null; heldCount: number; syncHeight: number; yedSendMinZat: string;
   shieldedZat: string; shieldedSpendableZat: string; shieldedPendingZat: string; shieldedScannedHeight: number; shieldedSendable: boolean;
+  /** YEC at the wallet's own post-quantum keys (in neither balance above), and its split by scheme (beta2 D-8). */
+  pqZat: string; pqSlhZat: string; pqFalconZat: string;
+  /** YEC staged for mints in progress: locked to the mint, never in a spendable total. */
+  stagedForMintZat: string;
 }
 export interface HistoryRow {
   txid: string; height: number; pending: boolean; yecDelta: string; yedDelta: string;
@@ -51,6 +57,10 @@ export interface MintEstimate {
   requiredZat: string; collateralZat: string; feeZat: string; attestFeeZat: string; payee: string; carrierZat: string; tokenZat: string;
   networkFeeZat: string; totalZat: string; availableZat: string; affordable: boolean; pMintMicroUsd: string | null; armed: boolean; bundleSeqs: number[];
   feeNote: string | null; unusualFeeAck: string | null; feePriceMicroUsd: string | null;
+  /** The funding source (beta2 D-3): "" = the public balance, else one of the wallet's post-quantum addresses. */
+  from: string;
+  /** The carrier funding's fee (from a post-quantum address: priced on its signatures' size), in networkFeeZat. */
+  carrierFeeZat: string; carrierFeeNote: string | null; unusualCarrierFeeAck: string | null;
 }
 /** `mint_start`: the carrier, staged; `confirm` funds and broadcasts it and answers the mintId. */
 export interface MintStart { previewId: string; cents: string; lockBlocks: number }
@@ -85,6 +95,24 @@ export interface ClaimableItem {
 }
 /** The bounds the confirm holds the server to (H-9.3): never more burned, never less paid. */
 export interface ClaimPreview { previewId: string; item: ClaimableItem; maxBurnCents: string; minOutZat: string; feeNote: string | null; unusualFeeAck: string | null; feePriceMicroUsd: string | null; }
+/** One of the wallet's post-quantum addresses holding plain YEC (a send or mint source, beta2 D-8). */
+export interface PqSource { address: string; scheme: number; schemeName: string; balanceZat: string }
+/** A send from a post-quantum address before confirmation (`api::PqSendPreviewInfo`). */
+export interface PqSendPreview {
+  previewId: string; from: string; schemeName: string; to: string; amountZat: string; amountBumped: boolean;
+  feeZat: string; changeZat: string; inputs: number; sizeBytes: number;
+  /** null in the browser: there is no clock to measure the signing with ("not measured"). */
+  signMillis: number | null;
+  feeNote: string | null; unusualFeeAck: string | null; feePriceMicroUsd: string | null; expiryHeight: number; txid: string;
+  fromPrivate: boolean;
+}
+/** A shape the app supports that this build cannot run, and the one-line reason the screen shows. */
+export interface Unavailable { shape: "pq_to_private" | "private_to_pq" | "mint_from_private"; reason: string }
+/** Mint terms the start holds the server to (audit G-2) and the source the carrier is funded from (beta2 D-3). */
+export interface MintTermsArg {
+  collateralZat: string; feeZat: string; payee: string; termClass: string; from: string;
+  carrierFeeZat: string; acceptUnusualCarrierFee: string | null;
+}
 export interface Confirmed { txid: string; verdict: string; mintId: number | null }
 export interface AddressCheck { valid: boolean; kind: string; yellowbackForm: boolean; message: string }
 export interface AddressPair { ye: string; s: string; path: string; coveredBySeed: boolean; address: string; kind: string }
@@ -117,10 +145,17 @@ export interface Core {
   fetch_params(fn: (p: ParamsProgress) => void, sources?: string[]): Promise<void>;
   send_yec_preview(to: string, zat: string, memo?: string): Promise<YecPreview>;
   send_yed_preview(to: string, cents: string): Promise<YedPreview>;
+  /** The wallet's post-quantum addresses holding spendable plain YEC, largest first. */
+  pq_sources(): Promise<PqSource[]>;
+  /** A send from the own post-quantum address `from` to an `s…` or post-quantum address; confirm with `confirm`. */
+  pq_send_preview(from: string, to: string, zat: string): Promise<PqSendPreview>;
+  /** The shapes the app supports that this build cannot run (hidden by the screens; the core refuses them anyway). */
+  unavailable_shapes(): Promise<Unavailable[]>;
   move_preview(direction: MoveDirection, zat: string): Promise<MovePreview>;
   mint_availability(): Promise<MintAvailability>;
-  mint_estimate(cents: string, lockBlocks: number): Promise<MintEstimate>;
-  mint_start(cents: string, lockBlocks: number): Promise<MintStart>;
+  /** `from`: "" (the public balance) or one of the wallet's post-quantum addresses. */
+  mint_estimate(cents: string, lockBlocks: number, from?: string): Promise<MintEstimate>;
+  mint_start(cents: string, lockBlocks: number, terms?: MintTermsArg): Promise<MintStart>;
   mint_finish(mintId: number): Promise<MintStep>;
   mint_sweep(mintId: number): Promise<MintStep>;
   mints(): Promise<MintStatus[]>;
@@ -205,10 +240,13 @@ export class CoreClient implements Core {
   }
   send_yec_preview(to: string, zat: string, memo?: string) { return this.call<YecPreview>("send_yec_preview", to, zat, memo); }
   send_yed_preview(to: string, cents: string) { return this.call<YedPreview>("send_yed_preview", to, cents); }
+  pq_sources() { return this.call<PqSource[]>("pq_sources"); }
+  pq_send_preview(from: string, to: string, zat: string) { return this.call<PqSendPreview>("pq_send_preview", from, to, zat); }
+  unavailable_shapes() { return this.call<Unavailable[]>("unavailable_shapes"); }
   move_preview(direction: MoveDirection, zat: string) { return this.call<MovePreview>("move_preview", direction, zat); }
   mint_availability() { return this.call<MintAvailability>("mint_availability"); }
-  mint_estimate(cents: string, lockBlocks: number) { return this.call<MintEstimate>("mint_estimate", cents, lockBlocks); }
-  mint_start(cents: string, lockBlocks: number) { return this.call<MintStart>("mint_start", cents, lockBlocks, null); }
+  mint_estimate(cents: string, lockBlocks: number, from = "") { return this.call<MintEstimate>("mint_estimate", cents, lockBlocks, from); }
+  mint_start(cents: string, lockBlocks: number, terms?: MintTermsArg) { return this.call<MintStart>("mint_start", cents, lockBlocks, terms ?? null); }
   mint_finish(mintId: number) { return this.call<MintStep>("mint_finish", BigInt(mintId)); }
   mint_sweep(mintId: number) { return this.call<MintStep>("mint_sweep", BigInt(mintId)); }
   mints() { return this.call<MintStatus[]>("mints"); }

@@ -1,7 +1,7 @@
 import { mount } from "../dom";
 import { clear, go, h } from "../dom";
 import { formatYec, formatYed, shorten } from "../format";
-import type { Vault } from "../core";
+import type { Balances, Vault } from "../core";
 import { YellowbackVm } from "../vm/yellowback";
 import { errorCard, feeLine, previewCard, resultCard, slideToConfirm, unusualFeeCard } from "../widgets";
 
@@ -45,7 +45,7 @@ export function renderYellowback(root: HTMLElement, vm: YellowbackVm, yedCents: 
   draw(); vm.load(); return vm.subscribe(draw);
 }
 
-export function renderMint(root: HTMLElement, vm: YellowbackVm) {
+export function renderMint(root: HTMLElement, vm: YellowbackVm, balances: () => Balances | null = () => null) {
   const draw = () => {
     clear(root);
     const s = vm.state; const e = s.estimate; const a = s.availability;
@@ -53,13 +53,27 @@ export function renderMint(root: HTMLElement, vm: YellowbackVm) {
     const amount = h("input", { type: "text", inputmode: "decimal", placeholder: "25.00", value: e ? (Number(e.cents) / 100).toFixed(2) : "" });
     const lock = h("input", { type: "number", min: 1, value: e ? String(e.lockBlocks) : "100" });
     const halted = a !== null && !a.allowed;
-    mount(root, h("h2", null, "Mint YED"), h("p", { class: "small" }, "YED is minted against public YEC locked in a vault; redeem at any time after the lock, a liquidator may claim once the grace period after it has passed."),
+    // beta2 D-3: "Fund from" — the public balance or one of the wallet's post-quantum addresses, each
+    // with its balance; funding from the private balance is the app's (one line says so)
+    const b = balances();
+    const fromSelect = h("select", { disabled: !!e, "aria-label": "Fund from", on: { change: () => vm.setFrom(fromSelect.value) } },
+      h("option", { value: "", selected: s.from === "" }, `Public · ${b ? formatYec(BigInt(b.yecZat) + BigInt(b.yecReservedZat)) : "—"} YEC`),
+      s.sources.map((x) => h("option", { value: x.address, selected: s.from === x.address }, `Post-quantum ${x.schemeName} · ${shorten(x.address, 6, 4)} · ${formatYec(x.balanceZat)} YEC`)));
+    const fromPrivate = vm.unavailableReason("mint_from_private");
+    const source = (from: string) => from ? `post-quantum · ${shorten(from, 6, 4)}` : "your public balance";
+    mount(root, h("h2", null, "Mint YED"), h("p", { class: "small" }, "YED is minted against YEC locked in a vault; redeem at any time after the lock, a liquidator may claim once the grace period after it has passed."),
       a === null ? h("p", { class: "small" }, "Asking the node whether minting is open…") : h("p", { class: halted ? "warn" : "small" }, halted ? a.reason : `Minting is open · ${a.attestStatus}${a.mintableClasses.length ? ` · classes ${a.mintableClasses.join(", ")}` : ""}`),
-      h("label", null, "Amount to mint, $"), amount, h("label", null, "Lock, in blocks"), lock, errorCard(s.error, s.errorKind),
+      h("label", null, "Amount to mint, $"), amount, h("label", null, "Lock, in blocks"), lock,
+      h("label", null, "Fund from"), fromSelect,
+      fromPrivate ? h("p", { class: "small", "data-shape": "mint_from_private" }, `Private: ${fromPrivate}`) : null,
+      errorCard(s.error, s.errorKind),
       !e ? h("div", { class: "actions" }, h("button", { disabled: s.busy || halted, on: { click: () => vm.estimate(amount.value, Number(lock.value)) } }, s.busy ? "Asking the node…" : "Estimate")) : null,
-      e && !s.mint ? [previewCard(`Mint ${formatYed(e.cents)}`, [["Collateral to lock", `${formatYec(e.collateralZat)} YEC`], ["Term class", e.termClass], ["Redeem from height", String(e.lockHeight)], ["Claimable from height", String(e.claimHeight)], ["Enforcement fee", feeLine(e.feeZat)], ["Fee payee", e.payee || "none (FEE-0)"], ["Total from your public balance", `${formatYec(e.totalZat)} YEC`], ["Expires if not minted by", String(e.expiryHeight)]],
-          e.affordable ? undefined : `Your public balance (${formatYec(e.availableZat)} YEC) does not cover it.`),
-        h("div", { class: "actions" }, h("button", { disabled: s.busy || !e.affordable, on: { click: () => vm.mintStart() } }, s.busy ? "Preparing…" : "Start: fund the carrier"), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Change the amount"))] : null,
+      e && !s.mint ? [previewCard(`Mint ${formatYed(e.cents)}`, [["Collateral to lock", `${formatYec(e.collateralZat)} YEC`], ["Term class", e.termClass], ["Redeem from height", String(e.lockHeight)], ["Claimable from height", String(e.claimHeight)], ["Enforcement fee", feeLine(e.feeZat)], ["Fee payee", e.payee || "none (FEE-0)"],
+          ["Funded from", source(e.from)], ["Carrier fee", e.from ? `${feeLine(e.carrierFeeZat)} (priced on its signature size)` : feeLine(e.carrierFeeZat)], ["Network fees", `${feeLine(e.networkFeeZat)} (two transactions)`],
+          [`Total from ${source(e.from)}`, `${formatYec(e.totalZat)} YEC`], ["Expires if not minted by", String(e.expiryHeight)]],
+          e.affordable ? undefined : `${e.from ? "This post-quantum address" : "Your public balance"} (${formatYec(e.availableZat)} YEC) does not cover it.`),
+        unusualFeeCard(e.carrierFeeNote, s.carrierFeeAccepted, () => vm.acceptCarrierFee()),
+        h("div", { class: "actions" }, h("button", { disabled: s.busy || !e.affordable || (!!e.unusualCarrierFeeAck && !s.carrierFeeAccepted), on: { click: () => vm.mintStart() } }, s.busy ? "Preparing…" : "Start: fund the carrier"), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Change the amount"))] : null,
       e && s.mint && s.mintId === null ? [previewCard("Step 1 of 2: the carrier", [["Carrier funds", `${formatYec(e.collateralZat)} YEC + fees`], ["Then", "the MINT locks the vault"]]),
         unusualFeeCard(e.feeNote, s.feeAccepted, () => vm.acceptFee()),
         slideToConfirm("Slide to fund the carrier", () => vm.mintConfirm(), s.busy || (!!e.unusualFeeAck && !s.feeAccepted))] : null,
@@ -71,7 +85,7 @@ export function renderMint(root: HTMLElement, vm: YellowbackVm) {
           s.mintStatus.canSweep ? h("button", { class: "secondary", on: { click: () => vm.mintSweep() } }, "Window closed: sweep the carrier") : null,
           s.step && s.mintStatus.canSweep && !s.mintStatus.canFinish ? slideToConfirm("Slide to sweep", () => vm.mintStepConfirm(), s.busy) : null))] : null);
   };
-  draw(); if (!vm.state.availability) vm.loadAvailability(); return vm.subscribe(draw);
+  draw(); if (!vm.state.availability) vm.loadAvailability(); if (!vm.state.unavailable.length) vm.loadSources(); return vm.subscribe(draw);
 }
 
 export function renderVault(root: HTMLElement, vm: YellowbackVm, vaultTxid: string) {
