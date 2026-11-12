@@ -58,11 +58,11 @@ zip32 = { version = "=0.2.0", default-features = false }
 # The Ycash Sapling light client (yew-shielded plan S1/S2): compact-block sync from lightwalletd-dd,
 # the note store (`zcash_client_sqlite`), reorg handling, broadcast. The library crate of
 # `boyfromcave/x402-ycash` (`light/`, crate `x402-ycash-light`, lib `x402_ycash_light`), by git rev
-# of its `upgrade/vault` branch (now 708618e: the light library on librustzcash6 6ff87bc9 and
+# of its `upgrade/vault` branch (now 5d8da72, #18: the light library on librustzcash6 6ff87bc9 and
 # rusqlite 0.41; first 8daa6fb: the light library on librustzcash6 4867cf85, regtest
 # `vault=<h>`, signing the next block's branch from `GetChainInfo`). Git, not a path: the build
 # does not depend on the workspace layout, and CI resolves the same source as Cargo.lock.
-x402-ycash-light = { version = "=0.1.0", git = "https://github.com/boyfromcave/x402-ycash.git", rev = "708618e5343bab475773ce7aa5d99484f227c842" }
+x402-ycash-light = { version = "=0.1.0", git = "https://github.com/boyfromcave/x402-ycash.git", rev = "5d8da7244d994509f5f19f25a8c35354704288e0" }
 # The shielded spend path and the note store, read beside the light client (`core/src/shielded.rs`):
 # the light library syncs, YEW proposes/proves/signs (privacy-first funding, transparent recipients,
 # memos, the fee preview) and fetches memos (`decrypt_and_store_transaction`) itself, on the same
