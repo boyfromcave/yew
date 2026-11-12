@@ -61,8 +61,10 @@ pub enum Network {
 /// - `slow`, `legacy`: shadow forks of mainnet (`CTestNetShadowParams`): mainnet's heights to
 ///   H_S, then the shadow upgrade under their own branch ids (`0x57a24d5d`, `0x35706728`) and,
 ///   on slow, Vault under `0xe1f1cc08`. librustzcash6 (the `zcash_protocol` YEW signs Sapling
-///   with) has no `BranchId` for those ids, so YEW cannot sign for them: selecting one is
-///   refused ([`TestnetProfile::network`]) rather than signing for the wrong chain.
+///   with) knows those ids but has no consensus parameters for either network (slow's Vault
+///   height is not set yet), and YEW's branch table does not hold them, so YEW cannot sign for
+///   them: selecting one is refused ([`TestnetProfile::network`]) rather than signing for the
+///   wrong chain.
 ///
 /// The heights and branch ids are pinned against the node by
 /// `core/tests/vectors/testnet_profiles.json` (generated from ycash6, `scripts/check-testnet-profiles.sh`).
@@ -115,14 +117,14 @@ impl TestnetProfile {
     }
 
     /// The YEW network for the profile: `fast` is [`Network::Testnet`]; `slow` and `legacy` are
-    /// refused with the reason (their shadow-fork branch ids are not in librustzcash6).
+    /// refused with the reason (librustzcash6 has no consensus parameters for them).
     pub fn network(self) -> Result<Network, String> {
         match self {
             TestnetProfile::Fast => Ok(Network::Testnet),
             TestnetProfile::Slow | TestnetProfile::Legacy => Err(format!(
                 "testnet profile {:?} is not supported by this build: it is a shadow fork of mainnet \
-                 whose branch ids (shadow 0x{:08x}{}) librustzcash6 does not define, so nothing could \
-                 be signed for it; use the fast profile",
+                 under its own branch ids (shadow 0x{:08x}{}) for which librustzcash6 has no \
+                 consensus parameters, so nothing could be signed for it; use the fast profile",
                 self.name(),
                 match self {
                     TestnetProfile::Slow => SLOW_SHADOW_BRANCH_ID,
@@ -181,8 +183,8 @@ pub const MAINNET_UPGRADES: [Upgrade; 8] = [
 
 /// testnet-yb-fast's upgrades (ycash6 `src/chainparams.cpp` `CTestNetParams` `:440-476`,
 /// `CTestNetFastParams` `:652`): Vault at 510,400 (H_V, a placeholder until the testnet's launch
-/// ceremony fixes it). Not librustzcash6's `TEST_NETWORK`, which still carries the old Ycash
-/// testnet's Blossom 661,610 / Heartwood 661,622 / Canopy 661,634 and no Vault.
+/// ceremony fixes it). librustzcash6's `TEST_NETWORK` carries the same heights (the light
+/// library's Sapling builds; `shielded::check_light_params` refuses them if the two ever differ).
 pub const TESTNET_FAST_UPGRADES: [Upgrade; 8] = [
     up("overwinter", 0x5ba8_1b19, Some(207_500)),
     up("sapling", 0x76b8_09bb, Some(280_000)),

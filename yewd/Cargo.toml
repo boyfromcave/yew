@@ -39,9 +39,9 @@ yewd-proto = { path = "proto" }
 secp256k1 = { version = "=0.33.1", features = ["std"] }
 hmac = "=0.13.0-pre.4"
 sha2 = "=0.11.0-pre.4"
-zcash_primitives = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "6ff87bc9f564fcb7891e1f32698c7ad91ba85ca2", default-features = false, features = ["std"] }
-zcash_protocol = { version = "=0.9.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "6ff87bc9f564fcb7891e1f32698c7ad91ba85ca2", default-features = false, features = ["std"] }
-zcash_keys = { version = "=0.14.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "6ff87bc9f564fcb7891e1f32698c7ad91ba85ca2", default-features = false, features = ["std", "sapling"] }
+zcash_primitives = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "a4935c512d01fb81969445e934b6fc00a615d733", default-features = false, features = ["std"] }
+zcash_protocol = { version = "=0.9.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "a4935c512d01fb81969445e934b6fc00a615d733", default-features = false, features = ["std"] }
+zcash_keys = { version = "=0.14.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "a4935c512d01fb81969445e934b6fc00a615d733", default-features = false, features = ["std", "sapling"] }
 sapling-crypto = { version = "=0.7.0", default-features = false, features = ["std"] }
 zip32 = { version = "=0.2.0", default-features = false }
 
@@ -59,5 +59,5 @@ overflow-checks = false
 
 # As in the root Cargo.toml (patches do not propagate through dependencies); keep the two in step.
 [patch.crates-io]
-schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "6ff87bc9f564fcb7891e1f32698c7ad91ba85ca2" }
+schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "a4935c512d01fb81969445e934b6fc00a615d733" }
 tonic-web-wasm-client = { git = "https://github.com/QuantumExplorer/tonic-web-wasm-client.git", rev = "cf9abc3952405cd61d7deacf906ff9e1dd8515ea" }

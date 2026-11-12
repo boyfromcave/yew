@@ -132,8 +132,8 @@ fn the_yed_lifecycle_columns_are_the_nodes() {
     assert_eq!(Network::Mainnet.day_blocks(), 1_152);
 }
 
-/// slow and legacy are shadow forks of mainnet under their own branch ids, which librustzcash6
-/// does not define: YEW refuses the profiles and never accepts those ids from a server.
+/// slow and legacy are shadow forks of mainnet under their own branch ids, for which librustzcash6
+/// has no consensus parameters: YEW refuses the profiles and never accepts those ids from a server.
 #[test]
 fn slow_and_legacy_are_refused() {
     let shadow = |net: &str| {
@@ -346,42 +346,51 @@ fn testnet_addresses_round_trip() {
     assert_eq!(t.sapling_address_hrp(), "ytestsapling");
 }
 
-/// Sapling on fast: the light library's parameters (librustzcash6's `TEST_NETWORK`) still carry
-/// the old Ycash testnet's heights, so a Sapling transaction built through them would commit to
-/// the Ycash epoch at 510,300..510,421 and use the pre-Canopy note format. YEW refuses to build one
-/// (`shielded::check_light_params`) until librustzcash6 carries fast's heights; mainnet passes.
-///
-/// When librustzcash6 is fixed this test fails: flip it to `is_ok()` and drop the `#[ignore]` of
-/// [`sapling_spend_for_fast_commits_to_the_heights_branch`].
+/// Sapling on fast: the light library's parameters (librustzcash6's `TEST_NETWORK`) are
+/// testnet-yb-fast's, so `shielded::check_light_params` passes on every network and no Sapling
+/// build is refused. (Before librustzcash6 carried fast's heights it refused testnet, naming
+/// blossom: the old Ycash testnet's 661,610.)
 #[test]
-fn sapling_on_fast_waits_for_librustzcash6() {
+fn sapling_on_fast_uses_the_nodes_heights() {
     use yew_core::shielded::check_light_params;
     assert_eq!(check_light_params(Network::Mainnet), Ok(()));
     assert_eq!(check_light_params(Network::Regtest), Ok(()));
-    let e = check_light_params(Network::Testnet).unwrap_err();
-    assert!(
-        e.contains("testnet-yb-fast") && e.contains("blossom"),
-        "{e}"
-    );
+    assert_eq!(check_light_params(Network::Testnet), Ok(()));
 }
 
-/// What a Sapling spend for fast must commit to, through the light library's parameters (the ones
-/// `Shielded::build` and yewd-signer's `z_sendmany` builder use). Ignored until librustzcash6
-/// carries fast's heights (see [`sapling_on_fast_waits_for_librustzcash6`]).
+/// What a Sapling spend for fast commits to, through the light library's parameters (the ones
+/// `Shielded::build` and yewd-signer's `z_sendmany` builder use): the height's branch, a v4
+/// transaction in the Sapling version group (Vault is v4-only on Ycash), and ZIP-212 notes
+/// (Canopy at 510,254). The build itself is `yewd/signer` `a_sapling_spend_for_fast_signs_under_the_heights_branch`.
 #[test]
-#[ignore = "librustzcash6 TEST_NETWORK still has the old testnet heights (wt/handoff/YEW-TESTNET.md)"]
 fn sapling_spend_for_fast_commits_to_the_heights_branch() {
-    use zcash_protocol::consensus::{BlockHeight, BranchId};
+    use zcash_primitives::transaction::TxVersion;
+    use zcash_protocol::consensus::{BlockHeight, BranchId, NetworkUpgrade, Parameters};
     let p = yew_core::shielded::ycash_network(Network::Testnet);
     for (h, want) in [
-        (510_300u32, CANOPY),
+        (510_247u32, 0x76b8_09bb),
+        (510_248, YCASH),
+        (510_250, 0x8e47_1bd6),
+        (510_252, HEARTWOOD),
+        (510_254, CANOPY),
+        (510_300, CANOPY),
+        (510_399, CANOPY),
         (510_400, VAULT_BRANCH_ID),
         (510_421, VAULT_BRANCH_ID),
     ] {
+        let branch = BranchId::for_height(&p, BlockHeight::from_u32(h));
+        assert_eq!(u32::from(branch), want, "{h}");
+        // the light library and YEW's own table agree at every height
         assert_eq!(
-            u32::from(BranchId::for_height(&p, BlockHeight::from_u32(h))),
-            want,
+            Network::Testnet.branch_id_at(u64::from(h)),
+            Some(want),
             "{h}"
         );
+        if h >= 510_300 {
+            let v = TxVersion::suggested_for_branch(branch);
+            assert_eq!(v, TxVersion::V4, "{h}");
+            assert_eq!(v.version_group_id(), SAPLING_VERSION_GROUP_ID, "{h}");
+            assert!(p.is_nu_active(NetworkUpgrade::Canopy, BlockHeight::from_u32(h)));
+        }
     }
 }

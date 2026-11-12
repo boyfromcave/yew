@@ -18,7 +18,7 @@ crate-type = ["cdylib", "rlib"]
 # is `LocalTxProver::from_bytes` and the single-threaded bellman prover. `local-prover` must stay
 # on anyway: `pub mod prover` (LocalTxProver, from_bytes included) is gated on it; its filesystem
 # helpers (home, xdg) compile for wasm32 and are simply never called.
-zcash_proofs = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "6ff87bc9f564fcb7891e1f32698c7ad91ba85ca2", default-features = false, features = ["local-prover"] }
+zcash_proofs = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "a4935c512d01fb81969445e934b6fc00a615d733", default-features = false, features = ["local-prover"] }
 sapling-crypto = { version = "0.7", default-features = false, features = ["circuit"] }
 incrementalmerkletree = { version = "0.8", default-features = false, features = ["legacy-api"] }
 rand = "0.8"

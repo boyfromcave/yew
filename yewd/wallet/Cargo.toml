@@ -29,4 +29,4 @@ tokio.workspace = true
 yewd-signer = { path = "../signer" }
 # the send matrix checks a post-quantum signature over librustzcash's ZIP-243 digest of a
 # transaction with a Sapling part (the signer's own pin; no new crate)
-zcash_transparent = { version = "=0.8.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "6ff87bc9f564fcb7891e1f32698c7ad91ba85ca2", default-features = false, features = ["std", "transparent-inputs"] }
+zcash_transparent = { version = "=0.8.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "a4935c512d01fb81969445e934b6fc00a615d733", default-features = false, features = ["std", "transparent-inputs"] }
