@@ -64,7 +64,16 @@ impl Wallet {
             Value::String(s) => s.as_str(),
             _ => return Err(invalid("from must be an address string")),
         };
-        let not_ours = || RpcError::new(code::WALLET_ERROR, "from: not an address of this wallet");
+        // vault.cpp CheckLockFrom: RPC_INVALID_ADDRESS_OR_KEY (-5) for another wallet's address and
+        // for a scheme-2 address before Falcon, as z_sendmany answers the same conditions (beta2
+        // audit L-5; doc/vault-rpc-contract.json). yewd holds no watch-only address, so the -4
+        // "from: a watch-only address of this wallet" row has no yewd source.
+        let not_ours = || {
+            RpcError::new(
+                code::INVALID_ADDRESS_OR_KEY,
+                "from: not an address of this wallet",
+            )
+        };
         if self.is_sapling(s) {
             if self.view.owns_address(s).is_none() {
                 return Err(not_ours());
@@ -73,7 +82,10 @@ impl Wallet {
         }
         if let Ok(id) = yew_core::keys::parse_pq_yec_address(self.network, s) {
             if id.scheme == yew_core::pq::SCHEME_FN_DSA_512 && !self.falcon_next() {
-                return Err(invalid("from: an FN-DSA-512 (scheme 2) address cannot be spent before Falcon is active at the next block"));
+                return Err(RpcError::new(
+                    code::INVALID_ADDRESS_OR_KEY,
+                    "from: an FN-DSA-512 (scheme 2) address cannot be spent before Falcon is active at the next block",
+                ));
             }
             if self.book.pq_by_id(&id).is_none() {
                 return Err(not_ours());
@@ -95,10 +107,13 @@ impl Wallet {
                 }));
             }
         }
-        Err(RpcError::new(
-            code::INVALID_ADDRESS_OR_KEY,
-            "bad-address: from: not a transparent P2PKH, post-quantum or Sapling address of this network",
-        ))
+        // yellowback::ParseAddressChoice (txbuilder.cpp): a Sprout address of this network is named
+        let what = if is_sprout_address(self.network, s) {
+            "bad-address: from: Sprout addresses are not supported"
+        } else {
+            "bad-address: from: not a transparent P2PKH, post-quantum or Sapling address of this network"
+        };
+        Err(RpcError::new(code::INVALID_ADDRESS_OR_KEY, what))
     }
 
     /// Fund and sign `tx` (its one output, the V, set; no input) from `from`.
@@ -202,7 +217,7 @@ impl Wallet {
             if got < needed {
                 if !refused.is_empty() {
                     return Err(RpcError::new(code::WALLET_ERROR, format!(
-                        "from: refusing to spend a Yellowback outpoint as plain YEC: {} (its YED would burn; lock it again with yed_lockcoins or lockunspent true)",
+                        "from: refusing to spend a Yellowback outpoint as plain YEC: {} (its YED would burn; lock it again with yed_lockcoins)",
                         refused.join(", ")
                     )));
                 }
@@ -344,6 +359,17 @@ impl Wallet {
             return Ok(Funded::Sapling(hex));
         }
     }
+}
+
+/// A Sprout payment address of `network` as `KeyIO::DecodePaymentAddress` takes one: Base58Check of
+/// the `ZCPAYMENT_ADDRESS` prefix (`chainparams.cpp`: mainnet `{0x16,0x36}`, testnet and regtest
+/// `{0x16,0x52}`) and the 64-byte serialized address. The legacy `zc…` prefix is not taken there.
+fn is_sprout_address(network: yew_core::params::Network, s: &str) -> bool {
+    let prefix: [u8; 2] = match network {
+        yew_core::params::Network::Mainnet => [0x16, 0x36],
+        _ => [0x16, 0x52],
+    };
+    yew_core::keys::base58check_decode(s).is_ok_and(|p| p.len() == 2 + 64 && p[..2] == prefix)
 }
 
 /// The size of `tx` with scriptSigs of `sizes` and the fee a lock from coins pays at it: for a

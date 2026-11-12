@@ -773,7 +773,7 @@ async fn vault_lock_from_refusals_and_tokens() {
     let foreign_ecc = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x33; 20]);
     for a in [foreign_pq, foreign_ecc] {
         let e = f.lock(Some(json!(a))).await.unwrap_err();
-        assert_eq!(e, (-4, "from: not an address of this wallet".into()), "{a}");
+        assert_eq!(e, (-5, "from: not an address of this wallet".into()), "{a}");
     }
     // an address of this wallet with no coins, and an empty Sapling address
     let empty = yew_core::keys::encode_pq_yec(Network::Regtest, &f.w.book.pq_key(1, 1).unwrap().id)
@@ -812,7 +812,7 @@ async fn vault_lock_from_refusals_and_tokens() {
         e,
         (
             -4,
-            format!("from: refusing to spend a Yellowback outpoint as plain YEC: {}:{} (its YED would burn; lock it again with yed_lockcoins or lockunspent true)", coin.txid, coin.vout)
+            format!("from: refusing to spend a Yellowback outpoint as plain YEC: {}:{} (its YED would burn; lock it again with yed_lockcoins)", coin.txid, coin.vout)
         )
     );
     // the index cannot answer: nothing is spent from a transparent or PQ from

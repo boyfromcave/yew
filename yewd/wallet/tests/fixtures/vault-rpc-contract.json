@@ -1,0 +1,2835 @@
+{
+  "contract": "vault-rpc",
+  "source": {
+    "file": "doc/vault-rpc.md",
+    "sha256": "01e05a81f4b026f1b43b52fb63f2a3bf8f698c39a840bba50a09c214f4d7f87e"
+  },
+  "branchid": "6d5b7a31",
+  "units": {
+    "yec": "amounts in RPC answers and parameters are YEC as a decimal JSON number (8 places), as in every Ycash RPC, including the set rate fields and bondmin that the set state stores in zatoshi",
+    "zat": "fields named *zat are integer zatoshi (1 YEC = 100000000 zatoshi)"
+  },
+  "types": {
+    "str": {
+      "json": "string",
+      "meaning": "text"
+    },
+    "hex": {
+      "json": "string",
+      "meaning": "hex-encoded bytes (a transaction, a script, a signature, a tag)"
+    },
+    "hash": {
+      "json": "string",
+      "meaning": "32 bytes, 64 hex digits (a txid or set id in RPC byte order; a sighash in raw order)"
+    },
+    "key": {
+      "json": "string",
+      "meaning": "a 33-byte compressed public key, 66 hex digits"
+    },
+    "pqkeyid": {
+      "json": "string",
+      "meaning": "a post-quantum key id, 66 hex digits: the scheme byte (`01` or `02`) then the 32-byte key hash as pushed in the template"
+    },
+    "outpoint": {
+      "json": "string",
+      "meaning": "`\"txid:n\"` in results; parameters also accept `{\"txid\", \"vout\"}`"
+    },
+    "address": {
+      "json": "string",
+      "meaning": "a transparent address of this network"
+    },
+    "int": {
+      "json": "number",
+      "meaning": "an integer"
+    },
+    "height": {
+      "json": "number",
+      "meaning": "a block height (integer)"
+    },
+    "bool": {
+      "json": "boolean",
+      "meaning": ""
+    },
+    "yec": {
+      "json": "number",
+      "meaning": "an amount in YEC, decimal with up to 8 places (1 YEC = 100,000,000 zatoshi)"
+    },
+    "zat": {
+      "json": "number",
+      "meaning": "an amount in zatoshi (integer)"
+    },
+    "any": {
+      "json": "any",
+      "meaning": "a JSON value"
+    }
+  },
+  "shapes": {
+    "SetParams": {
+      "type": "object",
+      "fields": {
+        "seats": {
+          "type": "int"
+        },
+        "unlockthreshold": {
+          "type": "int"
+        },
+        "cancelthreshold": {
+          "type": "int"
+        },
+        "slashthreshold": {
+          "type": "int"
+        },
+        "open": {
+          "type": "bool"
+        },
+        "ratelimitbps": {
+          "type": "int"
+        },
+        "ratewindow": {
+          "type": "int"
+        },
+        "livenesswindow": {
+          "type": "int"
+        },
+        "bondmin": {
+          "type": "yec"
+        },
+        "bondlockmin": {
+          "type": "int"
+        },
+        "maturity": {
+          "type": "int"
+        },
+        "admitkey": {
+          "type": "key"
+        }
+      },
+      "optional": []
+    },
+    "Set": {
+      "type": "object",
+      "fields": {
+        "setid": {
+          "type": "hash"
+        },
+        "height": {
+          "type": "height"
+        },
+        "seats": {
+          "type": "int"
+        },
+        "unlockthreshold": {
+          "type": "int"
+        },
+        "cancelthreshold": {
+          "type": "int"
+        },
+        "slashthreshold": {
+          "type": "int"
+        },
+        "open": {
+          "type": "bool"
+        },
+        "ratelimitbps": {
+          "type": "int"
+        },
+        "ratewindow": {
+          "type": "int"
+        },
+        "livenesswindow": {
+          "type": "int"
+        },
+        "bondmin": {
+          "type": "yec"
+        },
+        "bondlockmin": {
+          "type": "int"
+        },
+        "maturity": {
+          "type": "int"
+        },
+        "admitkey": {
+          "type": "key"
+        },
+        "createheight": {
+          "type": "height"
+        },
+        "winddownheight": {
+          "type": "height"
+        },
+        "lockedvalue": {
+          "type": "yec"
+        },
+        "epoch": {
+          "type": "int"
+        },
+        "epochbasis": {
+          "type": "yec"
+        },
+        "epochused": {
+          "type": "yec"
+        },
+        "unlockavailable": {
+          "type": "yec"
+        },
+        "members": {
+          "type": "int"
+        },
+        "active": {
+          "type": "int"
+        },
+        "current": {
+          "type": "int"
+        },
+        "dormant": {
+          "type": "bool"
+        },
+        "released": {
+          "type": "bool"
+        }
+      },
+      "optional": [
+        "unlockavailable"
+      ]
+    },
+    "Member": {
+      "type": "object",
+      "fields": {
+        "key": {
+          "type": "key"
+        },
+        "status": {
+          "oneOf": [
+            {
+              "const": "active"
+            },
+            {
+              "const": "removed"
+            },
+            {
+              "const": "ejected"
+            },
+            {
+              "const": "withdrawn"
+            }
+          ]
+        },
+        "current": {
+          "type": "bool"
+        },
+        "live": {
+          "type": "bool"
+        },
+        "joinheight": {
+          "type": "height"
+        },
+        "lastact": {
+          "type": "height"
+        },
+        "bondoutpoint": {
+          "type": "outpoint"
+        },
+        "bondvalue": {
+          "type": "yec"
+        },
+        "bondlocktime": {
+          "type": "height"
+        },
+        "bondfrozen": {
+          "type": "bool"
+        },
+        "exitheight": {
+          "type": "height"
+        },
+        "unlockheight": {
+          "type": "height"
+        },
+        "wallet": {
+          "type": "bool"
+        }
+      },
+      "optional": [
+        "exitheight",
+        "unlockheight"
+      ]
+    },
+    "VaultFields": {
+      "type": "object",
+      "fields": {
+        "tag": {
+          "type": "hex"
+        },
+        "tagtext": {
+          "type": "str"
+        },
+        "setid": {
+          "type": "hash"
+        },
+        "cancelsetid": {
+          "type": "hash"
+        },
+        "delay": {
+          "type": "int"
+        },
+        "ownerheight": {
+          "type": "height"
+        },
+        "appheight": {
+          "type": "height"
+        },
+        "owner": {
+          "type": "pqkeyid"
+        },
+        "ownerscheme": {
+          "type": "int"
+        }
+      },
+      "optional": []
+    },
+    "IntentFields": {
+      "type": "object",
+      "fields": {
+        "tag": {
+          "type": "hex"
+        },
+        "tagtext": {
+          "type": "str"
+        },
+        "setid": {
+          "type": "hash"
+        },
+        "cancelsetid": {
+          "type": "hash"
+        },
+        "delay": {
+          "type": "int"
+        },
+        "owner": {
+          "type": "pqkeyid"
+        },
+        "ownerscheme": {
+          "type": "int"
+        },
+        "recipienthash": {
+          "type": "hash"
+        },
+        "vaulthash": {
+          "type": "hash"
+        }
+      },
+      "optional": []
+    },
+    "TemplateOut": {
+      "oneOf": [
+        {
+          "type": "object",
+          "fields": {
+            "txid": {
+              "type": "hash"
+            },
+            "vout": {
+              "type": "int"
+            },
+            "outpoint": {
+              "type": "outpoint"
+            },
+            "kind": {
+              "const": "vault"
+            },
+            "value": {
+              "type": "yec"
+            },
+            "valuezat": {
+              "type": "zat"
+            },
+            "height": {
+              "type": "height"
+            },
+            "script": {
+              "type": "hex"
+            },
+            "tag": {
+              "type": "hex"
+            },
+            "tagtext": {
+              "type": "str"
+            },
+            "setid": {
+              "type": "hash"
+            },
+            "cancelsetid": {
+              "type": "hash"
+            },
+            "delay": {
+              "type": "int"
+            },
+            "ownerheight": {
+              "type": "height"
+            },
+            "appheight": {
+              "type": "height"
+            },
+            "owner": {
+              "type": "pqkeyid"
+            },
+            "ownerscheme": {
+              "type": "int"
+            },
+            "wallet": {
+              "type": "bool"
+            }
+          },
+          "optional": []
+        },
+        {
+          "type": "object",
+          "fields": {
+            "txid": {
+              "type": "hash"
+            },
+            "vout": {
+              "type": "int"
+            },
+            "outpoint": {
+              "type": "outpoint"
+            },
+            "kind": {
+              "const": "intent"
+            },
+            "value": {
+              "type": "yec"
+            },
+            "valuezat": {
+              "type": "zat"
+            },
+            "height": {
+              "type": "height"
+            },
+            "script": {
+              "type": "hex"
+            },
+            "tag": {
+              "type": "hex"
+            },
+            "tagtext": {
+              "type": "str"
+            },
+            "setid": {
+              "type": "hash"
+            },
+            "cancelsetid": {
+              "type": "hash"
+            },
+            "delay": {
+              "type": "int"
+            },
+            "owner": {
+              "type": "pqkeyid"
+            },
+            "ownerscheme": {
+              "type": "int"
+            },
+            "recipienthash": {
+              "type": "hash"
+            },
+            "vaulthash": {
+              "type": "hash"
+            },
+            "matureheight": {
+              "type": "height"
+            },
+            "mature": {
+              "type": "bool"
+            },
+            "cancellable": {
+              "type": "bool"
+            },
+            "origin": {
+              "type": "hex"
+            },
+            "wallet": {
+              "type": "bool"
+            }
+          },
+          "optional": []
+        }
+      ]
+    },
+    "ActType": {
+      "oneOf": [
+        {
+          "const": "create"
+        },
+        {
+          "const": "join"
+        },
+        {
+          "const": "heartbeat"
+        },
+        {
+          "const": "remove"
+        },
+        {
+          "const": "equivocation"
+        },
+        {
+          "const": "winddown"
+        }
+      ]
+    },
+    "Proof": {
+      "type": "object",
+      "fields": {
+        "setid": {
+          "type": "hash"
+        },
+        "prevout": {
+          "type": "outpoint"
+        },
+        "rolea": {
+          "type": "int"
+        },
+        "sighasha": {
+          "type": "hash"
+        },
+        "siga": {
+          "type": "hex"
+        },
+        "roleb": {
+          "type": "int"
+        },
+        "sighashb": {
+          "type": "hash"
+        },
+        "sigb": {
+          "type": "hex"
+        }
+      },
+      "optional": []
+    },
+    "ActBody": {
+      "oneOf": [
+        {
+          "type": "object",
+          "fields": {
+            "acttype": {
+              "const": "create"
+            },
+            "seats": {
+              "type": "int"
+            },
+            "unlockthreshold": {
+              "type": "int"
+            },
+            "cancelthreshold": {
+              "type": "int"
+            },
+            "slashthreshold": {
+              "type": "int"
+            },
+            "open": {
+              "type": "bool"
+            },
+            "ratelimitbps": {
+              "type": "int"
+            },
+            "ratewindow": {
+              "type": "int"
+            },
+            "livenesswindow": {
+              "type": "int"
+            },
+            "bondmin": {
+              "type": "yec"
+            },
+            "bondlockmin": {
+              "type": "int"
+            },
+            "maturity": {
+              "type": "int"
+            },
+            "admitkey": {
+              "type": "key"
+            }
+          },
+          "optional": []
+        },
+        {
+          "type": "object",
+          "fields": {
+            "acttype": {
+              "const": "join"
+            },
+            "setid": {
+              "type": "hash"
+            },
+            "memberkey": {
+              "type": "key"
+            },
+            "bondlocktime": {
+              "type": "height"
+            },
+            "bondvout": {
+              "type": "int"
+            }
+          },
+          "optional": []
+        },
+        {
+          "type": "object",
+          "fields": {
+            "acttype": {
+              "const": "heartbeat"
+            },
+            "setid": {
+              "type": "hash"
+            },
+            "memberkey": {
+              "type": "key"
+            }
+          },
+          "optional": []
+        },
+        {
+          "type": "object",
+          "fields": {
+            "acttype": {
+              "const": "remove"
+            },
+            "setid": {
+              "type": "hash"
+            },
+            "memberkey": {
+              "type": "key"
+            },
+            "burn": {
+              "type": "int"
+            }
+          },
+          "optional": []
+        },
+        {
+          "type": "object",
+          "fields": {
+            "acttype": {
+              "const": "equivocation"
+            },
+            "setid": {
+              "type": "hash"
+            },
+            "prevout": {
+              "type": "outpoint"
+            },
+            "rolea": {
+              "type": "int"
+            },
+            "sighasha": {
+              "type": "hash"
+            },
+            "siga": {
+              "type": "hex"
+            },
+            "roleb": {
+              "type": "int"
+            },
+            "sighashb": {
+              "type": "hash"
+            },
+            "sigb": {
+              "type": "hex"
+            }
+          },
+          "optional": []
+        },
+        {
+          "type": "object",
+          "fields": {
+            "acttype": {
+              "const": "winddown"
+            },
+            "setid": {
+              "type": "hash"
+            }
+          },
+          "optional": []
+        }
+      ]
+    },
+    "ActResult": {
+      "type": "object",
+      "fields": {
+        "hex": {
+          "type": "hex"
+        },
+        "type": {
+          "ref": "ActType"
+        },
+        "complete": {
+          "type": "bool"
+        },
+        "signatures": {
+          "type": "int"
+        },
+        "required": {
+          "type": "int"
+        }
+      },
+      "optional": []
+    },
+    "SetSigResult": {
+      "type": "object",
+      "fields": {
+        "hex": {
+          "type": "hex"
+        },
+        "complete": {
+          "type": "bool"
+        },
+        "signatures": {
+          "type": "int"
+        },
+        "required": {
+          "type": "int"
+        },
+        "sighash": {
+          "type": "hash"
+        },
+        "setsigs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "fields": {
+              "key": {
+                "type": "key"
+              },
+              "sig": {
+                "type": "hex"
+              }
+            },
+            "optional": []
+          }
+        }
+      },
+      "optional": []
+    },
+    "IntentOut": {
+      "type": "object",
+      "fields": {
+        "vout": {
+          "type": "int"
+        },
+        "amount": {
+          "type": "yec"
+        },
+        "recipient": {
+          "type": "hex"
+        },
+        "recipienthash": {
+          "type": "hash"
+        }
+      },
+      "optional": []
+    },
+    "Recipient": {
+      "type": "object",
+      "fields": {
+        "address": {
+          "type": "address"
+        },
+        "script": {
+          "type": "hex"
+        },
+        "amount": {
+          "type": "yec"
+        }
+      },
+      "optional": [
+        "address",
+        "script"
+      ]
+    },
+    "HandoffCoin": {
+      "type": "object",
+      "fields": {
+        "vin": {
+          "type": "int"
+        },
+        "outpoint": {
+          "type": "outpoint"
+        },
+        "amount": {
+          "type": "yec"
+        }
+      },
+      "optional": []
+    },
+    "HandoffOutput": {
+      "type": "object",
+      "fields": {
+        "n": {
+          "type": "int"
+        },
+        "amount": {
+          "type": "yec"
+        },
+        "address": {
+          "type": "address"
+        },
+        "script": {
+          "type": "hex"
+        },
+        "mine": {
+          "type": "bool"
+        },
+        "kind": {
+          "type": "str"
+        }
+      },
+      "optional": [
+        "address",
+        "script"
+      ]
+    },
+    "HandoffPreview": {
+      "type": "object",
+      "fields": {
+        "template": {
+          "oneOf": [
+            {
+              "type": "object",
+              "fields": {
+                "outpoint": {
+                  "type": "outpoint"
+                },
+                "kind": {
+                  "oneOf": [
+                    {
+                      "const": "vault"
+                    },
+                    {
+                      "const": "intent"
+                    }
+                  ]
+                },
+                "selector": {
+                  "oneOf": [
+                    {
+                      "type": "int"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "optional": []
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "act": {
+          "oneOf": [
+            {
+              "type": "any"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sign": {
+          "type": "array",
+          "items": {
+            "ref": "HandoffCoin"
+          }
+        },
+        "foreign": {
+          "type": "array",
+          "items": {
+            "ref": "HandoffCoin"
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "ref": "HandoffOutput"
+          }
+        },
+        "fee": {
+          "oneOf": [
+            {
+              "type": "yec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outflow": {
+          "type": "yec"
+        },
+        "wouldrefuse": {
+          "oneOf": [
+            {
+              "type": "str"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "optional": []
+    }
+  },
+  "methods": {
+    "vault_getinfo": {
+      "wallet": false,
+      "signature": "vault_getinfo",
+      "params": [],
+      "result": {
+        "type": "object",
+        "fields": {
+          "branchid": {
+            "type": "str"
+          },
+          "activationheight": {
+            "type": "int"
+          },
+          "active": {
+            "type": "bool"
+          },
+          "height": {
+            "type": "height"
+          },
+          "attestorsetid": {
+            "oneOf": [
+              {
+                "type": "hash"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "moduleactive": {
+            "type": "bool"
+          },
+          "dbtip": {
+            "oneOf": [
+              {
+                "type": "object",
+                "fields": {
+                  "hash": {
+                    "type": "hash"
+                  },
+                  "height": {
+                    "type": "height"
+                  }
+                },
+                "optional": []
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sets": {
+            "type": "int"
+          },
+          "vaults": {
+            "type": "int"
+          },
+          "intents": {
+            "type": "int"
+          },
+          "lockedvalue": {
+            "type": "yec"
+          },
+          "statehash": {
+            "type": "hash"
+          }
+        },
+        "optional": [
+          "intents",
+          "lockedvalue",
+          "sets",
+          "statehash",
+          "vaults"
+        ]
+      }
+    },
+    "set_list": {
+      "wallet": false,
+      "signature": "set_list",
+      "params": [],
+      "result": {
+        "type": "array",
+        "items": {
+          "ref": "Set"
+        }
+      }
+    },
+    "set_getinfo": {
+      "wallet": false,
+      "signature": "set_getinfo \"setid\" ( height )",
+      "params": [
+        {
+          "name": "setid",
+          "required": true,
+          "type": {
+            "type": "hash"
+          }
+        },
+        {
+          "name": "height",
+          "required": false,
+          "type": {
+            "type": "height"
+          }
+        }
+      ],
+      "result": {
+        "type": "object",
+        "fields": {
+          "setid": {
+            "type": "hash"
+          },
+          "height": {
+            "type": "height"
+          },
+          "seats": {
+            "type": "int"
+          },
+          "unlockthreshold": {
+            "type": "int"
+          },
+          "cancelthreshold": {
+            "type": "int"
+          },
+          "slashthreshold": {
+            "type": "int"
+          },
+          "open": {
+            "type": "bool"
+          },
+          "ratelimitbps": {
+            "type": "int"
+          },
+          "ratewindow": {
+            "type": "int"
+          },
+          "livenesswindow": {
+            "type": "int"
+          },
+          "bondmin": {
+            "type": "yec"
+          },
+          "bondlockmin": {
+            "type": "int"
+          },
+          "maturity": {
+            "type": "int"
+          },
+          "admitkey": {
+            "type": "key"
+          },
+          "createheight": {
+            "type": "height"
+          },
+          "winddownheight": {
+            "type": "height"
+          },
+          "lockedvalue": {
+            "type": "yec"
+          },
+          "epoch": {
+            "type": "int"
+          },
+          "epochbasis": {
+            "type": "yec"
+          },
+          "epochused": {
+            "type": "yec"
+          },
+          "unlockavailable": {
+            "type": "yec"
+          },
+          "members": {
+            "type": "int"
+          },
+          "active": {
+            "type": "int"
+          },
+          "current": {
+            "type": "int"
+          },
+          "dormant": {
+            "type": "bool"
+          },
+          "released": {
+            "type": "bool"
+          },
+          "memberlist": {
+            "type": "array",
+            "items": {
+              "ref": "Member"
+            }
+          }
+        },
+        "optional": [
+          "unlockavailable"
+        ]
+      }
+    },
+    "vault_list": {
+      "wallet": false,
+      "signature": "vault_list ( {\"tag\", \"setid\", \"owner\", \"kind\": \"vault\"|\"intent\", \"mine\": bool} )",
+      "params": [
+        {
+          "name": "filter",
+          "required": false,
+          "type": {
+            "type": "object",
+            "fields": {
+              "tag": {
+                "type": "str"
+              },
+              "setid": {
+                "type": "hash"
+              },
+              "owner": {
+                "type": "pqkeyid"
+              },
+              "kind": {
+                "oneOf": [
+                  {
+                    "const": "vault"
+                  },
+                  {
+                    "const": "intent"
+                  }
+                ]
+              },
+              "mine": {
+                "type": "bool"
+              }
+            },
+            "optional": [
+              "kind",
+              "mine",
+              "owner",
+              "setid",
+              "tag"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "type": "array",
+        "items": {
+          "ref": "TemplateOut"
+        }
+      }
+    },
+    "vault_decodescript": {
+      "wallet": false,
+      "signature": "vault_decodescript \"hex\"",
+      "params": [
+        {
+          "name": "hex",
+          "required": true,
+          "type": {
+            "type": "hex"
+          }
+        }
+      ],
+      "result": {
+        "oneOf": [
+          {
+            "type": "object",
+            "fields": {
+              "type": {
+                "const": "vault"
+              },
+              "tag": {
+                "type": "hex"
+              },
+              "tagtext": {
+                "type": "str"
+              },
+              "setid": {
+                "type": "hash"
+              },
+              "cancelsetid": {
+                "type": "hash"
+              },
+              "delay": {
+                "type": "int"
+              },
+              "ownerheight": {
+                "type": "height"
+              },
+              "appheight": {
+                "type": "height"
+              },
+              "owner": {
+                "type": "pqkeyid"
+              },
+              "ownerscheme": {
+                "type": "int"
+              }
+            },
+            "optional": []
+          },
+          {
+            "type": "object",
+            "fields": {
+              "type": {
+                "const": "intent"
+              },
+              "tag": {
+                "type": "hex"
+              },
+              "tagtext": {
+                "type": "str"
+              },
+              "setid": {
+                "type": "hash"
+              },
+              "cancelsetid": {
+                "type": "hash"
+              },
+              "delay": {
+                "type": "int"
+              },
+              "owner": {
+                "type": "pqkeyid"
+              },
+              "ownerscheme": {
+                "type": "int"
+              },
+              "recipienthash": {
+                "type": "hash"
+              },
+              "vaulthash": {
+                "type": "hash"
+              }
+            },
+            "optional": []
+          },
+          {
+            "type": "object",
+            "fields": {
+              "type": {
+                "const": "malformed"
+              }
+            },
+            "optional": []
+          },
+          {
+            "type": "object",
+            "fields": {
+              "type": {
+                "const": "act"
+              },
+              "acttype": {
+                "const": "create"
+              },
+              "seats": {
+                "type": "int"
+              },
+              "unlockthreshold": {
+                "type": "int"
+              },
+              "cancelthreshold": {
+                "type": "int"
+              },
+              "slashthreshold": {
+                "type": "int"
+              },
+              "open": {
+                "type": "bool"
+              },
+              "ratelimitbps": {
+                "type": "int"
+              },
+              "ratewindow": {
+                "type": "int"
+              },
+              "livenesswindow": {
+                "type": "int"
+              },
+              "bondmin": {
+                "type": "yec"
+              },
+              "bondlockmin": {
+                "type": "int"
+              },
+              "maturity": {
+                "type": "int"
+              },
+              "admitkey": {
+                "type": "key"
+              },
+              "signatures": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "fields": {
+                    "sig": {
+                      "type": "hex"
+                    }
+                  },
+                  "optional": []
+                }
+              },
+              "payload": {
+                "type": "hex"
+              }
+            },
+            "optional": []
+          },
+          {
+            "type": "object",
+            "fields": {
+              "type": {
+                "const": "act"
+              },
+              "acttype": {
+                "const": "join"
+              },
+              "setid": {
+                "type": "hash"
+              },
+              "memberkey": {
+                "type": "key"
+              },
+              "bondlocktime": {
+                "type": "height"
+              },
+              "bondvout": {
+                "type": "int"
+              },
+              "signatures": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "fields": {
+                    "sig": {
+                      "type": "hex"
+                    }
+                  },
+                  "optional": []
+                }
+              },
+              "payload": {
+                "type": "hex"
+              }
+            },
+            "optional": []
+          },
+          {
+            "type": "object",
+            "fields": {
+              "type": {
+                "const": "act"
+              },
+              "acttype": {
+                "const": "heartbeat"
+              },
+              "setid": {
+                "type": "hash"
+              },
+              "memberkey": {
+                "type": "key"
+              },
+              "signatures": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "fields": {
+                    "sig": {
+                      "type": "hex"
+                    }
+                  },
+                  "optional": []
+                }
+              },
+              "payload": {
+                "type": "hex"
+              }
+            },
+            "optional": []
+          },
+          {
+            "type": "object",
+            "fields": {
+              "type": {
+                "const": "act"
+              },
+              "acttype": {
+                "const": "remove"
+              },
+              "setid": {
+                "type": "hash"
+              },
+              "memberkey": {
+                "type": "key"
+              },
+              "burn": {
+                "type": "int"
+              },
+              "signatures": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "fields": {
+                    "sig": {
+                      "type": "hex"
+                    }
+                  },
+                  "optional": []
+                }
+              },
+              "payload": {
+                "type": "hex"
+              }
+            },
+            "optional": []
+          },
+          {
+            "type": "object",
+            "fields": {
+              "type": {
+                "const": "act"
+              },
+              "acttype": {
+                "const": "equivocation"
+              },
+              "setid": {
+                "type": "hash"
+              },
+              "prevout": {
+                "type": "outpoint"
+              },
+              "rolea": {
+                "type": "int"
+              },
+              "sighasha": {
+                "type": "hash"
+              },
+              "siga": {
+                "type": "hex"
+              },
+              "roleb": {
+                "type": "int"
+              },
+              "sighashb": {
+                "type": "hash"
+              },
+              "sigb": {
+                "type": "hex"
+              },
+              "signatures": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "fields": {
+                    "sig": {
+                      "type": "hex"
+                    }
+                  },
+                  "optional": []
+                }
+              },
+              "payload": {
+                "type": "hex"
+              }
+            },
+            "optional": []
+          },
+          {
+            "type": "object",
+            "fields": {
+              "type": {
+                "const": "act"
+              },
+              "acttype": {
+                "const": "winddown"
+              },
+              "setid": {
+                "type": "hash"
+              },
+              "signatures": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "fields": {
+                    "sig": {
+                      "type": "hex"
+                    }
+                  },
+                  "optional": []
+                }
+              },
+              "payload": {
+                "type": "hex"
+              }
+            },
+            "optional": []
+          },
+          {
+            "type": "object",
+            "fields": {
+              "type": {
+                "const": "act"
+              },
+              "error": {
+                "type": "str"
+              }
+            },
+            "optional": []
+          },
+          {
+            "type": "object",
+            "fields": {
+              "type": {
+                "const": "bond"
+              },
+              "locktime": {
+                "type": "height"
+              },
+              "memberkey": {
+                "type": "key"
+              },
+              "scriptpubkey": {
+                "type": "hex"
+              },
+              "address": {
+                "type": "address"
+              }
+            },
+            "optional": []
+          },
+          {
+            "type": "object",
+            "fields": {
+              "type": {
+                "const": "none"
+              }
+            },
+            "optional": []
+          }
+        ]
+      }
+    },
+    "set_create": {
+      "wallet": true,
+      "signature": "set_create {params}",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "type": {
+            "type": "object",
+            "fields": {
+              "seats": {
+                "type": "int"
+              },
+              "unlockthreshold": {
+                "type": "int"
+              },
+              "cancelthreshold": {
+                "type": "int"
+              },
+              "slashthreshold": {
+                "type": "int"
+              },
+              "open": {
+                "type": "bool"
+              },
+              "ratelimitbps": {
+                "type": "int"
+              },
+              "ratewindow": {
+                "type": "int"
+              },
+              "livenesswindow": {
+                "type": "int"
+              },
+              "bondmin": {
+                "type": "yec"
+              },
+              "bondlockmin": {
+                "type": "int"
+              },
+              "maturity": {
+                "type": "int"
+              },
+              "admitkey": {
+                "type": "key"
+              }
+            },
+            "optional": [
+              "admitkey",
+              "bondlockmin",
+              "bondmin",
+              "cancelthreshold",
+              "livenesswindow",
+              "maturity",
+              "open",
+              "ratelimitbps",
+              "ratewindow",
+              "slashthreshold"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "type": "object",
+        "fields": {
+          "txid": {
+            "type": "hash"
+          },
+          "setid": {
+            "type": "hash"
+          },
+          "admitkey": {
+            "type": "key"
+          }
+        },
+        "optional": []
+      }
+    },
+    "set_join": {
+      "wallet": true,
+      "signature": "set_join \"setid\" bondamount bondlocktime ( \"memberkey\" )",
+      "params": [
+        {
+          "name": "setid",
+          "required": true,
+          "type": {
+            "type": "hash"
+          }
+        },
+        {
+          "name": "bondamount",
+          "required": true,
+          "type": {
+            "type": "yec"
+          }
+        },
+        {
+          "name": "bondlocktime",
+          "required": true,
+          "type": {
+            "type": "height"
+          }
+        },
+        {
+          "name": "memberkey",
+          "required": false,
+          "type": {
+            "type": "key"
+          }
+        }
+      ],
+      "result": {
+        "type": "object",
+        "fields": {
+          "txid": {
+            "type": "hash"
+          },
+          "hex": {
+            "type": "hex"
+          },
+          "type": {
+            "ref": "ActType"
+          },
+          "complete": {
+            "type": "bool"
+          },
+          "signatures": {
+            "type": "int"
+          },
+          "required": {
+            "type": "int"
+          },
+          "memberkey": {
+            "type": "key"
+          },
+          "bondoutpoint": {
+            "type": "outpoint"
+          }
+        },
+        "optional": [
+          "txid"
+        ]
+      }
+    },
+    "set_heartbeat": {
+      "wallet": true,
+      "signature": "set_heartbeat \"setid\" ( \"memberkey\" )",
+      "params": [
+        {
+          "name": "setid",
+          "required": true,
+          "type": {
+            "type": "hash"
+          }
+        },
+        {
+          "name": "memberkey",
+          "required": false,
+          "type": {
+            "type": "key"
+          }
+        }
+      ],
+      "result": {
+        "type": "object",
+        "fields": {
+          "txid": {
+            "type": "hash"
+          },
+          "memberkey": {
+            "type": "key"
+          }
+        },
+        "optional": []
+      }
+    },
+    "set_leave": {
+      "wallet": true,
+      "signature": "set_leave \"setid\" ( \"memberkey\" )",
+      "params": [
+        {
+          "name": "setid",
+          "required": true,
+          "type": {
+            "type": "hash"
+          }
+        },
+        {
+          "name": "memberkey",
+          "required": false,
+          "type": {
+            "type": "key"
+          }
+        }
+      ],
+      "result": {
+        "type": "object",
+        "fields": {
+          "txid": {
+            "type": "hash"
+          },
+          "memberkey": {
+            "type": "key"
+          },
+          "exitheight": {
+            "type": "height"
+          },
+          "bondspendableat": {
+            "type": "height"
+          }
+        },
+        "optional": []
+      }
+    },
+    "set_buildact": {
+      "wallet": true,
+      "signature": "set_buildact \"type\" {params}",
+      "params": [
+        {
+          "name": "type",
+          "required": true,
+          "type": {
+            "ref": "ActType"
+          }
+        },
+        {
+          "name": "params",
+          "required": true,
+          "type": {
+            "type": "object",
+            "fields": {
+              "setid": {
+                "type": "hash"
+              },
+              "memberkey": {
+                "type": "key"
+              },
+              "bondamount": {
+                "type": "yec"
+              },
+              "bondlocktime": {
+                "type": "height"
+              },
+              "burn": {
+                "type": "bool"
+              },
+              "prevout": {
+                "type": "outpoint"
+              },
+              "rolea": {
+                "type": "int"
+              },
+              "sighasha": {
+                "type": "hash"
+              },
+              "siga": {
+                "type": "hex"
+              },
+              "roleb": {
+                "type": "int"
+              },
+              "sighashb": {
+                "type": "hash"
+              },
+              "sigb": {
+                "type": "hex"
+              },
+              "seats": {
+                "type": "int"
+              },
+              "unlockthreshold": {
+                "type": "int"
+              },
+              "cancelthreshold": {
+                "type": "int"
+              },
+              "slashthreshold": {
+                "type": "int"
+              },
+              "open": {
+                "type": "bool"
+              },
+              "ratelimitbps": {
+                "type": "int"
+              },
+              "ratewindow": {
+                "type": "int"
+              },
+              "livenesswindow": {
+                "type": "int"
+              },
+              "bondmin": {
+                "type": "yec"
+              },
+              "bondlockmin": {
+                "type": "int"
+              },
+              "maturity": {
+                "type": "int"
+              },
+              "admitkey": {
+                "type": "key"
+              }
+            },
+            "optional": [
+              "admitkey",
+              "bondamount",
+              "bondlockmin",
+              "bondlocktime",
+              "bondmin",
+              "burn",
+              "cancelthreshold",
+              "livenesswindow",
+              "maturity",
+              "memberkey",
+              "open",
+              "prevout",
+              "ratelimitbps",
+              "ratewindow",
+              "rolea",
+              "roleb",
+              "seats",
+              "setid",
+              "siga",
+              "sigb",
+              "sighasha",
+              "sighashb",
+              "slashthreshold",
+              "unlockthreshold"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "ref": "ActResult"
+      }
+    },
+    "set_signact": {
+      "wallet": true,
+      "signature": "set_signact \"hex\" ( \"setid\" )",
+      "params": [
+        {
+          "name": "hex",
+          "required": true,
+          "type": {
+            "type": "hex"
+          }
+        },
+        {
+          "name": "setid",
+          "required": false,
+          "type": {
+            "type": "hash"
+          }
+        }
+      ],
+      "result": {
+        "ref": "ActResult"
+      }
+    },
+    "set_sendact": {
+      "wallet": true,
+      "signature": "set_sendact \"hex\" ( {\"dryrun\", \"allowinputs\", \"allowoutflow\"} )",
+      "params": [
+        {
+          "name": "hex",
+          "required": true,
+          "type": {
+            "type": "hex"
+          }
+        },
+        {
+          "name": "options",
+          "required": false,
+          "type": {
+            "type": "object",
+            "fields": {
+              "dryrun": {
+                "type": "bool"
+              },
+              "allowinputs": {
+                "type": "array",
+                "items": {
+                  "type": "outpoint"
+                }
+              },
+              "allowoutflow": {
+                "type": "yec"
+              }
+            },
+            "optional": [
+              "allowinputs",
+              "allowoutflow",
+              "dryrun"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "oneOf": [
+          {
+            "type": "hash"
+          },
+          {
+            "ref": "HandoffPreview"
+          }
+        ]
+      }
+    },
+    "set_equivocation": {
+      "wallet": true,
+      "signature": "set_equivocation {proof}",
+      "params": [
+        {
+          "name": "proof",
+          "required": true,
+          "type": {
+            "ref": "Proof"
+          }
+        }
+      ],
+      "result": {
+        "type": "hash"
+      }
+    },
+    "vault_getnewowner": {
+      "wallet": true,
+      "signature": "vault_getnewowner ( scheme )",
+      "params": [
+        {
+          "name": "scheme",
+          "required": false,
+          "type": {
+            "type": "int"
+          }
+        }
+      ],
+      "result": {
+        "type": "object",
+        "fields": {
+          "scheme": {
+            "type": "int"
+          },
+          "keyhash": {
+            "type": "hex"
+          },
+          "owner": {
+            "type": "pqkeyid"
+          },
+          "address": {
+            "type": "str"
+          }
+        },
+        "optional": []
+      }
+    },
+    "vault_lock": {
+      "wallet": true,
+      "signature": "vault_lock {params}",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "type": {
+            "type": "object",
+            "fields": {
+              "tag": {
+                "type": "str"
+              },
+              "setid": {
+                "type": "hash"
+              },
+              "cancelsetid": {
+                "type": "hash"
+              },
+              "delay": {
+                "type": "int"
+              },
+              "ownerheight": {
+                "type": "height"
+              },
+              "appheight": {
+                "type": "height"
+              },
+              "amount": {
+                "type": "yec"
+              },
+              "owner": {
+                "type": "pqkeyid"
+              },
+              "from": {
+                "type": "address"
+              }
+            },
+            "optional": [
+              "appheight",
+              "cancelsetid",
+              "from",
+              "owner"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "type": "object",
+        "fields": {
+          "txid": {
+            "type": "hash"
+          },
+          "vout": {
+            "type": "int"
+          },
+          "outpoint": {
+            "type": "outpoint"
+          },
+          "script": {
+            "type": "hex"
+          },
+          "owner": {
+            "type": "pqkeyid"
+          }
+        },
+        "optional": []
+      }
+    },
+    "vault_buildunlock": {
+      "wallet": true,
+      "signature": "vault_buildunlock \"outpoint\" [{\"address\"|\"script\", \"amount\"}, ...] ( rebuild )",
+      "params": [
+        {
+          "name": "outpoint",
+          "required": true,
+          "type": {
+            "type": "outpoint"
+          }
+        },
+        {
+          "name": "recipients",
+          "required": true,
+          "type": {
+            "type": "array",
+            "items": {
+              "ref": "Recipient"
+            }
+          }
+        },
+        {
+          "name": "rebuild",
+          "required": false,
+          "type": {
+            "type": "bool"
+          }
+        }
+      ],
+      "result": {
+        "type": "object",
+        "fields": {
+          "hex": {
+            "type": "hex"
+          },
+          "intents": {
+            "type": "array",
+            "items": {
+              "ref": "IntentOut"
+            }
+          },
+          "required": {
+            "type": "int"
+          },
+          "sighash": {
+            "type": "hash"
+          },
+          "build": {
+            "oneOf": [
+              {
+                "const": "new"
+              },
+              {
+                "const": "reused"
+              },
+              {
+                "const": "refunded"
+              }
+            ]
+          }
+        },
+        "optional": []
+      }
+    },
+    "set_signunlock": {
+      "wallet": true,
+      "signature": "set_signunlock \"hex\" ( {\"acknowledgerestore\": true} )",
+      "params": [
+        {
+          "name": "hex",
+          "required": true,
+          "type": {
+            "type": "hex"
+          }
+        },
+        {
+          "name": "options",
+          "required": false,
+          "type": {
+            "type": "object",
+            "fields": {
+              "acknowledgerestore": {
+                "type": "bool"
+              }
+            },
+            "optional": [
+              "acknowledgerestore"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "ref": "SetSigResult"
+      }
+    },
+    "vault_buildcancel": {
+      "wallet": true,
+      "signature": "vault_buildcancel \"intentoutpoint\" ( rebuild )",
+      "params": [
+        {
+          "name": "intentoutpoint",
+          "required": true,
+          "type": {
+            "type": "outpoint"
+          }
+        },
+        {
+          "name": "rebuild",
+          "required": false,
+          "type": {
+            "type": "bool"
+          }
+        }
+      ],
+      "result": {
+        "type": "object",
+        "fields": {
+          "hex": {
+            "type": "hex"
+          },
+          "required": {
+            "type": "int"
+          },
+          "cancelsetid": {
+            "type": "hash"
+          },
+          "deadline": {
+            "type": "height"
+          },
+          "intentconfirmed": {
+            "type": "bool"
+          },
+          "sighash": {
+            "type": "hash"
+          },
+          "build": {
+            "oneOf": [
+              {
+                "const": "new"
+              },
+              {
+                "const": "reused"
+              },
+              {
+                "const": "refunded"
+              }
+            ]
+          }
+        },
+        "optional": []
+      }
+    },
+    "set_signcancel": {
+      "wallet": true,
+      "signature": "set_signcancel \"hex\" ( {\"acknowledgerestore\": true} )",
+      "params": [
+        {
+          "name": "hex",
+          "required": true,
+          "type": {
+            "type": "hex"
+          }
+        },
+        {
+          "name": "options",
+          "required": false,
+          "type": {
+            "type": "object",
+            "fields": {
+              "acknowledgerestore": {
+                "type": "bool"
+              }
+            },
+            "optional": [
+              "acknowledgerestore"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "ref": "SetSigResult"
+      }
+    },
+    "vault_refee": {
+      "wallet": true,
+      "signature": "vault_refee \"hex\"",
+      "params": [
+        {
+          "name": "hex",
+          "required": true,
+          "type": {
+            "type": "hex"
+          }
+        }
+      ],
+      "result": {
+        "type": "object",
+        "fields": {
+          "hex": {
+            "type": "hex"
+          },
+          "sighash": {
+            "type": "hash"
+          },
+          "fee": {
+            "type": "yec"
+          },
+          "replaced": {
+            "type": "array",
+            "items": {
+              "type": "outpoint"
+            }
+          }
+        },
+        "optional": []
+      }
+    },
+    "set_listsigned": {
+      "wallet": true,
+      "signature": "set_listsigned",
+      "params": [],
+      "result": {
+        "type": "object",
+        "fields": {
+          "restored": {
+            "type": "bool"
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "fields": {
+                "setid": {
+                  "type": "hash"
+                },
+                "prevout": {
+                  "type": "outpoint"
+                },
+                "role": {
+                  "type": "int"
+                },
+                "sighash": {
+                  "type": "hash"
+                }
+              },
+              "optional": []
+            }
+          }
+        },
+        "optional": []
+      }
+    },
+    "set_importsigned": {
+      "wallet": true,
+      "signature": "set_importsigned [{\"setid\", \"prevout\", \"role\", \"sighash\"}, ...]",
+      "params": [
+        {
+          "name": "records",
+          "required": true,
+          "type": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "fields": {
+                "setid": {
+                  "type": "hash"
+                },
+                "prevout": {
+                  "type": "outpoint"
+                },
+                "role": {
+                  "type": "int"
+                },
+                "sighash": {
+                  "type": "hash"
+                }
+              },
+              "optional": []
+            }
+          }
+        }
+      ],
+      "result": {
+        "type": "object",
+        "fields": {
+          "imported": {
+            "type": "int"
+          },
+          "present": {
+            "type": "int"
+          }
+        },
+        "optional": []
+      }
+    },
+    "set_acknowledgerestore": {
+      "wallet": true,
+      "signature": "set_acknowledgerestore",
+      "params": [],
+      "result": {
+        "type": "object",
+        "fields": {
+          "restored": {
+            "type": "bool"
+          },
+          "pendingkeys": {
+            "type": "int"
+          }
+        },
+        "optional": []
+      }
+    },
+    "vault_send": {
+      "wallet": true,
+      "signature": "vault_send \"hex\" ( {\"dryrun\", \"allowinputs\", \"allowoutflow\"} )",
+      "params": [
+        {
+          "name": "hex",
+          "required": true,
+          "type": {
+            "type": "hex"
+          }
+        },
+        {
+          "name": "options",
+          "required": false,
+          "type": {
+            "type": "object",
+            "fields": {
+              "dryrun": {
+                "type": "bool"
+              },
+              "allowinputs": {
+                "type": "array",
+                "items": {
+                  "type": "outpoint"
+                }
+              },
+              "allowoutflow": {
+                "type": "yec"
+              }
+            },
+            "optional": [
+              "allowinputs",
+              "allowoutflow",
+              "dryrun"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "oneOf": [
+          {
+            "type": "hash"
+          },
+          {
+            "ref": "HandoffPreview"
+          }
+        ]
+      }
+    },
+    "vault_release": {
+      "wallet": true,
+      "signature": "vault_release \"intentoutpoint\" ( \"address\"|\"script\" )",
+      "params": [
+        {
+          "name": "intentoutpoint",
+          "required": true,
+          "type": {
+            "type": "outpoint"
+          }
+        },
+        {
+          "name": "recipient",
+          "required": false,
+          "type": {
+            "type": "str"
+          }
+        }
+      ],
+      "result": {
+        "type": "hash"
+      }
+    },
+    "vault_ownerspend": {
+      "wallet": true,
+      "signature": "vault_ownerspend \"outpoint\" \"address\"",
+      "params": [
+        {
+          "name": "outpoint",
+          "required": true,
+          "type": {
+            "type": "outpoint"
+          }
+        },
+        {
+          "name": "address",
+          "required": true,
+          "type": {
+            "type": "address"
+          }
+        }
+      ],
+      "result": {
+        "type": "object",
+        "fields": {
+          "txid": {
+            "type": "hash"
+          },
+          "selector": {
+            "type": "int"
+          }
+        },
+        "optional": []
+      }
+    },
+    "vault_app": {
+      "wallet": true,
+      "signature": "vault_app \"outpoint\" ( [{\"address\"|\"script\", \"amount\"}, ...] )",
+      "params": [
+        {
+          "name": "outpoint",
+          "required": true,
+          "type": {
+            "type": "outpoint"
+          }
+        },
+        {
+          "name": "recipients",
+          "required": false,
+          "type": {
+            "type": "array",
+            "items": {
+              "ref": "Recipient"
+            }
+          }
+        }
+      ],
+      "result": {
+        "type": "object",
+        "fields": {
+          "hex": {
+            "type": "hex"
+          },
+          "intents": {
+            "type": "array",
+            "items": {
+              "ref": "IntentOut"
+            }
+          }
+        },
+        "optional": []
+      }
+    }
+  },
+  "errors": [
+    {
+      "code": -1,
+      "message": "is not active at the next block",
+      "raisedBy": [
+        "every act and vault RPC"
+      ],
+      "provokedBy": "`set_create` before activation"
+    },
+    {
+      "code": -8,
+      "message": "the set parameters are out of range",
+      "raisedBy": [
+        "set_create",
+        "set_buildact"
+      ],
+      "provokedBy": "`seats` 16"
+    },
+    {
+      "code": -5,
+      "message": "unknown set",
+      "raisedBy": [
+        "set_getinfo",
+        "set_join",
+        "set_heartbeat",
+        "set_buildact",
+        "vault_lock"
+      ],
+      "provokedBy": "`set_getinfo` of a random id"
+    },
+    {
+      "code": -4,
+      "message": "this wallet holds no current member key of the set",
+      "raisedBy": [
+        "set_heartbeat"
+      ],
+      "provokedBy": "a heartbeat for a set with no members"
+    },
+    {
+      "code": -26,
+      "message": "bad-vault-act-seats",
+      "raisedBy": [
+        "set_join",
+        "set_sendact"
+      ],
+      "provokedBy": "a join to a full set (a set a registered module governs may instead displace a member, below)"
+    },
+    {
+      "code": -8,
+      "message": "unknown act type",
+      "raisedBy": [
+        "set_buildact"
+      ],
+      "provokedBy": "type `\"bogus\"`"
+    },
+    {
+      "code": -8,
+      "message": "the transaction carries no YV act",
+      "raisedBy": [
+        "set_signact",
+        "set_sendact"
+      ],
+      "provokedBy": "`set_signact` of a vault spend"
+    },
+    {
+      "code": -8,
+      "message": "kind must be vault or intent",
+      "raisedBy": [
+        "vault_list"
+      ],
+      "provokedBy": "`{\"kind\": \"coin\"}`"
+    },
+    {
+      "code": -8,
+      "message": "vault parameters out of range",
+      "raisedBy": [
+        "vault_lock"
+      ],
+      "provokedBy": "`delay` 0"
+    },
+    {
+      "code": -8,
+      "message": "ownerkey-removed",
+      "raisedBy": [
+        "vault_lock"
+      ],
+      "provokedBy": "the former `ownerkey` parameter"
+    },
+    {
+      "code": -8,
+      "message": "appheight on a tag no module governs",
+      "raisedBy": [
+        "vault_lock"
+      ],
+      "provokedBy": "`appheight` on tag `TEST` (or on `YED\\0` where no attestor set is configured)"
+    },
+    {
+      "code": -8,
+      "message": "unknown post-quantum scheme",
+      "raisedBy": [
+        "vault_getnewowner"
+      ],
+      "provokedBy": "`scheme` 3"
+    },
+    {
+      "code": -8,
+      "message": "unregistered post-quantum scheme",
+      "raisedBy": [
+        "vault_lock",
+        "vault_list"
+      ],
+      "provokedBy": "an `owner` with scheme `03`"
+    },
+    {
+      "code": -8,
+      "message": "a scheme-2 (FN-DSA-512) owner before Falcon is active",
+      "raisedBy": [
+        "vault_lock"
+      ],
+      "provokedBy": "an `owner` with scheme `02` while Falcon is inactive at the next block"
+    },
+    {
+      "code": -5,
+      "message": "bad-address: from: not a transparent P2PKH, post-quantum or Sapling address of this network",
+      "raisedBy": [
+        "vault_lock"
+      ],
+      "provokedBy": "`from` `\"nonsense\"`"
+    },
+    {
+      "code": -5,
+      "message": "from: not an address of this wallet",
+      "raisedBy": [
+        "vault_lock"
+      ],
+      "provokedBy": "`from` another wallet's address"
+    },
+    {
+      "code": -4,
+      "message": "from: a watch-only address of this wallet",
+      "raisedBy": [
+        "vault_lock"
+      ],
+      "provokedBy": "`from` an address imported with `importaddress`"
+    },
+    {
+      "code": -5,
+      "message": "from: an FN-DSA-512 (scheme 2) address cannot be spent before Falcon is active",
+      "raisedBy": [
+        "vault_lock"
+      ],
+      "provokedBy": "`from` the address of a scheme-2 key imported with `z_importpqkey`, while Falcon is inactive at the next block"
+    },
+    {
+      "code": -6,
+      "message": "insufficient confirmed funds at",
+      "raisedBy": [
+        "vault_lock"
+      ],
+      "provokedBy": "`from` an empty transparent or post-quantum address of this wallet"
+    },
+    {
+      "code": -6,
+      "message": "in confirmed Sapling notes at",
+      "raisedBy": [
+        "vault_lock"
+      ],
+      "provokedBy": "`from` an empty Sapling address of this wallet"
+    },
+    {
+      "code": -4,
+      "message": "not a post-quantum key of this wallet",
+      "raisedBy": [
+        "vault_ownerspend"
+      ],
+      "provokedBy": "a vault with an external owner"
+    },
+    {
+      "code": -8,
+      "message": "not an unspent vault output",
+      "raisedBy": [
+        "vault_buildunlock",
+        "vault_app"
+      ],
+      "provokedBy": "a spent vault outpoint"
+    },
+    {
+      "code": -8,
+      "message": "the recipients' amounts exceed the vault's value",
+      "raisedBy": [
+        "vault_buildunlock",
+        "vault_app"
+      ],
+      "provokedBy": "more than the vault holds"
+    },
+    {
+      "code": -8,
+      "message": "the template input is not an intent",
+      "raisedBy": [
+        "set_signcancel"
+      ],
+      "provokedBy": "an unlock spend"
+    },
+    {
+      "code": -8,
+      "message": "the template input is not a vault",
+      "raisedBy": [
+        "set_signunlock"
+      ],
+      "provokedBy": "a cancel spend"
+    },
+    {
+      "code": -8,
+      "message": "no unspent vault or intent input",
+      "raisedBy": [
+        "set_signunlock",
+        "set_signcancel",
+        "vault_refee",
+        "vault_send"
+      ],
+      "provokedBy": "`vault_send` of a transaction with no template input"
+    },
+    {
+      "code": -4,
+      "message": "vault-send-foreign-input",
+      "raisedBy": [
+        "vault_send",
+        "set_sendact"
+      ],
+      "provokedBy": "a spend that names a wallet coin this wallet did not fund for these outputs, and `allowinputs` does not name it"
+    },
+    {
+      "code": -4,
+      "message": "vault-send-outflow",
+      "raisedBy": [
+        "vault_send",
+        "set_sendact"
+      ],
+      "provokedBy": "the wallet's net outflow exceeds the fee cap and `allowoutflow` does not cover it"
+    },
+    {
+      "code": -4,
+      "message": "set-sign-once",
+      "raisedBy": [
+        "set_signunlock",
+        "set_signcancel",
+        "set_importsigned"
+      ],
+      "provokedBy": "a second, different unlock of a vault this wallet already signed"
+    },
+    {
+      "code": -4,
+      "message": "set-sign-restored",
+      "raisedBy": [
+        "set_signunlock",
+        "set_signcancel"
+      ],
+      "provokedBy": "signing on a wallet that imported a member key, before `set_importsigned`"
+    },
+    {
+      "code": -8,
+      "message": "set-sign-invalid",
+      "raisedBy": [
+        "set_signunlock",
+        "set_signcancel"
+      ],
+      "provokedBy": "`set_signcancel` of an intent's cancel after the intent matured"
+    },
+    {
+      "code": -8,
+      "message": "already built a different unlock",
+      "raisedBy": [
+        "vault_buildunlock"
+      ],
+      "provokedBy": "a second build of one vault with other recipients, without `rebuild`"
+    },
+    {
+      "code": -8,
+      "message": "not an unspent intent output",
+      "raisedBy": [
+        "vault_buildcancel",
+        "vault_release"
+      ],
+      "provokedBy": "a released intent"
+    },
+    {
+      "code": -1,
+      "message": "can no longer be cancelled",
+      "raisedBy": [
+        "vault_buildcancel"
+      ],
+      "provokedBy": "an intent past its delay"
+    },
+    {
+      "code": -1,
+      "message": "matures at height",
+      "raisedBy": [
+        "vault_release"
+      ],
+      "provokedBy": "an intent before its delay"
+    },
+    {
+      "code": -1,
+      "message": "owner branch opens at height",
+      "raisedBy": [
+        "vault_ownerspend"
+      ],
+      "provokedBy": "a vault before `ownerheight`"
+    },
+    {
+      "code": -8,
+      "message": "has no APP branch",
+      "raisedBy": [
+        "vault_app"
+      ],
+      "provokedBy": "a vault with `appheight` 0"
+    },
+    {
+      "code": -1,
+      "message": "the APP branch opens at height",
+      "raisedBy": [
+        "vault_app"
+      ],
+      "provokedBy": "a vault before `appheight`"
+    }
+  ]
+}
