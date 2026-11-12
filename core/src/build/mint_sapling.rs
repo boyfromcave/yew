@@ -521,7 +521,11 @@ mod tests {
             ..c.want
         };
         assert!(gate::check(gate::Path::CarrierFromSapling(other_key), &c.raw, none).is_err());
-        for p in [gate::Path::Carrier, gate::Path::Shield, gate::Path::Yec] {
+        let ecc = gate::Path::Carrier(gate::EccCarrierOutputs {
+            carrier_hash: c.want.carrier_hash,
+            change_key: Some(c.want.staged_key),
+        });
+        for p in [ecc, gate::Path::Shield, gate::Path::Yec] {
             assert!(gate::check(p, &c.raw, none).is_err(), "{p:?}");
         }
         drop(w);

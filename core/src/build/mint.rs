@@ -1012,6 +1012,14 @@ where
     if change > 0 && change < MIN_CHANGE {
         change = 0;
     }
+    // review YEW-REVIEW-9 L3: the change key is derived and recorded before the transaction is
+    // built; the gate compares vout[0] with the re-derived carrier and vout[1] with the record
+    let change_row = if change > 0 {
+        Some(record_carrier_change_key(wallet, &carrier_row.hash160)?)
+    } else {
+        None
+    };
+    let want = recorded_ecc_carrier_outputs(wallet, &carrier_row.hash160, bundle, change > 0)?;
     let mut tx = Transaction::new_v4();
     tx.expiry_height = expiry_height;
     for u in &inputs {
@@ -1021,19 +1029,16 @@ where
         value: CARRIER_VALUE,
         script_pubkey: script::p2sh_of(&redeem),
     });
-    let mut change_row = None;
-    if change > 0 {
-        let row = fresh_change(wallet)?;
+    if let Some(row) = &change_row {
         tx.vout.push(TxOut {
             value: change,
             script_pubkey: script::p2pkh_script(&row.hash160),
         });
-        change_row = Some(row);
     }
     sign_p2pkh_inputs(wallet, &mut tx, &inputs, 0, branch_id)?;
     let raw = tx.serialize()?;
     let txid = tx.txid()?;
-    let (_, validation) = gate::confirm(validator, gate::Path::Carrier, &raw, |op| {
+    let (_, validation) = gate::confirm(validator, gate::Path::Carrier(want), &raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
     })
     .await?;
@@ -1041,7 +1046,7 @@ where
     // layer 3 on the YEC inputs (every input of the carrier funding): no input spent as plain YEC carries YED by its creating transaction
     gate::confirm_provenance(
         client,
-        gate::Path::Carrier,
+        gate::Path::Carrier(want),
         &raw,
         |op| wallet.store.utxo_class(op).ok().flatten(),
         |op| wallet.store.utxo_txout(op).ok().flatten(),
@@ -1113,7 +1118,8 @@ pub(crate) fn carrier_key(
 /// How [`carrier_step`] funds the carrier (beta2 D-3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CarrierFunding {
-    /// The wallet's transparent ECC coins, as before ([`gate::Path::Carrier`]).
+    /// The wallet's transparent ECC coins, as before ([`gate::Path::Carrier`], now bound to the
+    /// carrier and the recorded change key).
     Ecc,
     /// The own post-quantum address `id` ([`gate::Path::CarrierFromPq`]): the carrier and the
     /// staged MINT funding (`staged` zat to a fresh own P2PKH key), at most `max_fee` (the fee
@@ -1193,13 +1199,32 @@ pub(crate) fn recorded_carrier_outputs(
     carrier_key: &[u8; 20],
     bundle: &[u8],
 ) -> Result<gate::CarrierOutputs, WalletError> {
-    let bad = |m: &str| WalletError::Other(format!("the mint's staged funding key: {m}"));
+    let staged_key = recorded_change_key(
+        wallet,
+        &staging_record_key(carrier_key),
+        "the mint's staged funding key",
+    )?;
+    Ok(gate::CarrierOutputs {
+        carrier_hash: derived_carrier_hash(wallet, carrier_key, bundle)?,
+        staged_key,
+    })
+}
+
+/// A key hash recorded under `meta_key`, checked to be a change-chain key of this wallet's seed:
+/// it must have an address row on the change chain and re-derive at its recorded index
+/// (`key_for_hash`). `what` names it in the refusals.
+fn recorded_change_key(
+    wallet: &Wallet,
+    meta_key: &str,
+    what: &str,
+) -> Result<[u8; 20], WalletError> {
+    let bad = |m: &str| WalletError::Other(format!("{what}: {m}"));
     let v = wallet
         .store
-        .meta(&staging_record_key(carrier_key))?
+        .meta(meta_key)?
         .filter(|v| !v.is_empty())
         .ok_or_else(|| bad("not recorded"))?;
-    let staged_key: [u8; 20] = unhex(&v)
+    let key: [u8; 20] = unhex(&v)
         .ok()
         .and_then(|b| b.try_into().ok())
         .ok_or_else(|| bad("unreadable record"))?;
@@ -1207,17 +1232,59 @@ pub(crate) fn recorded_carrier_outputs(
         .store
         .addresses()?
         .into_iter()
-        .find(|r| r.hash160 == staged_key)
+        .find(|r| r.hash160 == key)
         .ok_or_else(|| bad("not a key of this wallet"))?;
     if row.hd_chain() != Some(keys::Chain::Change) {
         return Err(bad("not a change key of this wallet's seed"));
     }
-    if wallet.key_for_hash(&staged_key)?.is_none() {
+    if wallet.key_for_hash(&key)?.is_none() {
         return Err(bad("not a key of this wallet"));
     }
-    Ok(gate::CarrierOutputs {
+    Ok(key)
+}
+
+/// The meta key under which the change key of the ECC carrier funding whose carrier key hash is
+/// `carrier_key` is recorded before that transaction is built (review YEW-REVIEW-9 L3).
+pub(crate) fn carrier_change_record_key(carrier_key: &[u8; 20]) -> String {
+    format!("carrier_change:{}", keys::hex(carrier_key))
+}
+
+/// Derive a fresh change key for an ECC carrier funding and record it under the carrier's key
+/// before anything is built (review YEW-REVIEW-9 L3).
+pub(crate) fn record_carrier_change_key(
+    wallet: &Wallet,
+    carrier_key: &[u8; 20],
+) -> Result<AddressRow, WalletError> {
+    let row = fresh_change(wallet)?;
+    wallet.store.set_meta(
+        &carrier_change_record_key(carrier_key),
+        &keys::hex(&row.hash160),
+    )?;
+    Ok(row)
+}
+
+/// What [`gate::Path::Carrier`] compares for an ECC carrier funding (review YEW-REVIEW-9 L3): the
+/// carrier re-derived from the carrier key and `bundle` ([`derived_carrier_hash`]) and, when the
+/// funding pays change, the change key read back from the record (a change-chain key of the
+/// seed), never a builder's argument.
+pub(crate) fn recorded_ecc_carrier_outputs(
+    wallet: &Wallet,
+    carrier_key: &[u8; 20],
+    bundle: &[u8],
+    with_change: bool,
+) -> Result<gate::EccCarrierOutputs, WalletError> {
+    let change_key = if with_change {
+        Some(recorded_change_key(
+            wallet,
+            &carrier_change_record_key(carrier_key),
+            "the carrier funding's change key",
+        )?)
+    } else {
+        None
+    };
+    Ok(gate::EccCarrierOutputs {
         carrier_hash: derived_carrier_hash(wallet, carrier_key, bundle)?,
-        staged_key,
+        change_key,
     })
 }
 
@@ -2540,7 +2607,12 @@ mod tests {
             scripts
         )
         .is_err());
-        assert!(gate::check(gate::Path::Carrier, &raw, class).is_err());
+        // the ECC carrier path, bound to the same carrier and the staged key as its change
+        let ecc = gate::EccCarrierOutputs {
+            carrier_hash: want.carrier_hash,
+            change_key: Some(want.staged_key),
+        };
+        assert!(gate::check(gate::Path::Carrier(ecc), &raw, class).is_err());
         // too little at the source
         let e = plan_pq_funding(&w, &id, &carrier, 400_000_000, &stage, 100)
             .err()
@@ -2618,6 +2690,80 @@ mod tests {
     /// its two transactions leaves the staged YEC as ordinary balance; and a wallet restored from
     /// the same seed has the staged key in its derivation and scan set, and classifies the staged
     /// output as plain YEC.
+    #[test]
+    fn ecc_carrier_change_recorded_and_bound() {
+        use crate::params::Network;
+        use crate::store::Store;
+        // review YEW-REVIEW-9 L3: the change key is recorded before the build, read back as a
+        // change key of the seed, and the gate binds vout[0] and vout[1] to it
+        let seed = keys::seed_from_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "",
+        )
+        .unwrap();
+        let w = Wallet::from_parts(
+            Store::open_in_memory().unwrap(),
+            Network::Regtest,
+            &seed,
+            None,
+        )
+        .unwrap();
+        w.ensure_gap().unwrap();
+        let bundle = vec![0x61u8; 40];
+        let (carrier_row, redeem) = carrier_key(&w, &bundle).unwrap();
+        // no change: nothing to read, and a second output is refused
+        let none = recorded_ecc_carrier_outputs(&w, &carrier_row.hash160, &bundle, false).unwrap();
+        assert_eq!(none.change_key, None);
+        assert_eq!(none.carrier_hash, keys::hash160(&redeem));
+        let e = recorded_ecc_carrier_outputs(&w, &carrier_row.hash160, &bundle, true).unwrap_err();
+        assert!(e.to_string().contains("not recorded"), "{e}");
+        let change = record_carrier_change_key(&w, &carrier_row.hash160).unwrap();
+        let want = recorded_ecc_carrier_outputs(&w, &carrier_row.hash160, &bundle, true).unwrap();
+        assert_eq!(want.change_key, Some(change.hash160));
+        // the transaction as carrier_step builds it
+        let coin = OutPoint {
+            txid: [0x62; 32],
+            n: 0,
+        };
+        let class = |op: &OutPoint| (*op == coin).then_some(UtxoClass::Yec);
+        let tx_with = |change_spk: Vec<u8>| {
+            let mut tx = Transaction::new_v4();
+            tx.vin.push(TxIn::new(coin));
+            tx.vout.push(TxOut {
+                value: CARRIER_VALUE,
+                script_pubkey: script::p2sh_of(&redeem),
+            });
+            tx.vout.push(TxOut {
+                value: 4_000_000,
+                script_pubkey: change_spk,
+            });
+            tx.serialize().unwrap()
+        };
+        let ok = tx_with(script::p2pkh_script(&change.hash160));
+        assert!(gate::check(gate::Path::Carrier(want), &ok, class).is_ok());
+        assert!(gate::check(gate::Path::Carrier(none), &ok, class).is_err());
+        // the change paid to an external key, or a foreign one: refused
+        let ext = w.receive_address(false).unwrap();
+        for spk in [
+            script::p2pkh_script(&ext.hash160),
+            script::p2pkh_script(&[0x63; 20]),
+        ] {
+            assert!(gate::check(gate::Path::Carrier(want), &tx_with(spk), class).is_err());
+        }
+        // a record naming an external key is refused before anything is built
+        w.store
+            .set_meta(
+                &carrier_change_record_key(&carrier_row.hash160),
+                &keys::hex(&ext.hash160),
+            )
+            .unwrap();
+        let e = recorded_ecc_carrier_outputs(&w, &carrier_row.hash160, &bundle, true).unwrap_err();
+        assert!(
+            e.to_string().contains("change key of this wallet's seed"),
+            "{e}"
+        );
+    }
+
     #[test]
     fn staged_key_record_lock_and_restore() {
         use crate::params::Network;

@@ -55,7 +55,7 @@ transaction depends on the source.
 
 | source | builder | gate path of the carrier funding | web wallet |
 |---|---|---|---|
-| Public (ECC) | `mint::carrier_step` | `Path::Carrier` | yes |
+| Public (ECC) | `mint::carrier_step` | `Path::Carrier`: vout = [carrier P2SH, at most one P2PKH change to the key recorded before the build] (the claim's carrier funding has the same shape) | yes |
 | Post-quantum address | `mint::carrier_step_pq` | `Path::CarrierFromPq`: vout = [carrier P2SH, staged P2PKH], change to the source | yes |
 | Private | `mint_sapling::start_from_sapling` | `Path::CarrierFromSapling`: no transparent input, vout = [carrier P2SH, staged P2PKH], Sapling change | **no** |
 
@@ -209,9 +209,6 @@ that server and a burn. They are listed in the order a coin meets them.
   bound to the store's note.
 
 **Gate bindings and the mint**
-- **`Path::Carrier` (the ECC source and the claim) checks only `vout[0]`**, as some P2SH of
-  `CARRIER_VALUE`, and leaves every other output unconstrained. The ECC carrier funding pays the
-  carrier and a P2PKH change, which can be most of a large coin. (YEW-REVIEW-9 L3.)
 - **The carrier hash is re-derived from the carrier key and the bundle the start holds**
   (`derived_carrier_hash`, YEW-REVIEW-9 L1), so a `vout[0]` built from another key or bundle fails
   the gate. The bundle itself is the start's verified bundle, the one later stored in the mint

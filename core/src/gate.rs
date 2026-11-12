@@ -104,6 +104,10 @@ pub enum GateError {
     /// The carrier-funding path pays `vout[0]` as something other than a P2SH carrier.
     #[error("gate: the carrier path needs vout[0] = P2SH of CARRIER_VALUE")]
     CarrierOutput,
+    /// The ECC carrier funding ([`Path::Carrier`]) pays an output other than the recorded change
+    /// besides the carrier (review YEW-REVIEW-9 L3).
+    #[error("gate: the carrier funding {0}")]
+    CarrierChange(&'static str),
     /// The server offers no Yellowback service, so nothing YED can be validated or sent.
     #[error("gate: the server offers no Yellowback service; YED cannot be sent through it")]
     YellowbackAbsent,
@@ -185,8 +189,14 @@ pub enum Path {
     YecToPq(crate::pq::PqKeyId),
     /// A YED transfer (`build::yed_transfer`).
     YedTransfer,
-    /// The carrier funding transaction of a mint or claim (`build::mint::carrier_step`).
-    Carrier,
+    /// The carrier funding transaction of a mint or claim from the wallet's ECC coins
+    /// (`build::mint::carrier_step`, review YEW-REVIEW-9 L3): inputs the YEC classes only; no
+    /// payload; `vout[0]` the carrier, `CARRIER_VALUE` to the P2SH of the carrier script the core
+    /// re-derives from the carrier key and the bundle ([`EccCarrierOutputs::carrier_hash`]); at
+    /// most one more output, the change, a P2PKH paying exactly the change key the core derived
+    /// and recorded for this carrier before building it ([`EccCarrierOutputs::change_key`]; none
+    /// recorded, no change output), not of exactly `TOKEN_VALUE`; nothing shielded.
+    Carrier(EccCarrierOutputs),
     /// The MINT (`build::mint`).
     Mint,
     /// The owner-path REDEEM of an ACTIVE own vault (`build::redeem`).
@@ -270,6 +280,18 @@ pub struct CarrierOutputs {
     pub staged_key: [u8; 20],
 }
 
+/// The outputs a carrier funding from the wallet's ECC coins must pay (review YEW-REVIEW-9 L3):
+/// the carrier P2SH re-derived from the carrier key and the bundle, and the change key the core
+/// derived and recorded before building the transaction (`None`: no change output). Filled only
+/// by `build::mint::recorded_ecc_carrier_outputs`, never from a builder's own arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EccCarrierOutputs {
+    /// HASH160 of the carrier's redeem script (`vout[0]` is `P2SH(carrier_hash)`).
+    pub carrier_hash: [u8; 20],
+    /// HASH160 of the change key (`vout[1]`, when present, is `P2PKH(change_key)`).
+    pub change_key: Option<[u8; 20]>,
+}
+
 /// `vout[0]` and `vout[1]` of a carrier funding from another source: exactly the carrier P2SH
 /// and the staged own P2PKH named by `want`, the staged output not of exactly `TOKEN_VALUE`.
 fn check_carrier_outputs(tx: &Transaction, want: CarrierOutputs) -> Result<(), GateError> {
@@ -327,7 +349,7 @@ impl Path {
             Path::Yec => "YEC",
             Path::YecToPq(_) => "YEC to post-quantum",
             Path::YedTransfer => "YED transfer",
-            Path::Carrier => "carrier",
+            Path::Carrier(_) => "carrier",
             Path::Mint => "mint",
             Path::Redeem => "redeem",
             Path::Release => "release",
@@ -347,7 +369,7 @@ impl Path {
 
     fn allows(self, c: UtxoClass) -> bool {
         match self {
-            Path::Yec | Path::YecToPq(_) | Path::Carrier => c.yec_spendable(),
+            Path::Yec | Path::YecToPq(_) | Path::Carrier(_) => c.yec_spendable(),
             Path::YedTransfer => c.transfer_spendable(),
             Path::Mint => c.mint_spendable(),
             Path::Redeem => c.redeem_spendable(),
@@ -508,18 +530,35 @@ pub fn check_with_scripts(
                 ));
             }
         }
-        Path::Carrier => {
+        Path::Carrier(want) => {
             no_payload(&tx)?;
-            let ok = tx
-                .vout
-                .first()
-                .map(|o| {
-                    o.value == crate::params::CARRIER_VALUE
-                        && script::p2sh_hash(&o.script_pubkey).is_some()
-                })
-                .unwrap_or(false);
+            // review YEW-REVIEW-9 L3: the carrier by script, and nothing but the recorded change
+            let ok = tx.vout.first().is_some_and(|o| {
+                o.value == crate::params::CARRIER_VALUE
+                    && script::p2sh_hash(&o.script_pubkey) == Some(want.carrier_hash)
+            });
             if !ok {
                 return Err(GateError::CarrierOutput);
+            }
+            if tx.vout.len() > 2 {
+                return Err(GateError::CarrierChange(
+                    "pays at most one output besides the carrier, the change",
+                ));
+            }
+            if let Some(o) = tx.vout.get(1) {
+                let Some(k) = want.change_key else {
+                    return Err(GateError::CarrierChange(
+                        "pays nothing besides the carrier when no change key was recorded",
+                    ));
+                };
+                if o.script_pubkey != script::p2pkh_script(&k) {
+                    return Err(GateError::CarrierChange(
+                        "pays its change only to the change key this wallet derived and recorded for it",
+                    ));
+                }
+                if o.value == crate::params::TOKEN_VALUE {
+                    return Err(GateError::TokenValuedOutput(1));
+                }
             }
         }
         Path::YedTransfer => {
@@ -1098,6 +1137,12 @@ mod tests {
     ];
 
     /// A tiny deterministic PRNG (xorshift) so the property test needs no crate.
+    /// `Path::Carrier` bound to the `[9; 20]` carrier P2SH the older tests build, no change.
+    const ECC_CARRIER: Path = Path::Carrier(EccCarrierOutputs {
+        carrier_hash: [9; 20],
+        change_key: None,
+    });
+
     struct Rng(u64);
     impl Rng {
         fn next(&mut self) -> u64 {
@@ -1497,18 +1542,13 @@ mod tests {
             value: crate::params::CARRIER_VALUE,
             script_pubkey: script::p2sh_script(&[9; 20]),
         };
-        assert!(check(
-            Path::Carrier,
-            &build(&[yec], None, Some(p2sh.clone())),
-            class
-        )
-        .is_ok());
+        assert!(check(ECC_CARRIER, &build(&[yec], None, Some(p2sh.clone())), class).is_ok());
         assert_eq!(
-            check(Path::Carrier, &build(&[yec], None, None), class).unwrap_err(),
+            check(ECC_CARRIER, &build(&[yec], None, None), class).unwrap_err(),
             GateError::CarrierOutput
         );
         assert!(matches!(
-            check(Path::Carrier, &build(&[carrier], None, Some(p2sh)), class).unwrap_err(),
+            check(ECC_CARRIER, &build(&[carrier], None, Some(p2sh)), class).unwrap_err(),
             GateError::ForbiddenInput {
                 class: "CARRIER",
                 ..
@@ -2239,7 +2279,7 @@ mod tests {
                 .iter()
                 .any(|op| class(op) == Some(UtxoClass::PqOwned))
             {
-                assert!(check(Path::Carrier, &raw, class).is_err());
+                assert!(check(ECC_CARRIER, &raw, class).is_err());
             }
             passed += usize::from(want);
         }
@@ -2388,7 +2428,7 @@ mod tests {
                     assert!(check(Path::CarrierFromSapling(other), &raw, class).is_err());
                 }
                 // and no other path takes it
-                assert!(check(Path::Carrier, &raw, class).is_err());
+                assert!(check(ECC_CARRIER, &raw, class).is_err());
             }
             passed += usize::from(ok);
         }
@@ -2404,6 +2444,112 @@ mod tests {
             confirm(&mut v, path, &ok, |_| None).await.unwrap_err(),
             GateError::YellowbackAbsent
         );
+    }
+
+    /// Review YEW-REVIEW-9 L3: `Path::Carrier` (the ECC carrier funding of a mint or a claim)
+    /// over random inputs and outputs: accepted exactly when every input is of a YEC class,
+    /// nothing is shielded, `vout[0]` is the bound carrier P2SH of `CARRIER_VALUE` and the only
+    /// other output, if any, pays the recorded change key and is not of exactly `TOKEN_VALUE`.
+    /// Another carrier hash, another change key, or no recorded change key refuse the same bytes.
+    #[test]
+    fn ecc_carrier_property_over_every_class_and_shape() {
+        let with_change = EccCarrierOutputs {
+            carrier_hash: [0x51; 20],
+            change_key: Some([0x52; 20]),
+        };
+        let no_change = EccCarrierOutputs {
+            change_key: None,
+            ..with_change
+        };
+        let carrier = script::p2sh_script(&with_change.carrier_hash);
+        let change = script::p2pkh_script(&[0x52; 20]);
+        let kinds = [
+            carrier.clone(),
+            script::p2sh_script(&[0x53; 20]),
+            change.clone(),
+            script::p2pkh_script(&[0x54; 20]),
+            crate::pq::pqpkh_script(&pq_id(7)).unwrap(),
+            transfer_payload_script(),
+        ];
+        let cv = crate::params::CARRIER_VALUE;
+        let values = [
+            cv,
+            cv - 1,
+            crate::params::TOKEN_VALUE,
+            5_000_000,
+            123_456_789,
+        ];
+        let mut rng = Rng(0x3a9c_51e0_7d24_b816);
+        let mut passed = 0;
+        for _ in 0..4000 {
+            let n_coins = rng.below(3) as usize;
+            let coins: HashMap<OutPoint, UtxoClass> = (0..n_coins)
+                .map(|i| {
+                    let mut txid = [0u8; 32];
+                    txid[0] = i as u8 + 1;
+                    (
+                        OutPoint { txid, n: 0 },
+                        ALL[rng.below(ALL.len() as u64) as usize],
+                    )
+                })
+                .collect();
+            let inputs: Vec<OutPoint> = coins.keys().copied().collect();
+            let n_out = rng.below(4) as usize;
+            let outs: Vec<(i64, Vec<u8>)> = (0..n_out)
+                .map(|k| {
+                    if rng.below(2) == 0 && k < 2 {
+                        return if k == 0 {
+                            (cv, carrier.clone())
+                        } else {
+                            (5_000_000 + rng.below(1_000) as i64, change.clone())
+                        };
+                    }
+                    (
+                        values[rng.below(values.len() as u64) as usize],
+                        kinds[rng.below(kinds.len() as u64) as usize].clone(),
+                    )
+                })
+                .collect();
+            let shielded = rng.below(6) == 0;
+            let raw = raw_sapling(&inputs, &outs, 0, u8::from(shielded));
+            let class = |op: &OutPoint| coins.get(op).copied();
+            let base = !inputs.is_empty()
+                && inputs
+                    .iter()
+                    .all(|op| class(op).is_some_and(|c| c.yec_spendable()))
+                && !shielded
+                && !outs.is_empty()
+                && outs.len() <= 2
+                && outs[0] == (cv, carrier.clone());
+            let change_ok =
+                outs.len() < 2 || (outs[1].1 == change && outs[1].0 != crate::params::TOKEN_VALUE);
+            let r = check(Path::Carrier(with_change), &raw, class);
+            assert_eq!(r.is_ok(), base && change_ok, "{inputs:?} {outs:?}: {r:?}");
+            let r = check(Path::Carrier(no_change), &raw, class);
+            assert_eq!(r.is_ok(), base && outs.len() == 1, "{outs:?}: {r:?}");
+            if base && change_ok {
+                for other in [
+                    EccCarrierOutputs {
+                        carrier_hash: [0x53; 20],
+                        ..with_change
+                    },
+                    EccCarrierOutputs {
+                        change_key: Some([0x54; 20]),
+                        ..with_change
+                    },
+                ] {
+                    let must_fail =
+                        other.carrier_hash != with_change.carrier_hash || outs.len() == 2;
+                    assert_eq!(
+                        check(Path::Carrier(other), &raw, class).is_err(),
+                        must_fail,
+                        "{outs:?}"
+                    );
+                }
+                passed += 1;
+            }
+        }
+        assert!(passed > 20, "{passed}");
     }
 
     /// Beta2 item 5: without the remote layer both new paths are refused with the path-specific
@@ -2940,7 +3086,7 @@ mod tests {
         // (path, the legitimate inputs before the fee coin, after it, first output, payload)
         type Case = (Path, Vec<OutPoint>, Vec<OutPoint>, TxOut, Option<Payload>);
         let cases: Vec<Case> = vec![
-            (Path::Carrier, vec![], vec![], p2sh, None),
+            (ECC_CARRIER, vec![], vec![], p2sh, None),
             (
                 Path::Mint,
                 vec![],
@@ -3090,7 +3236,7 @@ mod tests {
             for path in [
                 Path::Yec,
                 Path::YedTransfer,
-                Path::Carrier,
+                ECC_CARRIER,
                 Path::Mint,
                 Path::Redeem,
                 Path::Release,
