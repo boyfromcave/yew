@@ -199,7 +199,7 @@ app/test/               widget tests over test/fake_wallet_api.dart
 app/integration_test/   m1 (send/receive), m2 (mint/vault/claim) and s3 (private screens + screenshots) flows against a devnet
 proto/                  the three lightwalletd-dd .proto files + PIN (the commit they came from)
 scripts/                build, run, devnet and CI check scripts (listed below)
-docs/                   trust.md, design-notes.md, security-review.md, release.md, licenses.md
+docs/                   trust.md, address-types.md, design-notes.md, security-review.md, release.md, licenses.md
 flutter_rust_bridge.yaml   codegen config
 .github/workflows/      ci.yml (build, tests, checks); semgrep.yml, codeql.yml, secops.yml, code-scanning.yml (SECURITY-CI.md); devnet-nightly.yml
 ```
@@ -446,6 +446,7 @@ Everything below needs a device, an account, a public server or a decision:
 
 ## Further reading
 
+- [docs/address-types.md](docs/address-types.md) — sends between address types (app and web), what is daemon only, the light-client safety layers, privacy, known limitations
 - [docs/design-notes.md](docs/design-notes.md) — the rules behind the code and the devnet evidence, phase by phase
 - [docs/security-review.md](docs/security-review.md) — findings, fixes, deferrals
 - [docs/release.md](docs/release.md) — reproducible build, endpoints, store checklist, testnet plan
