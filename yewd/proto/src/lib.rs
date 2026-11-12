@@ -27,6 +27,11 @@ pub mod preview;
 
 use serde::{Deserialize, Serialize};
 
+// Review YEW-PORT-5 R1: the refusal codes and the Sapling part's wire types live in yew-core
+// (the hybrid builder moves there, R3); re-exported here, the wire format unchanged.
+pub use yew_core::refuse;
+pub use yew_core::sapling_part::{SaplingOut, SaplingPart, SaplingSpend};
+
 /// The protocol version every request names; a signer refuses any other (S1 was version 0: the
 /// child-process `init`/`public` commands, which version 1 keeps).
 pub const PROTO_VERSION: u32 = 1;
@@ -192,40 +197,6 @@ pub struct SignRequest {
     /// transparent digest covers it (ZIP-243's `hashShieldedSpends` / `hashShieldedOutputs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sapling: Option<SaplingPart>,
-}
-
-/// The Sapling part of a [`SignRequest`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SaplingPart {
-    pub target_height: u32,
-    pub vault_height: Option<u32>,
-    pub spends: Vec<SaplingSpend>,
-    /// Shielded outputs only ([`SaplingOut::Shielded`] / [`SaplingOut::Change`]).
-    pub outputs: Vec<SaplingOut>,
-    /// The anchor of the spends (empty: none).
-    pub anchor: String,
-    pub params_dir: String,
-}
-
-impl SaplingPart {
-    /// `(spent, paid, paid to the wallet)`: the values the preview adds.
-    pub fn values(&self) -> (i64, i64, i64) {
-        let spent: i64 = self.spends.iter().map(|s| s.value as i64).sum();
-        let mut paid = 0;
-        let mut own = 0;
-        for o in &self.outputs {
-            let (v, mine) = match o {
-                SaplingOut::Shielded { value, own, .. } => (*value, *own),
-                SaplingOut::Change { value } => (*value, true),
-                SaplingOut::Transparent { .. } => (0, false),
-            };
-            paid += v;
-            if mine {
-                own += v;
-            }
-        }
-        (spent, paid, own)
-    }
 }
 
 /// The whole transaction signed. Never half-signed (H10): every input with a key is signed, or
@@ -495,50 +466,11 @@ pub struct BackupRequest {
     pub facade: String,
 }
 
-/// A Sapling note to spend (`z_sendmany`, S4; F-S2-8): the note the façade decrypted and its
-/// Merkle path at the anchor, computed by the façade from the node's tree state.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SaplingSpend {
-    /// The recipient address, 43 bytes hex (diversifier ‖ pk_d).
-    pub recipient: String,
-    pub value: u64,
-    /// `rseed`: 32 bytes hex; `after_zip212` picks the variant.
-    pub rseed: String,
-    pub after_zip212: bool,
-    /// The note was received on the account's internal (change) scope.
-    pub internal: bool,
-    /// The note's position in the commitment tree.
-    pub position: u64,
-    /// The authentication path, 32 nodes hex (leaf to root).
-    pub path: Vec<String>,
-}
-
 /// A transparent input of a Sapling-capable build: a wallet P2PKH coin.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SaplingTInput {
     pub prevout: Prevout,
     pub key: KeyRef,
-}
-
-/// An output of a Sapling-capable build.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SaplingOut {
-    /// A transparent output (P2PKH or P2SH script).
-    Transparent {
-        script: String,
-        value: i64,
-        own: bool,
-    },
-    /// A Sapling output: the encoded address, the memo (512 bytes hex; empty = no memo).
-    Shielded {
-        address: String,
-        value: i64,
-        memo: String,
-        own: bool,
-    },
-    /// A Sapling output to the account's internal (change) address.
-    Change { value: i64 },
 }
 
 /// `z_sendmany` (S4): the whole build in the signer (K-24: the spending key never leaves it):
@@ -551,6 +483,12 @@ pub struct SaplingBuildRequest {
     pub expiry_height: u32,
     /// Regtest's vault activation height (`-nuparams=6d5b7a31:<h>`), if any.
     pub vault_height: Option<u32>,
+    /// Regtest's other upgrade heights as the node reports them (`getblockchaininfo.upgrades`),
+    /// `name=height` pairs, `none` for an upgrade the node does not activate: the build's branch
+    /// and its notes' format (ZIP-212 from Canopy) follow the node, not the devnet's all-at-1.
+    /// Ignored on mainnet and testnet. Absent: the devnet's heights.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrades: Option<String>,
     pub inputs: Vec<SaplingTInput>,
     pub spends: Vec<SaplingSpend>,
     pub outputs: Vec<SaplingOut>,
@@ -676,50 +614,6 @@ impl Envelope {
 pub struct Refusal {
     pub code: String,
     pub reason: String,
-}
-
-/// The refusal codes.
-pub mod refuse {
-    /// The request names another protocol version.
-    pub const BAD_VERSION: &str = "bad-version";
-    /// The request does not parse, or the transaction does not.
-    pub const MALFORMED: &str = "malformed";
-    /// An input has no prevout, or its prevout is not the one the transaction spends.
-    pub const UNBOUND_INPUT: &str = "unbound-input";
-    /// A key reference does not own the script it is to spend or recognise.
-    pub const KEY_MISMATCH: &str = "key-mismatch";
-    /// The preview disagrees with the bytes (an amount, a recipient, an input, the fee).
-    pub const PREVIEW_MISMATCH: &str = "preview-mismatch";
-    /// A wallet coin is signed that the preview does not list.
-    pub const FOREIGN_INPUT: &str = "foreign-input";
-    /// The net outflow is above the cap.
-    pub const OUTFLOW: &str = "outflow";
-    /// The gate path's rules refuse the transaction.
-    pub const GATE: &str = "gate";
-    /// The sign-once record holds another role or sighash for `(setid, prevout)`.
-    pub const SET_SIGN_ONCE: &str = "set-sign-once";
-    /// The restore marker is set and the prevout has no record.
-    pub const SET_SIGN_RESTORED: &str = "set-sign-restored";
-    /// The equivocation guard holds another price for this key and height (EQV-1).
-    pub const EQUIVOCATION_GUARD: &str = "equivocation-guard";
-    /// A price outside `[PRICE_MIN, PRICE_MAX]`.
-    pub const ATTEST_RANGE: &str = "attest-range";
-    /// A cancel co-signature with no price given and none signed for the height.
-    pub const PRICE_REQUIRED: &str = "price-required";
-    /// A cancel co-signature whose price says the vault was claimable.
-    pub const CANCEL_STATEMENT_CLAIMABLE: &str = "cancel-statement-claimable";
-    /// The guard could not be written; nothing was signed.
-    pub const GUARD_WRITE_FAILED: &str = "guard-write-failed";
-    /// A key the signer does not hold (an imported index past its store, a bad WIF).
-    pub const KEY_NOT_HELD: &str = "key-not-held";
-    /// Anything else (a derivation, the store).
-    pub const FAILED: &str = "failed";
-    /// The wallet is encrypted and locked (S4): ycashd's `-13`.
-    pub const LOCKED: &str = "locked";
-    /// `walletpassphrase` with a wrong passphrase: ycashd's `-14`.
-    pub const BAD_PASSPHRASE: &str = "bad-passphrase";
-    /// `encryptwallet` on an encrypted wallet, `walletpassphrase`/`walletlock` on a plain one: `-15`.
-    pub const WRONG_ENC_STATE: &str = "wrong-enc-state";
 }
 
 /// An answer.

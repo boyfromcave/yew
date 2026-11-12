@@ -23,7 +23,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use yew_core::build::mint::{ConfirmedTerms, MintError};
+use yew_core::build::mint::{ConfirmedTerms, IssuedEstimates, MintError, MintSource};
 use yew_core::build::redeem::RedeemBuild;
 use yew_core::build::release::ReleaseBuild;
 use yew_core::build::terms::ClaimBounds;
@@ -79,6 +79,7 @@ fn wallet_err(e: WalletError) -> JsValue {
         WalletError::Key(_) => "invalid",
         WalletError::Mint(MintError::BadAmount { .. } | MintError::BadLock { .. }) => "invalid",
         WalletError::Shielded(s) => shielded_kind(s),
+        WalletError::Coins(yew_core::coins::CoinError::LinkingNeeded { .. }) => "linking",
         WalletError::Coins(_)
         | WalletError::Tx(_)
         | WalletError::Transfer(_)
@@ -152,11 +153,14 @@ enum Preview {
     Yed(YedTransferPreview),
     Redeem(RedeemBuild),
     Release(ReleaseBuild),
+    /// A send from one of the wallet's post-quantum addresses (`api::pq_send_preview`).
+    Pq(Box<yew_core::build::pq_send::PqSendPreview>),
     /// `mint_start`: the carrier is funded and broadcast at confirm (the core's `mint_start`).
     MintStart {
         cents: u64,
         lock_blocks: u32,
         terms: Option<ConfirmedTerms>,
+        source: MintSource,
     },
     MintFinish(i64),
     MintSweep(i64),
@@ -173,6 +177,9 @@ struct Session {
     conn: Option<Conn>,
     previews: HashMap<String, Preview>,
     preview_seq: u64,
+    /// The mint estimates the core issued: `mint_start` takes its terms from here (review
+    /// YEW-REVIEW-10 L2).
+    mint_estimates: IssuedEstimates,
 }
 
 thread_local! {
@@ -575,6 +582,7 @@ pub async fn open_at(
         conn: Some(conn),
         previews: HashMap::new(),
         preview_seq: 0,
+        mint_estimates: IssuedEstimates::default(),
     });
     to_js(&opened)
 }
@@ -812,7 +820,15 @@ pub fn balances() -> Result<JsValue, JsValue> {
             Some(sh) => sh.balance().map_err(shielded_err)?,
             None => Default::default(),
         };
-        to_js(&dto::balances(&b, &z, held, s.synced_tip()?))
+        let staged = yew_core::build::mint::staged_for_mint_zat(&s.wallet).map_err(wallet_err)?;
+        to_js(&dto::balances(
+            &b,
+            &z,
+            held,
+            s.synced_tip()?,
+            staged,
+            s.wallet.terms_refused(),
+        ))
     })
 }
 
@@ -859,9 +875,34 @@ fn receive_pair(s: &Session, kind: &str) -> Result<dto::AddressPair, JsValue> {
                 covered_by_seed: true,
             })
         }
+        // beta2 D-8, D-9: the post-quantum plain-YEC forms paired with the receive key
+        // (`api::receive_address`, `ReceiveKind::PqFalcon` / `PqSlh`): the scheme is in the prefix
+        "pq_falcon" | "pq_slh" => {
+            let row = s.wallet.receive_address(false).map_err(wallet_err)?;
+            let (id, name) = if kind == "pq_falcon" {
+                (
+                    s.wallet
+                        .falcon_holder_id(&row)
+                        .ok_or_else(|| err("build", "this key has no post-quantum pair"))?,
+                    "FN-DSA-512",
+                )
+            } else {
+                (s.wallet.pq_owner_id(row.index), "SLH-DSA-SHA2-128s")
+            };
+            let address = keys::encode_pq_yec(s.network, &id)
+                .ok_or_else(|| err("build", "the scheme has no address version"))?;
+            Ok(dto::AddressPair {
+                ye: String::new(),
+                s: row.address_s.clone(),
+                path: format!("m/44'/347'/0'/{}/{} ({name})", row.chain, row.index),
+                covered_by_seed: true,
+                address,
+                kind: kind.into(),
+            })
+        }
         other => Err(err(
             "invalid",
-            format!("receive kind {other:?}: shielded, transparent or yed"),
+            format!("receive kind {other:?}: shielded, transparent, yed, pq_falcon or pq_slh"),
         )),
     }
 }
@@ -990,7 +1031,8 @@ pub async fn params_status() -> Result<JsValue, JsValue> {
 }
 
 /// Fetch the Sapling proving parameters (52 MB) into the Cache API — from `sources` (base
-/// URLs ending in `/`; the default `download.z.cash` when empty) — verify them against the
+/// URLs ending in `/`; when empty, this page's own server at `/sapling-params/`,
+/// `sapling_params::WEB_DEFAULT_SOURCES`) — verify them against the
 /// pinned SHA-256s and load the prover (`api::download_params`; `sapling_params::fetch_with`).
 /// `f({bytesDone, bytesTotal, name})` before and after each file. A rejected fetch caches
 /// nothing. Must run before a private send or shield is confirmed.
@@ -1027,7 +1069,7 @@ pub async fn fetch_params(f: Option<js_sys::Function>, sources: JsValue) -> Resu
             .map_err(|e| {
                 err(
                     match e {
-                        ParamsError::Mismatch { .. } => "params",
+                        ParamsError::Mismatch { .. } | ParamsError::Refused(_) => "params",
                         _ => "network",
                     },
                     e,
@@ -1050,12 +1092,18 @@ pub async fn fetch_params(f: Option<js_sys::Function>, sources: JsValue) -> Resu
 /// Plan a YEC send (`api::send_yec_preview`): after a sync of both pools, funded privacy first
 /// (a `ys1…` recipient from private notes, with an optional memo; a transparent one from
 /// private notes when they cover it — `revealsShielded` —, else from public YEC). A public
-/// preview is signed already; a private one is proved and signed at [`confirm`].
+/// preview is signed already; a private one is proved and signed at [`confirm`]. A post-quantum
+/// recipient is paid from public YEC only (the browser has no private → post-quantum builder):
+/// short of it while private YEC exists, the answer is `unsupported:` with the reason. Public
+/// funding takes one public address's coins; when only several together cover the send the
+/// answer is `linking:` with the reason, and `allow_linking` (the user's go-ahead, beta2 D-5)
+/// combines them.
 #[wasm_bindgen]
 pub async fn send_yec_preview(
     to: String,
     zat: JsValue,
     memo: Option<String>,
+    allow_linking: Option<bool>,
 ) -> Result<JsValue, JsValue> {
     let zat = amount_arg(&zat, "zat")?;
     with_session(|s| {
@@ -1070,11 +1118,20 @@ pub async fn send_yec_preview(
                 &to,
                 zat,
                 false,
+                allow_linking.unwrap_or(false),
                 memo.as_deref(),
                 r.tip,
                 r.branch_id,
             )
-            .map_err(wallet_err)?;
+            .map_err(|e| {
+                // review YEW-REVIEW-10 L4: the browser pays a post-quantum address from public
+                // coins only; short of them with private YEC, say why instead of "insufficient"
+                if yec_private::pq_recipient_needs_private(&s.wallet, &to, &e) {
+                    err("unsupported", yec_private::PQ_FROM_PRIVATE_UNAVAILABLE)
+                } else {
+                    wallet_err(e)
+                }
+            })?;
             let id = match &plan.funding {
                 yec_private::Funding::Transparent(p) => txid_hex(&p.txid),
                 _ => s.next_preview_id(),
@@ -1087,12 +1144,106 @@ pub async fn send_yec_preview(
     .await
 }
 
+/// The wallet's post-quantum addresses that hold spendable plain YEC, largest first
+/// (`api::pq_sources`; the send screen's and the mint's source chooser). Empty on a server
+/// without Yellowback: it lists no post-quantum coin.
+#[wasm_bindgen]
+pub fn pq_sources() -> Result<JsValue, JsValue> {
+    with_session_sync(|s| {
+        let mut by: HashMap<Vec<u8>, i64> = HashMap::new();
+        for u in s.wallet.spendable_utxos().map_err(wallet_err)? {
+            if u.class == UtxoClass::PqOwned && u.height > 0 {
+                *by.entry(u.script.clone()).or_default() += u.value;
+            }
+        }
+        let mut out: Vec<(i64, dto::PqSource)> = by
+            .into_iter()
+            .filter_map(|(script, balance)| {
+                let id = yew_core::pq::pqpkh_of(&script)?;
+                Some((
+                    balance,
+                    dto::PqSource {
+                        address: keys::encode_pq_yec(s.network, &id)?,
+                        scheme: id.scheme,
+                        scheme_name: keys::pq_scheme_name(id.scheme)
+                            .unwrap_or("unknown")
+                            .to_string(),
+                        balance_zat: dto::amt(balance),
+                    },
+                ))
+            })
+            .collect();
+        out.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.address.cmp(&b.1.address)));
+        to_js(&out.into_iter().map(|(_, p)| p).collect::<Vec<_>>())
+    })
+}
+
+/// The shapes the app supports that the browser build cannot run, each with a one-line reason
+/// (beta2 D-8). The screens hide them; the core refuses them anyway.
+#[wasm_bindgen]
+pub fn unavailable_shapes() -> Result<JsValue, JsValue> {
+    const APP_ONLY: &str = "Not available in the browser: this send needs the wallet's combined private and post-quantum builder, which only the app has. Use the app.";
+    to_js(&[
+        dto::Unavailable {
+            shape: "pq_to_private",
+            reason: APP_ONLY,
+        },
+        dto::Unavailable {
+            shape: "private_to_pq",
+            reason: APP_ONLY,
+        },
+        dto::Unavailable {
+            shape: "mint_from_private",
+            reason: "Not available in the browser: funding a mint from the private balance needs the wallet's combined private and post-quantum builder, which only the app has. Use the app.",
+        },
+    ])
+}
+
+/// Plan and sign a send of `zat` from the own post-quantum address `from` to `to` (an `s…` or
+/// a post-quantum address), after a sync (`api::pq_send_preview`, `build::pq_send`). A private
+/// (`ys1…`) recipient is refused here: the browser build has no builder for it (native only). Nothing is
+/// broadcast; [`confirm`] sends it through both gate layers.
+#[wasm_bindgen]
+pub async fn pq_send_preview(from: String, to: String, zat: JsValue) -> Result<JsValue, JsValue> {
+    let zat = amount_arg(&zat, "zat")?;
+    with_session(|s| {
+        Box::pin(async move {
+            if yew_core::shielded_keys::is_sapling_address(s.network, to.trim()) {
+                return Err(err(
+                    "unsupported",
+                    "Sending from a post-quantum address to a private (ys1…) address is not available in the browser (the app has it).",
+                ));
+            }
+            let r = s.sync().await?;
+            let p = yew_core::build::pq_send::build_pq_send(
+                &s.wallet,
+                &from,
+                &to,
+                zat,
+                r.tip,
+                r.branch_id,
+            )
+            .map_err(wallet_err)?;
+            let id = format!("q{}", txid_hex(&p.txid));
+            let out = dto::pq_send_preview(id.clone(), &p);
+            s.previews.insert(id, Preview::Pq(Box::new(p)));
+            to_js(&out)
+        })
+    })
+    .await
+}
+
 /// Plan a move between the wallet's own public and private balances
 /// (`api::move_preview`): `to_private` shields public YEC (never the reserve or anything YED),
 /// `to_public` unshields to the wallet's own public address. `zat` `null` = everything that
-/// direction can move. Both prove at [`confirm`].
+/// direction can move. Both prove at [`confirm`]. `to_private` takes one public address's coins
+/// unless `allow_linking` (the go-ahead after a `linking:` refusal, beta2 D-5).
 #[wasm_bindgen]
-pub async fn move_preview(direction: String, zat: JsValue) -> Result<JsValue, JsValue> {
+pub async fn move_preview(
+    direction: String,
+    zat: JsValue,
+    allow_linking: Option<bool>,
+) -> Result<JsValue, JsValue> {
     let zat = if zat.is_undefined() || zat.is_null() {
         None
     } else {
@@ -1112,8 +1263,14 @@ pub async fn move_preview(direction: String, zat: JsValue) -> Result<JsValue, Js
         Box::pin(async move {
             let r = s.sync().await?;
             s.sync_shielded(yec_private::no_progress()).await?;
-            let plan =
-                yec_move::plan_move(&mut s.wallet, direction, zat, r.tip).map_err(wallet_err)?;
+            let plan = yec_move::plan_move(
+                &mut s.wallet,
+                direction,
+                zat,
+                allow_linking.unwrap_or(false),
+                r.tip,
+            )
+            .map_err(wallet_err)?;
             let id = s.next_preview_id();
             let out = dto::yec_preview(id.clone(), &plan, r.yec.1, s.has_prover());
             s.previews.insert(id, Preview::Yec(Box::new(plan)));
@@ -1187,23 +1344,61 @@ fn cents_arg(cents: &JsValue) -> Result<u64, JsValue> {
 }
 
 /// The mint estimate after a sync (`api::mint_estimate`): collateral, fees, payee, heights,
-/// term class, attestor seqs. Nothing is signed.
+/// term class, attestor seqs, and the carrier funding's fee from the source `from` (empty or
+/// absent = the public balance; a post-quantum address of the wallet). Nothing is signed. The
+/// core keeps the estimate and answers its `estimateId`, the only thing `mint_start` takes.
 #[wasm_bindgen]
-pub async fn mint_estimate(cents: JsValue, lock_blocks: u32) -> Result<JsValue, JsValue> {
+pub async fn mint_estimate(
+    cents: JsValue,
+    lock_blocks: u32,
+    from: Option<String>,
+) -> Result<JsValue, JsValue> {
     let cents = cents_arg(&cents)?;
+    let from = from.unwrap_or_default();
     with_session(|s| {
         Box::pin(async move {
+            let source = mint_source_of(s.network, &from)?;
             let r = s.sync().await?;
-            let Session { wallet, conn, .. } = s;
+            let Session {
+                wallet,
+                conn,
+                mint_estimates,
+                ..
+            } = s;
             let conn = conn.as_mut().expect("connected");
             let e = wallet
-                .mint_estimate(&mut conn.validator, cents, lock_blocks, r.tip)
+                .mint_estimate(&mut conn.validator, cents, lock_blocks, r.tip, source)
                 .await
                 .map_err(wallet_err)?;
-            to_js(&dto::mint_estimate(&e))
+            let id = mint_estimates.issue(&e);
+            to_js(&dto::mint_estimate(&e, &from, id))
         })
     })
     .await
+}
+
+/// The mint source `from` names (`api::mint_source_of`): empty = the public (ECC) balance, else
+/// one of the wallet's post-quantum addresses. The private balance (`private`) is the app's: the
+/// browser build has no builder for it (native only).
+fn mint_source_of(network: Network, from: &str) -> Result<MintSource, JsValue> {
+    let from = from.trim();
+    if from.is_empty() {
+        return Ok(MintSource::Ecc);
+    }
+    if from == "private" {
+        return Err(err(
+            "unsupported",
+            "Funding a mint from the private balance is not available in the browser (the app has it).",
+        ));
+    }
+    keys::parse_pq_yec_address(network, from)
+        .map(MintSource::Pq)
+        .map_err(|_| {
+            err(
+                "invalid",
+                "Fund the mint from your public balance or one of your post-quantum (sqf…/sqs…) addresses.",
+            )
+        })
 }
 
 #[derive(Serialize)]
@@ -1215,48 +1410,70 @@ struct MintStartPreview {
 }
 
 /// Stage a mint (`api::mint_start`): [`confirm`] verifies the bundle, funds the carrier through
-/// the gate and records the row (`CARRIER_SENT`; `mintId` in the confirm's result). `terms`
-/// `{collateralZat, feeZat, payee, termClass}` from the estimate the user saw: a server answer
-/// that differs is refused at confirm (`terms-changed`, audit G-2); `null` skips the check.
+/// the gate and records the row (`CARRIER_SENT`; `mintId` in the confirm's result). The page
+/// passes only `estimateId`, the id [`mint_estimate`] answered, and `acks`
+/// `{acceptUnusualFee?, acceptUnusualCarrierFee?}`, the acknowledgement tokens that estimate
+/// issued (review YEW-REVIEW-10 L2). The amount, the lock, the terms the start re-checks (a server
+/// answer that differs is refused at confirm: `terms-changed`, audit G-2), the carrier fee the
+/// funding may not exceed and the source (beta2 D-3) are all the core's stored estimate's. An id
+/// the core did not issue is refused.
 #[wasm_bindgen]
-pub fn mint_start(cents: JsValue, lock_blocks: u32, terms: JsValue) -> Result<JsValue, JsValue> {
-    let cents = cents_arg(&cents)?;
-    let terms = if terms.is_undefined() || terms.is_null() {
-        None
+pub fn mint_start(estimate_id: String, acks: JsValue) -> Result<JsValue, JsValue> {
+    #[derive(Default, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Acks {
+        #[serde(default)]
+        accept_unusual_fee: Option<String>,
+        #[serde(default)]
+        accept_unusual_carrier_fee: Option<String>,
+    }
+    let acks: Acks = if acks.is_undefined() || acks.is_null() {
+        Acks::default()
     } else {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Terms {
-            collateral_zat: String,
-            fee_zat: String,
-            payee: String,
-            term_class: String,
-        }
-        let t: Terms = serde_wasm_bindgen::from_value(terms)
-            .map_err(|e| err("invalid", format!("terms: {e}")))?;
-        Some(ConfirmedTerms {
-            collateral_zat: amount_arg(&JsValue::from_str(&t.collateral_zat), "collateralZat")?,
-            fee_zat: amount_arg(&JsValue::from_str(&t.fee_zat), "feeZat")?,
-            payee: t.payee,
-            term_class: t.term_class,
-        })
+        serde_wasm_bindgen::from_value(acks).map_err(|e| err("invalid", format!("acks: {e}")))?
     };
     with_session_sync(|s| {
+        let (preview, cents, lock_blocks) = mint_start_preview(
+            &s.mint_estimates,
+            &estimate_id,
+            acks.accept_unusual_fee,
+            acks.accept_unusual_carrier_fee,
+        )?;
         let id = s.next_preview_id();
-        s.previews.insert(
-            id.clone(),
-            Preview::MintStart {
-                cents,
-                lock_blocks,
-                terms,
-            },
-        );
+        s.previews.insert(id.clone(), preview);
         to_js(&MintStartPreview {
             preview_id: id,
             cents: dto::amt(cents as i64),
             lock_blocks,
         })
     })
+}
+
+/// The staged start for an issued estimate (review YEW-REVIEW-10 L2): everything from the
+/// stored estimate, the acknowledgement tokens from the page. Refused for an id the core did
+/// not issue (or no longer keeps).
+fn mint_start_preview(
+    issued: &IssuedEstimates,
+    estimate_id: &str,
+    accept_unusual_fee: Option<String>,
+    accept_unusual_carrier_fee: Option<String>,
+) -> Result<(Preview, u64, u32), JsValue> {
+    let e = issued.get(estimate_id).ok_or_else(|| {
+        err(
+            "invalid",
+            "This estimate is no longer valid. Estimate the mint again.",
+        )
+    })?;
+    Ok((
+        Preview::MintStart {
+            cents: e.cents,
+            lock_blocks: e.lock_blocks,
+            terms: Some(e.confirmed_terms(accept_unusual_fee, accept_unusual_carrier_fee)),
+            source: e.source,
+        },
+        e.cents,
+        e.lock_blocks,
+    ))
 }
 
 #[derive(Serialize)]
@@ -1452,13 +1669,20 @@ pub async fn claim_preview(vault_txid: String) -> Result<JsValue, JsValue> {
             let bounds = ClaimBounds {
                 max_burn_cents: item.minted_cents,
                 min_out_zat: item.claimant_zat,
+                accept_unusual_fee: None,
             };
+            let guard =
+                yew_core::build::mint::main_fee_guard(&s.wallet, "claim").map_err(wallet_err)?;
             let id = s.next_preview_id();
             let out = dto::ClaimPreview {
                 preview_id: id.clone(),
                 item: dto::claimable_item(item),
                 max_burn_cents: dto::amt(item.minted_cents as i64),
                 min_out_zat: dto::amt(item.claimant_zat),
+                fee_note: guard.note.clone(),
+                unusual_fee_ack: guard.ack.clone(),
+                fee_price_micro_usd: (guard.reported_price_micro_usd > 0)
+                    .then(|| dto::amt(guard.reported_price_micro_usd)),
             };
             s.previews.insert(
                 id,
@@ -1480,11 +1704,26 @@ pub async fn claim_preview(vault_txid: String) -> Result<JsValue, JsValue> {
 /// Broadcast a preview (`api::*_confirm`): the only path that signs (a private send or shield is
 /// proved here, seconds) and broadcasts, through both gate layers (`gate.rs`, D-W-5). A preview
 /// is consumed, except when the proving parameters are missing (`params: …`): run
-/// [`fetch_params`], then confirm again.
+/// [`fetch_params`], then confirm again. A preview whose fee is flagged (`unusualFeeAck`) is
+/// confirmed only with that acknowledgement as `accept_unusual_fee` (review YEW-REVIEW-4 M2);
+/// without it the call refuses and the preview stays.
 #[wasm_bindgen]
-pub async fn confirm(preview_id: String) -> Result<JsValue, JsValue> {
+pub async fn confirm(
+    preview_id: String,
+    accept_unusual_fee: Option<String>,
+) -> Result<JsValue, JsValue> {
     with_session(|s| {
         Box::pin(async move {
+            let guard = match s.previews.get(&preview_id) {
+                Some(Preview::Yed(p)) => Some(&p.fee_guard),
+                Some(Preview::Release(p)) => Some(&p.fee_guard),
+                Some(Preview::Pq(p)) => Some(&p.fee_guard),
+                _ => None,
+            };
+            if let Some(g) = guard {
+                yew_core::build::terms::require_ack(g, accept_unusual_fee.as_deref())
+                    .map_err(wallet_err)?;
+            }
             let p = s
                 .previews
                 .remove(&preview_id)
@@ -1522,10 +1761,34 @@ pub async fn confirm(preview_id: String) -> Result<JsValue, JsValue> {
                     s.ensure_conn().await?;
                     let Session { wallet, conn, .. } = &mut *s;
                     let conn = conn.as_mut().expect("connected");
-                    let (txid, v) =
-                        yed_transfer::broadcast(wallet, &mut conn.compact, &mut conn.validator, &p)
-                            .await
-                            .map_err(wallet_err)?;
+                    let (txid, v) = yed_transfer::broadcast(
+                        wallet,
+                        &mut conn.compact,
+                        &mut conn.validator,
+                        &p,
+                        accept_unusual_fee.as_deref(),
+                    )
+                    .await
+                    .map_err(wallet_err)?;
+                    dto::SendResult {
+                        txid,
+                        verdict: v.verdict,
+                        mint_id: None,
+                    }
+                }
+                Preview::Pq(p) => {
+                    s.ensure_conn().await?;
+                    let Session { wallet, conn, .. } = &mut *s;
+                    let conn = conn.as_mut().expect("connected");
+                    let (txid, v) = yew_core::build::pq_send::broadcast(
+                        wallet,
+                        &mut conn.compact,
+                        &mut conn.validator,
+                        &p,
+                        accept_unusual_fee.as_deref(),
+                    )
+                    .await
+                    .map_err(wallet_err)?;
                     dto::SendResult {
                         txid,
                         verdict: v.verdict,
@@ -1551,7 +1814,12 @@ pub async fn confirm(preview_id: String) -> Result<JsValue, JsValue> {
                     let Session { wallet, conn, .. } = &mut *s;
                     let conn = conn.as_mut().expect("connected");
                     let (txid, v) = wallet
-                        .release_confirm(&mut conn.compact, &mut conn.validator, &p)
+                        .release_confirm(
+                            &mut conn.compact,
+                            &mut conn.validator,
+                            &p,
+                            accept_unusual_fee.as_deref(),
+                        )
                         .await
                         .map_err(wallet_err)?;
                     dto::SendResult {
@@ -1564,7 +1832,15 @@ pub async fn confirm(preview_id: String) -> Result<JsValue, JsValue> {
                     cents,
                     lock_blocks,
                     terms,
+                    source,
                 } => {
+                    // the acknowledgement may come with the terms or with the confirm
+                    let terms = terms.map(|mut t| {
+                        if accept_unusual_fee.is_some() {
+                            t.accept_unusual_fee = accept_unusual_fee.clone();
+                        }
+                        t
+                    });
                     let r = s.sync().await?;
                     let id = {
                         let Session { wallet, conn, .. } = &mut *s;
@@ -1578,6 +1854,7 @@ pub async fn confirm(preview_id: String) -> Result<JsValue, JsValue> {
                                 terms.as_ref(),
                                 r.tip,
                                 r.branch_id,
+                                source,
                             )
                             .await
                             .map_err(wallet_err)?
@@ -1601,6 +1878,7 @@ pub async fn confirm(preview_id: String) -> Result<JsValue, JsValue> {
                                 id,
                                 r.tip,
                                 r.branch_id,
+                                accept_unusual_fee.as_deref(),
                             )
                             .await
                             .map_err(wallet_err)?;
@@ -1635,7 +1913,11 @@ pub async fn confirm(preview_id: String) -> Result<JsValue, JsValue> {
                         mint_id: Some(id),
                     }
                 }
-                Preview::Claim { vault_txid, bounds } => {
+                Preview::Claim {
+                    vault_txid,
+                    mut bounds,
+                } => {
+                    bounds.accept_unusual_fee = accept_unusual_fee.clone();
                     let r = s.sync().await?;
                     let id = {
                         let Session { wallet, conn, .. } = &mut *s;

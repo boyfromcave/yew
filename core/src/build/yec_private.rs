@@ -6,8 +6,9 @@
 //! combined (transparent + shielded) sync the send runs first.
 //!
 //! Funding rule, one default, no manual choice:
-//! 1. A Sapling recipient (`ys1…`) is paid from shielded notes, with an optional memo. Shielded
-//!    funds only: YEW's transparent builder makes no Sapling outputs (shielding is S4).
+//! 1. A Sapling recipient (`ys1…`) is paid from shielded notes, with an optional memo; when the
+//!    notes fall short, from the public balance by a shielding send to the recipient
+//!    (`yec_move::plan_shield_to`, WEB-REAL MEDIUM-4: the node's `z_sendmany` shape and fee).
 //! 2. A transparent recipient is paid from shielded notes when they cover amount + fee and the
 //!    wallet is scanned to the tip; the plan then says [`YecSendPlan::reveals_shielded`] (the
 //!    amber line: "This send leaves the private pool"). No memo can go to a transparent address.
@@ -93,12 +94,16 @@ pub struct Confirmed {
 
 /// Plan a YEC send of `amount` zat to `to` by the funding rule above, after a sync at `tip`
 /// with the server's `branch_id` (the transparent path signs with it). `memo` is for Sapling
-/// recipients only.
+/// recipients only. `allow_linking`: a public-balance path (to a transparent recipient, and the
+/// shield to another wallet's Sapling address) may combine coins of several public addresses
+/// (the user's go-ahead, [`yec_send::build_yec_send`], `yec_move::plan_shield_to`).
+#[allow(clippy::too_many_arguments)]
 pub fn plan_yec_send(
     wallet: &mut Wallet,
     to: &str,
     amount: i64,
     send_everything: bool,
+    allow_linking: bool,
     memo: Option<&str>,
     tip: u64,
     branch_id: u32,
@@ -110,11 +115,37 @@ pub fn plan_yec_send(
     let memo = memo.map(str::trim_end).filter(|m| !m.is_empty());
     let sapling_recipient = crate::shielded_keys::is_sapling_address(wallet.network, to);
     if sapling_recipient {
-        let plan = wallet.shielded_mut()?.plan(to, amount as u64, memo)?;
-        return Ok(YecSendPlan {
-            funding: Funding::Shielded(Box::new(plan)),
-            reveals_shielded: false,
-        });
+        return match wallet.shielded_mut()?.plan(to, amount as u64, memo) {
+            Ok(plan) => Ok(YecSendPlan {
+                funding: Funding::Shielded(Box::new(plan)),
+                reveals_shielded: false,
+            }),
+            // Too little private YEC: the public balance pays, a shielding send to the
+            // recipient (WEB-REAL MEDIUM-4; `yec_move::plan_shield_to`). When the public balance
+            // cannot pay either, the private shortfall is the error the user sees; when only
+            // several public addresses together can, the linking question (beta2 D-5), as on
+            // the transparent path.
+            Err(e @ ShieldedError::Insufficient { .. }) => {
+                match crate::build::yec_move::plan_shield_to(
+                    wallet,
+                    to,
+                    memo,
+                    amount,
+                    allow_linking,
+                    tip,
+                ) {
+                    Ok(p) => Ok(YecSendPlan {
+                        funding: Funding::Shield(Box::new(p)),
+                        reveals_shielded: false,
+                    }),
+                    Err(WalletError::Coins(crate::coins::CoinError::Insufficient { .. })) => {
+                        Err(e.into())
+                    }
+                    Err(other) => Err(other),
+                }
+            }
+            Err(e) => Err(e.into()),
+        };
     }
     if memo.is_some() {
         return Err(ShieldedError::Memo(
@@ -146,11 +177,41 @@ pub fn plan_yec_send(
             }
         }
     }
-    let p = yec_send::build_yec_send(wallet, to, amount, send_everything, tip, branch_id)?;
+    let p = yec_send::build_yec_send(
+        wallet,
+        to,
+        amount,
+        send_everything,
+        allow_linking,
+        tip,
+        branch_id,
+    )?;
     Ok(YecSendPlan {
         funding: Funding::Transparent(p),
         reveals_shielded: false,
     })
+}
+
+/// What a build without the combined private and post-quantum builder (the browser) says when a
+/// post-quantum recipient cannot be paid from the public balance (review YEW-REVIEW-10 L4).
+pub const PQ_FROM_PRIVATE_UNAVAILABLE: &str = "This browser wallet cannot pay a post-quantum address from the private balance; use the mobile app or move funds to a public address first.";
+
+/// True when `e`, [`plan_yec_send`]'s refusal of a send to `to`, is the public balance falling
+/// short for a post-quantum recipient while the private balance holds spendable YEC: the case a
+/// build without the hybrid builder explains with [`PQ_FROM_PRIVATE_UNAVAILABLE`] instead of an
+/// insufficient-funds error (review YEW-REVIEW-10 L4). Reads the store only.
+pub fn pq_recipient_needs_private(wallet: &Wallet, to: &str, e: &WalletError) -> bool {
+    matches!(
+        e,
+        WalletError::Coins(crate::coins::CoinError::Insufficient { .. })
+    ) && matches!(
+        crate::keys::parse_yec_destination(wallet.network, to.trim()),
+        Ok(crate::keys::YecDestination::Pq(_))
+    ) && wallet
+        .shielded
+        .as_ref()
+        .and_then(|sh| sh.balance().ok())
+        .is_some_and(|b| b.spendable_zat > 0)
 }
 
 /// Confirm a planned send: the transparent path exactly as `yec_send::broadcast`; the shielded
@@ -282,15 +343,15 @@ mod tests {
             .default_address()
             .1;
         // No amount, a memo to a transparent address, a bad address: refused up front.
-        assert!(plan_yec_send(&mut w, &t, 0, false, None, 100, 1).is_err());
-        let e = plan_yec_send(&mut w, &t, 1_000, false, Some("hi"), 100, 1).unwrap_err();
+        assert!(plan_yec_send(&mut w, &t, 0, false, false, None, 100, 1).is_err());
+        let e = plan_yec_send(&mut w, &t, 1_000, false, false, Some("hi"), 100, 1).unwrap_err();
         assert!(e.to_string().contains("private (ys1…) address"), "{e}");
-        assert!(plan_yec_send(&mut w, "s1nope", 1_000, false, None, 100, 1).is_err());
+        assert!(plan_yec_send(&mut w, "s1nope", 1_000, false, false, None, 100, 1).is_err());
         // A whitespace-only memo is no memo: the transparent path is tried (and has no coins).
-        let e = plan_yec_send(&mut w, &t, 1_000, false, Some("  "), 100, 1).unwrap_err();
+        let e = plan_yec_send(&mut w, &t, 1_000, false, false, Some("  "), 100, 1).unwrap_err();
         assert!(matches!(e, WalletError::Coins(_)), "{e}");
         // A ys1 recipient needs the private side; a wallet without one says so.
-        let e = plan_yec_send(&mut w, &z, 1_000, false, Some("hi"), 100, 1).unwrap_err();
+        let e = plan_yec_send(&mut w, &z, 1_000, false, false, Some("hi"), 100, 1).unwrap_err();
         assert!(e.to_string().contains("no shielded store"), "{e}");
     }
 
@@ -311,15 +372,18 @@ mod tests {
         assert!(dir.join("shielded/w/wallet.sqlite").is_file());
         let z = w.shielded().unwrap().default_address().1;
         // Not scanned: a private recipient is "not ready", never silently transparent.
-        let e = plan_yec_send(&mut w, &z, 1_000, false, None, 100, 1).unwrap_err();
+        let e = plan_yec_send(&mut w, &z, 1_000, false, false, None, 100, 1).unwrap_err();
         assert!(
             matches!(e, WalletError::Shielded(ShieldedError::NotSynced { .. })),
             "{e}"
         );
         // A transparent recipient falls through to the transparent builder (no coins here).
         let t = keys::encode_p2pkh(Network::Regtest, &[3; 20]);
-        let e = plan_yec_send(&mut w, &t, 1_000, false, None, 100, 1).unwrap_err();
+        let e = plan_yec_send(&mut w, &t, 1_000, false, false, None, 100, 1).unwrap_err();
         assert!(matches!(e, WalletError::Coins(_)), "{e}");
+        // review YEW-REVIEW-10 L4: a short public balance for a transparent recipient, or with
+        // no private YEC, is the plain insufficient-funds error
+        assert!(!pq_recipient_needs_private(&w, &t, &e));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

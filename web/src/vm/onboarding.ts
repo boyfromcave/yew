@@ -57,7 +57,10 @@ export class OnboardingVm extends Vm<OnboardingState> {
     const w = words.trim().toLowerCase().split(/\s+/).filter(Boolean);
     if (w.length !== 12 && w.length !== 24) { this.set({ error: "A recovery phrase has 12 or 24 words." }); return; }
     if (!Number.isInteger(birthday) || birthday < 0) { this.set({ error: "The birthday is a block height (0 = scan everything)." }); return; }
-    this.set({ seedWords: w.join(" "), birthday, step: "server", error: "" });
+    // "0 = scan everything" is height 1 to the core: a birthday of 0 there means a seed generated in this
+    // browser, whose private scan starts at the tip, so a restore with 0 would never find its notes
+    // (real-stack run WEB-REAL, 2026-11-12). The core clamps it to the Sapling activation height.
+    this.set({ seedWords: w.join(" "), birthday: Math.max(1, birthday), step: "server", error: "" });
   }
   checkServer(serverUrl: string) {
     return this.run(async () => {

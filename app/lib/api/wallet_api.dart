@@ -29,6 +29,8 @@ export '../src/rust/api.dart'
         NetworkId,
         ParamsProgress,
         ParamsStatus,
+        PqSendPreviewInfo,
+        PqSource,
         ReceiveKind,
         Recipient,
         RedeemPreview,
@@ -93,7 +95,8 @@ abstract class WalletApi {
 
   Future<Balances> balances();
 
-  /// The receive address of [kind]: `s…` (transparent), `yb…` (YED) or `ys1…` (private).
+  /// The receive address of [kind]: `s…` (transparent), `yb…` (YED), `ys1…` (private), or the
+  /// receive key's post-quantum pair (`sqf…` FN-DSA-512, `sqs…` SLH-DSA).
   Future<AddressPair> receiveAddress({ReceiveKind kind = ReceiveKind.transparent, required bool fresh});
 
   /// A new private address of the same private balance (Receive → "New private address").
@@ -103,11 +106,14 @@ abstract class WalletApi {
 
   Future<HistoryPage> history({required int page, required int pageSize});
 
-  /// Funded privacy first by the core; [memo] only for a private (`ys1…`) recipient.
+  /// Funded privacy first by the core; [memo] only for a private (`ys1…`) recipient. Public
+  /// funding takes one public address's coins; with [allowLinking] (after the user agreed to
+  /// ErrorKind.addressLinkingNeeded's text, beta2 D-5) the core may combine several addresses.
   Future<YecPreview> sendYecPreview({
     required String to,
     required int zat,
     required bool sendEverything,
+    bool allowLinking = false,
     String? memo,
   });
 
@@ -115,9 +121,27 @@ abstract class WalletApi {
 
   /// Move YEC between the wallet's own private and public balances (yew-shielded plan S4);
   /// [amountZat] null = all, less the fee. The preview is a send preview to the own address.
-  Future<YecPreview> movePreview({required MoveDirection direction, int? amountZat});
+  /// [allowLinking]: as [sendYecPreview], for a move to the private balance.
+  Future<YecPreview> movePreview({required MoveDirection direction, int? amountZat, bool allowLinking = false});
 
   Future<SendResult> moveConfirm({required String previewId});
+
+  /// The wallet's post-quantum addresses holding spendable YEC (beta2 D-8), largest first.
+  /// Empty on a server without Yellowback.
+  Future<List<PqSource>> pqSources();
+
+  /// A send from the own post-quantum address [from] to a public address (`s…`, `sqf…`, `sqs…`):
+  /// planned and signed by the core (the planner yewd uses), nothing broadcast.
+  Future<PqSendPreviewInfo> pqSendPreview({required String from, required String to, required int zat});
+
+  Future<SendResult> pqSendConfirm({required String previewId, String? acceptUnusualFee});
+
+  /// A send from the private balance to a post-quantum address (`sqf…`/`sqs…`; beta2 D-2):
+  /// proven at the preview (the proving files first), confirmed with [pqSendConfirm]. The
+  /// preview's `fromPrivate` is set: the amount and the recipient become visible on the chain.
+  /// The notes' transactions come from the wallet's store; with [allowNoteLookup] the core may ask
+  /// the server for those it lacks (after the user agreed to ErrorKind.noteLookupNeeded's text).
+  Future<PqSendPreviewInfo> privatePqSendPreview({required String to, required int zat, bool allowNoteLookup = false});
 
   /// The Sapling proving files on this device (no network).
   Future<ParamsStatus> paramsStatus();
@@ -128,7 +152,7 @@ abstract class WalletApi {
 
   Future<YedPreview> sendYedPreview({required List<Recipient> recipients});
 
-  Future<SendResult> sendYedConfirm({required String previewId});
+  Future<SendResult> sendYedConfirm({required String previewId, String? acceptUnusualFee});
 
   Future<WifExport> exportWif({required String address});
 
@@ -144,7 +168,9 @@ abstract class WalletApi {
   /// term class mintable). Connects; no sync.
   Future<MintAvailability> mintAvailability();
 
-  Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks});
+  /// [from]: where the YEC comes from (beta2 D-3): empty = the public balance, else one of the
+  /// wallet's post-quantum addresses holding YEC ([pqSources]).
+  Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks, String from = ''});
 
   /// [confirmed] is the estimate the user saw: the core refuses a server answer whose
   /// collateral, fee, payee or class differs from it (audit G-2).
@@ -154,9 +180,16 @@ abstract class WalletApi {
 
   Future<List<MintStatus>> mints();
 
-  Future<MintStatus> mintFinish({required int mintId});
+  /// The MINT or CLAIM over a confirmed carrier. A main fee above what the start accepted is
+  /// refused (`unusual-fee: …`, with a new acknowledgement in the message); [acceptUnusualFee]
+  /// passes that acknowledgement back (review YEW-REVIEW-5 M2).
+  Future<MintStatus> mintFinish({required int mintId, String? acceptUnusualFee});
 
   Future<MintStatus> mintSweep({required int mintId});
+
+  /// Forget the YEC price reports the unusual-fee check compares against (review YEW-REVIEW-5
+  /// M1): until three days have reported again, every fee above 0.1 YEC needs its own confirmation.
+  Future<void> resetFeeReference();
 
   Future<List<VaultSummary>> vaults();
 
@@ -179,7 +212,7 @@ abstract class WalletApi {
   /// Build and sign the release of a matured intent (`txid:n`); nothing is sent.
   Future<ReleasePreview> releasePreview({required String intent});
 
-  Future<ReleaseResult> releaseConfirm({required String previewId});
+  Future<ReleaseResult> releaseConfirm({required String previewId, String? acceptUnusualFee});
 
   String generateSeedWords({required int words});
 

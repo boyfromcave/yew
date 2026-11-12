@@ -216,7 +216,7 @@ class _YecSplit extends StatelessWidget {
         children: [
           Icon(icon, size: 16, color: c.yec),
           const SizedBox(width: 6),
-          Text(label, style: t.bodyMedium),
+          Flexible(child: Text(label, style: t.bodyMedium, overflow: TextOverflow.ellipsis)),
           const Spacer(),
           Text('${formatYec(zat)} YEC', key: key, style: t.bodyMedium),
         ],
@@ -248,12 +248,27 @@ class _YecSplit extends StatelessWidget {
         line(
           const Key('yec-public'),
           Icons.public_rounded,
-          'Public',
+          'Public (ECC)',
           app.publicYecZat,
         ),
         note('${formatYec(b.yecReservedZat)} YEC reserved for fees'),
         if (b.yecPendingZat > 0)
           note('${formatYec(b.yecPendingZat)} YEC pending'),
+        // beta2 D-8: the post-quantum balance by scheme, where the server lists post-quantum coins
+        if (app.yellowbackUsable || b.yecPqZat > 0) ...[
+          line(
+            const Key('yec-pq-slh'),
+            Icons.shield_outlined,
+            'PQ · SLH-DSA',
+            b.yecPqSlhZat,
+          ),
+          line(
+            const Key('yec-pq-falcon'),
+            Icons.shield_outlined,
+            'PQ · FN-DSA-512',
+            b.yecPqFalconZat,
+          ),
+        ],
         if (b.yecPqZat > 0 && b.pqCoins.isNotEmpty)
           InkWell(
             key: const Key('pq-yec'),
@@ -264,9 +279,16 @@ class _YecSplit extends StatelessWidget {
               '${formatYec(b.yecPqZat)} YEC at your post-quantum addresses · tap to move it to your wallet',
             ),
           ),
+        // never in a spendable total: YEC staged for a mint in progress is listed on its own
+        // (build::mint::staged_for_mint_zat, as the web wallet shows it)
+        if (b.yecStagedForMintZat > 0)
+          note(
+            '${formatYec(b.yecStagedForMintZat)} YEC staged for a mint in progress (not spendable until the mint finishes or lapses)',
+            const Key('yec-staged-for-mint'),
+          ),
         if (b.heldCount > 0)
           note(
-            '${b.heldCount} output${b.heldCount == 1 ? '' : 's'} held until the server classifies ${b.heldCount == 1 ? 'it' : 'them'}',
+            '${b.heldCount} output${b.heldCount == 1 ? '' : 's'} held: not spent as YEC until ${b.heldCount == 1 ? 'it is' : 'they are'} shown to carry no YED',
           ),
       ],
     );

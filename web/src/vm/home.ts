@@ -1,4 +1,5 @@
-// Home (home.dart): numbers first — YED, YEC public/private, price, sync progress from the
+// Home (home.dart): numbers first — YED, YEC by type (private, public ECC, post-quantum by scheme;
+// held and staged-for-mint apart, never in a total), price, sync progress from the
 // core's callback (no polling), Receive / Send / Move.
 import type { Balances, Core, ProgressEvent } from "../core";
 import { messageOf } from "../core";

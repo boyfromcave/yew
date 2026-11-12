@@ -19,6 +19,9 @@ const fakeYe = 'yr1qkfcjyqz9y4d3qz9v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8';
 const fakeS = 'smV6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v';
 /// A regtest post-quantum vault-owner address (53 characters, rpcversion 7).
 const fakeOwnerPq = 'yrPq8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8vOwn';
+/// Regtest D-9 post-quantum plain-YEC addresses of the receive key (53 characters).
+const fakePqFalcon = 'rqfPqFalcon8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8y';
+const fakePqSlh = 'rqsPqSlh8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6y8v6yy';
 const fakeZ = 'yregtestsapling1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqfake';
 const fakeZ2 = 'yregtestsapling1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzsecond';
 const fakeWords = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -37,7 +40,7 @@ class FakeWalletApi implements WalletApi {
     syncHeight: 484,
     yedSendMinZat: 21000, yecShieldedZat: 0, yecShieldedSpendableZat: 0, yecShieldedPendingZat: 0, shieldedScannedHeight: 0, shieldedSendable: false,
     yecPqZat: 0,
-    pqCoins: [],
+    yecPqSlhZat: 0, yecPqFalconZat: 0, yecStagedForMintZat: 0, pqCoins: [],
   );
   List<HistoryItem> historyAnswer = const [];
   Object? yedPreviewError;
@@ -69,6 +72,12 @@ class FakeWalletApi implements WalletApi {
   List<VaultSummary> vaultsAnswer = const [];
   List<ClaimableItem> claimableAnswer = const [];
   Object? mintEstimateError;
+  /// When set, a private-source preview / mint start without the go-ahead refuses with
+  /// ErrorKind.noteLookupNeeded and this text.
+  String? noteLookupText;
+  /// When set, a YEC preview / move preview without the go-ahead refuses with
+  /// ErrorKind.addressLinkingNeeded and this text (beta2 D-5).
+  String? linkingText;
   Object? mintStartError;
   Object? mintFinishError;
   Object? mintSweepError;
@@ -230,13 +239,14 @@ class FakeWalletApi implements WalletApi {
   }
 
   @override
-  Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks}) async {
-    calls.add('mintEstimate $cents $lockBlocks');
+  Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks, String from = ''}) async {
+    calls.add(from.isEmpty ? 'mintEstimate $cents $lockBlocks' : 'mintEstimate $cents $lockBlocks from $from');
     if (mintEstimateError != null) throw mintEstimateError!;
     final klass = lockBlocks <= 96 ? 'A' : (lockBlocks <= 144 ? 'B' : 'C');
     final collateral = cents * 19000 * 2 ~/ 1; // 1 YED = $1, $0.52/YEC, 200 %
     final total = collateral + 10000 + 10000 + 2000 + 1000;
-    final available = balancesAnswer.yecZat + balancesAnswer.yecReservedZat;
+    // As the core: the source's own balance (the private balance's spendable YEC for 'private').
+    final available = from == 'private' ? balancesAnswer.yecShieldedSpendableZat : balancesAnswer.yecZat + balancesAnswer.yecReservedZat;
     return MintEstimate(
       cents: cents,
       lockBlocks: lockBlocks,
@@ -261,6 +271,8 @@ class FakeWalletApi implements WalletApi {
       pMintMicroUsd: 520000,
       armed: armed,
       bundleSeqs: Uint32List.fromList([0, 1, 2]),
+      from: from,
+      carrierFeeZat: from.isEmpty ? 1000 : 18000,
     );
   }
 
@@ -268,6 +280,11 @@ class FakeWalletApi implements WalletApi {
   Future<MintStatus> mintStart({required int cents, required int lockBlocks, required MintTerms confirmed}) async {
     calls.add('mintStart $cents $lockBlocks');
     calls.add('mintStart confirmed ${confirmed.collateralZat} ${confirmed.feeZat} ${confirmed.payee} ${confirmed.termClass}');
+    if (confirmed.from.isNotEmpty) calls.add('mintStart from ${confirmed.from} carrier ${confirmed.carrierFeeZat}');
+    if (confirmed.allowNoteLookup) calls.add('mintStart lookup');
+    if (noteLookupText != null && confirmed.from == 'private' && !confirmed.allowNoteLookup) {
+      throw YewError(kind: ErrorKind.noteLookupNeeded, message: noteLookupText!);
+    }
     if (mintStartError != null) throw mintStartError!;
     final m = mintRow(id: mintsAnswer.length + 1, state: 'CARRIER_SENT', cents: cents, tip: tip, refHeight: tip - 4);
     _set(m);
@@ -281,9 +298,12 @@ class FakeWalletApi implements WalletApi {
   Future<List<MintStatus>> mints() async => List.of(mintsAnswer);
 
   @override
-  Future<MintStatus> mintFinish({required int mintId}) async {
-    calls.add('mintFinish $mintId');
-    if (mintFinishError != null) throw mintFinishError!;
+  Future<void> resetFeeReference() async => calls.add('resetFeeReference');
+
+  @override
+  Future<MintStatus> mintFinish({required int mintId, String? acceptUnusualFee}) async {
+    calls.add(acceptUnusualFee == null ? 'mintFinish $mintId' : 'mintFinish $mintId $acceptUnusualFee');
+    if (mintFinishError != null && acceptUnusualFee == null) throw mintFinishError!;
     final old = mintsAnswer.firstWhere((m) => m.mintId == mintId);
     final m = mintRow(id: mintId, state: 'MAIN_SENT', kind: old.kind, cents: old.cents, tip: old.tip, refHeight: old.refHeight, vaultTxid: old.vaultTxid);
     _set(m);
@@ -392,7 +412,7 @@ class FakeWalletApi implements WalletApi {
   }
 
   @override
-  Future<ReleaseResult> releaseConfirm({required String previewId}) async {
+  Future<ReleaseResult> releaseConfirm({required String previewId, String? acceptUnusualFee}) async {
     calls.add('releaseConfirm $previewId');
     final intent = previewId.substring(3);
     if (balancesAnswer.pqCoins.contains(intent)) {
@@ -468,7 +488,7 @@ class FakeWalletApi implements WalletApi {
     birthday: 1,
     syncHeight: 484,
     addresses: 40,
-    yellowback: const YellowbackStatus(present: true, usable: true, rpcversion: 6, enabled: true, active: true, serverVersion: 'lwd', feeZat: 1000),
+    yellowback: YellowbackStatus(present: yellowbackPresent, usable: yellowbackPresent, rpcversion: 6, enabled: true, active: true, serverVersion: 'lwd', feeZat: 1000),
     coreVersion: '0.1.0',
   );
 
@@ -478,6 +498,8 @@ class FakeWalletApi implements WalletApi {
   @override
   Future<AddressPair> receiveAddress({ReceiveKind kind = ReceiveKind.transparent, required bool fresh}) async {
     if (kind == ReceiveKind.shielded) return privateAddress;
+    if (kind == ReceiveKind.pqFalcon) return pqFalconAddress;
+    if (kind == ReceiveKind.pqSlh) return pqSlhAddress;
     if (fresh) this.fresh++;
     return address;
   }
@@ -509,8 +531,9 @@ class FakeWalletApi implements WalletApi {
   Future<HistoryPage> history({required int page, required int pageSize}) async => HistoryPage(rows: historyAnswer, page: page, total: historyAnswer.length);
 
   @override
-  Future<YecPreview> sendYecPreview({required String to, required int zat, required bool sendEverything, String? memo}) async {
-    calls.add('yecPreview $to $zat $sendEverything${memo == null ? '' : ' memo=$memo'}');
+  Future<YecPreview> sendYecPreview({required String to, required int zat, required bool sendEverything, bool allowLinking = false, String? memo}) async {
+    calls.add('yecPreview $to $zat $sendEverything${memo == null ? '' : ' memo=$memo'}${allowLinking ? ' link' : ''}');
+    if (linkingText != null && !allowLinking) throw YewError(kind: ErrorKind.addressLinkingNeeded, message: linkingText!);
     if (yecPreviewError != null) throw yecPreviewError!;
     final private = yecFunding == YecFunding.shielded;
     return YecPreview(previewId: 'p1', to: to, amountZat: zat, amountBumped: zat == 10000, feeZat: private ? 10000 : 1000, changeZat: 150000000 - zat - 1000, inputs: 1, usesReserve: sendEverything, keepsReservedZat: 105000, expiryHeight: 524, txid: private ? '' : 'aa' * 32, funding: yecFunding, revealsShielded: revealsShielded, memo: memo, paramsNeeded: private && paramsNeeded);
@@ -531,8 +554,9 @@ class FakeWalletApi implements WalletApi {
   Object? movePreviewError;
 
   @override
-  Future<YecPreview> movePreview({required MoveDirection direction, int? amountZat}) async {
-    calls.add('movePreview ${direction.name} ${amountZat ?? 'all'}');
+  Future<YecPreview> movePreview({required MoveDirection direction, int? amountZat, bool allowLinking = false}) async {
+    calls.add('movePreview ${direction.name} ${amountZat ?? 'all'}${allowLinking ? ' link' : ''}');
+    if (linkingText != null && !allowLinking) throw YewError(kind: ErrorKind.addressLinkingNeeded, message: linkingText!);
     if (movePreviewError != null) throw movePreviewError!;
     final toPrivate = direction == MoveDirection.toPrivate;
     const fee = 15000;
@@ -546,6 +570,84 @@ class FakeWalletApi implements WalletApi {
     return SendResult(txid: 'mm' * 32, verdict: 'ok');
   }
 
+  // ---- beta2 D-8: sends from an own post-quantum address.
+  /// The server offers Yellowback (the capability post-quantum coins are listed under).
+  bool yellowbackPresent = true;
+  List<PqSource> pqSourcesAnswer = const [];
+  Object? pqPreviewError;
+  Object? pqConfirmError;
+  /// The core's unusual-fee note on the next PQ preview (review YEW-REVIEW-3 M1).
+  String? pqFeeNote;
+  String? pqFeeAck;
+  /// The browser: no signing time measured (review YEW-REVIEW-3 L5).
+  bool pqSignUnmeasured = false;
+  AddressPair pqFalconAddress = const AddressPair(ye: '', s: fakeS, path: "m/44'/347'/0'/0/0 (FN-DSA-512)", coveredBySeed: true, address: fakePqFalcon, kind: ReceiveKind.pqFalcon);
+  AddressPair pqSlhAddress = const AddressPair(ye: '', s: fakeS, path: "m/44'/347'/0'/0/0 (SLH-DSA-SHA2-128s)", coveredBySeed: true, address: fakePqSlh, kind: ReceiveKind.pqSlh);
+
+  @override
+  Future<List<PqSource>> pqSources() async => pqSourcesAnswer;
+
+  @override
+  Future<PqSendPreviewInfo> pqSendPreview({required String from, required String to, required int zat}) async {
+    calls.add('pqPreview $from $to $zat');
+    if (pqPreviewError != null) throw pqPreviewError!;
+    final slh = from.startsWith('rqs');
+    return PqSendPreviewInfo(
+      previewId: 'q1',
+      from: from,
+      schemeName: slh ? 'SLH-DSA-SHA2-128s' : 'FN-DSA-512',
+      to: to,
+      amountZat: zat,
+      amountBumped: false,
+      feeZat: slh ? 2000 : 1000,
+      changeZat: 50000,
+      inputs: 1,
+      sizeBytes: slh ? 8120 : 1800,
+      signMillis: pqSignUnmeasured ? null : BigInt.from(slh ? 900 : 12),
+      feeNote: pqFeeNote,
+      unusualFeeAck: pqFeeAck,
+      expiryHeight: 524,
+      txid: 'qq' * 32,
+      fromPrivate: false,
+    );
+  }
+
+  @override
+  Future<PqSendPreviewInfo> privatePqSendPreview({required String to, required int zat, bool allowNoteLookup = false}) async {
+    calls.add(allowNoteLookup ? 'privatePqPreview $to $zat lookup' : 'privatePqPreview $to $zat');
+    if (noteLookupText != null && !allowNoteLookup) throw YewError(kind: ErrorKind.noteLookupNeeded, message: noteLookupText!);
+    if (pqPreviewError != null) throw pqPreviewError!;
+    return PqSendPreviewInfo(
+      previewId: 'zq1',
+      from: '',
+      schemeName: to.startsWith('rqs') ? 'SLH-DSA-SHA2-128s' : 'FN-DSA-512',
+      to: to,
+      amountZat: zat,
+      amountBumped: false,
+      feeZat: 2000,
+      changeZat: 40000,
+      inputs: 1,
+      sizeBytes: 2801,
+      signMillis: BigInt.from(4100),
+      feeNote: pqFeeNote,
+      unusualFeeAck: pqFeeAck,
+      expiryHeight: 524,
+      txid: 'zz' * 32,
+      fromPrivate: true,
+    );
+  }
+
+  @override
+  Future<SendResult> pqSendConfirm({required String previewId, String? acceptUnusualFee}) async {
+    calls.add('pqConfirm $previewId${acceptUnusualFee == null ? '' : ' ack=$acceptUnusualFee'}');
+    // the core's rule: a flagged fee needs exactly its acknowledgement
+    if (pqFeeAck != null && acceptUnusualFee != pqFeeAck) {
+      throw const YewError(kind: ErrorKind.other, message: 'unusual-fee: this fee needs its own confirmation.');
+    }
+    if (pqConfirmError != null) throw pqConfirmError!;
+    return SendResult(txid: 'qq' * 32, verdict: 'ok');
+  }
+
   @override
   Future<YedPreview> sendYedPreview({required List<Recipient> recipients}) async {
     calls.add('yedPreview ${recipients.map((r) => '${r.address}:${r.cents}').join(',')}');
@@ -555,7 +657,7 @@ class FakeWalletApi implements WalletApi {
   }
 
   @override
-  Future<SendResult> sendYedConfirm({required String previewId}) async {
+  Future<SendResult> sendYedConfirm({required String previewId, String? acceptUnusualFee}) async {
     calls.add('yedConfirm $previewId');
     if (yedConfirmError != null) throw yedConfirmError!;
     return SendResult(txid: 'bb' * 32, verdict: 'ok');
@@ -577,10 +679,10 @@ class FakeWalletApi implements WalletApi {
   Stream<SyncEvent> syncNow() {
     calls.add('sync');
     if (syncController != null) return syncController!.stream;
-    return Stream.fromIterable(const [
-      SyncEvent(stage: SyncStage.connecting, message: 'Connecting', tip: 0, syncHeight: 0, yellowbackUsable: false, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
-      SyncEvent(stage: SyncStage.probing, message: 'Yellowback service present', tip: 484, syncHeight: 0, yellowbackUsable: true, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
-      SyncEvent(stage: SyncStage.done, message: 'Synced to 484', tip: 484, syncHeight: 484, yellowbackUsable: true, percent: 100, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
+    return Stream.fromIterable([
+      const SyncEvent(stage: SyncStage.connecting, message: 'Connecting', tip: 0, syncHeight: 0, yellowbackUsable: false, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
+      SyncEvent(stage: SyncStage.probing, message: 'Yellowback service present', tip: 484, syncHeight: 0, yellowbackUsable: yellowbackPresent, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
+      SyncEvent(stage: SyncStage.done, message: 'Synced to 484', tip: 484, syncHeight: 484, yellowbackUsable: yellowbackPresent, percent: 100, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
     ]);
   }
 
@@ -598,12 +700,12 @@ class FakeWalletApi implements WalletApi {
   AddressCheck validateAddress({required NetworkId network, required String address}) => address.startsWith('yregtestsapling1')
       ? const AddressCheck(valid: true, kind: 'sapling', yellowbackForm: false, message: '')
       // The 53-character post-quantum regtest forms (the core's kinds; vectors: a q/attest node's
-      // vault_getnewowner pairs): rq… plain YEC, yr2V… a Falcon YED holder, yr2U… an SLH-DSA owner.
+      // vault_getnewowner pairs, D-9 forms): rq… plain YEC, yrf… a Falcon YED holder, yrs… an SLH-DSA owner.
       : address.length == 53 && address.startsWith('rq')
       ? const AddressCheck(valid: true, kind: 'pq_yec', yellowbackForm: false, message: '')
-      : address.length == 53 && address.startsWith('yr2V')
+      : address.length == 53 && address.startsWith('yrf')
       ? const AddressCheck(valid: true, kind: 'pq', yellowbackForm: true, message: '')
-      : address.length == 53 && address.startsWith('yr2U')
+      : address.length == 53 && address.startsWith('yrs')
       ? AddressCheck(valid: false, kind: 'pq_owner', yellowbackForm: true, message: '$address is a post-quantum vault-owner address, not a payment address')
       : address.startsWith('yr1') || address.startsWith('sm')
       ? AddressCheck(valid: true, kind: 'p2pkh', yellowbackForm: address.startsWith('yr1'), message: '')

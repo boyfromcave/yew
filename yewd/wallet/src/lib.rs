@@ -26,10 +26,12 @@ pub mod admin;
 pub mod armed;
 pub mod attest;
 pub mod build;
+pub mod bytype;
 pub mod claim;
 pub mod json;
 pub mod keys;
 pub mod legacy;
+pub mod lockfrom;
 pub mod mint;
 pub mod node;
 pub mod raw;
@@ -118,6 +120,8 @@ pub mod code {
     pub const WALLET_INSUFFICIENT_FUNDS: i64 = -6;
     pub const INVALID_PARAMETER: i64 = -8;
     pub const WALLET_INVALID_ACCOUNT_NAME: i64 = -11;
+    /// ycashd's `RPC_WALLET_ACCOUNTS_UNSUPPORTED` (the same -11).
+    pub const WALLET_ACCOUNTS_UNSUPPORTED: i64 = -11;
     pub const WALLET_UNLOCK_NEEDED: i64 = -13;
     pub const WALLET_PASSPHRASE_INCORRECT: i64 = -14;
     pub const WALLET_WRONG_ENC_STATE: i64 = -15;
@@ -215,7 +219,35 @@ pub struct Wallet {
 #[derive(Clone, Debug, Default)]
 pub struct ChainFacts {
     pub vault_activation: Option<u32>,
+    /// The node's other upgrade heights, a `name=height` list for the signer's regtest
+    /// parameters ([`upgrades_spec`]).
+    pub upgrades: Option<String>,
     pub falcon_active: Option<bool>,
+}
+
+/// The node's upgrade heights before the vault upgrade (`getblockchaininfo.upgrades`, keyed by
+/// branch id) as the light library's regtest spec (`YcashNetwork::with_upgrades`): every upgrade
+/// through Canopy, its height, or `none` when the node does not list it (on regtest an upgrade
+/// without `-nuparams` is not active). The vault upgrade travels separately (`vault_height`).
+pub fn upgrades_spec(upgrades: &serde_json::Value) -> String {
+    const BRANCHES: [(&str, &str); 6] = [
+        ("overwinter", "5ba81b19"),
+        ("sapling", "76b809bb"),
+        ("ycash", "374d694f"),
+        ("blossom", "8e471bd6"),
+        ("heartwood", "66314da3"),
+        ("canopy", "19bd2d2f"),
+    ];
+    BRANCHES
+        .iter()
+        .map(
+            |(name, id)| match upgrades[*id]["activationheight"].as_u64() {
+                Some(h) => format!("{name}={h}"),
+                None => format!("{name}=none"),
+            },
+        )
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// The façade's mock clock (H11, F-S4-11): `-mocktime` at start and every `setmocktime` the façade
@@ -418,7 +450,7 @@ impl Wallet {
     ) -> Result<Wallet, String> {
         let path = dir.join("wallet.json");
         let st = match State::load(&path)? {
-            Some(s) => {
+            Some(mut s) => {
                 if s.network != network.chain_name() {
                     return Err(format!(
                         "{} is a {} wallet, asked for {}",
@@ -426,6 +458,18 @@ impl Wallet {
                         s.network,
                         network.chain_name()
                     ));
+                }
+                // D-9: a book from before the scheme-visible prefixes is rewritten once.
+                let m = s.migrate_pq_book(network);
+                for w in &m.warnings {
+                    eprintln!("yewd: {w}");
+                }
+                if m.rewritten > 0 {
+                    // as before D-9, a wallet on a datadir it cannot write still opens: the
+                    // rewritten book is kept in memory and written at the next save that succeeds
+                    if let Err(e) = s.save(&path) {
+                        eprintln!("yewd: could not save the rewritten address book ({e}); continuing with it in memory");
+                    }
                 }
                 s
             }
@@ -778,7 +822,22 @@ impl Wallet {
 
     /// Bring the wallet to the node's best block and mempool (the barrier, H1/H2). Returns
     /// whether anything changed.
+    /// Sync with the node; while the wallet has not held YED, a sync that saw something new also
+    /// asks the node's index whether any of the wallet's outputs is a YED token (the write-once
+    /// "has held YED" marker, beta2; a failing or absent index answer leaves it unset).
     pub async fn sync(&mut self, node: &dyn Node) -> Result<bool, RpcError> {
+        let changed = self.sync_chain(node).await?;
+        if changed && !self.st.yed_held {
+            if let Ok(t) = self.tokens(node).await {
+                if !t.is_empty() {
+                    self.mark_yed_held();
+                }
+            }
+        }
+        Ok(changed)
+    }
+
+    async fn sync_chain(&mut self, node: &dyn Node) -> Result<bool, RpcError> {
         let mut changed = false;
         if !self.chain_read {
             self.refresh_chain(node).await?;
@@ -845,6 +904,7 @@ impl Wallet {
         self.chain.vault_activation = info["upgrades"][&key]["activationheight"]
             .as_u64()
             .map(|h| h as u32);
+        self.chain.upgrades = Some(upgrades_spec(&info["upgrades"]));
         Ok(())
     }
 
@@ -1113,5 +1173,36 @@ mod tests {
     fn links_the_core() {
         assert_eq!(super::VAULT_BRANCH_ID, 0x6d5b_7a31);
         assert!(!super::CORE_VERSION.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod upgrades_spec_tests {
+    /// The node's `getblockchaininfo.upgrades` as the signer's regtest spec: listed upgrades at
+    /// their heights, an unlisted one `none`, the vault upgrade left out (it travels apart).
+    #[test]
+    fn upgrades_spec_mirrors_the_node() {
+        let u = serde_json::json!({
+            "5ba81b19": {"name": "Overwinter", "activationheight": 1},
+            "76b809bb": {"name": "Sapling", "activationheight": 1},
+            "374d694f": {"name": "Ycash", "activationheight": 1},
+            "8e471bd6": {"name": "Blossom", "activationheight": 1},
+            "66314da3": {"name": "Heartwood", "activationheight": 1},
+            "19bd2d2f": {"name": "Canopy", "activationheight": 150},
+            "6d5b7a31": {"name": "Vault", "activationheight": 210}
+        });
+        assert_eq!(
+            super::upgrades_spec(&u),
+            "overwinter=1,sapling=1,ycash=1,blossom=1,heartwood=1,canopy=150"
+        );
+        let mut no_canopy = u.clone();
+        no_canopy.as_object_mut().unwrap().remove("19bd2d2f");
+        assert!(super::upgrades_spec(&no_canopy).ends_with(",canopy=none"));
+        let spec = super::upgrades_spec(&u);
+        assert!(
+            yew_core::shielded::ycash_network(yew_core::params::Network::Regtest)
+                .with_upgrades(&spec)
+                .is_ok()
+        );
     }
 }

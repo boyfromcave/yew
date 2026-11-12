@@ -215,7 +215,9 @@ async fn restore_from_seed_with_birthday() {
     };
     yew_web_core::install_storage().await.expect("opfs");
     let words = yew_web_core::new_seed_words().expect("seed");
-    let tip0 = yew_web_core::latest_height(LWD, NETWORK).await.expect("tip");
+    let tip0 = yew_web_core::latest_height(LWD, NETWORK)
+        .await
+        .expect("tip");
     let birthday0 = tip0.saturating_sub(5).max(1);
     let dir_a = run_dir("a");
     reserve_files(6).await;
@@ -234,7 +236,10 @@ async fn restore_from_seed_with_birthday() {
     let txid_z = helper(
         fund_url,
         "fund",
-        &format!("addr={address_z}&zat={FUND_ZAT}&memo={}", MEMO.replace(' ', "%20")),
+        &format!(
+            "addr={address_z}&zat={FUND_ZAT}&memo={}",
+            MEMO.replace(' ', "%20")
+        ),
     )
     .await
     .expect("fund");
@@ -252,7 +257,10 @@ async fn restore_from_seed_with_birthday() {
     console_log!(
         "yew-web-core: restore: funded public {txid_t}@{h_t}, private {txid_z}@{h_z} memo {memo_a:?}"
     );
-    assert_eq!(memo_a, MEMO, "the memo of a receipt is read by the enhancement");
+    assert_eq!(
+        memo_a, MEMO,
+        "the memo of a receipt is read by the enhancement"
+    );
     yew_web_core::close();
     assert!(yew_web_core::balances().is_err());
 
@@ -262,7 +270,11 @@ async fn restore_from_seed_with_birthday() {
     reserve_files(6).await;
     let t0 = now();
     let o = open_in(&words, birthday, &dir_b).await;
-    assert_eq!(field_str(&o, "address"), address_z, "the same seed, the same addresses");
+    assert_eq!(
+        field_str(&o, "address"),
+        address_z,
+        "the same seed, the same addresses"
+    );
     assert_eq!(field_str(&o, "addressS"), address_s);
     assert!(!field_bool(&o, "registered"), "a new store");
     let b = sync_until("restored balances", 300.0, |_, b| {
@@ -282,10 +294,7 @@ async fn restore_from_seed_with_birthday() {
     );
     assert_eq!(rows_of(&txid_z), 1);
     assert_eq!(rows_of(&txid_t), 1);
-    assert_eq!(
-        field_u64(&history_row(&txid_z).unwrap(), "height"),
-        h_z
-    );
+    assert_eq!(field_u64(&history_row(&txid_z).unwrap(), "height"), h_z);
     yew_web_core::close();
 
     // A birthday after the funding: the private note is never scanned (expected), and the
@@ -303,7 +312,11 @@ async fn restore_from_seed_with_birthday() {
         field_amt(&b, "shieldedZat"),
         field_amt(&b, "yecZat") + field_amt(&b, "yecReservedZat")
     );
-    assert_eq!(field_amt(&b, "shieldedZat"), 0, "the note is before the birthday");
+    assert_eq!(
+        field_amt(&b, "shieldedZat"),
+        0,
+        "the note is before the birthday"
+    );
     assert!(history_row(&txid_z).is_none());
     assert_eq!(
         field_amt(&b, "yecZat") + field_amt(&b, "yecReservedZat"),
@@ -318,7 +331,9 @@ async fn restore_from_seed_with_birthday() {
 async fn busy_under_concurrency() {
     yew_web_core::install_storage().await.expect("opfs");
     let words = yew_web_core::new_seed_words().expect("seed");
-    let tip0 = yew_web_core::latest_height(LWD, NETWORK).await.expect("tip");
+    let tip0 = yew_web_core::latest_height(LWD, NETWORK)
+        .await
+        .expect("tip");
     let dir = run_dir("busy");
     reserve_files(6).await;
     open_in(&words, tip0.saturating_sub(30).max(1), &dir).await;
@@ -366,7 +381,10 @@ async fn busy_under_concurrency() {
     assert!(field_bool(&o, "registered"), "the same store");
     let r = yew_web_core::sync().await.expect("sync after reopen");
     assert!(field_str(&r, "shielded_message").is_empty());
-    assert_eq!(field_amt(&yew_web_core::balances().unwrap(), "shieldedZat"), b0);
+    assert_eq!(
+        field_amt(&yew_web_core::balances().unwrap(), "shieldedZat"),
+        b0
+    );
     yew_web_core::close();
 }
 
@@ -382,15 +400,21 @@ async fn reorg_during_private_sync() {
     }
     yew_web_core::install_storage().await.expect("opfs");
     let words = yew_web_core::new_seed_words().expect("seed");
-    let tip0 = yew_web_core::latest_height(LWD, NETWORK).await.expect("tip");
+    let tip0 = yew_web_core::latest_height(LWD, NETWORK)
+        .await
+        .expect("tip");
     let dir = run_dir("reorg");
     reserve_files(6).await;
     open_in(&words, tip0.saturating_sub(5).max(1), &dir).await;
     yew_web_core::sync().await.expect("first sync");
     let address_z = yew_web_core::receive_address(None).unwrap();
-    let txid_z = helper(fund_url, "fund", &format!("addr={address_z}&zat={FUND_ZAT}"))
-        .await
-        .expect("fund");
+    let txid_z = helper(
+        fund_url,
+        "fund",
+        &format!("addr={address_z}&zat={FUND_ZAT}"),
+    )
+    .await
+    .expect("fund");
     sync_until("private receipt mined", 300.0, |_, b| {
         field_amt(b, "shieldedSpendableZat") >= FUND_ZAT as i64
             && history_row(&txid_z).is_some_and(|r| !field_bool(&r, "pending"))
@@ -434,7 +458,7 @@ async fn reorg_during_private_sync() {
     assert!(h2 >= h, "mined again at or after the invalidated height");
     // A send of the whole balance plans against one note (no phantom second note).
     let other = yew_web_core::new_shielded_address().unwrap();
-    let p = yew_web_core::send_yec_preview(other, JsValue::from_str("100000000"), None)
+    let p = yew_web_core::send_yec_preview(other, JsValue::from_str("100000000"), None, None)
         .await
         .expect("preview after the reorg");
     assert_eq!(field_str(&p, "funding"), "shielded");
@@ -451,7 +475,9 @@ async fn several_stores_in_one_profile() {
         in_use(&p)
     );
     assert!(p.capacity() >= 24, "install_storage reserves headroom");
-    let tip0 = yew_web_core::latest_height(LWD, NETWORK).await.expect("tip");
+    let tip0 = yew_web_core::latest_height(LWD, NETWORK)
+        .await
+        .expect("tip");
     let birthday = tip0.saturating_sub(5).max(1);
     let base = run_dir("stores");
     let dir = |i: usize| format!("{base}/{i}");
@@ -463,19 +489,27 @@ async fn several_stores_in_one_profile() {
         move |s: &String| s.starts_with(&format!("{d}/"))
     };
     let listed = || async {
-        let v: Vec<String> = serde_wasm_bindgen::from_value(yew_web_core::stores().await.expect("stores")).unwrap();
+        let v: Vec<String> =
+            serde_wasm_bindgen::from_value(yew_web_core::stores().await.expect("stores")).unwrap();
         v.into_iter().filter(under(&base)).collect::<Vec<_>>()
     };
     for i in 1..=4 {
         open_in(&words[i - 1], birthday, &dir(i)).await;
         let r = yew_web_core::sync().await.expect("sync");
-        assert!(field_str(&r, "shielded_message").is_empty(), "store {i} syncs");
+        assert!(
+            field_str(&r, "shielded_message").is_empty(),
+            "store {i} syncs"
+        );
         assert!(field_u64(&r, "tip") >= tip0);
         yew_web_core::close();
     }
     assert_eq!(listed().await, (1..=4).map(dir).collect::<Vec<_>>());
     let files_before = in_use(&p);
-    assert!(files_before >= 12, "four stores: {files_before} files {:?}", names(&p));
+    assert!(
+        files_before >= 12,
+        "four stores: {files_before} files {:?}",
+        names(&p)
+    );
     // Forget the second: its three files go, nothing else does, and the directory is not listed.
     let n = yew_web_core::forget(&dir(2)).await.expect("forget");
     assert_eq!(n, 3, "the transparent file and the private store's two");
@@ -483,10 +517,17 @@ async fn several_stores_in_one_profile() {
     assert!(!names(&p).iter().any(under(&dir(2))), "{:?}", names(&p));
     assert!(names(&p).iter().any(under(&dir(1))));
     assert_eq!(listed().await, [1, 3, 4].map(dir).to_vec());
-    assert_eq!(yew_web_core::forget(&dir(2)).await.expect("forget twice"), 0);
+    assert_eq!(
+        yew_web_core::forget(&dir(2)).await.expect("forget twice"),
+        0
+    );
     // A fifth opens beside the three, and the forgotten directory takes a new seed (no "other seed").
     open_in(&words[4], birthday, &dir(5)).await;
-    assert!(field_str(&yew_web_core::sync().await.expect("sync"), "shielded_message").is_empty());
+    assert!(field_str(
+        &yew_web_core::sync().await.expect("sync"),
+        "shielded_message"
+    )
+    .is_empty());
     yew_web_core::close();
     let o = open_in(&words[1], birthday, &dir(2)).await;
     assert!(!field_bool(&o, "registered"), "a fresh store");

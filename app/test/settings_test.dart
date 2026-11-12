@@ -52,6 +52,17 @@ void main() {
     expect(h.secrets.bound, isFalse);
   });
 
+  testWidgets('Reset fee reference explains itself in one line and calls the core (review YEW-REVIEW-5 M1)', (tester) async {
+    final h = Harness(withWallet: true);
+    await openSettings(tester, h);
+    await tester.scrollUntilVisible(find.byKey(const Key('fee-reference')), 100);
+    expect(find.textContaining('Forget the YEC prices servers reported'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('fee-reference')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('resetFeeReference'));
+    expect(find.text('Fee reference reset'), findsOneWidget);
+  });
+
   testWidgets('export private key shows the warning before the key, then the WIF and both address forms', (tester) async {
     final h = Harness(withWallet: true);
     await openSettings(tester, h);
@@ -73,7 +84,7 @@ void main() {
   testWidgets('export private key once Falcon is active: by the s… form, the P2PKH YED form labelled, the Falcon holder named', (tester) async {
     final h = Harness(withWallet: true);
     // addresses() lists the 53-character Falcon holder as the YED form (core: TOK-PQ).
-    const falcon = 'yr2VSZg8io63sLAH7edCZ5YPZN4ihsf6m1U3y38sTygja16pcz1bo';
+    const falcon = 'yrf2Fyxswbwo4B8UYQm36DBw5UF3xcEfHTAjAP49F7CzrizdhPLmh';
     h.api.address = const AddressPair(ye: falcon, s: fakeS, path: "m/44'/347'/0'/0/0 (Falcon holder)", coveredBySeed: true, address: fakeS, kind: ReceiveKind.transparent);
     await openSettings(tester, h);
     await tester.tap(find.byKey(const Key('export-key')));

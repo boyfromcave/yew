@@ -108,19 +108,35 @@ class RustWalletApi implements WalletApi {
     required String to,
     required int zat,
     required bool sendEverything,
+    bool allowLinking = false,
     String? memo,
-  }) => rust.sendYecPreview(to: to, zat: zat, sendEverything: sendEverything, memo: memo);
+  }) => rust.sendYecPreview(to: to, zat: zat, sendEverything: sendEverything, allowLinking: allowLinking, memo: memo);
 
   @override
   Future<SendResult> sendYecConfirm({required String previewId}) =>
       rust.sendYecConfirm(previewId: previewId);
 
   @override
-  Future<YecPreview> movePreview({required MoveDirection direction, int? amountZat}) =>
-      rust.movePreview(direction: direction, amountZat: amountZat);
+  Future<YecPreview> movePreview({required MoveDirection direction, int? amountZat, bool allowLinking = false}) =>
+      rust.movePreview(direction: direction, amountZat: amountZat, allowLinking: allowLinking);
 
   @override
   Future<SendResult> moveConfirm({required String previewId}) => rust.moveConfirm(previewId: previewId);
+
+  @override
+  Future<List<PqSource>> pqSources() => rust.pqSources();
+
+  @override
+  Future<PqSendPreviewInfo> pqSendPreview({required String from, required String to, required int zat}) =>
+      rust.pqSendPreview(from: from, to: to, zat: zat);
+
+  @override
+  Future<SendResult> pqSendConfirm({required String previewId, String? acceptUnusualFee}) =>
+      rust.pqSendConfirm(previewId: previewId, acceptUnusualFee: acceptUnusualFee);
+
+  @override
+  Future<PqSendPreviewInfo> privatePqSendPreview({required String to, required int zat, bool allowNoteLookup = false}) =>
+      rust.privatePqSendPreview(to: to, zat: zat, allowNoteLookup: allowNoteLookup);
 
   @override
   Future<ParamsStatus> paramsStatus() => rust.paramsStatus();
@@ -133,8 +149,8 @@ class RustWalletApi implements WalletApi {
       rust.sendYedPreview(recipients: recipients);
 
   @override
-  Future<SendResult> sendYedConfirm({required String previewId}) =>
-      rust.sendYedConfirm(previewId: previewId);
+  Future<SendResult> sendYedConfirm({required String previewId, String? acceptUnusualFee}) =>
+      rust.sendYedConfirm(previewId: previewId, acceptUnusualFee: acceptUnusualFee);
 
   @override
   Future<WifExport> exportWif({required String address}) => rust.exportWif(address: address);
@@ -150,8 +166,8 @@ class RustWalletApi implements WalletApi {
   Future<MintAvailability> mintAvailability() => rust.mintAvailability();
 
   @override
-  Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks}) =>
-      rust.mintEstimate(cents: cents, lockBlocks: lockBlocks);
+  Future<MintEstimate> mintEstimate({required int cents, required int lockBlocks, String from = ''}) =>
+      rust.mintEstimate(cents: cents, lockBlocks: lockBlocks, from: from);
 
   @override
   Future<MintStatus> mintStart({required int cents, required int lockBlocks, required MintTerms confirmed}) =>
@@ -164,10 +180,14 @@ class RustWalletApi implements WalletApi {
   Future<List<MintStatus>> mints() => rust.mints();
 
   @override
-  Future<MintStatus> mintFinish({required int mintId}) => rust.mintFinish(mintId: mintId);
+  Future<MintStatus> mintFinish({required int mintId, String? acceptUnusualFee}) =>
+      rust.mintFinish(mintId: mintId, acceptUnusualFee: acceptUnusualFee);
 
   @override
   Future<MintStatus> mintSweep({required int mintId}) => rust.mintSweep(mintId: mintId);
+
+  @override
+  Future<void> resetFeeReference() => rust.resetFeeReference();
 
   @override
   Future<List<VaultSummary>> vaults() => rust.vaults();
@@ -192,7 +212,8 @@ class RustWalletApi implements WalletApi {
   Future<ReleasePreview> releasePreview({required String intent}) => rust.releasePreview(intent: intent);
 
   @override
-  Future<ReleaseResult> releaseConfirm({required String previewId}) => rust.releaseConfirm(previewId: previewId);
+  Future<ReleaseResult> releaseConfirm({required String previewId, String? acceptUnusualFee}) =>
+      rust.releaseConfirm(previewId: previewId, acceptUnusualFee: acceptUnusualFee);
 
   @override
   String generateSeedWords({required int words}) => rust.generateSeedWords(words: words);

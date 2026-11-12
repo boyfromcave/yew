@@ -106,6 +106,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
 # (`pq.rs` `falcon_reproduces_the_nist_kats`); `aes` 0.8.4 is already in Cargo.lock.
 [dev-dependencies]
 aes = "=0.8.4"
+# The tests' pre-ZIP-212 notes (`Shielded::receive_pre_zip212_for_test`): the note encryption
+# trait sapling-crypto implements; already in Cargo.lock (sapling-crypto's own dependency).
+zcash_note_encryption = "=0.4.1"
 
 [build-dependencies]
 # The vendored Falcon C (`pq-c/falcon`, build.rs): the `cc` already in Cargo.lock (rusqlite's
@@ -139,6 +142,16 @@ zcash_proofs = { version = "=0.28.0", git = "https://github.com/boyfromcave/libr
 # `core/src/sapling_params.rs`): rustls through `tokio-rustls` (the version tonic's TLS already
 # links) with the Mozilla roots above; the SHA-256 pins, not the transport, are the integrity check.
 tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring"] }
+# review YEW-PORT-5 R3: the hybrid builder moved from yewd's signer (core/src/build/hybrid.rs,
+# native only), at the versions both Cargo.lock files already hold (no new crate, no new version).
+hex = "=0.4.3"
+incrementalmerkletree = "=0.8.2"
+orchard = { version = "=0.14.0", default-features = false }
+rand_core = { version = "=0.6.4", features = ["getrandom"] }
+# Real-stack run YEW-REAL finding 1 (2026-11-11, the beta2 decision): a
+# pre-ZIP-212 Sapling note's `rseed` is a Jubjub scalar (`Rseed::BeforeZip212(jubjub::Fr)`), so the
+# hybrid builder spends notes from before Canopy. The version both Cargo.lock files already hold.
+jubjub = { version = "=0.10.0", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }

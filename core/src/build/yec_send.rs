@@ -54,12 +54,27 @@ pub struct YecSendPreview {
     pub txid: [u8; 32],
 }
 
-/// Build and sign a YEC send of `amount` zat to `to`.
+/// The gate path of a YEC send to `to` (beta2 item 3): [`gate::Path::YecToPq`] for a decoded
+/// plain-YEC post-quantum address of this network, [`gate::Path::Yec`] for a P2PKH / P2SH one.
+/// A post-quantum YED (`ybf…`) or vault-owner address is refused with the reason
+/// (`keys::parse_yec_destination`).
+pub fn send_path(network: crate::params::Network, to: &str) -> Result<gate::Path, WalletError> {
+    Ok(match keys::parse_yec_destination(network, to)? {
+        keys::YecDestination::Pq(id) => gate::Path::YecToPq(id),
+        _ => gate::Path::Yec,
+    })
+}
+
+/// Build and sign a YEC send of `amount` zat to `to`. The coins come from one of the wallet's
+/// public addresses unless `allow_linking` (the user's go-ahead after
+/// [`coins::CoinError::LinkingNeeded`], beta2 D-5: ycashd's `z_sendmany` asks for `NoPrivacy`
+/// before it combines coins of several addresses for a transparent recipient).
 pub fn build_yec_send(
     wallet: &Wallet,
     to: &str,
     amount: i64,
     send_everything: bool,
+    allow_linking: bool,
     tip: u64,
     branch_id: u32,
 ) -> Result<YecSendPreview, WalletError> {
@@ -69,6 +84,7 @@ pub fn build_yec_send(
     // A post-quantum `sq…`/`tq…`/`rq…` is paid a `TX_PQPKH` (D-Q-20): the inputs stay the
     // wallet's P2PKH keys, so the transaction's size and fee are those of any YEC send.
     let dest_script = keys::parse_yec_destination(wallet.network, to)?.script();
+    let path = send_path(wallet.network, to)?;
     let (amount, amount_bumped) = if amount == TOKEN_VALUE {
         (amount + 1, true)
     } else {
@@ -76,7 +92,8 @@ pub fn build_yec_send(
     };
 
     let spendable = wallet.spendable_utxos()?;
-    let inputs = coins::select_yec(&spendable, amount + FEE_ZAT, send_everything)?;
+    let inputs =
+        coins::select_yec_linking(&spendable, amount + FEE_ZAT, send_everything, allow_linking)?;
     let total: i64 = inputs.iter().map(|u| u.value).sum();
     let mut fee = FEE_ZAT;
     let mut change = total - amount - fee;
@@ -119,9 +136,7 @@ pub fn build_yec_send(
     let raw = tx.serialize()?;
     let txid = tx.txid()?;
     // The gate sees the bytes that will be sent (D-W-5); `broadcast` runs it again.
-    gate::check(gate::Path::Yec, &raw, |op| {
-        wallet.store.utxo_class(op).ok().flatten()
-    })?;
+    gate::check(path, &raw, |op| wallet.store.utxo_class(op).ok().flatten())?;
     Ok(YecSendPreview {
         to: to.to_string(),
         amount,
@@ -148,9 +163,23 @@ pub async fn broadcast(
     validator: &mut Validator,
     preview: &YecSendPreview,
 ) -> Result<String, WalletError> {
-    gate::confirm(validator, gate::Path::Yec, &preview.raw, |op| {
+    // the has-held-YED guard (beta2 item 32): a wallet that held YED spends transparent YEC
+    // only where Yellowback tells its YED outputs apart
+    // beta2 item 3: a post-quantum recipient is its own path, whose dry run is mandatory
+    let path = send_path(wallet.network, &preview.to)?;
+    gate::refuse_held_absent(validator, path, wallet.has_held_yed()?)?;
+    gate::confirm(validator, path, &preview.raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
     })
+    .await?;
+    // layer 3: no input carries YED by its creating transaction (review YEW-REVIEW-3)
+    gate::confirm_provenance(
+        client,
+        path,
+        &preview.raw,
+        |op| wallet.store.utxo_class(op).ok().flatten(),
+        |op| wallet.store.utxo_txout(op).ok().flatten(),
+    )
     .await?;
     let reply = client.send_transaction(preview.raw.clone()).await?;
     let txid_str = txid_hex(&preview.txid);
@@ -240,6 +269,59 @@ mod tests {
         w
     }
 
+    /// beta2 D-5 (lane KG-YEWD-FIX): a send takes one public address's coins whenever one
+    /// address covers it; combining addresses (which links them on the chain, as ycashd's
+    /// `z_sendmany` refuses without `NoPrivacy`) needs the go-ahead, and the transaction then
+    /// spends both addresses' coins.
+    #[test]
+    fn a_send_links_public_addresses_only_with_the_go_ahead() {
+        // address 0: 40,000; address 1: 30,000 (wallet_with puts coin i at address row i)
+        let w = wallet_with(&[(40_000, UtxoClass::Yec), (30_000, UtxoClass::Yec)]);
+        let rows = w.addresses().unwrap();
+        assert!(rows.len() >= 2);
+        let to = keys::encode_p2pkh(Network::Regtest, &[0x42; 20]);
+        // 25,000: smallest-first would take the 30,000 coin alone: one address either way
+        let p = build_yec_send(&w, &to, 25_000, false, false, 100, 1).unwrap();
+        assert_eq!(coins::distinct_addresses(&p.inputs), 1);
+        assert_eq!(p.inputs[0].value, 30_000);
+        // 35,000: the 40,000 coin alone (one address), where the plain selector links both
+        let plain =
+            coins::select_yec(&w.spendable_utxos().unwrap(), 35_000 + FEE_ZAT, false).unwrap();
+        assert_eq!(coins::distinct_addresses(&plain), 2);
+        let p = build_yec_send(&w, &to, 35_000, false, false, 100, 1).unwrap();
+        assert_eq!(coins::distinct_addresses(&p.inputs), 1);
+        assert_eq!(p.inputs[0].value, 40_000);
+        // 60,000: no single address holds it; refused with the reason, nothing signed
+        let e = build_yec_send(&w, &to, 60_000, false, false, 100, 1).unwrap_err();
+        assert!(
+            matches!(
+                e,
+                WalletError::Coins(coins::CoinError::LinkingNeeded {
+                    need: 61_000,
+                    best_one: 40_000
+                })
+            ),
+            "{e}"
+        );
+        assert!(
+            e.to_string().contains("several of your public addresses"),
+            "{e}"
+        );
+        // the app sees its own kind, the go-ahead question (the dialog shows the text)
+        let y = crate::api::YewError::from(e);
+        assert_eq!(y.kind, crate::api::ErrorKind::AddressLinkingNeeded);
+        // with the go-ahead: both addresses, one transaction
+        let p = build_yec_send(&w, &to, 60_000, false, true, 100, 1).unwrap();
+        assert_eq!(coins::distinct_addresses(&p.inputs), 2);
+        let (tx, _) = Transaction::parse(&p.raw).unwrap();
+        assert_eq!(tx.vin.len(), 2);
+        // more than everything: insufficient, never the linking question
+        assert!(matches!(
+            build_yec_send(&w, &to, 100_000, false, false, 100, 1),
+            Err(WalletError::Coins(coins::CoinError::Insufficient { .. }))
+        ));
+    }
+
     #[test]
     fn builds_signed_send_with_change_and_bumps_token_value() {
         let w = wallet_with(&[
@@ -248,7 +330,7 @@ mod tests {
             (10_000, UtxoClass::Held),
         ]);
         let to = keys::encode_p2pkh(Network::Regtest, &[0x42; 20]);
-        let p = build_yec_send(&w, &to, TOKEN_VALUE, false, 100, 0x2bb4_0e60).unwrap();
+        let p = build_yec_send(&w, &to, TOKEN_VALUE, false, false, 100, 0x2bb4_0e60).unwrap();
         assert_eq!(p.amount, TOKEN_VALUE + 1);
         assert!(p.amount_bumped);
         assert_eq!(p.fee, FEE_ZAT);
@@ -262,23 +344,38 @@ mod tests {
         assert!(script::pushes(&tx.vin[0].script_sig).unwrap().len() == 2);
         assert!(!p.uses_reserve);
         // Change of exactly TOKEN_VALUE is lowered by one zat.
-        let q = build_yec_send(&w, &to, 50_000 - FEE_ZAT - TOKEN_VALUE, false, 100, 1).unwrap();
+        let q = build_yec_send(
+            &w,
+            &to,
+            50_000 - FEE_ZAT - TOKEN_VALUE,
+            false,
+            false,
+            100,
+            1,
+        )
+        .unwrap();
         assert_eq!(q.change, TOKEN_VALUE - 1);
         assert_eq!(q.fee, FEE_ZAT + 1);
         // Too much without the reserve; fine with it.
-        assert!(build_yec_send(&w, &to, 60_000, false, 100, 1).is_err());
-        let r = build_yec_send(&w, &to, 60_000, true, 100, 1).unwrap();
+        assert!(build_yec_send(&w, &to, 60_000, false, false, 100, 1).is_err());
+        // The reserve sits at another address than the coin (beta2 D-5): only with the go-ahead.
+        assert!(matches!(
+            build_yec_send(&w, &to, 60_000, true, false, 100, 1),
+            Err(WalletError::Coins(coins::CoinError::LinkingNeeded { .. }))
+        ));
+        let r = build_yec_send(&w, &to, 60_000, true, true, 100, 1).unwrap();
         assert!(r.uses_reserve);
         assert_eq!(r.inputs.len(), 2);
         // Dust change folds into the fee.
-        let s = build_yec_send(&w, &to, 50_000 - FEE_ZAT - 50, false, 100, 1).unwrap();
+        let s = build_yec_send(&w, &to, 50_000 - FEE_ZAT - 50, false, false, 100, 1).unwrap();
         assert_eq!(s.change, 0);
         assert_eq!(s.fee, FEE_ZAT + 50);
-        assert!(build_yec_send(&w, &to, 0, false, 100, 1).is_err());
+        assert!(build_yec_send(&w, &to, 0, false, false, 100, 1).is_err());
         assert!(build_yec_send(
             &w,
             &keys::encode_p2pkh(Network::Mainnet, &[1; 20]),
             5,
+            false,
             false,
             100,
             1
@@ -293,8 +390,8 @@ mod tests {
     #[test]
     fn pays_a_post_quantum_yec_address() {
         let w = wallet_with(&[(50_000, UtxoClass::Yec)]);
-        let to = "rq5MXCssfNHhhz8WuNL5bKAmUKc1k1Wx7TpG2fM8ks9Gz5cPeCqKa";
-        let p = build_yec_send(&w, to, 20_000, false, 100, 0x6d5b_7a31).unwrap();
+        let to = "rqf37MAujTiHQadywBQeNWk42bweehqf1UdcCrXg4oAqhqZQhCebM";
+        let p = build_yec_send(&w, to, 20_000, false, false, 100, 0x6d5b_7a31).unwrap();
         let (tx, _) = Transaction::parse(&p.raw).unwrap();
         let id = keys::parse_pq_yec_address(Network::Regtest, to).unwrap();
         assert_eq!(id.scheme, 2);
@@ -305,20 +402,41 @@ mod tests {
         assert_eq!(tx.vout[0].value, 20_000);
         assert_eq!((p.fee, p.change), (FEE_ZAT, 50_000 - 20_000 - FEE_ZAT));
         assert_eq!(p.to, to);
+        // beta2 item 3: its own gate path; the plain YEC path refuses the same bytes
+        assert_eq!(
+            send_path(Network::Regtest, to).unwrap(),
+            gate::Path::YecToPq(id)
+        );
+        let class = |op: &OutPoint| w.store.utxo_class(op).ok().flatten();
+        assert!(gate::check(gate::Path::YecToPq(id), &p.raw, class).is_ok());
+        assert_eq!(
+            gate::check(gate::Path::Yec, &p.raw, class).unwrap_err(),
+            gate::GateError::PqOutputOnYecPath(0)
+        );
+        let ecc = keys::encode_p2pkh(Network::Regtest, &[0x42; 20]);
+        assert_eq!(send_path(Network::Regtest, &ecc).unwrap(), gate::Path::Yec);
+        let q = build_yec_send(&w, &ecc, 20_000, false, false, 100, 1).unwrap();
+        assert!(gate::check(gate::Path::Yec, &q.raw, class).is_ok());
+        assert!(send_path(
+            Network::Regtest,
+            "yrf1yW8ubn3p8Wf9XWuksXcZs562YHJTTjqdnLuWym3qJQ8SeGH2b"
+        )
+        .is_err());
         for refused in [
-            "yr2VA5rANyC4wfgx6kmvLPy2LxuhHYitwJ8xazzFCdXa1gEZSXSRH",
-            "yr2UGYBxhHb8yzYYCjZ1HtJ8cNHP6tNJawkjC4L1wmRiGdFQVjNy5",
+            "yrf1yW8ubn3p8Wf9XWuksXcZs562YHJTTjqdnLuWym3qJQ8SeGH2b",
+            "yrs2wCox3ZNcy8vFFh8wejMoNVDfSRKfdjwrp3q4fipDxaJRZPzW3",
             "sq4ekeYR7pAE7ByLpq428jfiHrrsVyMnSTs58MNJeFMXDFL63vTbT",
         ] {
             assert!(
-                build_yec_send(&w, refused, 20_000, false, 100, 1).is_err(),
+                build_yec_send(&w, refused, 20_000, false, false, 100, 1).is_err(),
                 "{refused}"
             );
         }
         let e = build_yec_send(
             &w,
-            "yr2VA5rANyC4wfgx6kmvLPy2LxuhHYitwJ8xazzFCdXa1gEZSXSRH",
+            "yrf1yW8ubn3p8Wf9XWuksXcZs562YHJTTjqdnLuWym3qJQ8SeGH2b",
             20_000,
+            false,
             false,
             100,
             1,
@@ -341,14 +459,14 @@ mod tests {
                 0,
             )
             .unwrap();
-        assert!(build_yec_send(&w, &to, 1_000, false, 100, 1).is_err());
+        assert!(build_yec_send(&w, &to, 1_000, false, false, 100, 1).is_err());
         w.store
             .unlock(&OutPoint {
                 txid: [1; 32],
                 n: 0,
             })
             .unwrap();
-        let p = build_yec_send(&w, &to, 1_000, false, 100, 1).unwrap();
+        let p = build_yec_send(&w, &to, 1_000, false, false, 100, 1).unwrap();
         let (tx, _) = Transaction::parse(&p.raw).unwrap();
         assert_eq!(tx.vout[0].script_pubkey, script::p2sh_script(&[0x42; 20]));
     }

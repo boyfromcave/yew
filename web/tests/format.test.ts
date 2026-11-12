@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatPriceLine, formatYec, formatYecDelta, formatYed, formatYedDelta, parseYecZat, parseYedCents, ratioPct, shorten } from "../src/format";
+import { formatPriceLine, formatSigning, formatYec, formatYecDelta, formatYed, formatYedDelta, parseYecZat, parseYedCents, ratioPct, shorten } from "../src/format";
 
 describe("format (translated from app/lib/format.dart)", () => {
   it("YED from cents", () => {
@@ -14,5 +14,9 @@ describe("format (translated from app/lib/format.dart)", () => {
   it("price line and ratio", () => {
     expect(formatPriceLine("52")).toBe("1 YED = $1.00 · mint price 1.92 YEC"); expect(formatPriceLine("0")).toContain("unavailable");
     expect(ratioPct("200000000", "100", "52")).toBe(104); expect(shorten("a".repeat(40))).toBe("aaaaaaaaaa…aaaaaa");
+  });
+  it("signing time: the core's None arrives as undefined and reads \"not measured\" (WEB-REAL: it read \"NaN s\")", () => {
+    expect(formatSigning(undefined)).toBe("not measured in the browser"); expect(formatSigning(null)).toBe("not measured in the browser");
+    expect(formatSigning(NaN)).toBe("not measured in the browser"); expect(formatSigning(250)).toBe("0.25 s on this device"); expect(formatSigning(1500)).toBe("1.5 s on this device");
   });
 });

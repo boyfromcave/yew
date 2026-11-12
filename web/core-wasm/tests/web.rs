@@ -19,6 +19,9 @@ use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
+/// The sync progress events a test collects: (phase, pct, height, tip).
+type SyncEvents = Rc<RefCell<Vec<(String, u64, u64, u64)>>>;
+
 const LWD: &str = match option_env!("YEW_WEB_LWD") {
     Some(u) => u,
     None => "http://localhost:9067",
@@ -229,7 +232,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
     );
 
     // The progress callback: every event of the first sync.
-    let events: Rc<RefCell<Vec<(String, u64, u64, u64)>>> = Rc::new(RefCell::new(Vec::new()));
+    let events: SyncEvents = Rc::new(RefCell::new(Vec::new()));
     let sink = events.clone();
     let cb = Closure::<dyn Fn(JsValue)>::new(move |ev: JsValue| {
         sink.borrow_mut().push((
@@ -347,6 +350,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
         foreign.clone(),
         JsValue::from_str(&SEND_T_ZAT.to_string()),
         None,
+        None,
     )
     .await
     .expect("t→t preview");
@@ -363,7 +367,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
         field_u64(&p, "inputs")
     );
     let t3 = now();
-    let c = yew_web_core::confirm(preview_id.clone())
+    let c = yew_web_core::confirm(preview_id.clone(), None)
         .await
         .expect("t→t confirm");
     console_log!(
@@ -373,7 +377,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
         now() - t3
     );
     assert_eq!(field_str(&c, "txid"), preview_id);
-    let e = yew_web_core::confirm(preview_id.clone())
+    let e = yew_web_core::confirm(preview_id.clone(), None)
         .await
         .expect_err("consumed");
     assert!(message(&e).starts_with("invalid: This preview is no longer valid"));
@@ -420,6 +424,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
     let p = yew_web_core::move_preview(
         "to_private".into(),
         JsValue::from_str(&SHIELD_ZAT.to_string()),
+        None,
     )
     .await
     .expect("shield preview");
@@ -429,12 +434,14 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
     let shield_id = field_str(&p, "previewId");
     let shield_fee = field_amt(&p, "fee");
     if !field_bool(&ps, "present") {
-        let e = yew_web_core::confirm(shield_id.clone())
+        let e = yew_web_core::confirm(shield_id.clone(), None)
             .await
             .expect_err("no params yet");
         assert!(message(&e).starts_with("params: "), "{}", message(&e));
     }
-    let params_url = option_env!("YEW_WEB_PARAMS_URL").expect("YEW_WEB_PARAMS_URL");
+    let Some(params_url) = option_env!("YEW_WEB_PARAMS_URL") else {
+        panic!("YEW_WEB_PARAMS_URL")
+    };
     let fetch_events: Rc<RefCell<Vec<(String, u64, u64)>>> = Rc::new(RefCell::new(Vec::new()));
     let sink = fetch_events.clone();
     let fcb = Closure::<dyn Fn(JsValue)>::new(move |ev: JsValue| {
@@ -481,7 +488,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
     );
 
     let t7 = now();
-    let c = yew_web_core::confirm(shield_id.clone())
+    let c = yew_web_core::confirm(shield_id.clone(), None)
         .await
         .expect("shield confirm");
     let shield_txid = field_str(&c, "txid");
@@ -521,6 +528,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
         other.clone(),
         JsValue::from_str(&SEND_Z_ZAT.to_string()),
         Some(MEMO.into()),
+        None,
     )
     .await
     .expect("z→z preview");
@@ -534,7 +542,9 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
     let z_id = field_str(&p, "previewId");
     let z_fee = field_amt(&p, "fee");
     let t8 = now();
-    let c = yew_web_core::confirm(z_id).await.expect("z→z confirm");
+    let c = yew_web_core::confirm(z_id, None)
+        .await
+        .expect("z→z confirm");
     let z_txid = field_str(&c, "txid");
     console_log!(
         "yew-web-core: z→z {z_txid} (fee {z_fee}) proved and broadcast in {:.0} ms",
@@ -587,13 +597,14 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
         foreign.clone(),
         JsValue::from_str("1000"),
         Some("x".into()),
+        None,
     )
     .await
     .expect_err("memo to t");
     assert!(message(&e).starts_with("invalid: "), "{}", message(&e));
     // A shielded recipient is paid from the private pool: a transparent recipient too when
     // the notes cover it (the amber line).
-    let p = yew_web_core::send_yec_preview(foreign.clone(), JsValue::from_str("1000"), None)
+    let p = yew_web_core::send_yec_preview(foreign.clone(), JsValue::from_str("1000"), None, None)
         .await
         .expect("reveal preview");
     assert_eq!(field_str(&p, "funding"), "shielded");
@@ -623,7 +634,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
         field_str(&m, "attestStatus"),
         field(&m, "mintableClasses")
     );
-    match yew_web_core::mint_estimate(JsValue::from_str("100"), 48).await {
+    match yew_web_core::mint_estimate(JsValue::from_str("100"), 48, None).await {
         Ok(e) => console_log!(
             "yew-web-core: mint_estimate: collateral {} total {} affordable {} armed {}",
             field_amt(&e, "collateralZat"),
@@ -636,10 +647,13 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
             assert!(!field_bool(&m, "allowed") || message(&e).starts_with("build: "));
         }
     }
-    let e = yew_web_core::mint_estimate(JsValue::from_str("0"), 48)
+    let e = yew_web_core::mint_estimate(JsValue::from_str("0"), 48, None)
         .await
         .expect_err("zero");
     assert!(message(&e).starts_with("invalid: "));
+    // review YEW-REVIEW-10 L2: a start takes only an estimate id the core issued
+    let e = yew_web_core::mint_start("e-not-issued".into(), JsValue::NULL).expect_err("unknown id");
+    assert!(message(&e).starts_with("invalid: "), "{}", message(&e));
     let cl = yew_web_core::claimable().await.expect("claimable");
     console_log!(
         "yew-web-core: claimable: {} rows",

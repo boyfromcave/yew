@@ -358,6 +358,9 @@ void main() {
             feeZat: est.feeZat,
             payee: est.payee,
             termClass: est.termClass,
+            from: est.from,
+            carrierFeeZat: est.carrierFeeZat,
+            allowNoteLookup: false,
           ),
         )
         .catchError((Object e) => fail('mintStart: ${messageOf(e)}'));

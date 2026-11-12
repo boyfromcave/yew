@@ -118,6 +118,9 @@ pub struct Opts {
     /// `-sendchangeback` (default off): transparent change returns to the largest input's
     /// address instead of a new change key.
     pub send_change_back: bool,
+    /// `-yellowback=0`: a wallet that has held YED may spend as plain YEC while the node reports
+    /// Yellowback not live (its YED outputs are then not locked; each such send logs a warning).
+    pub yellowback_ack: bool,
 }
 
 impl Default for Opts {
@@ -128,6 +131,7 @@ impl Default for Opts {
             paytxfee: 0,
             params_dir: None,
             send_change_back: false,
+            yellowback_ack: false,
         }
     }
 }
@@ -731,6 +735,14 @@ impl Wallet {
             .into_iter()
             .collect();
             for (k, v) in &expect {
+                // A dump written before D-9 names the key in the 2-byte-version form: it still
+                // matches (the one place that form is read, as ycashd's z_importpqkey).
+                if *k != "owner"
+                    && yew_core::keys::parse_legacy_pq_address(self.network, v, *k == "addr")
+                        == Some(id)
+                {
+                    continue;
+                }
                 if *v != have[k] {
                     return Err(RpcError::new(code::INVALID_ADDRESS_OR_KEY, format!(
                         "the line's {k}={v} does not match the key its seed makes under scheme {scheme} ({}); nothing imported",

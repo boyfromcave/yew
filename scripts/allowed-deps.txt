@@ -60,3 +60,17 @@ web-sys
 # Quantum plan Q7 (2026-10-10): SLH-DSA-SHA2-128s vault owners (core/src/pq.rs), RustCrypto `slh-dsa` =0.1.0
 # (FIPS 205 final; client survey §1: the version that resolves beside bip32's pre-release pins).
 slh-dsa
+# Review YEW-PORT-5 R3 (2026-11-11): the hybrid builder (a transparent transaction with a Sapling
+# part) moved from yewd's signer into core/src/build/hybrid.rs, native only. Its crates, at the
+# versions both Cargo.lock files already held through librustzcash6 (no new crate or version):
+# hex 0.4.3, incrementalmerkletree 0.8.2, orchard 0.14.0 (the transaction's Orchard authorization
+# type only), rand_core 0.6.4 (OsRng). Pending the Yellowback lead architect's recorded decision
+# in the wallet plan (§3.3).
+hex
+incrementalmerkletree
+orchard
+rand_core
+# Real-stack run YEW-REAL finding 1 (2026-11-11, the beta2 decision; plan §3.3):
+# spending a Sapling note from before Canopy (pre-ZIP-212, mainnet below height 1,100,006) in the hybrid
+# builder, whose `rseed` is a Jubjub scalar. jubjub 0.10.0, already in both Cargo.lock files (no new crate).
+jubjub

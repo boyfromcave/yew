@@ -1,9 +1,9 @@
 import { mount } from "../dom";
 import { clear, go, h } from "../dom";
 import { formatYec, formatYed, shorten } from "../format";
-import type { Vault } from "../core";
+import type { Balances, Vault } from "../core";
 import { YellowbackVm } from "../vm/yellowback";
-import { errorCard, feeLine, previewCard, resultCard, slideToConfirm } from "../widgets";
+import { errorCard, feeLine, previewCard, resultCard, slideToConfirm, unusualFeeCard } from "../widgets";
 
 /** The owner's redeem: open at any height after the mint (in-term claims, D-IT-15); before the term ends it
  *  pays the early-redeem fee, so the label says which of the two a redeem now would be. */
@@ -33,7 +33,7 @@ export function renderYellowback(root: HTMLElement, vm: YellowbackVm, yedCents: 
     const s = vm.state;
     if (s.txid && !s.mint) { mount(root, resultCard("Sent", s.txid, () => { vm.reset(); draw(); })); return; }
     const vaults = s.vaults.filter((v) => v.open);
-    mount(root, h("h2", null, "Yellowback"), h("div", { class: "card" }, h("h3", null, "YED you hold"), h("div", { class: "big yed" }, formatYed(yedCents)),
+    mount(root, h("h2", null, "Yellowback"), h("div", { class: "card" }, h("h3", null, "YED you hold"), h("div", { class: "big yed" }, yedCents ? formatYed(yedCents) : "—"),
         h("div", { class: "actions" }, h("button", { on: { click: () => go("mint") } }, "Mint"), h("button", { class: "secondary", on: { click: () => go("claimable") } }, "Claimable"))),
       errorCard(s.error, s.errorKind),
       h("h3", null, "Your vaults"), vaults.length === 0 ? h("p", { class: "small" }, "No open vault. Mint YED to open one.") : null,
@@ -45,7 +45,7 @@ export function renderYellowback(root: HTMLElement, vm: YellowbackVm, yedCents: 
   draw(); vm.load(); return vm.subscribe(draw);
 }
 
-export function renderMint(root: HTMLElement, vm: YellowbackVm) {
+export function renderMint(root: HTMLElement, vm: YellowbackVm, balances: () => Balances | null = () => null) {
   const draw = () => {
     clear(root);
     const s = vm.state; const e = s.estimate; const a = s.availability;
@@ -53,21 +53,39 @@ export function renderMint(root: HTMLElement, vm: YellowbackVm) {
     const amount = h("input", { type: "text", inputmode: "decimal", placeholder: "25.00", value: e ? (Number(e.cents) / 100).toFixed(2) : "" });
     const lock = h("input", { type: "number", min: 1, value: e ? String(e.lockBlocks) : "100" });
     const halted = a !== null && !a.allowed;
-    mount(root, h("h2", null, "Mint YED"), h("p", { class: "small" }, "YED is minted against public YEC locked in a vault; redeem at any time after the lock, a liquidator may claim once the grace period after it has passed."),
+    // beta2 D-3: "Fund from" — the public balance or one of the wallet's post-quantum addresses, each
+    // with its balance; funding from the private balance is the app's (one line says so)
+    const b = balances();
+    const fromSelect = h("select", { disabled: !!e, "aria-label": "Fund from", on: { change: () => vm.setFrom(fromSelect.value) } },
+      h("option", { value: "", selected: s.from === "" }, `Public · ${b ? formatYec(BigInt(b.yecZat) + BigInt(b.yecReservedZat)) : "—"} YEC`),
+      s.sources.map((x) => h("option", { value: x.address, selected: s.from === x.address }, `Post-quantum ${x.schemeName} · ${shorten(x.address, 6, 4)} · ${formatYec(x.balanceZat)} YEC`)));
+    const fromPrivate = vm.unavailableReason("mint_from_private");
+    const source = (from: string) => from ? `post-quantum · ${shorten(from, 6, 4)}` : "your public balance";
+    mount(root, h("h2", null, "Mint YED"), h("p", { class: "small" }, "YED is minted against YEC locked in a vault; redeem at any time after the lock, a liquidator may claim once the grace period after it has passed."),
       a === null ? h("p", { class: "small" }, "Asking the node whether minting is open…") : h("p", { class: halted ? "warn" : "small" }, halted ? a.reason : `Minting is open · ${a.attestStatus}${a.mintableClasses.length ? ` · classes ${a.mintableClasses.join(", ")}` : ""}`),
-      h("label", null, "Amount to mint, $"), amount, h("label", null, "Lock, in blocks"), lock, errorCard(s.error, s.errorKind),
+      h("label", null, "Amount to mint, $"), amount, h("label", null, "Lock, in blocks"), lock,
+      h("label", null, "Fund from"), fromSelect,
+      fromPrivate ? h("p", { class: "small", "data-shape": "mint_from_private" }, `Private: ${fromPrivate}`) : null,
+      errorCard(s.error, s.errorKind),
       !e ? h("div", { class: "actions" }, h("button", { disabled: s.busy || halted, on: { click: () => vm.estimate(amount.value, Number(lock.value)) } }, s.busy ? "Asking the node…" : "Estimate")) : null,
-      e && !s.mint ? [previewCard(`Mint ${formatYed(e.cents)}`, [["Collateral to lock", `${formatYec(e.collateralZat)} YEC`], ["Term class", e.termClass], ["Redeem from height", String(e.lockHeight)], ["Claimable from height", String(e.claimHeight)], ["Enforcement fee", feeLine(e.feeZat)], ["Fee payee", e.payee || "none (FEE-0)"], ["Total from your public balance", `${formatYec(e.totalZat)} YEC`], ["Expires if not minted by", String(e.expiryHeight)]],
-          e.affordable ? undefined : `Your public balance (${formatYec(e.availableZat)} YEC) does not cover it.`),
-        h("div", { class: "actions" }, h("button", { disabled: s.busy || !e.affordable, on: { click: () => vm.mintStart() } }, s.busy ? "Preparing…" : "Start: fund the carrier"), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Change the amount"))] : null,
-      e && s.mint && s.mintId === null ? [previewCard("Step 1 of 2: the carrier", [["Carrier funds", `${formatYec(e.collateralZat)} YEC + fees`], ["Then", "the MINT locks the vault"]]), slideToConfirm("Slide to fund the carrier", () => vm.mintConfirm(), s.busy)] : null,
+      e && !s.mint ? [previewCard(`Mint ${formatYed(e.cents)}`, [["Collateral to lock", `${formatYec(e.collateralZat)} YEC`], ["Term class", e.termClass], ["Redeem from height", String(e.lockHeight)], ["Claimable from height", String(e.claimHeight)], ["Enforcement fee", feeLine(e.feeZat)], ["Fee payee", e.payee || "none (FEE-0)"],
+          ["Funded from", source(e.from)], ["Carrier fee", e.from ? `${feeLine(e.carrierFeeZat)} (priced on its signature size)` : feeLine(e.carrierFeeZat)], ["Network fees", `${feeLine(e.networkFeeZat)} (two transactions)`],
+          [`Total from ${source(e.from)}`, `${formatYec(e.totalZat)} YEC`], ["Expires if not minted by", String(e.expiryHeight)]],
+          e.affordable ? undefined : `${e.from ? "This post-quantum address" : "Your public balance"} (${formatYec(e.availableZat)} YEC) does not cover it.`),
+        unusualFeeCard(e.carrierFeeNote, s.carrierFeeAccepted, () => vm.acceptCarrierFee()),
+        h("div", { class: "actions" }, h("button", { disabled: s.busy || !e.affordable || (!!e.unusualCarrierFeeAck && !s.carrierFeeAccepted), on: { click: () => vm.mintStart() } }, s.busy ? "Preparing…" : "Start: fund the carrier"), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Change the amount"))] : null,
+      e && s.mint && s.mintId === null ? [previewCard("Step 1 of 2: the carrier", [["Carrier funds", `${formatYec(e.collateralZat)} YEC + fees`], ["Then", "the MINT locks the vault"]]),
+        unusualFeeCard(e.feeNote, s.feeAccepted, () => vm.acceptFee()),
+        slideToConfirm("Slide to fund the carrier", () => vm.mintConfirm(), s.busy || (!!e.unusualFeeAck && !s.feeAccepted))] : null,
+      s.finishFee ? [unusualFeeCard(s.finishFee.note, s.feeAccepted, () => vm.acceptFee()),
+        s.feeAccepted ? slideToConfirm("Slide to mint at this fee", () => vm.acceptFinishFee(), s.busy) : null] : null,
       s.mintId !== null && s.mintStatus?.inProgress ? [h("div", { class: "card" }, h("h3", null, "Step 2 of 2: the mint"), h("p", { class: "small" }, `carrier ${shorten(s.mintStatus.carrierTxid || s.txid)} · ${s.mintStatus.state}${s.mintStatus.note ? ` · ${s.mintStatus.note}` : ""}`),
         s.step && s.mintStatus.canFinish ? slideToConfirm("Slide to mint", () => vm.mintStepConfirm(), s.busy) : null,
         h("div", { class: "actions" }, !s.mintStatus.canFinish ? h("button", { disabled: s.busy, on: { click: () => vm.mintFinish() } }, "Check the carrier") : null,
           s.mintStatus.canSweep ? h("button", { class: "secondary", on: { click: () => vm.mintSweep() } }, "Window closed: sweep the carrier") : null,
           s.step && s.mintStatus.canSweep && !s.mintStatus.canFinish ? slideToConfirm("Slide to sweep", () => vm.mintStepConfirm(), s.busy) : null))] : null);
   };
-  draw(); if (!vm.state.availability) vm.loadAvailability(); return vm.subscribe(draw);
+  draw(); if (!vm.state.availability) vm.loadAvailability(); if (!vm.state.unavailable.length) vm.loadSources(); return vm.subscribe(draw);
 }
 
 export function renderVault(root: HTMLElement, vm: YellowbackVm, vaultTxid: string) {
@@ -98,7 +116,8 @@ export function renderClaimable(root: HTMLElement, vm: YellowbackVm) {
       !s.claim ? (s.claimable.length === 0 && !s.busy ? h("p", null, "Nothing is claimable right now.") : h("ul", { class: "list" }, s.claimable.map((c) => h("li", { on: { click: () => vm.claimPreview(c.vaultTxid) } },
         h("span", null, h("div", null, `${formatYed(c.cents)} debt · ${formatYec(c.collateralZat)} YEC`), h("div", { class: "small" }, `you keep about ${formatYec(c.claimantZat)} YEC · clause ${c.claimPath} · ${shorten(c.ownerAddress, 8, 4)}`)))))) : null,
       s.claim ? [previewCard("Claim", [["YED burned (at most)", formatYed(s.claim.maxBurnCents)], ["You receive (at least)", `${formatYec(s.claim.minOutZat)} YEC`], ["Enforcement fee", feeLine(s.claim.item.feeZat)], ["Clause", s.claim.item.claimPath]]),
-        slideToConfirm("Slide to claim", () => vm.confirm(), s.busy), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Cancel")] : null);
+        unusualFeeCard(s.claim.feeNote, s.feeAccepted, () => vm.acceptFee()),
+        slideToConfirm("Slide to claim", () => vm.confirm(), s.busy || (!!s.claim.unusualFeeAck && !s.feeAccepted)), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Cancel")] : null);
   };
   draw(); vm.loadClaimable(); return vm.subscribe(draw);
 }

@@ -73,7 +73,8 @@ pub struct State {
     pub birthday: u32,
     pub created: i64,
     pub issued: Issued,
-    /// Keyed by the address ycashd keys its book by: `s…` for P2PKH, `sq…` for a PQ holder.
+    /// Keyed by the address ycashd keys its book by: `s…` for P2PKH, `sqf…`/`sqs…` (D-9) for a PQ
+    /// holder.
     pub book: BTreeMap<String, BookEntry>,
     /// PQ owner keys handed out (`vault_getnewowner`, `yed_getnewaddress "pqowner"`), pqkeyid hex.
     pub owners: BTreeSet<String>,
@@ -107,6 +108,33 @@ pub struct State {
     /// Redeem scripts this wallet knows (`addmultisigaddress`): P2SH address → script hex.
     #[serde(default)]
     pub scripts: BTreeMap<String, String>,
+    /// A submission whose answer was lost (review M1): until the wallet learns whether the node
+    /// has it, its inputs stay locked and the next submission is refused once with the outcome.
+    #[serde(default)]
+    pub unknown: Option<UnknownSubmit>,
+    /// "Has held YED" (beta2, the C++ lines' wallet.dat `yedheld` record): set once, never
+    /// cleared, when the wallet first sees a YED token output of its own, commits a transaction
+    /// whose payload assigns it YED, or issues a holder key (`yed_getnewaddress` p2pkh or pq, not
+    /// pqowner). Absent in older wallet files: false.
+    #[serde(default)]
+    pub yed_held: bool,
+}
+
+/// A transaction handed to `sendrawtransaction` whose answer never came (a transport error or a
+/// timeout), so the wallet cannot say whether it was accepted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnknownSubmit {
+    pub txid: String,
+    /// The locks (`txid:n`) placed on its inputs when the answer was lost, released only once
+    /// the transaction is certainly dead (review YEW-REVIEW-3 L1).
+    pub locked: Vec<String>,
+    /// Its `nExpiryHeight` (0: never expires; also what a record written before this field
+    /// reads as). Dead once the chain's tip reaches it: no later block may include it.
+    #[serde(default)]
+    pub expiry_height: u32,
+    /// All its inputs (`txid:n`), locked or not: dead once one is spent by another transaction.
+    #[serde(default)]
+    pub inputs: Vec<String>,
 }
 
 /// A carrier (`CarrierRecord`): its key (external chain index), the bundle it commits to, its
@@ -145,6 +173,8 @@ impl State {
             expired: BTreeMap::new(),
             evicted: BTreeMap::new(),
             scripts: BTreeMap::new(),
+            unknown: None,
+            yed_held: false,
         }
     }
 
@@ -175,6 +205,11 @@ impl State {
         }
     }
 
+    /// D-9: see [`migrate_pq_book`].
+    pub fn migrate_pq_book(&mut self, network: yew_core::params::Network) -> PqBookMigration {
+        migrate_pq_book(&mut self.book, network)
+    }
+
     /// Write atomically (temporary file, fsync, rename).
     pub fn save(&self, path: &Path) -> Result<(), String> {
         use std::io::Write;
@@ -190,5 +225,192 @@ impl State {
             .and_then(|_| f.sync_all())
             .map_err(|e| format!("{}: {e}", tmp.display()))?;
         std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    }
+}
+
+/// What [`migrate_pq_book`] did: how many keys it rewrote, and the warnings to log (a dropped
+/// label of a key the book held in both forms; an old-form key with an unregistered scheme byte,
+/// left in the book as it is).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PqBookMigration {
+    pub rewritten: usize,
+    pub warnings: Vec<String>,
+}
+
+/// D-9: rewrite every address-book key written in the pre-D-9 post-quantum form (`sq…`/`tq…`/
+/// `rq…` + a digit, `version2 ‖ scheme ‖ keyHash`) to the D-9 form of the same key (`sqf…`/
+/// `sqs…`, …), as ycashd rewrites its address-book records once at load. The old form is never an
+/// address, so no other key changes. When the book already holds the D-9 form of the same key,
+/// that entry stays; it takes the old entry's label and purpose if its own label is empty, and
+/// two different non-empty labels keep the new one with a warning naming both. An old-form key
+/// whose scheme byte is outside the registry is left in the book, with a warning.
+pub fn migrate_pq_book(
+    book: &mut BTreeMap<String, BookEntry>,
+    network: yew_core::params::Network,
+) -> PqBookMigration {
+    use yew_core::keys;
+    let mut r = PqBookMigration::default();
+    let (_, plain) = network.legacy_pq_versions();
+    let mut old: Vec<(String, String)> = Vec::new();
+    for a in book.keys() {
+        match keys::parse_legacy_pq_address(network, a, false) {
+            Some(id) => {
+                if let Some(to) = keys::encode_pq_yec(network, &id) {
+                    old.push((a.clone(), to));
+                }
+            }
+            None => {
+                // the old form's shape (35 bytes under the old version) with a scheme byte
+                // outside the registry: kept, unread
+                if let Ok(payload) = keys::base58check_decode(a) {
+                    if payload.len() == 35 && payload[..2] == plain {
+                        r.warnings.push(format!(
+                            "address book: {a} is a pre-D-9 post-quantum address with the unregistered scheme byte {}; left as it is",
+                            payload[2]
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    for (from, to) in &old {
+        let Some(e) = book.remove(from) else { continue };
+        match book.get_mut(to) {
+            None => {
+                book.insert(to.clone(), e);
+            }
+            Some(have) if have.label.is_empty() => {
+                *have = e;
+            }
+            Some(have) => {
+                if !e.label.is_empty() && e.label != have.label {
+                    r.warnings.push(format!(
+                        "address book: {from} and {to} are one key; kept the label {:?} of {to}, dropped {:?} of {from}",
+                        have.label, e.label
+                    ));
+                }
+            }
+        }
+        r.rewritten += 1;
+    }
+    r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yew_core::keys;
+    use yew_core::params::Network;
+    use yew_core::pq::PqKeyId;
+
+    /// D-9: a book written before D-9 keys a post-quantum address by its old form; at load it is
+    /// keyed by the D-9 form of the same key, its label and purpose kept, every other key as is.
+    #[test]
+    fn migrate_pq_book_rewrites_the_pre_d9_form() {
+        let net = Network::Regtest;
+        let mut book = BTreeMap::new();
+        let entry = |l: &str| BookEntry {
+            label: l.into(),
+            purpose: "receive".into(),
+        };
+        let ids = [1u8, 2].map(|scheme| PqKeyId {
+            scheme,
+            hash: [scheme * 7; 32],
+        });
+        for (i, id) in ids.iter().enumerate() {
+            let mut old = net.legacy_pq_versions().1.to_vec();
+            old.extend_from_slice(&id.to_bytes());
+            book.insert(keys::base58check_encode(&old), entry(&format!("pq{i}")));
+        }
+        let p2pkh = keys::encode_p2pkh(net, &[5; 20]);
+        book.insert(p2pkh.clone(), entry("ecc"));
+        assert_eq!(migrate_pq_book(&mut book, net).rewritten, 2);
+        assert_eq!(book.len(), 3);
+        assert_eq!(book[&p2pkh].label, "ecc");
+        for (i, id) in ids.iter().enumerate() {
+            let a = keys::encode_pq_yec(net, id).unwrap();
+            assert_eq!(book[&a].label, format!("pq{i}"));
+        }
+        assert_eq!(migrate_pq_book(&mut book, net), PqBookMigration::default());
+    }
+    fn old_form(net: Network, id: &PqKeyId) -> String {
+        let mut old = net.legacy_pq_versions().1.to_vec();
+        old.extend_from_slice(&id.to_bytes());
+        keys::base58check_encode(&old)
+    }
+
+    fn entry(label: &str, purpose: &str) -> BookEntry {
+        BookEntry {
+            label: label.into(),
+            purpose: purpose.into(),
+        }
+    }
+
+    /// Review of stage 1, finding 1: a key the book holds in both forms keeps one entry, the D-9
+    /// one; an empty new label takes the old label and purpose; two different labels keep the
+    /// new one and warn naming both; equal labels warn nothing.
+    #[test]
+    fn migrate_pq_book_merges_a_key_held_in_both_forms() {
+        let net = Network::Regtest;
+        let id = |b: u8| PqKeyId {
+            scheme: 2,
+            hash: [b; 32],
+        };
+        let mut book = BTreeMap::new();
+        // empty new label: the old entry wins
+        book.insert(old_form(net, &id(1)), entry("old1", "send"));
+        book.insert(
+            keys::encode_pq_yec(net, &id(1)).unwrap(),
+            entry("", "receive"),
+        );
+        // both labelled, different: the new one stays, with a warning
+        book.insert(old_form(net, &id(2)), entry("old2", "send"));
+        book.insert(
+            keys::encode_pq_yec(net, &id(2)).unwrap(),
+            entry("new2", "receive"),
+        );
+        // both labelled the same: no warning
+        book.insert(old_form(net, &id(3)), entry("same", "receive"));
+        book.insert(
+            keys::encode_pq_yec(net, &id(3)).unwrap(),
+            entry("same", "receive"),
+        );
+        let m = migrate_pq_book(&mut book, net);
+        assert_eq!(m.rewritten, 3);
+        assert_eq!(book.len(), 3);
+        assert_eq!(
+            book[&keys::encode_pq_yec(net, &id(1)).unwrap()],
+            entry("old1", "send")
+        );
+        assert_eq!(
+            book[&keys::encode_pq_yec(net, &id(2)).unwrap()],
+            entry("new2", "receive")
+        );
+        assert_eq!(
+            book[&keys::encode_pq_yec(net, &id(3)).unwrap()],
+            entry("same", "receive")
+        );
+        assert_eq!(m.warnings.len(), 1, "{:?}", m.warnings);
+        let w = &m.warnings[0];
+        assert!(w.contains("\"new2\"") && w.contains("\"old2\""), "{w}");
+        assert!(w.contains(&old_form(net, &id(2))), "{w}");
+    }
+
+    /// Review of stage 1, finding 2: an old-form key with a scheme byte outside the registry is
+    /// left in the book and warned about once per load.
+    #[test]
+    fn migrate_pq_book_warns_on_an_unregistered_scheme() {
+        let net = Network::Regtest;
+        let mut payload = net.legacy_pq_versions().1.to_vec();
+        payload.push(9);
+        payload.extend_from_slice(&[4; 32]);
+        let odd = keys::base58check_encode(&payload);
+        let mut book = BTreeMap::new();
+        book.insert(odd.clone(), entry("odd", "receive"));
+        let m = migrate_pq_book(&mut book, net);
+        assert_eq!(m.rewritten, 0);
+        assert_eq!(m.warnings.len(), 1);
+        assert!(m.warnings[0].contains(&odd) && m.warnings[0].contains("scheme byte 9"));
+        assert_eq!(book[&odd], entry("odd", "receive"));
     }
 }

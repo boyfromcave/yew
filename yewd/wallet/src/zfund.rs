@@ -12,6 +12,7 @@
 
 use yewd_proto::{SaplingOut, SaplingPart, SaplingSpend};
 
+use crate::mint::FundShort;
 use crate::node::Node;
 use crate::{code, RpcError, Wallet};
 
@@ -32,21 +33,14 @@ impl Wallet {
         zaddr: &str,
         needed: i64,
         what: &str,
+        limit: usize,
     ) -> Result<(Vec<SaplingSpend>, String, i64), RpcError> {
         if self.view.owns_address(zaddr).is_none() {
             return Err(crate::mint::build_error(format!(
                 "bad-address: no spending key for {zaddr} in this wallet"
             )));
         }
-        let mut notes: Vec<crate::NoteRow> = self
-            .notes
-            .iter()
-            .filter(|n| {
-                !n.spent && n.address == zaddr && self.depth(n.height) >= 1 && n.position.is_some()
-            })
-            .cloned()
-            .collect();
-        notes.sort_by(|a, b| b.value.cmp(&a.value));
+        let notes = self.z_spendable(zaddr);
         let available: i64 = notes.iter().map(|n| n.value as i64).sum();
         let mut sel = Vec::new();
         let mut sum = 0i64;
@@ -64,9 +58,9 @@ impl Wallet {
                 crate::rpc::format_money(available)
             )));
         }
-        if sel.len() > MAX_SAPLING_SPENDS {
+        if sel.len() > limit {
             return Err(crate::mint::build_error(format!(
-                "too-many-notes: the {what} would spend {} Sapling notes (limit {MAX_SAPLING_SPENDS}); consolidate with z_mergetoaddress first",
+                "too-many-notes: the {what} would spend {} Sapling notes (limit {limit}); consolidate with z_mergetoaddress first",
                 sel.len()
             )));
         }
@@ -91,6 +85,29 @@ impl Wallet {
             })
             .collect();
         Ok((spends, anchor, sum))
+    }
+
+    /// The notes `SelectSapling` chooses from: this address's, unspent, confirmed, with a
+    /// position; largest first.
+    fn z_spendable(&self, zaddr: &str) -> Vec<crate::NoteRow> {
+        let mut notes: Vec<crate::NoteRow> = self
+            .notes
+            .iter()
+            .filter(|n| {
+                !n.spent && n.address == zaddr && self.depth(n.height) >= 1 && n.position.is_some()
+            })
+            .cloned()
+            .collect();
+        notes.sort_by(|a, b| b.value.cmp(&a.value));
+        notes
+    }
+
+    /// The values of [`Wallet::z_spendable`], largest first.
+    pub(crate) fn z_note_values(&self, zaddr: &str) -> Vec<i64> {
+        self.z_spendable(zaddr)
+            .iter()
+            .map(|n| n.value as i64)
+            .collect()
     }
 
     /// The Sapling part of a builder's transaction at `target_height`.
@@ -255,29 +272,96 @@ impl Wallet {
         next: &crate::build::Next,
         what: &str,
     ) -> Result<(String, i64), RpcError> {
-        let mut fee = flat;
-        for _ in 0..6 {
-            let need = base.output_total() + fee - input_value;
-            let (spends, anchor, sum) = self.z_select(node, zaddr, need.max(0), what).await?;
-            let change = sum - need.max(0);
-            let outputs = if change > 0 {
-                vec![self.sapling_out(zaddr, change)]
-            } else {
-                Vec::new()
-            };
-            let conventional =
-                Wallet::hybrid_fee(base, script_sig_sizes, spends.len(), outputs.len())?.max(flat);
-            if conventional > fee {
-                fee = conventional;
-                continue;
+        // the plan over the note values (shared with the mint's check before its carrier); a
+        // shortfall is reported by `z_select` at the plan's need
+        let values = self.z_note_values(zaddr);
+        let (need, fee) = match plan_zfund(&values, base, script_sig_sizes, input_value, flat) {
+            Ok(p) => (p.need, p.fee),
+            Err(FundShort::Coins { needed, fee, .. })
+            | Err(FundShort::TooMany { needed, fee, .. }) => (needed, fee),
+            Err(FundShort::NoConvergence) => {
+                return Err(crate::mint::build_error("the fee did not converge".into()))
             }
-            let part = self.sapling_part(next.height, spends, anchor, outputs);
-            let cap = input_value + sum + 1;
-            let hexs = self
-                .sign_inputs_hex(base, prevs, keys, &[], gate, cap, next.branch, Some(part))
-                .await?;
-            return Ok((hexs, fee));
-        }
-        Err(crate::mint::build_error("the fee did not converge".into()))
+        };
+        let (spends, anchor, sum) = self
+            .z_select(node, zaddr, need.max(0), what, MAX_SAPLING_SPENDS)
+            .await?;
+        let change = sum - need.max(0);
+        let outputs = if change > 0 {
+            vec![self.sapling_out(zaddr, change)]
+        } else {
+            Vec::new()
+        };
+        let part = self.sapling_part(next.height, spends, anchor, outputs);
+        let cap = input_value + sum + 1;
+        let hexs = self
+            .sign_inputs_hex(base, prevs, keys, &[], gate, cap, next.branch, Some(part))
+            .await?;
+        Ok((hexs, fee))
     }
+}
+
+/// A Sapling funding plan: the need from the notes, how many it spends (the largest first), the
+/// change note (0: none) and the network fee.
+#[derive(Debug)]
+pub(crate) struct ZPlan {
+    pub need: i64,
+    pub spends: usize,
+    pub change: i64,
+    pub fee: i64,
+}
+
+/// [`Wallet::z_fund_and_sign`]'s plan over the note values `values` (largest first): the outputs of
+/// `base` plus the fee, less `input_value`, from the largest notes, change back as one note; the
+/// fee starts at `flat` and rises to the ZIP-317 conventional fee of the whole shape.
+pub(crate) fn plan_zfund(
+    values: &[i64],
+    base: &yew_core::tx::Transaction,
+    script_sig_sizes: &[usize],
+    input_value: i64,
+    flat: i64,
+) -> Result<ZPlan, FundShort> {
+    let have: i64 = values.iter().sum();
+    let mut fee = flat;
+    for _ in 0..6 {
+        let need = base.output_total() + fee - input_value;
+        let (mut spends, mut sum) = (0usize, 0i64);
+        for v in values {
+            if sum >= need.max(0) {
+                break;
+            }
+            sum += v;
+            spends += 1;
+        }
+        if sum < need {
+            return Err(FundShort::Coins {
+                needed: need,
+                have,
+                fee,
+            });
+        }
+        if spends > MAX_SAPLING_SPENDS {
+            return Err(FundShort::TooMany {
+                needed: need,
+                spends,
+                fee,
+            });
+        }
+        let change = sum - need.max(0);
+        let outputs = usize::from(change > 0);
+        let conventional = Wallet::hybrid_fee(base, script_sig_sizes, spends, outputs)
+            .map_err(|_| FundShort::NoConvergence)?
+            .max(flat);
+        if conventional > fee {
+            fee = conventional;
+            continue;
+        }
+        return Ok(ZPlan {
+            need,
+            spends,
+            change: change.max(0),
+            fee,
+        });
+    }
+    Err(FundShort::NoConvergence)
 }

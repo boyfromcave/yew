@@ -102,6 +102,9 @@ pub struct Balances {
     pub yec_pq_zat: i64,
     /// Those coins (unlocked), oldest first.
     pub pq_coins: Vec<crate::tx::OutPoint>,
+    /// [`Balances::yec_pq_zat`] split by scheme (beta2 D-8; `TypeSplit`, the split yewd answers
+    /// `z_gettotalbalance` with).
+    pub yec_pq_by_scheme: crate::build::any_to_any::TypeSplit,
 }
 
 /// An open wallet.
@@ -123,6 +126,10 @@ pub struct Wallet {
     /// The server's post-quantum terms as last read (`params.pq`, rpcversion 7): the size fee
     /// rate and the Falcon activation ([`Wallet::pq_terms`]).
     pq_terms: std::sync::Mutex<crate::build::terms::PqTerms>,
+    /// Why the last server's terms were refused ([`Wallet::note_server_params`]), `None` once a
+    /// server's terms were accepted: a post-quantum send refuses with it rather than price itself
+    /// on older terms (review YEW-REVIEW-3 M1).
+    terms_refused: std::sync::Mutex<Option<String>>,
     /// The Sapling side (`None` for a wallet over an in-memory store, as the unit tests use).
     pub shielded: Option<Shielded>,
 }
@@ -193,6 +200,34 @@ impl Wallet {
         w
     }
 
+    /// The has-held-YED marker (beta2 item 32; yewd's `yed_held`, the C++ lines' `yedheld`):
+    /// written once, never cleared. True once the wallet saw a token of its own at a sync, held a
+    /// pending token, or started a mint ([`Wallet::mark_held_yed`]), and for a wallet whose token
+    /// history shows one (a wallet synced before the marker existed). A marked wallet refuses a
+    /// plain YEC spend of transparent coins on a server without Yellowback
+    /// ([`crate::gate::refuse_held_absent`]).
+    ///
+    /// **What it does not cover** (review YEW-REVIEW-3 L4; the C++ lines' `doc/yellowback.md`,
+    /// "What the has-held-YED marker does not cover"): the marker is not derived from the seed. A
+    /// wallet restored from its seed and synced only against a server without Yellowback stays
+    /// unmarked, so nothing refuses; only the class rule (an own output of exactly `TOKEN_VALUE`
+    /// is `HELD`) protects its YED there, and YED on an output of any other value is not
+    /// protected. Restore only against a server with Yellowback (README, "What the has-held-YED
+    /// marker does not cover").
+    pub fn has_held_yed(&self) -> Result<bool, WalletError> {
+        Ok(self.store.meta("yed_held")?.as_deref() == Some("1")
+            || self.store.ever_held_token()?
+            || !self.store.mints()?.is_empty())
+    }
+
+    /// Set the has-held-YED marker ([`Wallet::has_held_yed`]); idempotent.
+    pub fn mark_held_yed(&self) -> Result<(), WalletError> {
+        if self.store.meta("yed_held")?.as_deref() != Some("1") {
+            self.store.set_meta("yed_held", "1")?;
+        }
+        Ok(())
+    }
+
     /// The vault upgrade's activation height recorded by the last sync (`GetChainInfo`; regtest
     /// only takes it, see [`crate::params::signing_branch_id`]), `None` when the server reported
     /// none.
@@ -206,9 +241,25 @@ impl Wallet {
     pub fn set_vault_activation(&mut self, vault: Option<u64>) -> Result<(), WalletError> {
         self.store
             .set_meta("vault_activation_height", &vault.unwrap_or(0).to_string())?;
+        let upgrades = self.chain_upgrades()?;
         if let Some(sh) = self.shielded.as_mut() {
-            sh.set_vault_activation(vault)?;
+            sh.set_chain_upgrades(vault, upgrades)?;
         }
+        Ok(())
+    }
+
+    /// The server's upgrade heights before the vault upgrade that the last sync recorded
+    /// (`GetChainInfo`, a `name=height` list; regtest only takes them, see
+    /// [`crate::shielded::ycash_network_with_upgrades`]), `None` when the server listed none.
+    pub fn chain_upgrades(&self) -> Result<Option<String>, WalletError> {
+        Ok(self.store.meta("chain_upgrades")?.filter(|s| !s.is_empty()))
+    }
+
+    /// Record the server's upgrade heights ([`Wallet::chain_upgrades`]); the shielded side takes
+    /// them with the next [`Wallet::set_vault_activation`].
+    pub fn set_chain_upgrades(&mut self, upgrades: Option<String>) -> Result<(), WalletError> {
+        self.store
+            .set_meta("chain_upgrades", upgrades.as_deref().unwrap_or(""))?;
         Ok(())
     }
 
@@ -274,6 +325,7 @@ impl Wallet {
             pq_ids: std::sync::Mutex::new(HashMap::new()),
             falcon_ids: std::sync::Mutex::new(HashMap::new()),
             pq_terms: std::sync::Mutex::new(stored_terms),
+            terms_refused: std::sync::Mutex::new(None),
             shielded: None,
         };
         w.ensure_gap()?;
@@ -614,6 +666,33 @@ impl Wallet {
         *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Why the last server's post-quantum terms were refused, if they were.
+    pub fn terms_refused(&self) -> Option<String> {
+        self.terms_refused
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Set the post-quantum terms directly (unit tests of the builders).
+    #[cfg(test)]
+    pub(crate) fn set_pq_terms_for_test(&self, t: crate::build::terms::PqTerms) {
+        *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner()) = t;
+    }
+
+    /// Set the fee guard's reference price directly, as an established one (unit tests of the
+    /// builders): `PRICE_MIN_OBSERVATIONS` days ending today at that price.
+    #[cfg(test)]
+    pub(crate) fn set_fee_reference_for_test(&self, price_micro_usd: i64) {
+        let today = unix_day();
+        let mut o = crate::build::terms::PriceObservations::default();
+        for d in 0..crate::build::terms::PRICE_MIN_OBSERVATIONS as i64 {
+            o.obs.push((today - d, price_micro_usd));
+        }
+        o.reference = price_micro_usd;
+        self.store.set_meta(FEE_PRICES_KEY, &o.encode()).unwrap();
+    }
+
     /// TOK-PQ is in force for the next block as far as this wallet knows (the last synced tip
     /// and the server's terms): its YED receive address is then its Falcon holder address.
     pub fn falcon_now(&self) -> bool {
@@ -628,29 +707,130 @@ impl Wallet {
         &self,
         p: Option<&crate::net::rpc::YellowbackParams>,
     ) -> Result<crate::build::terms::PqTerms, crate::build::mint::MintError> {
-        let t = crate::build::terms::pq_terms(
-            p.ok_or_else(|| crate::build::mint::MintError::Inconsistent {
+        let read = p
+            .ok_or_else(|| crate::build::mint::MintError::Inconsistent {
                 what: "GetYellowbackInfo carries no params".into(),
-            })?,
-            self.network,
-        )?;
+            })
+            .and_then(|p| crate::build::terms::pq_terms(p, self.network));
+        *self.terms_refused.lock().unwrap_or_else(|e| e.into_inner()) =
+            read.as_ref().err().map(|e| e.to_string());
+        let t = read?;
         *self.pq_terms.lock().unwrap_or_else(|e| e.into_inner()) = t;
+        // review YEW-REVIEW-5 M1: one report a day into the rolling window the fee guard's
+        // reference price is the median of (a failed write only skips this report)
+        self.observe_fee_price(unix_day(), t.price_micro_usd);
         // Remembered for an offline open (the receive address, the CLI): a failed write only
         // costs the default until the next server answer.
         let _ = self.store.set_meta(
             "pq_terms",
             &format!(
-                "{} {} {} {} {} {} {}",
+                "{} {} {} {} {} {} {} {}",
                 t.fee_rate_zat_per_kb,
                 t.falcon_height.map(|h| h as i64).unwrap_or(-1),
                 u8::from(t.falcon_active),
                 t.yed_rate_zat_per_kb,
                 t.floor_rate_zat_per_kb,
                 t.flat_zat,
-                t.max_fee_zat
+                t.max_fee_zat,
+                t.price_micro_usd
             ),
         );
         Ok(t)
+    }
+
+    /// The YEC price reports the fee guard's reference rests on (review YEW-REVIEW-5 M1).
+    pub fn fee_prices(&self) -> crate::build::terms::PriceObservations {
+        self.store
+            .meta(FEE_PRICES_KEY)
+            .ok()
+            .flatten()
+            .map(|v| crate::build::terms::PriceObservations::parse(&v))
+            .unwrap_or_default()
+    }
+
+    /// Record a server's reported YEC price for `today` ([`crate::build::terms::PriceObservations::observe`]).
+    pub(crate) fn observe_fee_price(&self, today: i64, price_micro_usd: i64) {
+        let mut o = self.fee_prices();
+        if o.observe(today, price_micro_usd) {
+            let _ = self.store.set_meta(FEE_PRICES_KEY, &o.encode());
+        }
+    }
+
+    /// Step 2c's retry state (review YEW-REVIEW-5 L1): per creating transaction that could not be
+    /// fetched, the failures so far and the Unix time it is asked for again.
+    pub(crate) fn provenance_backoff(&self) -> std::collections::HashMap<[u8; 32], (u32, i64)> {
+        let mut m = std::collections::HashMap::new();
+        if let Ok(Some(v)) = self.store.meta(PROVENANCE_BACKOFF_KEY) {
+            for e in v.split(',').filter(|e| !e.is_empty()) {
+                let mut f = e.split(':');
+                if let (Some(t), Some(n), Some(at)) = (f.next(), f.next(), f.next()) {
+                    if let (Ok(t), Ok(n), Ok(at)) =
+                        (crate::tx::txid_from_hex(t), n.parse(), at.parse())
+                    {
+                        m.insert(t, (n, at));
+                    }
+                }
+            }
+        }
+        m
+    }
+
+    /// Store step 2c's retry state.
+    pub(crate) fn set_provenance_backoff(
+        &self,
+        m: &std::collections::HashMap<[u8; 32], (u32, i64)>,
+    ) -> Result<(), WalletError> {
+        let mut v: Vec<String> = m
+            .iter()
+            .map(|(t, (n, at))| format!("{}:{n}:{at}", crate::tx::txid_hex(t)))
+            .collect();
+        v.sort();
+        self.store.set_meta(PROVENANCE_BACKOFF_KEY, &v.join(","))?;
+        Ok(())
+    }
+
+    /// Forget step 2c's retry state, so the next sync asks for every held coin's creating
+    /// transaction at once (on a server change: another server may answer).
+    pub fn reset_provenance_backoff(&self) -> Result<(), WalletError> {
+        self.store.set_meta(PROVENANCE_BACKOFF_KEY, "")?;
+        Ok(())
+    }
+
+    /// The fee guard's reference today: the median of the window's reports and how many days
+    /// reported (0 = none yet).
+    pub fn fee_reference(&self) -> crate::build::terms::FeeReference {
+        self.fee_prices().reference_on(unix_day())
+    }
+
+    /// Forget every YEC price report (review YEW-REVIEW-5 M1: the way out of a reference a
+    /// server poisoned): the guard is then as on first use, flagging every fee above 0.1 YEC
+    /// until three days have reported again.
+    pub fn reset_fee_reference(&self) -> Result<(), WalletError> {
+        self.store.set_meta(
+            FEE_PRICES_KEY,
+            &crate::build::terms::PriceObservations::default().encode(),
+        )?;
+        Ok(())
+    }
+
+    /// [`crate::build::terms::guard_fee`] on this wallet's terms and reference price.
+    pub fn guard_fee(
+        &self,
+        kind: crate::build::terms::FeeKind,
+        fee: i64,
+        size: usize,
+        conventional: i64,
+        id: &str,
+    ) -> Result<crate::build::terms::FeeGuard, WalletError> {
+        crate::build::terms::guard_fee(
+            &self.pq_terms(),
+            self.fee_reference(),
+            kind,
+            fee,
+            size,
+            conventional,
+            id,
+        )
     }
 
     /// The terms [`Wallet::note_server_params`] last remembered in the store, else
@@ -685,17 +865,21 @@ impl Wallet {
         let floor = crate::params::RELAY_FLOOR_ZAT_PER_KB;
         let yed = next(d.yed_rate_zat_per_kb).max(floor);
         let floor_rate = next(d.floor_rate_zat_per_kb).max(floor);
-        let flat =
-            next(d.flat_zat).clamp(crate::params::FEE_ZAT, crate::params::MAX_YED_TX_FEE_ZAT);
+        let flat = next(d.flat_zat).clamp(crate::params::FEE_ZAT, crate::params::MAX_FLAT_ZAT);
         let cap = next(d.max_fee_zat).clamp(flat, crate::params::MAX_YED_TX_FEE_ZAT);
+        let price = next(0).clamp(0, crate::params::PRICE_MAX_MICRO_USD);
         Some(crate::build::terms::PqTerms {
-            fee_rate_zat_per_kb: rate.max(floor),
-            yed_rate_zat_per_kb: yed,
+            // review YEW-REVIEW-3 M1: a stored rate is held to the same limits as a server's
+            fee_rate_zat_per_kb: rate
+                .max(floor)
+                .min(crate::params::MAX_PLAIN_FEE_RATE_ZAT_PER_KB),
+            yed_rate_zat_per_kb: yed.min(crate::params::MAX_YED_FEE_RATE_ZAT_PER_KB),
             floor_rate_zat_per_kb: floor_rate,
             flat_zat: flat,
             max_fee_zat: cap,
             falcon_height: u64::try_from(height).ok(),
             falcon_active: active != 0,
+            price_micro_usd: price,
         })
     }
 
@@ -757,7 +941,12 @@ impl Wallet {
             .filter(|u| u.class == coins::UtxoClass::PqOwned)
             .collect();
         pq.sort_by_key(|u| (u.height, u.outpoint.txid, u.outpoint.n));
+        let mut yec_pq_by_scheme = crate::build::any_to_any::TypeSplit::default();
+        for u in &pq {
+            yec_pq_by_scheme.add(&u.script, u.value);
+        }
         Ok(Balances {
+            yec_pq_by_scheme,
             yec_pq_zat: coins::pq_yec_balance(&spendable),
             pq_coins: pq.iter().map(|u| u.outpoint).collect(),
             yec_zat,
@@ -780,9 +969,10 @@ impl Wallet {
         cents: u64,
         lock_blocks: u32,
         tip: u64,
+        source: mint::MintSource,
     ) -> Result<MintEstimate, WalletError> {
         let yb = validator.client_mut().ok_or(GateError::YellowbackAbsent)?;
-        mint::estimate(self, yb, cents, lock_blocks, tip).await
+        mint::estimate(self, yb, cents, lock_blocks, tip, source).await
     }
 
     /// `mint_start(...)`: bundle, carrier funding transaction, the `mints` row. With
@@ -798,6 +988,7 @@ impl Wallet {
         confirmed: Option<&ConfirmedTerms>,
         tip: u64,
         branch_id: u32,
+        source: mint::MintSource,
     ) -> Result<i64, WalletError> {
         mint::start(
             self,
@@ -808,12 +999,15 @@ impl Wallet {
             confirmed,
             tip,
             branch_id,
+            source,
         )
         .await
     }
 
     /// `mint_finish(mintId)`: the MINT (or, for a claim row, the CLAIM) over the confirmed
-    /// carrier. The row must be `CarrierConfirmed` (the sync loop advances it).
+    /// carrier. The row must be `CarrierConfirmed` (the sync loop advances it). A main fee above
+    /// what the start accepted is refused with a new acknowledgement, which `accept_unusual_fee`
+    /// passes back (review YEW-REVIEW-5 M2).
     pub async fn mint_finish(
         &self,
         client: &mut CompactClient,
@@ -821,8 +1015,18 @@ impl Wallet {
         mint_id: i64,
         tip: u64,
         branch_id: u32,
+        accept_unusual_fee: Option<&str>,
     ) -> Result<Finished, WalletError> {
-        mint::finish(self, client, validator, mint_id, tip, branch_id).await
+        mint::finish(
+            self,
+            client,
+            validator,
+            mint_id,
+            tip,
+            branch_id,
+            accept_unusual_fee,
+        )
+        .await
     }
 
     /// `mint_sweep(mintId)`: reclaim the carrier of a lapsed row (`CARRIER_VALUE − fee`).
@@ -939,8 +1143,9 @@ impl Wallet {
         client: &mut CompactClient,
         validator: &mut Validator,
         preview: &crate::build::release::ReleaseBuild,
+        accept_unusual_fee: Option<&str>,
     ) -> Result<(String, Validation), WalletError> {
-        crate::build::release::broadcast(self, client, validator, preview).await
+        crate::build::release::broadcast(self, client, validator, preview, accept_unusual_fee).await
     }
 
     /// The mint gate (hardening H-1, H-5): whether a mint can be made now and why not, from
@@ -980,6 +1185,44 @@ impl Wallet {
             .into_iter()
             .filter(|u| !locked.contains(&u.outpoint))
             .collect())
+    }
+}
+
+/// The meta key of [`crate::build::terms::PriceObservations`] (the old
+/// `fee_price_high_water` is no longer read: a reference it poisoned is dropped on upgrade).
+const FEE_PRICES_KEY: &str = "fee_prices";
+
+/// The meta key of step 2c's retry state ([`Wallet::provenance_backoff`]).
+const PROVENANCE_BACKOFF_KEY: &str = "provenance_backoff";
+
+/// Seconds since the Unix epoch on this device's clock (the browser's on wasm32).
+pub(crate) fn unix_secs() -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        (js_sys::Date::now() / 1000.0).floor() as i64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    }
+}
+
+/// Days since the Unix epoch on this device's clock (the browser's on wasm32, where
+/// `SystemTime::now` is not available).
+pub(crate) fn unix_day() -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        (js_sys::Date::now() / 86_400_000.0).floor() as i64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| (d.as_secs() / 86_400) as i64)
+            .unwrap_or(0)
     }
 }
 
@@ -1069,6 +1312,33 @@ mod tests {
     /// The server's terms survive an offline reopen; mainnet and testnet are Falcon from day one
     /// (owner decision 2026-10-10) by the compiled default, and a server that disagrees is refused
     /// (LOW-06-Y-4), not overridden; regtest follows the server.
+    /// Review YEW-REVIEW-5 M1: the reports persist across a restart, feed the guard's
+    /// reference, and the reset forgets them (first-use behaviour again).
+    #[test]
+    fn fee_reference_persists_and_resets() {
+        let seed = keys::seed_from_mnemonic(PHRASE, "").unwrap();
+        let w = wallet();
+        assert_eq!(w.fee_reference().observations, 0);
+        let today = unix_day();
+        for d in (0..3).rev() {
+            w.observe_fee_price(today - d, 300_000);
+        }
+        w.observe_fee_price(today, 4_000_000_000); // a second report today: not counted
+        let r = w.fee_reference();
+        assert_eq!((r.price, r.observations, r.weak()), (300_000, 3, false));
+        let w = Wallet::from_parts(w.store, Network::Regtest, &seed, None).unwrap();
+        assert_eq!(w.fee_reference(), r);
+        // an old poisoned high-water mark is not read
+        w.store
+            .set_meta("fee_price_high_water", "4000000000")
+            .unwrap();
+        assert_eq!(w.fee_reference(), r);
+        w.reset_fee_reference().unwrap();
+        let r = w.fee_reference();
+        assert_eq!((r.price, r.observations), (0, 0));
+        assert!(r.weak());
+    }
+
     #[test]
     fn pq_terms_persist_and_mainnet_is_falcon_from_day_one() {
         let seed = keys::seed_from_mnemonic(PHRASE, "").unwrap();
@@ -1264,5 +1534,28 @@ mod tests {
         let b = w.balances().unwrap();
         assert_eq!((b.yed_cents, b.yed_pending_cents), (2_500, 6_000));
         assert_eq!(w.spendable_balances().unwrap().1, (2_500, 6_000));
+    }
+
+    /// The has-held-YED marker (beta2 item 32): unset on a fresh wallet; set by a token in the
+    /// wallet's token history or by `mark_held_yed`, and never cleared.
+    #[test]
+    fn held_yed_marker() {
+        let w = wallet();
+        assert!(!w.has_held_yed().unwrap());
+        w.store
+            .insert_own_token(
+                &crate::tx::OutPoint {
+                    txid: [5; 32],
+                    n: 1,
+                },
+                100,
+            )
+            .unwrap();
+        assert!(w.has_held_yed().unwrap());
+        let w2 = wallet();
+        w2.mark_held_yed().unwrap();
+        w2.mark_held_yed().unwrap();
+        assert!(w2.has_held_yed().unwrap());
+        assert_eq!(w2.store.meta("yed_held").unwrap().as_deref(), Some("1"));
     }
 }

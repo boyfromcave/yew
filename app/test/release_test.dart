@@ -91,13 +91,13 @@ void main() {
 
   testWidgets('CAN-1: a pending claim names where its burn returns if cancelled; a cancelled one says it came back', (tester) async {
     final h = Harness(withWallet: true);
-    const to = 'yr2SfdhqKtnRSY3HebfoY5vXSPc781t1HrBi2JcZ26k4EXLCMboLq';
+    const to = 'yrs1LJKpgAZuRgQzhZFjtvzCCWYPTYqNLeNqeJ7bk48ZvUPFABGPu';
     h.api.intentsAnswer = [
       h.api.intent(txid: 'b1' * 32, height: 480, refundCents: 1000, refundAddress: to, refundOwn: true),
       h.api.intent(txid: 'b2' * 32, state: 'CANCELLED', height: 460, refundCents: 1000, refundAddress: to, refundOwn: true),
     ];
     await openYellowback(tester, h);
-    expect(find.textContaining('claim · if this claim is cancelled, \$10.00 returns to your address yr2SfdhqKt…CMboLq'), findsOneWidget);
-    expect(find.textContaining('\$10.00 came back to your address yr2SfdhqKt…CMboLq; the YEC fees are not returned'), findsOneWidget);
+    expect(find.textContaining('claim · if this claim is cancelled, \$10.00 returns to your address yrs1LJKpgA…FABGPu'), findsOneWidget);
+    expect(find.textContaining('\$10.00 came back to your address yrs1LJKpgA…FABGPu; the YEC fees are not returned'), findsOneWidget);
   });
 }

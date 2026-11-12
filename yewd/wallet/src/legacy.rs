@@ -8,10 +8,13 @@
 //! :1358, `ListReceived` :1846, `ListTransactions` :2006 with `WalletTxToJSON`, `z_listaddresses`
 //! :3982), over the wallet's own transactions and address book.
 
+use std::collections::BTreeSet;
+
 use serde_json::Value;
 
 use crate::json::J;
 use crate::keys::script_address;
+use crate::node::Node;
 use crate::rpc::{arity, invalid, minconf, p_bool, p_int, p_str, param, parse_taddr_script};
 use crate::{code, RpcError, Wallet};
 
@@ -24,10 +27,18 @@ pub const SERVED: &[&str] = &[
 ];
 
 impl Wallet {
-    pub(crate) async fn legacy_call(&mut self, method: &str, p: &[Value]) -> Result<J, RpcError> {
+    pub(crate) async fn legacy_call(
+        &mut self,
+        node: &dyn Node,
+        method: &str,
+        p: &[Value],
+    ) -> Result<J, RpcError> {
         match method {
             "getaddressesbyaccount" => self.getaddressesbyaccount(p),
-            "listreceivedbyaddress" => self.listreceivedbyaddress(p),
+            "listreceivedbyaddress" => {
+                let holders = self.yed_holder_scripts(node).await;
+                self.listreceivedbyaddress(p, &holders)
+            }
             "listtransactions" => self.listtransactions(p),
             "z_listaddresses" => self.z_listaddresses(p),
             "z_mergetoaddress" => self.z_mergetoaddress(p),
@@ -69,7 +80,11 @@ impl Wallet {
 
     /// `listreceivedbyaddress ( minconf includeempty includeWatchonly addressFilter
     /// includeImmatureCoinbase asOfHeight )` (`ListReceived`).
-    fn listreceivedbyaddress(&self, p: &[Value]) -> Result<J, RpcError> {
+    fn listreceivedbyaddress(
+        &self,
+        p: &[Value],
+        yed_holders: &BTreeSet<Vec<u8>>,
+    ) -> Result<J, RpcError> {
         arity("listreceivedbyaddress", p, 6)?;
         if let Some(f) = p_str(p, 3)? {
             if !f.is_empty() {
@@ -86,7 +101,29 @@ impl Wallet {
         let min = minconf(p, 0, 1)?;
         let include_empty = p_bool(p, 1, false)?;
         let mut rows = Vec::new();
-        for (addr, script) in self.book_taddrs() {
+        // The address book, plus (beta2 item 15) every post-quantum key of this wallet that
+        // received coins without a book entry (a seed restore finds them by rescan).
+        let mut listed = self.book_taddrs();
+        let mut received_pq: BTreeSet<String> = BTreeSet::new();
+        for (_, px) in self.parsed_all() {
+            for o in &px.tx.vout {
+                if let Some(id) = yew_core::pq::pqpkh_of(&o.script_pubkey) {
+                    if self.book.owns_script(&o.script_pubkey).is_some() {
+                        if let Some(a) = yew_core::keys::encode_pq_yec(self.network, &id) {
+                            if !self.st.book.contains_key(&a) {
+                                received_pq.insert(a);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for a in received_pq {
+            if let Some(s) = parse_taddr_script(self.network, &a) {
+                listed.push((a, s));
+            }
+        }
+        for (addr, script) in listed {
             if self.book.owns_script(&script).is_none() {
                 continue;
             }
@@ -125,14 +162,21 @@ impl Wallet {
             if txids.is_empty() && !include_empty {
                 continue;
             }
-            rows.push(
-                J::obj()
-                    .with("address", addr)
-                    .with("amount", J::Amount(amount))
-                    .with("amountZat", amount)
-                    .with("confirmations", if conf == i64::MAX { 0 } else { conf })
-                    .with("txids", J::Arr(txids)),
-            );
+            let mut row = J::obj()
+                .with("address", addr)
+                .with("amount", J::Amount(amount))
+                .with("amountZat", amount)
+                .with("confirmations", if conf == i64::MAX { 0 } else { conf });
+            if let Some(id) = yew_core::pq::pqpkh_of(&script) {
+                // beta2 item 15: a post-quantum address shows its scheme
+                row = row
+                    .with("pqscheme", id.scheme as i64)
+                    .with("pqschemename", crate::rpc::pq_scheme_name(id.scheme));
+            }
+            if yed_holders.contains(&script) {
+                row = row.with("yed_holder", true);
+            }
+            rows.push(row.with("txids", J::Arr(txids)));
         }
         Ok(J::Arr(rows))
     }

@@ -199,8 +199,28 @@ pub fn ycash_network(n: Network) -> YcashNetwork {
 /// testnet take librustzcash6's compiled-in heights (no vault activation until a release sets
 /// one, P8) and ignore `vault`, the rule of [`Network::vault_activation_from_server`].
 pub fn ycash_network_with_vault(n: Network, vault: Option<u64>) -> YcashNetwork {
+    ycash_network_with_upgrades(n, vault, None)
+}
+
+/// [`ycash_network_with_vault`] with the server's other upgrade heights on regtest: `upgrades` is
+/// a `name=height` list (`YcashNetwork::with_upgrades`; `none` = not active), from the server's
+/// `GetChainInfo.upgrades` ([`crate::net::yellowback::upgrades_spec`]), so a regtest whose Canopy
+/// is later than the devnet's height 1 scans its pre-Canopy notes (lead byte 0x01) under the
+/// right ZIP-212 enforcement. `None`, or a list the library refuses, keeps the devnet heights.
+/// Mainnet and testnet ignore both arguments: their heights are compiled in.
+pub fn ycash_network_with_upgrades(
+    n: Network,
+    vault: Option<u64>,
+    upgrades: Option<&str>,
+) -> YcashNetwork {
     match (n, ycash_network_base(n)) {
-        (Network::Regtest, YcashNetwork::Regtest(mut local)) => {
+        (Network::Regtest, base) => {
+            let base = upgrades
+                .and_then(|u| base.with_upgrades(u).ok())
+                .unwrap_or(base);
+            let YcashNetwork::Regtest(mut local) = base else {
+                return base;
+            };
             local.vault = vault
                 .filter(|h| *h > 0)
                 .map(|h| BlockHeight::from_u32(u32::try_from(h).unwrap_or(u32::MAX)));
@@ -374,6 +394,43 @@ pub struct ShieldInput {
     pub hash160: [u8; 20],
 }
 
+/// Where a shielding transaction's Sapling output goes and what fee it pays.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum ShieldTo {
+    /// The wallet's own default address (a move, S4), empty memo, the ZIP-317 fee.
+    #[default]
+    Own,
+    /// Another wallet's Sapling address (WEB-REAL MEDIUM-4: public YEC to someone else's
+    /// `ys1…`), with an optional text memo, at the fee ycash6's `z_sendmany` charges the same
+    /// shape (`-feepolicy=peroutput`: [`crate::build::any_to_any::peroutput_fee`] of the padded
+    /// Sapling outputs).
+    Recipient {
+        /// The encoded Sapling address of this network.
+        address: String,
+        /// The memo text (at most [`MAX_MEMO_BYTES`] bytes).
+        memo: Option<String>,
+        /// The fee, zat: [`ShieldTo::node_fee`], plus a change too small to keep.
+        fee: u64,
+    },
+}
+
+impl ShieldTo {
+    /// The fee ycash6's `z_sendmany` charges a transaction with one Sapling output (padded to
+    /// two) under its default `-feepolicy=peroutput`: 1,000 zat.
+    pub fn node_fee() -> u64 {
+        use crate::build::any_to_any::{padded, peroutput_fee};
+        peroutput_fee(padded(1)) as u64
+    }
+
+    /// The fee a shield to this destination pays when it is fixed (not ZIP-317).
+    pub fn fixed_fee(&self) -> Option<u64> {
+        match self {
+            ShieldTo::Own => None,
+            ShieldTo::Recipient { fee, .. } => Some(*fee),
+        }
+    }
+}
+
 fn zat(v: u64) -> Result<Zatoshis, ShieldedError> {
     Zatoshis::from_u64(v).map_err(|_| ShieldedError::Propose(format!("bad amount {v}")))
 }
@@ -399,6 +456,9 @@ pub struct ShieldedTx {
 pub struct Shielded {
     network: Network,
     params: YcashNetwork,
+    /// The server's upgrade heights before the vault upgrade (regtest; see
+    /// [`ycash_network_with_upgrades`]), kept so a new vault height does not drop them.
+    upgrades: Option<String>,
     dir: PathBuf,
     /// YEW's own store handle. Natively always open. In the browser the OPFS VFS allows one
     /// connection per file (yew/web plan W0.1 finding 3), so it is closed while the light
@@ -439,6 +499,13 @@ fn percent_of(s: &WalletSummary<AccountUuid>) -> u8 {
 }
 
 impl Shielded {
+    /// The account's extended spending key, a transient copy (beta2 item 5: the output viewing
+    /// key of a post-quantum -> Sapling send's output, `build::pq_send`). Never stored.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn extended_spending_key(&self) -> sapling_crypto::zip32::ExtendedSpendingKey {
+        self.account.extended_spending_key()
+    }
+
     /// Open (creating if needed) the store under `dir` for `account` on `network`. Offline:
     /// the light client connects at the first [`Shielded::sync`]. A store holding another
     /// seed's account is refused.
@@ -463,6 +530,7 @@ impl Shielded {
         let s = Shielded {
             network,
             params,
+            upgrades: None,
             dir: dir.to_path_buf(),
             db: Some(db),
             account,
@@ -894,7 +962,19 @@ impl Shielded {
     /// scan's branch check, transaction parsing, proposals and the builder all use the Vault
     /// branch from the activation height on. Returns whether anything changed.
     pub fn set_vault_activation(&mut self, vault: Option<u64>) -> Result<bool, ShieldedError> {
-        let params = ycash_network_with_vault(self.network, vault);
+        let upgrades = self.upgrades.clone();
+        self.set_chain_upgrades(vault, upgrades)
+    }
+
+    /// [`Shielded::set_vault_activation`] with the server's other upgrade heights (regtest:
+    /// [`ycash_network_with_upgrades`]; mainnet and testnet: ignored).
+    pub fn set_chain_upgrades(
+        &mut self,
+        vault: Option<u64>,
+        upgrades: Option<String>,
+    ) -> Result<bool, ShieldedError> {
+        let params = ycash_network_with_upgrades(self.network, vault, upgrades.as_deref());
+        self.upgrades = upgrades;
         if params == self.params {
             return Ok(false);
         }
@@ -1114,6 +1194,7 @@ impl Shielded {
         &self,
         target: u32,
         inputs: &[ShieldInput],
+        to: &ShieldTo,
         amount_zat: u64,
         change: Option<([u8; 20], u64)>,
     ) -> Result<Builder<'static, YcashNetwork, ()>, ShieldedError> {
@@ -1135,14 +1216,21 @@ impl Shielded {
             b.add_transparent_p2pkh_input(pubkey, OutPoint::new(i.txid, i.n), coin)
                 .map_err(|e| ShieldedError::Create(e.to_string()))?;
         }
-        let (to, ovk) = self.account.default_output();
-        b.add_sapling_output::<std::convert::Infallible>(
-            Some(ovk),
-            to,
-            zat(amount_zat)?,
-            MemoBytes::empty(),
-        )
-        .map_err(|e| ShieldedError::Create(e.to_string()))?;
+        let (own, ovk) = self.account.default_output();
+        let (to, memo) = match to {
+            ShieldTo::Own => (own, MemoBytes::empty()),
+            ShieldTo::Recipient { address, memo, .. } => (
+                self.sapling_recipient(address)?,
+                match memo.as_deref().map(str::trim_end).filter(|m| !m.is_empty()) {
+                    Some(m) => memo_to_bytes(m)?,
+                    None => MemoBytes::empty(),
+                },
+            ),
+        };
+        // the wallet's external outgoing viewing key either way: the sender can read back what
+        // it sent (as the private send path's OvkPolicy::Sender)
+        b.add_sapling_output::<std::convert::Infallible>(Some(ovk), to, zat(amount_zat)?, memo)
+            .map_err(|e| ShieldedError::Create(e.to_string()))?;
         if let Some((h, v)) = change {
             b.add_transparent_output(&TransparentAddress::PublicKeyHash(h), zat(v)?)
                 .map_err(|e| ShieldedError::Create(e.to_string()))?;
@@ -1156,13 +1244,37 @@ impl Shielded {
         &self,
         target: u32,
         inputs: &[ShieldInput],
+        to: &ShieldTo,
         amount_zat: u64,
         change: Option<[u8; 20]>,
     ) -> Result<u64, ShieldedError> {
-        let b = self.shield_builder(target, inputs, amount_zat.max(1), change.map(|h| (h, 1)))?;
+        let b = self.shield_builder(
+            target,
+            inputs,
+            to,
+            amount_zat.max(1),
+            change.map(|h| (h, 1)),
+        )?;
+        if let Some(fee) = to.fixed_fee() {
+            return Ok(fee);
+        }
         Ok(b.get_fee(&zip317::FeeRule::standard())
             .map_err(|e| ShieldedError::Propose(format!("fee: {e:?}")))?
             .into_u64())
+    }
+
+    /// `to` as a Sapling payment address of this network (a shield's recipient).
+    pub fn sapling_recipient(
+        &self,
+        to: &str,
+    ) -> Result<sapling_crypto::PaymentAddress, ShieldedError> {
+        match Address::decode(&self.params, to.trim()) {
+            Some(Address::Sapling(pa)) => Ok(pa),
+            _ => Err(ShieldedError::Address(format!(
+                "{} is not a Sapling address of this network",
+                to.trim()
+            ))),
+        }
     }
 
     /// Build the shielding transaction (S4): prove the Sapling output with the parameters in
@@ -1170,11 +1282,13 @@ impl Shielded {
     /// `secrets` (one 32-byte key per input, in order; used for this call only). The fee must
     /// be exactly what [`Shielded::shield_fee`] said, or the builder refuses. Nothing is written
     /// to the note store: the output is found by the next scan once mined.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_shield(
         &mut self,
         target: u32,
         inputs: &[ShieldInput],
         secrets: &[[u8; 32]],
+        to: &ShieldTo,
         amount_zat: u64,
         change: Option<([u8; 20], u64)>,
         params_dir: &Path,
@@ -1186,13 +1300,17 @@ impl Shielded {
         }
         let params_millis = self.load_prover(params_dir)?;
         let t1 = now_ms();
-        let b = self.shield_builder(target, inputs, amount_zat, change)?;
-        // The fee the builder charges (its own ZIP-317 computation; `fee_paid` cannot see the
-        // transparent input values once built).
-        let fee_zat = b
-            .get_fee(&zip317::FeeRule::standard())
-            .map_err(|e| ShieldedError::Propose(format!("fee: {e:?}")))?
-            .into_u64();
+        let b = self.shield_builder(target, inputs, to, amount_zat, change)?;
+        // The fee the builder charges (its own ZIP-317 computation, or the fixed fee of a shield
+        // to another wallet; `fee_paid` cannot see the transparent input values once built).
+        let fixed = to.fixed_fee();
+        let fee_zat = match fixed {
+            Some(f) => f,
+            None => b
+                .get_fee(&zip317::FeeRule::standard())
+                .map_err(|e| ShieldedError::Propose(format!("fee: {e:?}")))?
+                .into_u64(),
+        };
         let mut keys = TransparentSigningSet::new();
         for s in secrets {
             let sk = secp256k1_zcash::SecretKey::from_slice(s)
@@ -1200,17 +1318,30 @@ impl Shielded {
             keys.add_key(sk);
         }
         let (_, prover) = self.prover.as_ref().expect("loaded above");
-        let built = b
-            .build(
-                &keys,
-                &[],
-                &[],
-                OsRng,
-                prover,
-                prover,
-                &zip317::FeeRule::standard(),
-            )
-            .map_err(|e| ShieldedError::Create(e.to_string()))?;
+        let built = match fixed {
+            Some(f) => b
+                .build(
+                    &keys,
+                    &[],
+                    &[],
+                    OsRng,
+                    prover,
+                    prover,
+                    &zcash_primitives::transaction::fees::fixed::FeeRule::non_standard(zat(f)?),
+                )
+                .map_err(|e| ShieldedError::Create(e.to_string())),
+            None => b
+                .build(
+                    &keys,
+                    &[],
+                    &[],
+                    OsRng,
+                    prover,
+                    prover,
+                    &zip317::FeeRule::standard(),
+                )
+                .map_err(|e| ShieldedError::Create(e.to_string())),
+        }?;
         drop(keys);
         let tx = built.transaction();
         let mut raw = Vec::new();
@@ -1317,6 +1448,603 @@ impl Shielded {
             .map(|h| u32::from(h) as u64)
             .unwrap_or(1)
     }
+
+    /// How many notes [`Shielded::select_spends`] would select for `amount_zat` plus
+    /// `fee_of(notes)`, the fee settled and the notes' total, without their paths (read-only: a
+    /// quote, e.g. a mint estimate's carrier fee from the private balance). Nothing is locked.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn quote_spends(
+        &self,
+        amount_zat: u64,
+        fee_of: impl Fn(usize) -> u64,
+    ) -> Result<(usize, u64, u64), ShieldedError> {
+        let (notes, total, fee, _, _) = self.pick_notes(amount_zat, fee_of)?;
+        Ok((notes.len(), fee, total))
+    }
+
+    /// The creating transactions (txids, internal order, deduplicated) of every note the store
+    /// would select from now: the selection of [`Shielded::select_spends`] for the whole
+    /// spendable balance, no fee (read-only; review YEW-REVIEW-9 L2: an upper bound of the notes
+    /// any spend can take, known before its amount is). Empty when nothing is spendable; a store
+    /// whose balance and selection disagree (`Insufficient`) also answers empty, so the caller's
+    /// later per-spend check still runs.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn spendable_note_txids(&self) -> Result<Vec<[u8; 32]>, ShieldedError> {
+        let b = self.balance()?;
+        if b.spendable_zat == 0 {
+            return Ok(Vec::new());
+        }
+        let notes = match self.pick_notes(b.spendable_zat, |_| 0) {
+            Ok((notes, ..)) => notes,
+            Err(ShieldedError::Insufficient { .. }) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let mut t: Vec<[u8; 32]> = notes.iter().map(|n| *n.txid().as_ref()).collect();
+        t.sort();
+        t.dedup();
+        Ok(t)
+    }
+
+    /// The selection half of [`Shielded::select_spends`] (the store's own selection, the fee
+    /// settled in a few rounds).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::type_complexity)]
+    fn pick_notes(
+        &self,
+        amount_zat: u64,
+        fee_of: impl Fn(usize) -> u64,
+    ) -> Result<
+        (
+            Vec<
+                zcash_client_backend::wallet::ReceivedNote<
+                    zcash_client_sqlite::ReceivedNoteId,
+                    sapling_crypto::Note,
+                >,
+            >,
+            u64,
+            u64,
+            BlockHeight,
+            BlockHeight,
+        ),
+        ShieldedError,
+    > {
+        use zcash_client_backend::data_api::{InputSource, TargetValue};
+        let id = self
+            .account_id()?
+            .ok_or(ShieldedError::NotSynced { scanned: 0, tip: 0 })?;
+        let b = self.balance()?;
+        let not_synced = ShieldedError::NotSynced {
+            scanned: b.scanned_height,
+            tip: b.tip_height,
+        };
+        if !b.sendable {
+            return Err(not_synced);
+        }
+        let (target, anchor_height) = self
+            .store()?
+            .get_target_and_anchor_heights(policy().trusted())
+            .map_err(store_err)?
+            .ok_or(not_synced)?;
+        // the fee rises with the number of notes only: settle it in a few rounds
+        let mut fee = fee_of(1);
+        let mut chosen = None;
+        for _ in 0..6 {
+            let need = amount_zat
+                .checked_add(fee)
+                .ok_or_else(|| ShieldedError::Propose("amount out of range".into()))?;
+            let notes = self
+                .store()?
+                .select_spendable_notes(
+                    id,
+                    TargetValue::AtLeast(zat(need)?),
+                    &[ShieldedProtocol::Sapling],
+                    target,
+                    policy(),
+                    &[],
+                )
+                .map_err(store_err)?
+                .take_sapling();
+            let total: u64 = notes.iter().map(|n| n.note().value().inner()).sum();
+            if total < need {
+                return Err(ShieldedError::Insufficient {
+                    available: b.spendable_zat,
+                    required: need,
+                });
+            }
+            let f = fee_of(notes.len());
+            if f == fee {
+                chosen = Some((notes, total));
+                break;
+            }
+            fee = f;
+        }
+        let (notes, total_zat) =
+            chosen.ok_or_else(|| ShieldedError::Propose("the fee did not settle".into()))?;
+        Ok((notes, total_zat, fee, target.into(), anchor_height))
+    }
+
+    /// Spendable notes covering `amount_zat` plus the fee `fee_of(number of notes)`, each with
+    /// its Merkle path at the anchor, for a transaction the hybrid builder makes
+    /// (`build::sapling_pq`: a Sapling -> post-quantum send). Not a new witness store: the
+    /// notes come from the store's own selection (`select_spendable_notes`, what
+    /// [`Shielded::plan`]'s proposal calls) at the store's target and anchor heights
+    /// (`get_target_and_anchor_heights` under the same confirmation policy), and the paths from
+    /// the store's commitment tree exactly as `create_proposed_transactions` takes them
+    /// (`root_at_checkpoint_id` and `witness_at_checkpoint_id_caching` at the anchor height).
+    /// Refuses before the scan reaches the tip. Nothing is locked or stored.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn select_spends(
+        &mut self,
+        amount_zat: u64,
+        fee_of: impl Fn(usize) -> u64,
+    ) -> Result<NoteSpends, ShieldedError> {
+        use zcash_client_backend::data_api::WalletCommitmentTrees;
+        let (notes, total_zat, fee, target, anchor_height) = self.pick_notes(amount_zat, fee_of)?;
+        type TreeErr<T> = zcash_client_backend::data_api::error::Error<
+            std::convert::Infallible,
+            T,
+            std::convert::Infallible,
+            std::convert::Infallible,
+            std::convert::Infallible,
+            std::convert::Infallible,
+        >;
+        let (anchor, paths) = self
+            .store_mut()?
+            .with_sapling_tree_mut(|tree| {
+                let anchor = tree.root_at_checkpoint_id(&anchor_height)?;
+                let mut paths = Vec::with_capacity(notes.len());
+                for n in &notes {
+                    paths.push(tree.witness_at_checkpoint_id_caching(
+                        n.note_commitment_tree_position(),
+                        &anchor_height,
+                    )?);
+                }
+                Ok::<_, TreeErr<_>>((anchor, paths))
+            })
+            .map_err(|e| store_err(format!("the note paths: {e:?}")))?;
+        // a pruned checkpoint (as `create_proposed_transactions` refuses it)
+        let pruned = || store_err(format!("no note path at the anchor height {anchor_height}"));
+        let anchor = sapling_crypto::Anchor::from(anchor.ok_or_else(pruned)?);
+        let paths = paths
+            .into_iter()
+            .map(|p| p.ok_or_else(pruned))
+            .collect::<Result<Vec<_>, _>>()?;
+        let notes = notes
+            .iter()
+            .zip(paths)
+            .map(|(n, path)| SelectedNote {
+                txid: *n.txid().as_ref(),
+                output_index: n.output_index(),
+                cmu: n.note().cmu().to_bytes(),
+                value: n.note().value().inner(),
+                internal: n.spending_key_scope() == zip32::Scope::Internal,
+                position: u64::from(n.note_commitment_tree_position()),
+                path: path
+                    .path_elems()
+                    .iter()
+                    .map(|e| hex::encode(e.to_bytes()))
+                    .collect(),
+            })
+            .collect();
+        Ok(NoteSpends {
+            notes,
+            anchor: hex::encode(anchor.to_bytes()),
+            total_zat,
+            fee_zat: fee,
+            target_height: u32::from(target),
+        })
+    }
+
+    /// The raw bytes of those of `txids` (internal order) the store holds: memo enhancement
+    /// (`decrypt_and_store_transaction` on every transaction that paid the wallet a note) and
+    /// [`Shielded::record_sent`] keep each full transaction. No network request (review
+    /// YEW-REVIEW-8 M1: the notes a spend takes are not revealed to the server by fetching their
+    /// transactions just before it).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn stored_transactions(
+        &self,
+        txids: &[[u8; 32]],
+    ) -> Result<std::collections::HashMap<[u8; 32], Vec<u8>>, ShieldedError> {
+        let mut out = std::collections::HashMap::new();
+        for t in txids {
+            if let Some(tx) = self
+                .store()?
+                .get_transaction(TxId::from_bytes(*t))
+                .map_err(store_err)?
+            {
+                let mut raw = Vec::new();
+                tx.write(&mut raw).map_err(store_err)?;
+                out.insert(*t, raw);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Record a transaction this wallet built outside the store's own builder (the hybrid
+    /// builder's Sapling -> post-quantum send) once it has been handed to the server: the store
+    /// decrypts it with the account's keys as it does a fetched transaction (the memo enhancement
+    /// path, `decrypt_and_store_transaction`), so its notes count as spent and its Sapling change
+    /// as pending until it is mined or expires.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn record_sent(&mut self, raw: &[u8], branch_id: u32) -> Result<(), ShieldedError> {
+        let branch = BranchId::try_from(branch_id)
+            .map_err(|_| store_err(format!("branch id {branch_id:08x}")))?;
+        let tx = ZTransaction::read(raw, branch).map_err(store_err)?;
+        let params = self.params;
+        decrypt_and_store_transaction(&params, self.store_mut()?, &tx, None).map_err(store_err)?;
+        Ok(())
+    }
+}
+
+/// A test chain for the store (no server): the account registered at `birthday`, notes of
+/// `values` to its default address in the block at `birthday`, empty blocks up to `tip`, all
+/// scanned by the store's own scanner (`scan_cached_blocks`), so the store selects the notes and
+/// its commitment tree gives their paths exactly as after a real sync.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl Shielded {
+    pub(crate) fn receive_for_test(
+        &mut self,
+        birthday: u32,
+        tip: u32,
+        values: &[u64],
+        params_dir: &Path,
+    ) -> Vec<u8> {
+        use zcash_client_backend::proto::compact_formats as cf;
+        // the paying transaction, proven by the hybrid builder: Sapling outputs to the account's
+        // default address, nothing transparent (its balance does not matter to a scan)
+        let (_, own) = self.account.default_address();
+        let part = crate::sapling_part::SaplingPart {
+            target_height: birthday,
+            vault_height: None,
+            spends: Vec::new(),
+            outputs: values
+                .iter()
+                .map(|v| crate::sapling_part::SaplingOut::Shielded {
+                    address: own.clone(),
+                    value: *v as i64,
+                    memo: String::new(),
+                    own: true,
+                })
+                .collect(),
+            anchor: String::new(),
+            params_dir: params_dir.display().to_string(),
+        };
+        let mut t = crate::tx::Transaction::new_v4();
+        t.expiry_height = birthday + 40;
+        let h = crate::build::hybrid::sapling_prepare(
+            self.account.extended_spending_key(),
+            self.network,
+            &part,
+            &t,
+            crate::params::VAULT_BRANCH_ID,
+            OsRng,
+        )
+        .expect("prepare");
+        let raw = crate::build::hybrid::finish_signed(Some(h), &t, OsRng).expect("finish");
+        let ztx = ZTransaction::read(
+            &raw[..],
+            BranchId::try_from(crate::params::VAULT_BRANCH_ID).unwrap(),
+        )
+        .expect("parse");
+        let outputs: Vec<cf::CompactSaplingOutput> = ztx
+            .sapling_bundle()
+            .expect("sapling")
+            .shielded_outputs()
+            .iter()
+            .map(|o| cf::CompactSaplingOutput {
+                cmu: o.cmu().to_bytes().to_vec(),
+                ephemeral_key: o.ephemeral_key().0.to_vec(),
+                ciphertext: o.enc_ciphertext()[..52].to_vec(),
+            })
+            .collect();
+        self.scan_outputs_for_test(birthday, tip, ztx.txid().as_ref().to_vec(), outputs);
+        raw
+    }
+
+    /// Pre-ZIP-212 notes (lead byte 0x01, `Rseed::BeforeZip212`, what a sender makes before
+    /// Canopy) of `values` to the account's default address in the block at `birthday`, empty
+    /// blocks up to `tip`, scanned as in [`Shielded::receive_for_test`]. No proof: the scan reads
+    /// the compact outputs only.
+    pub(crate) fn receive_pre_zip212_for_test(&mut self, birthday: u32, tip: u32, values: &[u64]) {
+        use zcash_client_backend::proto::compact_formats as cf;
+        use zcash_note_encryption::Domain;
+        let dfvk = self
+            .account
+            .extended_spending_key()
+            .to_diversifiable_full_viewing_key();
+        let (_, addr) = dfvk.default_address();
+        let outputs = values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let note = addr.create_note(
+                    sapling_crypto::value::NoteValue::from_raw(*v),
+                    sapling_crypto::Rseed::BeforeZip212(jubjub::Fr::from(1_000 + i as u64)),
+                );
+                let ne = sapling_crypto::note_encryption::sapling_note_encryption(
+                    None,
+                    note.clone(),
+                    [0; 512],
+                    &mut OsRng,
+                );
+                let enc = ne.encrypt_note_plaintext();
+                cf::CompactSaplingOutput {
+                    cmu: note.cmu().to_bytes().to_vec(),
+                    ephemeral_key: sapling_crypto::note_encryption::SaplingDomain::epk_bytes(
+                        ne.epk(),
+                    )
+                    .0
+                    .to_vec(),
+                    ciphertext: enc[..52].to_vec(),
+                }
+            })
+            .collect();
+        self.scan_outputs_for_test(birthday, tip, vec![7; 32], outputs);
+    }
+
+    /// The chain of [`Shielded::receive_for_test`]: the account registered at `birthday`, one
+    /// transaction `txid` with `outputs` in the block at `birthday`, empty blocks up to `tip`,
+    /// all scanned by the store's own scanner under this store's parameters.
+    fn scan_outputs_for_test(
+        &mut self,
+        birthday: u32,
+        tip: u32,
+        txid: Vec<u8>,
+        outputs: Vec<zcash_client_backend::proto::compact_formats::CompactSaplingOutput>,
+    ) {
+        use zcash_client_backend::data_api::chain::{
+            error::Error as ChainError, scan_cached_blocks, BlockSource, ChainState,
+        };
+        use zcash_client_backend::data_api::{AccountBirthday, AccountPurpose};
+        use zcash_client_backend::proto::compact_formats as cf;
+        let usk = x402_ycash_light::keys::usk_from_extsk(&self.account.extended_spending_key());
+        let ufvk = x402_ycash_light::keys::ufvk(&usk);
+        let hash = |h: u32| {
+            let mut b = [0u8; 32];
+            b[..4].copy_from_slice(&h.to_le_bytes());
+            b[31] = 0xaa;
+            b
+        };
+        let prior = ChainState::empty(
+            BlockHeight::from_u32(birthday - 1),
+            zcash_primitives::block::BlockHash(hash(birthday - 1)),
+        );
+        let mut size = 0u32;
+        let mut blocks = Vec::new();
+        for h in birthday..=tip {
+            let mut vtx = Vec::new();
+            if h == birthday {
+                size += outputs.len() as u32;
+                vtx.push(cf::CompactTx {
+                    index: 1,
+                    txid: txid.clone(),
+                    outputs: outputs.clone(),
+                    ..Default::default()
+                });
+            }
+            blocks.push(cf::CompactBlock {
+                height: h as u64,
+                hash: hash(h).to_vec(),
+                prev_hash: hash(h - 1).to_vec(),
+                time: 1_600_000_000 + h,
+                vtx,
+                chain_metadata: Some(cf::ChainMetadata {
+                    sapling_commitment_tree_size: size,
+                    orchard_commitment_tree_size: 0,
+                }),
+                ..Default::default()
+            });
+        }
+        struct Src(Vec<cf::CompactBlock>);
+        impl BlockSource for Src {
+            type Error = std::convert::Infallible;
+            fn with_blocks<F, E>(
+                &self,
+                from: Option<BlockHeight>,
+                limit: Option<usize>,
+                mut f: F,
+            ) -> Result<(), ChainError<E, Self::Error>>
+            where
+                F: FnMut(cf::CompactBlock) -> Result<(), ChainError<E, Self::Error>>,
+            {
+                let from = from.map_or(0, |h| u32::from(h) as u64);
+                for b in self
+                    .0
+                    .iter()
+                    .filter(|b| b.height >= from)
+                    .take(limit.unwrap_or(usize::MAX))
+                {
+                    f(b.clone())?;
+                }
+                Ok(())
+            }
+        }
+        let params = self.params;
+        let db = self.store_mut().expect("store");
+        db.import_account_ufvk(
+            "yew-test",
+            &ufvk,
+            &AccountBirthday::from_parts(prior.clone(), None),
+            AccountPurpose::Spending { derivation: None },
+            None,
+        )
+        .expect("account");
+        db.update_chain_tip(BlockHeight::from_u32(tip))
+            .expect("tip");
+        scan_cached_blocks(
+            &params,
+            &Src(blocks),
+            db,
+            BlockHeight::from_u32(birthday),
+            &prior,
+            (tip - birthday + 1) as usize,
+        )
+        .expect("scan");
+    }
+
+    /// Continue [`Shielded::receive_for_test`]'s chain: `raw` (a transaction this wallet built,
+    /// e.g. a first send leaving Sapling change) mined in the block at `at`, empty blocks up to
+    /// `tip`. `earlier` are the transactions already mined on this chain, in order (the
+    /// `receive_for_test` paying transaction first): they give the commitment tree's frontier
+    /// at `at - 1`. Every block at or below `at - 1` must already be scanned.
+    pub(crate) fn mine_for_test(&mut self, earlier: &[&[u8]], at: u32, tip: u32, raw: &[u8]) {
+        use zcash_client_backend::data_api::chain::{
+            error::Error as ChainError, scan_cached_blocks, BlockSource, ChainState,
+        };
+        use zcash_client_backend::proto::compact_formats as cf;
+        let hash = |h: u32| {
+            let mut b = [0u8; 32];
+            b[..4].copy_from_slice(&h.to_le_bytes());
+            b[31] = 0xaa;
+            b
+        };
+        let parse = |r: &[u8]| {
+            ZTransaction::read(
+                r,
+                BranchId::try_from(crate::params::VAULT_BRANCH_ID).unwrap(),
+            )
+            .expect("parse")
+        };
+        let mut frontier = incrementalmerkletree::frontier::Frontier::<
+            sapling_crypto::Node,
+            { sapling_crypto::NOTE_COMMITMENT_TREE_DEPTH },
+        >::empty();
+        let mut size = 0u32;
+        for r in earlier {
+            if let Some(b) = parse(r).sapling_bundle() {
+                for o in b.shielded_outputs() {
+                    frontier.append(sapling_crypto::Node::from_cmu(o.cmu()));
+                    size += 1;
+                }
+            }
+        }
+        let prior = ChainState::new(
+            BlockHeight::from_u32(at - 1),
+            zcash_primitives::block::BlockHash(hash(at - 1)),
+            frontier,
+        );
+        let ztx = parse(raw);
+        let bundle = ztx.sapling_bundle().expect("sapling");
+        let outputs: Vec<cf::CompactSaplingOutput> = bundle
+            .shielded_outputs()
+            .iter()
+            .map(|o| cf::CompactSaplingOutput {
+                cmu: o.cmu().to_bytes().to_vec(),
+                ephemeral_key: o.ephemeral_key().0.to_vec(),
+                ciphertext: o.enc_ciphertext()[..52].to_vec(),
+            })
+            .collect();
+        let spends: Vec<cf::CompactSaplingSpend> = bundle
+            .shielded_spends()
+            .iter()
+            .map(|s| cf::CompactSaplingSpend {
+                nf: s.nullifier().0.to_vec(),
+            })
+            .collect();
+        let mut blocks = Vec::new();
+        for h in at..=tip {
+            let mut vtx = Vec::new();
+            if h == at {
+                size += outputs.len() as u32;
+                vtx.push(cf::CompactTx {
+                    index: 1,
+                    txid: ztx.txid().as_ref().to_vec(),
+                    spends: spends.clone(),
+                    outputs: outputs.clone(),
+                    ..Default::default()
+                });
+            }
+            blocks.push(cf::CompactBlock {
+                height: h as u64,
+                hash: hash(h).to_vec(),
+                prev_hash: hash(h - 1).to_vec(),
+                time: 1_600_000_000 + h,
+                vtx,
+                chain_metadata: Some(cf::ChainMetadata {
+                    sapling_commitment_tree_size: size,
+                    orchard_commitment_tree_size: 0,
+                }),
+                ..Default::default()
+            });
+        }
+        struct Src(Vec<cf::CompactBlock>);
+        impl BlockSource for Src {
+            type Error = std::convert::Infallible;
+            fn with_blocks<F, E>(
+                &self,
+                from: Option<BlockHeight>,
+                limit: Option<usize>,
+                mut f: F,
+            ) -> Result<(), ChainError<E, Self::Error>>
+            where
+                F: FnMut(cf::CompactBlock) -> Result<(), ChainError<E, Self::Error>>,
+            {
+                let from = from.map_or(0, |h| u32::from(h) as u64);
+                for b in self
+                    .0
+                    .iter()
+                    .filter(|b| b.height >= from)
+                    .take(limit.unwrap_or(usize::MAX))
+                {
+                    f(b.clone())?;
+                }
+                Ok(())
+            }
+        }
+        let params = self.params;
+        let db = self.store_mut().expect("store");
+        db.update_chain_tip(BlockHeight::from_u32(tip))
+            .expect("tip");
+        scan_cached_blocks(
+            &params,
+            &Src(blocks),
+            db,
+            BlockHeight::from_u32(at),
+            &prior,
+            (tip - at + 1) as usize,
+        )
+        .expect("scan");
+    }
+}
+
+/// Notes and their paths for a hybrid spend ([`Shielded::select_spends`]).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug)]
+pub struct NoteSpends {
+    /// The selected notes with their Merkle paths at [`NoteSpends::anchor`].
+    pub notes: Vec<SelectedNote>,
+    /// The anchor (the tree's root at the anchor height), hex.
+    pub anchor: String,
+    /// The notes' total, zat.
+    pub total_zat: u64,
+    /// The fee settled for this many notes, zat.
+    pub fee_zat: u64,
+    /// The height the transaction is built for (the store's tip + 1).
+    pub target_height: u32,
+}
+
+/// One selected note as the store holds it. The store keeps a note's `rcm`, not the ZIP-212
+/// `rseed` it was derived from (`zcash_client_sqlite` reads every note back as pre-ZIP-212),
+/// and the hybrid builder needs a ZIP-212 note's `rseed` (a note from before Canopy it spends by
+/// its `rcm`); so the note plaintext is decrypted again from its transaction
+/// (`build::sapling_pq::note_spends`), bound to this commitment.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectedNote {
+    /// The transaction that created it (internal order).
+    pub txid: [u8; 32],
+    /// Its index among that transaction's Sapling outputs.
+    pub output_index: u16,
+    /// Its note commitment (`cmu`), as the store and the tree hold it.
+    pub cmu: [u8; 32],
+    /// Its value, zat.
+    pub value: u64,
+    /// Received on the account's internal (change) scope.
+    pub internal: bool,
+    /// Its position in the commitment tree.
+    pub position: u64,
+    /// Its Merkle path at the anchor, 32 nodes hex (leaf to root).
+    pub path: Vec<String>,
 }
 
 /// The browser's storage setup (yew/web plan W0.1/W0.5): SQLite on OPFS through the sahpool
@@ -1569,6 +2297,106 @@ mod tests {
             assert_eq!(p.activation_height(NetworkUpgrade::Vault), None);
             assert_eq!(at(p, 5_000_000), CANOPY);
         }
+    }
+
+    /// Real-stack run YEW-REAL finding 0, the plain private arm: Sapling -> Sapling through the
+    /// store's own builder (`create_proposed_transactions`), twice in a row, the second spending
+    /// the internal change the first left once mined.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn private_send_twice_spends_the_change() {
+        let other = SaplingAccount::from_mnemonic(PHRASE, "another", Network::Regtest).unwrap();
+        private_send_twice(&other.default_address().1, "twice");
+    }
+
+    /// Review of the real-run fixes, test gap: Sapling -> ECC (a transparent recipient) through
+    /// the store's own builder, twice, the second spending the first's internal change.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn private_send_to_ecc_twice_spends_the_change() {
+        let to = crate::keys::encode_p2pkh(Network::Regtest, &[0x4e; 20]);
+        private_send_twice(&to, "twice-ecc");
+    }
+
+    /// Two private sends of 300,000 zat to `to`, each mined, from one received note.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn private_send_twice(to: &str, name: &str) {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let params: PathBuf = std::env::var("YEW_SAPLING_PARAMS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                if cfg!(target_os = "macos") {
+                    format!("{home}/Library/Application Support/ZcashParams").into()
+                } else {
+                    format!("{home}/.zcash-params").into()
+                }
+            });
+        let dir = tmp(name);
+        let mut s = Shielded::open(&dir, Network::Regtest, account(Network::Regtest, "")).unwrap();
+        s.set_vault_activation(Some(1)).unwrap();
+        let mut mined = vec![s.receive_for_test(100, 120, &[2_000_000], &params)];
+        let mut height = 120u32;
+        for round in 0..2 {
+            let plan = s.plan(to, 300_000, None).unwrap();
+            let built = s
+                .build(&plan, &params)
+                .unwrap_or_else(|e| panic!("send {}: {e}", round + 1));
+            let earlier: Vec<&[u8]> = mined.iter().map(|r| r.as_slice()).collect();
+            s.mine_for_test(&earlier, height + 1, height + 20, &built.raw);
+            height += 20;
+            mined.push(built.raw);
+        }
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review LOW-4: the light sync finds a pre-Canopy note (lead byte 0x01) exactly where
+    /// ZIP-212 allows one, under Ycash's 3-block grace period (`ZIP212_GRACE_PERIOD`). The scan's
+    /// enforcement follows the store's parameters:
+    /// - regtest with the devnet heights (Canopy at 1): a 0x01 note at 100 is past the grace
+    ///   window and rejected (what the real-stack run saw on a regtest whose Canopy was at 150);
+    /// - regtest with the server's heights (Canopy at 150, `set_chain_upgrades`): found;
+    /// - mainnet (Canopy 1,100,006, compiled in; a server height is ignored): found below Canopy
+    ///   and in the grace window, rejected from Canopy + 3 on.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn light_sync_finds_pre_canopy_notes_where_zip212_allows_them() {
+        const MAIN_CANOPY: u32 = 1_100_006;
+        let found = |net: Network, upgrades: Option<&str>, at: u32, name: &str| {
+            let dir = tmp(name);
+            let mut s = Shielded::open(&dir, net, account(net, "")).unwrap();
+            s.set_chain_upgrades(None, upgrades.map(str::to_string))
+                .unwrap();
+            s.receive_pre_zip212_for_test(at, at + 2, &[300_000]);
+            let total = s.balance().unwrap().total_zat;
+            drop(s);
+            let _ = std::fs::remove_dir_all(&dir);
+            total
+        };
+        let node = "overwinter=1,sapling=1,ycash=1,blossom=1,heartwood=1,canopy=150";
+        assert_eq!(found(Network::Regtest, None, 100, "pre-devnet"), 0);
+        assert_eq!(
+            found(Network::Regtest, Some(node), 100, "pre-node"),
+            300_000
+        );
+        assert_eq!(
+            found(Network::Regtest, Some(node), 152, "pre-grace"),
+            300_000
+        );
+        assert_eq!(found(Network::Regtest, Some(node), 153, "pre-after"), 0);
+        // mainnet: the compiled-in Canopy, whatever a server says
+        assert_eq!(
+            ycash_network(Network::Mainnet).activation_height(NetworkUpgrade::Canopy),
+            Some(BlockHeight::from_u32(MAIN_CANOPY))
+        );
+        assert_eq!(
+            ycash_network_with_upgrades(Network::Mainnet, Some(5), Some("canopy=150")),
+            YcashNetwork::Main
+        );
+        let main = |at: u32, name: &str| found(Network::Mainnet, Some("canopy=1"), at, name);
+        assert_eq!(main(MAIN_CANOPY - 10, "pre-main-below"), 300_000);
+        assert_eq!(main(MAIN_CANOPY + 2, "pre-main-grace"), 300_000);
+        assert_eq!(main(MAIN_CANOPY + 3, "pre-main-after"), 0);
     }
 
     /// The shielded store takes the activation: the branch check agrees with a server that

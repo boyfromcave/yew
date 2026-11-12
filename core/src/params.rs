@@ -107,32 +107,52 @@ impl Network {
         }
     }
 
-    /// Post-quantum Yellowback address version bytes (quantum spec §4, F-4): the 33-byte payload
-    /// `scheme ‖ keyHash` of a `CPQKeyID` renders `yb…` / `yt…` / `yr…` at 53 characters, beside
-    /// the 35-character 20-byte form. Main `{0x56,0xAB}` (D-Q-21; the node's
-    /// `pqAddressVersion` is `{0x56,0xBF}` = `ye…` until the Y-B sweep), test `{0x57,0x1E}`,
-    /// regtest `{0x57,0x10}` (`ycash-dd/src/yellowback/params.cpp` `pqAddressVersion`) — each
-    /// the lowest version whose whole payload interval keeps the prefix and the length.
-    pub fn pq_yellowback_prefix(self) -> [u8; 2] {
-        match self {
-            Network::Mainnet => [0x56, 0xAB],
-            Network::Testnet => [0x57, 0x1E],
-            Network::Regtest => [0x57, 0x10],
-        }
+    /// Post-quantum Yellowback address versions (quantum spec §4, D-9): one 3-byte version per
+    /// scheme, so the prefix names the scheme; the address is `Base58Check(version ‖ keyHash)`,
+    /// 53 characters. Main FN-DSA-512 `56AEDE` `ybf…` / SLH-DSA-SHA2-128s `56B044` `ybs…`, test
+    /// `5721C9` `ytf…` / `572330` `yts…`, regtest `571444` `yrf…` / `5715AA` `yrs…`
+    /// (`ycash6/src/yellowback/params.cpp` `pqAddressVersions`, ycash-dd#166). `None` for a
+    /// scheme outside the registry.
+    pub fn pq_yellowback_version(self, scheme: u8) -> Option<[u8; 3]> {
+        use crate::pq::{SCHEME_FN_DSA_512 as F, SCHEME_SLH_DSA_SHA2_128S as S};
+        Some(match (self, scheme) {
+            (Network::Mainnet, F) => [0x56, 0xAE, 0xDE],
+            (Network::Mainnet, S) => [0x56, 0xB0, 0x44],
+            (Network::Testnet, F) => [0x57, 0x21, 0xC9],
+            (Network::Testnet, S) => [0x57, 0x23, 0x30],
+            (Network::Regtest, F) => [0x57, 0x14, 0x44],
+            (Network::Regtest, S) => [0x57, 0x15, 0xAA],
+            _ => return None,
+        })
     }
 
-    /// Post-quantum plain-YEC address version bytes (owner decision D-Q-20): the same 33-byte
-    /// `scheme ‖ keyHash` payload and the same `TX_PQPKH` script as the post-quantum Yellowback
-    /// form, rendered `sq…` / `tq…` / `rq…` (53 characters): main `{0x4D,0xD9}`, test
-    /// `{0x4F,0x61}`, regtest `{0x4C,0x51}` (the node's `key_io` `PlainPQAddressVersion`,
-    /// decoded chain-wide since the plan's §8.1 "SQ" step). YEW sends YEC to it
-    /// (`keys::parse_yec_destination`) and syncs its own keys' forms through lightwalletd's taddr
-    /// methods, which index `TX_PQPKH` under it.
-    pub fn pq_yec_prefix(self) -> [u8; 2] {
+    /// Post-quantum plain-YEC address versions (D-Q-20, D-9): the same `TX_PQPKH` script as the
+    /// post-quantum Yellowback form, one 3-byte version per scheme: main FN-DSA-512 `4DDD04`
+    /// `sqf…` / SLH-DSA-SHA2-128s `4DDE6A` `sqs…`, test `4F6519` `tqf…` / `4F667F` `tqs…`,
+    /// regtest `4C54EF` `rqf…` / `4C5655` `rqs…` (the node's `key_io` `PlainPQAddressVersions`).
+    /// YEW sends YEC to it (`keys::parse_yec_destination`) and syncs its own keys' forms through
+    /// lightwalletd's taddr methods, which index `TX_PQPKH` under it.
+    pub fn pq_yec_version(self, scheme: u8) -> Option<[u8; 3]> {
+        use crate::pq::{SCHEME_FN_DSA_512 as F, SCHEME_SLH_DSA_SHA2_128S as S};
+        Some(match (self, scheme) {
+            (Network::Mainnet, F) => [0x4D, 0xDD, 0x04],
+            (Network::Mainnet, S) => [0x4D, 0xDE, 0x6A],
+            (Network::Testnet, F) => [0x4F, 0x65, 0x19],
+            (Network::Testnet, S) => [0x4F, 0x66, 0x7F],
+            (Network::Regtest, F) => [0x4C, 0x54, 0xEF],
+            (Network::Regtest, S) => [0x4C, 0x56, 0x55],
+            _ => return None,
+        })
+    }
+
+    /// The pre-D-9 2-byte versions (`version ‖ scheme ‖ keyHash`), `(yed, plain)`: never produced
+    /// and never accepted as an address. Only yewd reads them, to rewrite an address-book key
+    /// written before D-9 (the node's `DecodeLegacyPQAddress`).
+    pub fn legacy_pq_versions(self) -> ([u8; 2], [u8; 2]) {
         match self {
-            Network::Mainnet => [0x4D, 0xD9],
-            Network::Testnet => [0x4F, 0x61],
-            Network::Regtest => [0x4C, 0x51],
+            Network::Mainnet => ([0x56, 0xAB], [0x4D, 0xD9]),
+            Network::Testnet => ([0x57, 0x1E], [0x4F, 0x61]),
+            Network::Regtest => ([0x57, 0x10], [0x4C, 0x51]),
         }
     }
 
@@ -725,11 +745,82 @@ pub fn zat_to_usd_cents(zat: i64, price_micro_usd: i64) -> i64 {
 /// the same on ycash6): the lowest size rate YEW ever charges, whatever a server reports.
 pub const RELAY_FLOOR_ZAT_PER_KB: i64 = 100;
 
-/// The highest `params.pq.feeRateZatPerKB` YEW accepts from a server: 100× the relay floor
-/// (an 8 KB SLH-DSA owner spend would then cost 80,000 zat). A server reporting more is refused
-/// as inconsistent rather than allowed to drain fees (the quantum plan's Q8 release multiplier
-/// is expected to be a small single digit).
+/// The highest **fallback** rate YEW accepts from a server (`params.fees.network.fallbackZatPerKB`,
+/// the node's `-pqfeerate`, used only while no attested price is in force): 100× the relay floor.
+/// It bounds only that price-free rate. The dollar-priced rates a server derives from the YEC
+/// price it reports are bounded by [`MAX_PLAIN_FEE_RATE_ZAT_PER_KB`] and
+/// [`MAX_YED_FEE_RATE_ZAT_PER_KB`], and the fee of a post-quantum send by
+/// [`pq_send_fee_limit`] (review YEW-REVIEW-3 M1).
 pub const MAX_PQ_FEE_RATE_ZAT_PER_KB: i64 = 100 * RELAY_FLOOR_ZAT_PER_KB;
+
+/// `DEFAULT_PQ_FEE_USD_PER_KB_MICRO` (`ycash-dd/src/policy/policy.h`, `-pqfeeusdperkb`): the
+/// plain post-quantum dollar target, $0.02 per KB.
+pub const DEFAULT_PQ_FEE_USD_PER_KB_MICRO: i64 = 20_000;
+
+/// `DEFAULT_YED_FEE_USD_PER_KB_MICRO` (`-yellowbackfeeusdperkb`): the vault / Yellowback dollar
+/// target, $0.05 per KB.
+pub const DEFAULT_YED_FEE_USD_PER_KB_MICRO: i64 = 50_000;
+
+/// `DEFAULT_TRANSACTION_MAXFEE` (`ycash-dd/src/main.h`, `-maxtxfee`): 0.1 YEC. The price-free
+/// part of the node's post-quantum cap (`PQMaxTxFee` = min(max(-maxtxfee, $2 at the attested
+/// price), -yellowbackmaxtxfee)): above it a fee is justified only by the attested price.
+pub const DEFAULT_TRANSACTION_MAXFEE_ZAT: i64 = COIN / 10;
+
+/// The lowest YEC price, µUSD per YEC, YEW believes when it bounds a fee rate: $0.01.
+///
+/// YEW cannot verify the attested price a server reports (`fees.network.priceMicroUsd`): the
+/// node prices fees at the highest of its index's window medians, which a light client cannot
+/// recompute, and the attestor keys come from the same server (`ListAttestors`). A server that
+/// reports a tiny price inflates every dollar-priced rate. So the rates a server may quote are
+/// bounded by the node's default dollar targets at this price: an honest server running the C++
+/// defaults passes at any YEC price of $0.01 or more, and a hostile one can charge at most what
+/// an honest one would at $0.01 (and never above [`MAX_YED_TX_FEE_ZAT`] per transaction).
+pub const FEE_PRICE_FLOOR_MICRO_USD: i64 = 10_000;
+
+/// The highest plain post-quantum rate (zat/KB) YEW pays, whatever a server reports:
+/// `AttestedRateZatPerKB($0.02/KB, $0.01)` = 200,000,000 zat/KB (2 YEC/KB).
+pub const MAX_PLAIN_FEE_RATE_ZAT_PER_KB: i64 =
+    DEFAULT_PQ_FEE_USD_PER_KB_MICRO * COIN / FEE_PRICE_FLOOR_MICRO_USD;
+
+/// The highest vault / Yellowback rate (zat/KB) YEW pays, whatever a server reports:
+/// `AttestedRateZatPerKB($0.05/KB, $0.01)` = 500,000,000 zat/KB (5 YEC/KB).
+pub const MAX_YED_FEE_RATE_ZAT_PER_KB: i64 =
+    DEFAULT_YED_FEE_USD_PER_KB_MICRO * COIN / FEE_PRICE_FLOOR_MICRO_USD;
+
+/// The most YEW pays for a plain post-quantum send of `size` signed bytes whose ZIP-317
+/// conventional fee is `conventional`, whatever a server reports (review YEW-REVIEW-3 M1):
+/// the node's `PQBuilderFee` at [`MAX_PLAIN_FEE_RATE_ZAT_PER_KB`],
+/// `max(1000, rate × size / 1000, conventional)`, never above [`MAX_YED_TX_FEE_ZAT`] (the
+/// node's `-yellowbackmaxtxfee` ceiling) unless the conventional fee alone is higher.
+pub fn pq_send_fee_limit(size: usize, conventional: i64) -> i64 {
+    let size_fee = FEE_ZAT.max(MAX_PLAIN_FEE_RATE_ZAT_PER_KB.saturating_mul(size as i64) / 1000);
+    size_fee.min(MAX_YED_TX_FEE_ZAT).max(conventional)
+}
+
+/// The highest flat fee (`fees.network.flatZat`, a floor on every Yellowback fee) YEW accepts from
+/// a server: 10× [`FEE_ZAT`] (review YEW-REVIEW-4 M2; the node's default is `FEE_ZAT`).
+pub const MAX_FLAT_ZAT: i64 = 10 * FEE_ZAT;
+
+/// The most YEW pays for a vault / Yellowback transaction of `size` bytes whose conventional fee
+/// is `conventional`, whatever a server reports (review YEW-REVIEW-4 M2): the size fee at
+/// [`MAX_YED_FEE_RATE_ZAT_PER_KB`] or [`MAX_FLAT_ZAT`], never above [`MAX_YED_TX_FEE_ZAT`]
+/// unless the conventional fee alone is higher.
+pub fn yed_fee_limit(size: usize, conventional: i64) -> i64 {
+    let size_fee = MAX_FLAT_ZAT.max(rate_fee(MAX_YED_FEE_RATE_ZAT_PER_KB, size));
+    size_fee.min(MAX_YED_TX_FEE_ZAT).max(conventional)
+}
+
+/// The fee above which YEW marks a post-quantum send's fee as unusual in the preview: the larger
+/// of the node's price-free cap [`DEFAULT_TRANSACTION_MAXFEE_ZAT`] (0.1 YEC) and three times the
+/// fee at the attested floor rate [`ATTESTED_FEE_FLOOR_ZAT_PER_KB`] (the cheapest any priced
+/// server quotes, `max(1000, floor × size / 1000, conventional)`). A fee above it rests on the
+/// YEC price the server reports, which YEW cannot verify.
+pub fn pq_fee_unusual_threshold(size: usize, conventional: i64) -> i64 {
+    let floor_fee = FEE_ZAT
+        .max(ATTESTED_FEE_FLOOR_ZAT_PER_KB.saturating_mul(size as i64) / 1000)
+        .max(conventional);
+    DEFAULT_TRANSACTION_MAXFEE_ZAT.max(floor_fee.saturating_mul(3))
+}
 
 /// The network fee of a transaction of `size` bytes that spends a post-quantum input (quantum
 /// plan §4.5, client survey C-5): `max(floor, rate × size)`, with `CFeeRate::GetFee`'s rounding

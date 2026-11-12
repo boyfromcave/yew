@@ -9,7 +9,7 @@
 //!         [--seed-file PATH | YEW_SEED=<mnemonic>] [--passphrase P | YEW_PASSPHRASE=P]
 //!         [--birthday H] <command>
 //! commands: status | yed-info | price | address [--new] [--shielded] [--falcon] | balance | sync | coins
-//!           | send-yec <addr> <zat> [--all] [--memo TEXT] | send-yed <addr> <cents> [<addr> <cents> ...]
+//!           | send-yec <addr> <zat> [--all] [--link] [--memo TEXT] | send-yed <addr> <cents> [<addr> <cents> ...]
 //!           | params-status | params-download <base-url>
 //!           | export-wif <addr> | import-wif <wif> | history | version
 //!           | mint-estimate <cents> <lockBlocks> | mint-start <cents> <lockBlocks>
@@ -65,9 +65,9 @@ fn usage() -> ! {
         "usage: yew-cli [--server host:port] [--plain] [--ca-pem PATH] [--wallet PATH] [--network N] \
          [--seed-file PATH] [--passphrase P] [--birthday H] [--params DIR] <command>\n\
          commands: status | yed-info | price | address [--new] [--shielded] [--falcon] | balance | sync | coins\n\
-         \x20         | send-yec <addr> <zat> [--all] [--memo TEXT] | send-yed <addr> <cents> [<addr> <cents> ...]\n\
+         \x20         | send-yec <addr> <zat> [--all] [--link] [--memo TEXT] | send-yed <addr> <cents> [<addr> <cents> ...]\n\
          \x20         | params-status | params-download <base-url>\n\
-         \x20         | export-wif <addr> | import-wif <wif> | history | version\n\
+         \x20         | export-wif <addr> | import-wif <wif> | history | version | fee-reference [--reset]\n\
          \x20         | mint-estimate <cents> <lockBlocks> | mint-start <cents> <lockBlocks>\n\
          \x20         | mint-status [<id>] | mint-finish <id> | mint-sweep <id>\n\
          \x20         | vaults | redeem <vaultTxid> | claimable | claim <vaultTxid>\n\
@@ -599,6 +599,8 @@ async fn main() {
                 _ => usage(),
             };
             let all = o.rest.iter().any(|a| a == "--all");
+            // --link: combine coins of several public addresses (beta2 D-5, links them publicly)
+            let link = o.rest.iter().any(|a| a == "--link");
             let memo = o
                 .rest
                 .iter()
@@ -610,6 +612,7 @@ async fn main() {
                 &to,
                 zat,
                 all,
+                link,
                 memo.as_deref(),
                 r.tip,
                 r.branch_id,
@@ -701,10 +704,30 @@ async fn main() {
                 p.expiry_height,
                 yew_core::keys::hex(&p.payload)
             );
-            let (txid, val) = fail(yed_transfer::broadcast(&w, &mut c, &mut v, &p).await);
+            let (txid, val) = fail(yed_transfer::broadcast(&w, &mut c, &mut v, &p, None).await);
             println!(
                 "sent {txid} (node dry run: verdict {} valid {} burned {} yedIn {} yedOut {})",
                 val.verdict, val.valid, val.burned, val.yed_in, val.yed_out
+            );
+        }
+        "fee-reference" => {
+            // review YEW-REVIEW-5 M1: the reference price the unusual-fee check uses, and the way
+            // out of one a server poisoned
+            let w = open_wallet(&o);
+            if o.rest.iter().any(|a| a == "--reset") {
+                fail(w.reset_fee_reference());
+                println!("fee reference reset: until 3 days have reported a YEC price again, every fee above 0.1 YEC needs its own confirmation");
+            }
+            let r = w.fee_reference();
+            println!(
+                "reference {} uUSD per YEC from {} day(s) of reports in the last 30{}",
+                r.price,
+                r.observations,
+                if r.weak() {
+                    " (weak: fees above 0.1 YEC are flagged)"
+                } else {
+                    ""
+                }
             );
         }
         "export-wif" => {
@@ -791,7 +814,16 @@ async fn main() {
                 _ => usage(),
             };
             let (w, _, mut v, r) = synced(&o).await;
-            let e = fail(w.mint_estimate(&mut v, cents, lock, r.tip).await);
+            let e = fail(
+                w.mint_estimate(
+                    &mut v,
+                    cents,
+                    lock,
+                    r.tip,
+                    yew_core::build::mint::MintSource::Ecc,
+                )
+                .await,
+            );
             println!(
                 "mint {} class {} R {} lock {} claim {} | required {} zat -> collateral {} zat, fee {} zat to {:?}, attestor fee {} zat, carrier {} zat | total {} zat, available {} zat: {}",
                 dollars(e.cents as i64),
@@ -827,7 +859,16 @@ async fn main() {
             let (w, mut c, mut v, r) = synced(&o).await;
             // The CLI confirms the estimate it just printed (audit G-2): the start's answer
             // must match it.
-            let e = fail(w.mint_estimate(&mut v, cents, lock, r.tip).await);
+            let e = fail(
+                w.mint_estimate(
+                    &mut v,
+                    cents,
+                    lock,
+                    r.tip,
+                    yew_core::build::mint::MintSource::Ecc,
+                )
+                .await,
+            );
             println!(
                 "estimate: collateral {} zat, fee {} zat to {:?}, class {}",
                 e.collateral_zat, e.fee_zat, e.payee, e.term_class
@@ -837,6 +878,11 @@ async fn main() {
                 fee_zat: e.fee_zat,
                 payee: e.payee.clone(),
                 term_class: e.term_class.clone(),
+                // an unusual fee is refused here: the CLI has no second confirmation
+                accept_unusual_fee: None,
+                // the CLI funds a mint from the wallet's ECC (public) coins only
+                carrier_fee_zat: Some(e.carrier_fee_zat),
+                accept_unusual_carrier_fee: None,
             };
             let id = fail(
                 w.mint_start(
@@ -847,6 +893,7 @@ async fn main() {
                     Some(&confirmed),
                     r.tip,
                     r.branch_id,
+                    yew_core::build::mint::MintSource::Ecc,
                 )
                 .await,
             );
@@ -866,7 +913,10 @@ async fn main() {
         "mint-finish" => {
             let id = parse_id(o.rest.get(1));
             let (w, mut c, mut v, r) = synced(&o).await;
-            let f = fail(w.mint_finish(&mut c, &mut v, id, r.tip, r.branch_id).await);
+            let f = fail(
+                w.mint_finish(&mut c, &mut v, id, r.tip, r.branch_id, None)
+                    .await,
+            );
             println!(
                 "mint {id}: sent {} (node dry run: verdict {} valid {} type {} path {:?} yedIn {} yedOut {} fee {})",
                 f.txid, f.validation.verdict, f.validation.valid, f.validation.tx_type, f.validation.path,
@@ -953,6 +1003,7 @@ async fn main() {
             let bounds = yew_core::build::terms::ClaimBounds {
                 max_burn_cents: entry.minted_cents,
                 min_out_zat: entry.claimant_zat,
+                accept_unusual_fee: None,
             };
             let id = fail(
                 w.claim(&mut c, &mut v, &txid, Some(&bounds), r.tip, r.branch_id)
@@ -1000,7 +1051,7 @@ async fn main() {
                 "preview release {}: {} zat to {} (fee from YEC, change {} zat)",
                 arg, p.value, p.recipient_address, p.change
             );
-            let (sent, val) = fail(w.release_confirm(&mut c, &mut v, &p).await);
+            let (sent, val) = fail(w.release_confirm(&mut c, &mut v, &p, None).await);
             println!(
                 "release {sent} sent (node dry run: verdict {} valid {} type {:?})",
                 val.verdict, val.valid, val.tx_type

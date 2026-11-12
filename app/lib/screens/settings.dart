@@ -83,6 +83,18 @@ class SettingsScreen extends StatelessWidget {
             title: const Text('Device unlock'),
             subtitle: const Text('Ask before opening the wallet or showing the phrase'),
           ),
+          ListTile(
+            key: const Key('fee-reference'),
+            leading: const Icon(Icons.price_change_outlined),
+            title: const Text('Reset fee reference'),
+            subtitle: const Text('Forget the YEC prices servers reported; for a while, fees above 0.1 YEC ask first'),
+            onTap: () async {
+              await app.api.resetFeeReference();
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Fee reference reset')));
+              }
+            },
+          ),
           const Divider(),
           ListTile(
             key: const Key('lock'),

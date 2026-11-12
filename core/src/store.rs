@@ -545,6 +545,7 @@ CREATE TABLE IF NOT EXISTS vaults (
   cancel_quiet_until INTEGER NOT NULL DEFAULT 0, held_residuals TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS pq_owners (idx INTEGER PRIMARY KEY, scheme INTEGER NOT NULL, hash BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS pq_holders (idx INTEGER PRIMARY KEY, scheme INTEGER NOT NULL, hash BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS provenance (txid BLOB NOT NULL, n INTEGER NOT NULL, verdict TEXT NOT NULL, classifier INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (txid, n));
 CREATE TABLE IF NOT EXISTS claim_bounds (
   mint_id INTEGER PRIMARY KEY, max_burn_cents INTEGER NOT NULL, min_out_zat INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS claim_intents (
@@ -682,6 +683,16 @@ impl Store {
             .exists([])?;
         if !has_p_mint {
             conn.execute_batch("ALTER TABLE vaults ADD COLUMN p_mint INTEGER NOT NULL DEFAULT 0;")?;
+        }
+        // review YEW-REVIEW-5 L2: the classifier version of each provenance verdict (a store from
+        // the build that added the table has none: 0, so its held verdicts are re-checked)
+        let has_classifier: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('provenance') WHERE name = 'classifier'")?
+            .exists([])?;
+        if !has_classifier {
+            conn.execute_batch(
+                "ALTER TABLE provenance ADD COLUMN classifier INTEGER NOT NULL DEFAULT 0;",
+            )?;
         }
         // CAN-1 (a cancelled claim refunds its burn): additive like `pq_spend_txid`.
         for (column, decl) in [
@@ -957,6 +968,24 @@ impl Store {
         Ok(out)
     }
 
+    /// The value and script the wallet recorded for one outpoint, if known (layer 3 compares
+    /// them with the creating transaction, review YEW-REVIEW-4 L2).
+    pub fn utxo_txout(&self, op: &OutPoint) -> Result<Option<crate::tx::TxOut>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT value, script FROM utxos WHERE txid = ?1 AND n = ?2",
+                params![op.txid.as_slice(), op.n],
+                |r| {
+                    Ok(crate::tx::TxOut {
+                        value: r.get(0)?,
+                        script_pubkey: r.get(1)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
     /// The class of one outpoint, if known.
     pub fn utxo_class(&self, op: &OutPoint) -> Result<Option<UtxoClass>, StoreError> {
         let c: Option<String> = self
@@ -1219,6 +1248,14 @@ impl Store {
             params![op.txid.as_slice(), op.n, cents as i64],
         )?;
         Ok(())
+    }
+
+    /// True when the wallet ever held a token (`own_tokens` is not empty).
+    pub fn ever_held_token(&self) -> Result<bool, StoreError> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM own_tokens", [], |r| r.get(0))?;
+        Ok(n > 0)
     }
 
     /// The cents of a token the wallet ever held, if known.
@@ -1544,6 +1581,41 @@ impl Store {
         self.conn.execute(
             "INSERT OR REPLACE INTO pq_holders (idx, scheme, hash) VALUES (?1, ?2, ?3)",
             params![idx, id.scheme as i64, id.hash.as_slice()],
+        )?;
+        Ok(())
+    }
+
+    // ---- layer-3 provenance verdicts (review YEW-REVIEW-4 M3; additive table)
+
+    /// The stored provenance verdict of an own output: `Some("")` proven plain YEC, `Some(why)`
+    /// carries YED or cannot be YEC (final: the verdict rests on the creating transaction's
+    /// bytes, bound to the txid), `None` not decided yet. Review YEW-REVIEW-5 L2: a "held"
+    /// verdict reached by a classifier older than `classifier` is not answered (`None`), so the
+    /// coin is checked again after an upgrade; a "plain" verdict stands whatever its classifier
+    /// (it is bound to verified bytes, and any payload the classifier did not know was held,
+    /// never judged plain).
+    pub fn provenance(&self, op: &OutPoint, classifier: i64) -> Result<Option<String>, StoreError> {
+        let row: Option<(String, i64)> = self
+            .conn
+            .query_row(
+                "SELECT verdict, classifier FROM provenance WHERE txid = ?1 AND n = ?2",
+                params![op.txid.as_slice(), op.n],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(row.and_then(|(v, c)| (v.is_empty() || c >= classifier).then_some(v)))
+    }
+
+    /// Record a final provenance verdict (`""` = proven plain YEC), reached by `classifier`.
+    pub fn set_provenance(
+        &self,
+        op: &OutPoint,
+        verdict: &str,
+        classifier: i64,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO provenance (txid, n, verdict, classifier) VALUES (?1, ?2, ?3, ?4)",
+            params![op.txid.as_slice(), op.n, verdict, classifier],
         )?;
         Ok(())
     }
@@ -2248,5 +2320,55 @@ mod tests {
         let got = s.vaults().unwrap();
         assert_eq!(got.len(), 1);
         assert!(!got[0].is_open() && got[0].close_height == 530);
+    }
+
+    /// Review YEW-REVIEW-5 L2: a held verdict of an older classifier is re-checked (not
+    /// answered), a plain one stands; a store from before the column gets it (held rows at 0).
+    #[test]
+    fn provenance_verdicts_carry_their_classifier() {
+        let op = OutPoint {
+            txid: [7; 32],
+            n: 1,
+        };
+        let plain = OutPoint { n: 2, ..op };
+        let dir = std::env::temp_dir().join(format!("yew-store-prov-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.sqlite");
+        let p = path.to_str().unwrap();
+        {
+            let s = Store::open(p).unwrap();
+            // the table as the build that added it wrote it
+            s.conn
+                .execute_batch("ALTER TABLE provenance DROP COLUMN classifier;")
+                .unwrap();
+            for (o, v) in [(op, "carries YED"), (plain, "")] {
+                s.conn
+                    .execute(
+                        "INSERT INTO provenance (txid, n, verdict) VALUES (?1, ?2, ?3)",
+                        params![o.txid.as_slice(), o.n, v],
+                    )
+                    .unwrap();
+            }
+        }
+        let s = Store::open(p).unwrap();
+        assert_eq!(
+            s.provenance(&op, 2).unwrap(),
+            None,
+            "held, older: re-checked"
+        );
+        assert_eq!(
+            s.provenance(&op, 0).unwrap().as_deref(),
+            Some("carries YED")
+        );
+        assert_eq!(
+            s.provenance(&plain, 2).unwrap().as_deref(),
+            Some(""),
+            "plain stands"
+        );
+        s.set_provenance(&op, "still YED", 2).unwrap();
+        assert_eq!(s.provenance(&op, 2).unwrap().as_deref(), Some("still YED"));
+        assert_eq!(s.provenance(&op, 3).unwrap(), None);
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
