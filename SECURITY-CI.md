@@ -11,8 +11,8 @@ the same shape in every Yellowback repository:
 | CodeQL | `codeql.yml` | `rust` (build-mode none) and `actions`, `security-extended` | never fails a PR on an existing alert; new alerts show on the PR | code scanning (`codeql/<language>`) |
 | Workflow security | `secops.yml` `zizmor` | every workflow and `dependabot.yml` | fails on any finding (default persona) | run summary, code scanning (`zizmor`) |
 | Secrets | `secops.yml` `gitleaks` | PR: the PR's commits; nightly, dispatch, push to `upgrade/vault`: the whole history | fails on a leak not in `.gitleaksignore` | run summary, code scanning (`gitleaks`, redacted) |
-| Dependency vulnerabilities | `secops.yml` `osv-scanner` | `Cargo.lock`, `yewd/Cargo.lock` and `app/pubspec.lock` | fails on a known vulnerability not in `osv-scanner.toml` | run summary, code scanning (`osv-scanner`) |
-| Rust advisories | `ci.yml` `audit` (cargo-audit, `scripts/audit.sh`) | `Cargo.lock`, `yewd/Cargo.lock` | fails on an advisory with a reachable fix | run log |
+| Dependency vulnerabilities | `secops.yml` `osv-scanner` | `Cargo.lock`, `yewd/Cargo.lock`, `app/pubspec.lock`, `web/core-wasm/Cargo.lock` (the web wallet's wasm module) and the `web/spike-*` locks (W0 experiments, never shipped) | fails on a known vulnerability not in `osv-scanner.toml` | run summary, code scanning (`osv-scanner`) |
+| Rust advisories | `ci.yml` `audit` (cargo-audit, `scripts/audit.sh`) | `Cargo.lock`, `yewd/Cargo.lock`, `web/core-wasm/Cargo.lock` | fails on an advisory with a reachable fix | run log |
 | Code-scanning triage | `code-scanning.yml` (`contrib/secops/code-scanning-triage.py`) | the open code-scanning alerts | dismisses the alerts listed in `contrib/secops/code-scanning-dismissals.json`; never fails on an open one | run summary (alerts left open), artifact `code-scanning-alerts` |
 | Dependency updates | `.github/dependabot.yml` | cargo, pub, github-actions | security updates only, one grouped PR per ecosystem; version updates off | Dependabot PRs |
 
@@ -21,7 +21,7 @@ and Dependabot open PRs; everything else reports to code scanning and the run su
 
 **Not covered, and why.** Dart (`app/`): Semgrep's Dart support is experimental with no maintained
 security rules in the pinned packs, and CodeQL has no Dart extractor; the app is covered by
-`flutter analyze` (ci.yml), OSV-Scanner over `app/pubspec.lock` and review. The vendored Falcon C
+`flutter analyze` (ci.yml), OSV-Scanner over `app/pubspec.lock` and review. `web/package-lock.json` (the web shell's build tools: Vite, Vitest, TypeScript; 2026-11-11 OSV reports dev-only advisories in vite 5.4.21, vitest 2.1.9, esbuild 0.21.5 and tinypool 1.1.1 whose fixes are major upgrades that change the bundle) is not scanned yet: adding it waits on the Yellowback lead architect's decision on those upgrades. The vendored Falcon C
 (`core/pq-c/falcon`) is a byte copy of the node's PQClean code pinned by `SHA256SUMS`; it is scanned in
 the node repositories, not here. The generated bridge (`core/src/frb_generated.rs`, `app/lib/src/rust/`)
 is excluded from Semgrep and CodeQL: ci.yml regenerates it and fails on any difference, so a finding
