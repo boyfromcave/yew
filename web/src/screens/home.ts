@@ -3,6 +3,7 @@ import { clear, go, h } from "../dom";
 import { formatPriceLine, formatYec, formatYed } from "../format";
 import { HomeVm } from "../vm/home";
 import { errorCard, progressBar } from "../widgets";
+import { localize } from "../prefixes";
 
 export function renderHome(root: HTMLElement, vm: HomeVm) {
   const draw = () => {
@@ -19,8 +20,8 @@ export function renderHome(root: HTMLElement, vm: HomeVm) {
         h("div", { class: "row" }, h("span", null, "Public (ECC)"), h("span", { class: "yec" }, b ? `${formatYec(b.yecZat)} YEC` : "—")),
         b && BigInt(b.yecPendingZat) !== 0n ? h("div", { class: "small pending" }, `${formatYec(b.yecPendingZat)} YEC pending`) : null,
         // beta2 D-8: balances by type; post-quantum YEC is spent only from its own address (Send → From)
-        h("div", { class: "row" }, h("span", null, "PQ · SLH-DSA (sqs…)"), h("span", { class: "yec" }, b ? `${formatYec(b.pqSlhZat)} YEC` : "—")),
-        h("div", { class: "row" }, h("span", null, "PQ · FN-DSA-512 (sqf…)"), h("span", { class: "yec" }, b ? `${formatYec(b.pqFalconZat)} YEC` : "—")),
+        h("div", { class: "row" }, h("span", null, localize("PQ · SLH-DSA (sqs…)")), h("span", { class: "yec" }, b ? `${formatYec(b.pqSlhZat)} YEC` : "—")),
+        h("div", { class: "row" }, h("span", null, localize("PQ · FN-DSA-512 (sqf…)")), h("span", { class: "yec" }, b ? `${formatYec(b.pqFalconZat)} YEC` : "—")),
         // never in a spendable total: held outputs and YEC staged for a mint are listed on their own
         b && BigInt(b.stagedForMintZat) !== 0n ? h("div", { class: "small pending", "data-balance": "staged" }, `${formatYec(b.stagedForMintZat)} YEC staged for a mint in progress (not spendable until the mint finishes or lapses)`) : null,
         b && b.heldCount > 0 ? h("div", { class: "small pending", "data-balance": "held" }, `${b.heldCount} output${b.heldCount === 1 ? "" : "s"} held: in no balance and never spent as plain YEC (${b.heldCount === 1 ? "it may carry" : "they may carry"} YED, or the origin could not be verified)`) : null,

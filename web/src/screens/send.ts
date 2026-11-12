@@ -4,13 +4,14 @@ import { formatSigning, formatYec, formatYed, shorten } from "../format";
 import type { PqSendPreview } from "../core";
 import { SendVm } from "../vm/send";
 import { errorCard, feeLine, previewCard, resultCard, slideToConfirm, unusualFeeCard } from "../widgets";
+import { localize } from "../prefixes";
 
 export function renderSend(root: HTMLElement, vm: SendVm) {
   const draw = () => {
     clear(root);
     const s = vm.state;
     if (s.txid) { mount(root, resultCard("Sent", s.txid, () => { vm.reset(); go("home"); })); return; }
-    const to = h("input", { type: "text", value: s.to, autocomplete: "off", spellcheck: false, placeholder: s.asset === "yed" ? "yb… address" : s.from ? "s…, sqf… or sqs… address" : "ys1… (private), s…, sqf… or sqs… address", on: { change: () => vm.setTo(to.value) } });
+    const to = h("input", { type: "text", value: s.to, autocomplete: "off", spellcheck: false, placeholder: localize(s.asset === "yed" ? "yb… address" : s.from ? "s…, sqf… or sqs… address" : "ys1… (private), s…, sqf… or sqs… address"), on: { change: () => vm.setTo(to.value) } });
     const amount = h("input", { type: "text", inputmode: "decimal", value: s.amount, placeholder: s.asset === "yed" ? "25.00" : "0.5", on: { input: () => (vm.state.amount = amount.value) } });
     const memo = h("textarea", { value: s.memo, placeholder: "Message to the recipient (private payments only)", on: { input: () => (vm.state.memo = memo.value) } });
     const seg = (a: "yed" | "yec", label: string) => h("button", { class: s.asset === a ? "on" : "", on: { click: () => vm.setAsset(a) } }, label);
@@ -23,7 +24,7 @@ export function renderSend(root: HTMLElement, vm: SendVm) {
     const privateToPq = vm.unavailableReason("private_to_pq");
     mount(root, h("h2", null, "Send"), h("div", { class: "seg" }, seg("yed", "YED"), seg("yec", "YEC")),
       s.asset === "yec" ? [h("label", null, "From"), fromSelect,
-        privateToPq ? h("p", { class: "small", "data-shape": "private_to_pq" }, `Private → post-quantum (sqf…/sqs…): ${privateToPq}`) : null] : null,
+        privateToPq ? h("p", { class: "small", "data-shape": "private_to_pq" }, localize(`Private → post-quantum (sqf…/sqs…): ${privateToPq}`)) : null] : null,
       h("label", null, "To"), to,
       vm.blockedReason ? h("p", { class: "warn", "data-shape": "pq_to_private" }, vm.blockedReason) : null, h("label", null, s.asset === "yed" ? "Amount, $" : "Amount, YEC"), amount,
       s.asset === "yec" && vm.toPrivate ? [h("label", null, `Message (${vm.memoBytes} / 512 bytes)`), memo] : null,

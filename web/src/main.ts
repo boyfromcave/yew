@@ -7,6 +7,7 @@ import type { Core } from "./core";
 import { CoreClient, messageOf, serialized } from "./core";
 import { clear, currentRoute, go, h, onRoute } from "./dom";
 import * as keystore from "./keystore";
+import { setNetwork } from "./prefixes";
 import { renderOnboarding, renderUnlock } from "./screens/onboarding";
 import { renderHome } from "./screens/home";
 import { renderReceive } from "./screens/receive";
@@ -57,12 +58,13 @@ async function main() {
       h("nav", null, link("home", "Home"), link("send", "Send"), link("receive", "Receive"), link("history", "History"), link("yellowback", "Yellowback")));
   };
 
-  const opened = async () => { open = true; meta = await keystore.walletMeta(); method = await keystore.unlockMethod(); await home.attach(); await home.load(); home.sync(); home.autoSync(); go("home"); route(); };
+  const opened = async () => { open = true; meta = await keystore.walletMeta(); setNetwork(meta?.network || network); method = await keystore.unlockMethod(); await home.attach(); await home.load(); home.sync(); home.autoSync(); go("home"); route(); };
   home.onSynced(() => yb.onSynced());
   const unlockScreen = async (method: "prf" | "passphrase") => {
     clear(app); const body = h("div"); app.append(body);
     renderUnlock(body, method, async (u) => {
       const { seedWords, meta: m } = await keystore.unlockSeed(u);
+      setNetwork(m.network || network);
       if (m.storeDir) await core.open_at(seedWords, m.birthday, m.serverUrl, m.network || network, m.storeDir);
       else await core.open(seedWords, m.birthday, m.serverUrl, m.network || network);
       await opened();
@@ -74,6 +76,7 @@ async function main() {
   };
   const onboard = () => {
     clear(app); const body = h("div"); app.append(body);
+    setNetwork(network);
     const vm = new OnboardingVm(core, keystore, defaultServer, network);
     renderOnboarding(body, vm);
     let done = false;

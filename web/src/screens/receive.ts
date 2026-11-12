@@ -3,6 +3,7 @@ import { clear, copy, h } from "../dom";
 import type { AddressKind } from "../core";
 import { ReceiveVm } from "../vm/receive";
 import { errorCard, qr } from "../widgets";
+import { localize } from "../prefixes";
 
 export function renderReceive(root: HTMLElement, vm: ReceiveVm) {
   const draw = () => {
@@ -19,7 +20,7 @@ export function renderReceive(root: HTMLElement, vm: ReceiveVm) {
       yed: "YED and the public YEC that pays its fees (yb…).",
     };
     mount(root, h("h2", null, "Receive"), h("div", { class: "seg" }, seg("shielded", "Private"), seg("transparent", "Public (ECC)"), seg("pq_falcon", "PQ · FN-DSA-512"), seg("pq_slh", "PQ · SLH-DSA"), seg("yed", "YED")),
-      h("p", { class: "small" }, about[s.kind]),
+      h("p", { class: "small" }, localize(about[s.kind])),
       s.address ? qr(s.address) : null, s.address ? h("code", { class: "addr" }, s.address) : null, errorCard(s.error),
       h("div", { class: "actions" }, cp, s.kind === "shielded" ? h("button", { class: "secondary", on: { click: () => vm.fresh() } }, "New private address") : null));
   };

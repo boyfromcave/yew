@@ -10,6 +10,7 @@ import { HistoryVm } from "../src/vm/history";
 import { SettingsVm } from "../src/vm/settings";
 import { YellowbackVm } from "../src/vm/yellowback";
 import type { Unlock, WalletMeta } from "../src/keystore";
+import { localize, setNetwork } from "../src/prefixes";
 
 class FakeKeystore {
   saved: { seed: string; unlock: Unlock; meta: WalletMeta } | null = null; forgotten = false;
@@ -231,6 +232,15 @@ describe("serialized core", () => {
 });
 
 describe("real-stack run WEB-REAL (2026-11-12)", () => {
+  it("labels name the prefixes of the network in use (LOW-4): rqs…/rqf… on regtest, tqs…/tqf… on testnet", () => {
+    expect(localize("PQ · SLH-DSA (sqs…)", "regtest")).toBe("PQ · SLH-DSA (rqs…)");
+    expect(localize("ys1… (private), s…, sqf… or sqs… address", "testnet")).toBe("ytestsapling1… (private), s…, tqf… or tqs… address");
+    expect(localize("post-quantum YED address (ybf…/ybs…) … a yb… address", "regtest")).toBe("post-quantum YED address (yrf…/yrs…) … a yr… address");
+    expect(localize("sqf… sqs…", "mainnet")).toBe("sqf… sqs…");
+    setNetwork("regtest");
+    try { expect(destinationMismatch("yed", "pq_yec")).toBe("This is a post-quantum YEC address (rqf…/rqs…): it receives YEC, not YED. Ask for a yr… address."); }
+    finally { setNetwork("mainnet"); }
+  });
   it("a restore with birthday 0 (\"scan everything\") reaches the core as height 1, never 0 (the core's new-seed tip start)", () => {
     const vm = new OnboardingVm(new MockCore(), new FakeKeystore());
     vm.startRestore(); vm.restore(MOCK_SEED, 0); expect(vm.state.step).toBe("server"); expect(vm.state.birthday).toBe(1);
