@@ -757,6 +757,7 @@ impl Wallet {
             target_height: next.height,
             expiry_height: next.height + TX_EXPIRY_DELTA,
             vault_height: self.chain.vault_activation,
+            upgrades: self.chain.upgrades.clone(),
             inputs: sel_t
                 .iter()
                 .map(|c| SaplingTInput {

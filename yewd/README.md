@@ -122,7 +122,7 @@ ycashd's wallet arguments (`-keypool`, `-exportdir`, …) and a ycashd-format `y
 |---|---|---|
 | `-datadir=<dir>` | `~/.yewd` | data directory |
 | `-conf=<file>` | `<datadir>/yewd.conf` (optional) | configuration file; relative to `-datadir`; a named file must exist |
-| `-regtest` / `-testnet` | mainnet | picks the default `-rpcport` and the cookie subdirectory (`regtest/`, `testnet/`) |
+| `-regtest` / `-testnet` | mainnet | picks the default `-rpcport` and the cookie subdirectory (`regtest/`, `testnet/`); on regtest the upgrade heights are the backend's (`getblockchaininfo.upgrades`, so a Canopy above height 1 is followed: pre-ZIP-212 notes before it; a transaction with a post-quantum input or a mint carrier, built only from the vault upgrade on, assumes Canopy before the vault upgrade, as on every real network), mainnet and testnet use the compiled ones |
 | `-rpcbind=<ip>[:port]` | `127.0.0.1` | listen address, repeatable |
 | `-rpcport=<port>` | 8832; 18832 on testnet and regtest | listen port (ycashd's defaults: the façade stands where ycashd stood) |
 | `-rpcuser=<u>` `-rpcpassword=<p>` | — | client credentials; without `-rpcpassword`, cookie authentication |

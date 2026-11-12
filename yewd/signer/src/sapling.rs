@@ -78,8 +78,14 @@ fn sapling_build(
 ) -> Result<String, Refused> {
     let dfvk = extsk.to_diversifiable_full_viewing_key();
     let internal_extsk = extsk.derive_internal();
-    let params =
+    let mut params =
         yew_core::shielded::ycash_network_with_vault(network, r.vault_height.map(u64::from));
+    // regtest: the node's own upgrade heights (a Canopy above height 1 decides the notes' format)
+    if let (Network::Regtest, Some(spec)) = (network, r.upgrades.as_deref()) {
+        params = params
+            .with_upgrades(spec)
+            .map_err(|e| (refuse::MALFORMED, format!("upgrades: {e}")))?;
+    }
     // the spends: each note rebuilt from its parts, each path checked against the anchor
     // outputs alone still need an anchor for the bundle: the empty tree's root
     let anchor = if r.spends.is_empty() {
@@ -370,6 +376,7 @@ mod tests {
             target_height: 200,
             expiry_height: 240,
             vault_height: Some(1),
+            upgrades: None,
             inputs: Vec::new(),
             outputs: vec![SaplingOut::Change {
                 value: spend.value as i64 - fee,
@@ -383,6 +390,64 @@ mod tests {
         sapling_build(extsk.clone(), Network::Regtest, &r, |_, _| {
             no(refuse::KEY_MISMATCH, "no transparent input here")
         })
+    }
+
+    /// Real-stack run YEW-REAL finding 2: on a regtest whose node activates Canopy above height
+    /// 1, a build before Canopy makes pre-ZIP-212 notes (lead byte 0x01), which the node and every
+    /// wallet decrypt there; without the node's heights it made ZIP-212 notes (0x02) that ycashd
+    /// before Canopy never decrypts. After Canopy, and without the node's heights, ZIP-212.
+    #[test]
+    fn regtest_notes_follow_the_nodes_canopy_height() {
+        use sapling_crypto::note_encryption::{
+            try_sapling_note_decryption, PreparedIncomingViewingKey, Zip212Enforcement,
+        };
+        let extsk = sapling_extsk(PHRASE, Network::Regtest).unwrap();
+        let dfvk = extsk.to_diversifiable_full_viewing_key();
+        let ivk = PreparedIncomingViewingKey::new(&dfvk.to_ivk(Scope::Internal));
+        let (_, change) = dfvk.change_address();
+        let lead_byte = |upgrades: Option<&str>, target: u32| -> u8 {
+            let (spend, anchor) = lone_spend(&change, 500_000, Rseed::AfterZip212([3; 32]), true);
+            let r = SaplingBuildRequest {
+                target_height: target,
+                expiry_height: target + 40,
+                vault_height: None,
+                upgrades: upgrades.map(str::to_string),
+                inputs: Vec::new(),
+                outputs: vec![SaplingOut::Change { value: 499_000 }],
+                spends: vec![spend],
+                fee_zat: 1_000,
+                anchor,
+                outflow_cap_zat: 1_000,
+                params_dir: params_dir(),
+            };
+            let raw = hex::decode(
+                sapling_build(extsk.clone(), Network::Regtest, &r, |_, _| {
+                    no(refuse::KEY_MISMATCH, "none")
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            let branch = if upgrades.is_some_and(|u| u.contains("canopy=500")) && target < 500 {
+                zcash_protocol::consensus::BranchId::Heartwood
+            } else {
+                zcash_protocol::consensus::BranchId::Canopy
+            };
+            let tx = zcash_primitives::transaction::Transaction::read(&raw[..], branch).unwrap();
+            let outs = tx.sapling_bundle().unwrap().shielded_outputs();
+            for (enforcement, byte) in [(Zip212Enforcement::Off, 1u8), (Zip212Enforcement::On, 2)] {
+                if outs
+                    .iter()
+                    .any(|o| try_sapling_note_decryption(&ivk, o, enforcement).is_some())
+                {
+                    return byte;
+                }
+            }
+            panic!("the change does not decrypt");
+        };
+        let node = "overwinter=1,sapling=1,ycash=1,blossom=1,heartwood=1,canopy=500";
+        assert_eq!(lead_byte(Some(node), 300), 1, "before the node's Canopy");
+        assert_eq!(lead_byte(Some(node), 600), 2, "after it");
+        assert_eq!(lead_byte(None, 300), 2, "the devnet's Canopy at 1");
     }
 
     /// Real-stack run YEW-REAL finding 1: a note from before Canopy (pre-ZIP-212: its `rcm`, a
