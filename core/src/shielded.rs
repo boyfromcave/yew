@@ -394,6 +394,43 @@ pub struct ShieldInput {
     pub hash160: [u8; 20],
 }
 
+/// Where a shielding transaction's Sapling output goes and what fee it pays.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum ShieldTo {
+    /// The wallet's own default address (a move, S4), empty memo, the ZIP-317 fee.
+    #[default]
+    Own,
+    /// Another wallet's Sapling address (WEB-REAL MEDIUM-4: public YEC to someone else's
+    /// `ys1…`), with an optional text memo, at the fee ycash6's `z_sendmany` charges the same
+    /// shape (`-feepolicy=peroutput`: [`crate::build::any_to_any::peroutput_fee`] of the padded
+    /// Sapling outputs).
+    Recipient {
+        /// The encoded Sapling address of this network.
+        address: String,
+        /// The memo text (at most [`MAX_MEMO_BYTES`] bytes).
+        memo: Option<String>,
+        /// The fee, zat: [`ShieldTo::node_fee`], plus a change too small to keep.
+        fee: u64,
+    },
+}
+
+impl ShieldTo {
+    /// The fee ycash6's `z_sendmany` charges a transaction with one Sapling output (padded to
+    /// two) under its default `-feepolicy=peroutput`: 1,000 zat.
+    pub fn node_fee() -> u64 {
+        use crate::build::any_to_any::{padded, peroutput_fee};
+        peroutput_fee(padded(1)) as u64
+    }
+
+    /// The fee a shield to this destination pays when it is fixed (not ZIP-317).
+    pub fn fixed_fee(&self) -> Option<u64> {
+        match self {
+            ShieldTo::Own => None,
+            ShieldTo::Recipient { fee, .. } => Some(*fee),
+        }
+    }
+}
+
 fn zat(v: u64) -> Result<Zatoshis, ShieldedError> {
     Zatoshis::from_u64(v).map_err(|_| ShieldedError::Propose(format!("bad amount {v}")))
 }
@@ -1157,6 +1194,7 @@ impl Shielded {
         &self,
         target: u32,
         inputs: &[ShieldInput],
+        to: &ShieldTo,
         amount_zat: u64,
         change: Option<([u8; 20], u64)>,
     ) -> Result<Builder<'static, YcashNetwork, ()>, ShieldedError> {
@@ -1178,14 +1216,21 @@ impl Shielded {
             b.add_transparent_p2pkh_input(pubkey, OutPoint::new(i.txid, i.n), coin)
                 .map_err(|e| ShieldedError::Create(e.to_string()))?;
         }
-        let (to, ovk) = self.account.default_output();
-        b.add_sapling_output::<std::convert::Infallible>(
-            Some(ovk),
-            to,
-            zat(amount_zat)?,
-            MemoBytes::empty(),
-        )
-        .map_err(|e| ShieldedError::Create(e.to_string()))?;
+        let (own, ovk) = self.account.default_output();
+        let (to, memo) = match to {
+            ShieldTo::Own => (own, MemoBytes::empty()),
+            ShieldTo::Recipient { address, memo, .. } => (
+                self.sapling_recipient(address)?,
+                match memo.as_deref().map(str::trim_end).filter(|m| !m.is_empty()) {
+                    Some(m) => memo_to_bytes(m)?,
+                    None => MemoBytes::empty(),
+                },
+            ),
+        };
+        // the wallet's external outgoing viewing key either way: the sender can read back what
+        // it sent (as the private send path's OvkPolicy::Sender)
+        b.add_sapling_output::<std::convert::Infallible>(Some(ovk), to, zat(amount_zat)?, memo)
+            .map_err(|e| ShieldedError::Create(e.to_string()))?;
         if let Some((h, v)) = change {
             b.add_transparent_output(&TransparentAddress::PublicKeyHash(h), zat(v)?)
                 .map_err(|e| ShieldedError::Create(e.to_string()))?;
@@ -1199,13 +1244,37 @@ impl Shielded {
         &self,
         target: u32,
         inputs: &[ShieldInput],
+        to: &ShieldTo,
         amount_zat: u64,
         change: Option<[u8; 20]>,
     ) -> Result<u64, ShieldedError> {
-        let b = self.shield_builder(target, inputs, amount_zat.max(1), change.map(|h| (h, 1)))?;
+        let b = self.shield_builder(
+            target,
+            inputs,
+            to,
+            amount_zat.max(1),
+            change.map(|h| (h, 1)),
+        )?;
+        if let Some(fee) = to.fixed_fee() {
+            return Ok(fee);
+        }
         Ok(b.get_fee(&zip317::FeeRule::standard())
             .map_err(|e| ShieldedError::Propose(format!("fee: {e:?}")))?
             .into_u64())
+    }
+
+    /// `to` as a Sapling payment address of this network (a shield's recipient).
+    pub fn sapling_recipient(
+        &self,
+        to: &str,
+    ) -> Result<sapling_crypto::PaymentAddress, ShieldedError> {
+        match Address::decode(&self.params, to.trim()) {
+            Some(Address::Sapling(pa)) => Ok(pa),
+            _ => Err(ShieldedError::Address(format!(
+                "{} is not a Sapling address of this network",
+                to.trim()
+            ))),
+        }
     }
 
     /// Build the shielding transaction (S4): prove the Sapling output with the parameters in
@@ -1213,11 +1282,13 @@ impl Shielded {
     /// `secrets` (one 32-byte key per input, in order; used for this call only). The fee must
     /// be exactly what [`Shielded::shield_fee`] said, or the builder refuses. Nothing is written
     /// to the note store: the output is found by the next scan once mined.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_shield(
         &mut self,
         target: u32,
         inputs: &[ShieldInput],
         secrets: &[[u8; 32]],
+        to: &ShieldTo,
         amount_zat: u64,
         change: Option<([u8; 20], u64)>,
         params_dir: &Path,
@@ -1229,13 +1300,17 @@ impl Shielded {
         }
         let params_millis = self.load_prover(params_dir)?;
         let t1 = now_ms();
-        let b = self.shield_builder(target, inputs, amount_zat, change)?;
-        // The fee the builder charges (its own ZIP-317 computation; `fee_paid` cannot see the
-        // transparent input values once built).
-        let fee_zat = b
-            .get_fee(&zip317::FeeRule::standard())
-            .map_err(|e| ShieldedError::Propose(format!("fee: {e:?}")))?
-            .into_u64();
+        let b = self.shield_builder(target, inputs, to, amount_zat, change)?;
+        // The fee the builder charges (its own ZIP-317 computation, or the fixed fee of a shield
+        // to another wallet; `fee_paid` cannot see the transparent input values once built).
+        let fixed = to.fixed_fee();
+        let fee_zat = match fixed {
+            Some(f) => f,
+            None => b
+                .get_fee(&zip317::FeeRule::standard())
+                .map_err(|e| ShieldedError::Propose(format!("fee: {e:?}")))?
+                .into_u64(),
+        };
         let mut keys = TransparentSigningSet::new();
         for s in secrets {
             let sk = secp256k1_zcash::SecretKey::from_slice(s)
@@ -1243,17 +1318,30 @@ impl Shielded {
             keys.add_key(sk);
         }
         let (_, prover) = self.prover.as_ref().expect("loaded above");
-        let built = b
-            .build(
-                &keys,
-                &[],
-                &[],
-                OsRng,
-                prover,
-                prover,
-                &zip317::FeeRule::standard(),
-            )
-            .map_err(|e| ShieldedError::Create(e.to_string()))?;
+        let built = match fixed {
+            Some(f) => b
+                .build(
+                    &keys,
+                    &[],
+                    &[],
+                    OsRng,
+                    prover,
+                    prover,
+                    &zcash_primitives::transaction::fees::fixed::FeeRule::non_standard(zat(f)?),
+                )
+                .map_err(|e| ShieldedError::Create(e.to_string())),
+            None => b
+                .build(
+                    &keys,
+                    &[],
+                    &[],
+                    OsRng,
+                    prover,
+                    prover,
+                    &zip317::FeeRule::standard(),
+                )
+                .map_err(|e| ShieldedError::Create(e.to_string())),
+        }?;
         drop(keys);
         let tx = built.transaction();
         let mut raw = Vec::new();

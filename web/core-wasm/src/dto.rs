@@ -306,7 +306,7 @@ pub fn yec_preview(
             txid: String::new(),
             funding: "transparent".into(),
             reveals_shielded: false,
-            memo: None,
+            memo: p.memo.clone(),
             params_needed: !has_prover,
         },
     }

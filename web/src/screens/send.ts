@@ -32,8 +32,9 @@ export function renderSend(root: HTMLElement, vm: SendVm) {
       s.yed ? [previewCard(`Send ${formatYed(BigInt(Math.round(Number(s.amount.replace(/[$,]/g, "")) * 100)))}`, [["To", s.to], ["Fee", feeLine(s.yed.feeZat)], ["YED inputs", String(s.yed.inputs)], ["Node verdict", s.yed.verdict]]),
         unusualFeeCard(s.yed.feeNote, s.feeAccepted, () => vm.acceptFee()),
         slideToConfirm("Slide to send", () => vm.confirm(), s.busy || (!!s.yed.unusualFeeAck && !s.feeAccepted)), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Change")] : null,
-      s.yec ? [previewCard(`Send ${s.amount} YEC`, [["To", s.to], ["Fee", feeLine(s.yec.fee)], ["Change", `${formatYec(s.yec.change)} YEC`], ["Paid from", s.yec.funding === "shielded" ? "your private balance" : "your public balance"]],
-          s.yec.revealsShielded ? "This payment leaves your private balance for a public address: its amount will be visible on the chain." : undefined),
+      s.yec ? [previewCard(`Send ${s.amount} YEC`, [["To", s.to], ...(s.yec.memo ? [["Message", s.yec.memo] as [string, string]] : []), ["Fee", feeLine(s.yec.fee)], ["Change", `${formatYec(s.yec.change)} YEC`], ["Paid from", s.yec.funding === "shielded" ? "your private balance" : "your public balance"]],
+          s.yec.revealsShielded ? "This payment leaves your private balance for a public address: its amount will be visible on the chain."
+            : s.yec.funding !== "shielded" && s.toKind === "sapling" ? publicToPrivateNote : undefined),
         s.yec.paramsNeeded ? h("p", { class: "small" }, "Proved in this browser at confirm (private spends take a while).") : null,
         slideToConfirm("Slide to send", () => vm.confirm(), s.busy), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Change")] : null,
       s.pq ? [pqPreviewCard(s.pq),
@@ -43,6 +44,9 @@ export function renderSend(root: HTMLElement, vm: SendVm) {
   // the From chooser's balances change with every send and sync: read them again on every visit
   draw(); vm.loadSources(); return vm.subscribe(draw);
 }
+
+/** A private (ys1…) recipient paid from the public balance (WEB-REAL MEDIUM-4): what the chain shows. */
+export const publicToPrivateNote = "Paid from your public balance: the amount and the public address it comes from are visible on the chain; the recipient's address and the message are not.";
 
 /** A post-quantum send's preview (app/lib/widgets/preview_card.dart PqSendPreviewCard): the fee, the
  *  signed size and the signing time ("not measured" where the platform has no clock: the browser). */

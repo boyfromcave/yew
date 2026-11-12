@@ -29,7 +29,7 @@ use crate::gate::{self, Path as GatePath, Validator};
 use crate::net::CompactClient;
 use crate::params::{MAX_INPUTS, TOKEN_VALUE, TX_EXPIRY_DELTA};
 use crate::script;
-use crate::shielded::{ShieldInput, ShieldedError};
+use crate::shielded::{ShieldInput, ShieldTo, ShieldedError};
 use crate::store::HistoryRow;
 use crate::tx::{txid_hex, OutPoint};
 use crate::wallet::{Wallet, WalletError};
@@ -46,8 +46,13 @@ pub enum Direction {
 /// A planned shield: what the preview shows and what confirm proves and signs.
 #[derive(Clone, Debug)]
 pub struct ShieldPlan {
-    /// The wallet's own default Sapling address.
+    /// The Sapling address paid: the wallet's own default one (a move), or another wallet's
+    /// ([`plan_shield_to`]).
     pub to: String,
+    /// The output's destination as the builder takes it (and the fee rule that goes with it).
+    pub dest: ShieldTo,
+    /// The memo of a shield to another wallet.
+    pub memo: Option<String>,
     /// Into the private balance, zat.
     pub amount: i64,
     /// The amount was raised to absorb a change of exactly `TOKEN_VALUE` or of dust.
@@ -162,7 +167,7 @@ fn plan_shield(wallet: &Wallet, amount: Option<i64>, tip: u64) -> Result<ShieldP
             }
             let si = shield_inputs(wallet, &all)?;
             let total: i64 = all.iter().map(|u| u.value).sum();
-            let fee = sh.shield_fee(target, &si, total as u64, None)? as i64;
+            let fee = sh.shield_fee(target, &si, &ShieldTo::Own, total as u64, None)? as i64;
             if total <= fee {
                 return Err(coins::CoinError::Insufficient {
                     need: fee + 1,
@@ -179,7 +184,8 @@ fn plan_shield(wallet: &Wallet, amount: Option<i64>, tip: u64) -> Result<ShieldP
             loop {
                 let sel = coins::select_yec(&spendable, a + fee, false)?;
                 let si = shield_inputs(wallet, &sel)?;
-                let f = sh.shield_fee(target, &si, a as u64, Some(change_h))? as i64;
+                let f =
+                    sh.shield_fee(target, &si, &ShieldTo::Own, a as u64, Some(change_h))? as i64;
                 let total: i64 = sel.iter().map(|u| u.value).sum();
                 if total >= a + f {
                     break (sel, a, total - a - f, f);
@@ -205,11 +211,87 @@ fn plan_shield(wallet: &Wallet, amount: Option<i64>, tip: u64) -> Result<ShieldP
     let shield_inputs = shield_inputs(wallet, &inputs)?;
     Ok(ShieldPlan {
         to,
+        dest: ShieldTo::Own,
+        memo: None,
         amount: amount_zat,
         amount_bumped,
         fee,
         change,
         change_address: (change > 0).then(|| (change_row.address_s.clone(), change_h)),
+        inputs,
+        shield_inputs,
+        target,
+        expiry_height: target.saturating_add(TX_EXPIRY_DELTA),
+    })
+}
+
+/// Plan a send of `amount` zat from the public balance to another wallet's Sapling address `to`
+/// (real-stack run WEB-REAL MEDIUM-4: before, a Sapling recipient was paid from private notes
+/// only). The shape of ycash6's `z_sendmany` from transparent addresses to a Sapling address:
+/// transparent `YEC` coins only (`coins::select_yec` without the reserve, so the fee reserve and
+/// every YED-bearing, locked, pending or held output stay where they are), one Sapling output to
+/// `to` with the optional `memo`, transparent change to a fresh change address of this wallet (as
+/// the node's change from transparent addresses, and as every other public-balance send here),
+/// and the node's fee for that shape ([`ShieldTo::fixed_fee`], 1,000 zat). The recipient gets
+/// exactly `amount`: a change of exactly `TOKEN_VALUE` or of dust goes to the fee, never to the
+/// recipient. Confirm is [`confirm_shield`] (gate path [`GatePath::Shield`], the held-YED guard,
+/// the provenance layer, the built fee equal to the previewed one).
+pub fn plan_shield_to(
+    wallet: &Wallet,
+    to: &str,
+    memo: Option<&str>,
+    amount: i64,
+    tip: u64,
+) -> Result<ShieldPlan, WalletError> {
+    if amount <= 0 {
+        return Err(WalletError::Other("amount must be positive".into()));
+    }
+    let sh = wallet.shielded()?;
+    let to = to.trim();
+    sh.sapling_recipient(to)?;
+    let memo = memo
+        .map(str::trim_end)
+        .filter(|m| !m.is_empty())
+        .map(str::to_string);
+    if let Some(m) = &memo {
+        crate::shielded::memo_to_bytes(m)?;
+    }
+    let base_fee = ShieldTo::node_fee() as i64;
+    let target = (tip as u32).saturating_add(1);
+    let spendable = wallet.spendable_utxos()?;
+    let inputs = coins::select_yec(&spendable, amount + base_fee, false)?;
+    let total: i64 = inputs.iter().map(|u| u.value).sum();
+    let mut change = total - amount - base_fee;
+    let mut fee = base_fee;
+    if change == TOKEN_VALUE || (change > 0 && change < MIN_CHANGE) {
+        fee += change;
+        change = 0;
+    }
+    let dest = ShieldTo::Recipient {
+        address: to.to_string(),
+        memo: memo.clone(),
+        fee: fee as u64,
+    };
+    let change_row = wallet.change_address()?;
+    let shield_inputs = shield_inputs(wallet, &inputs)?;
+    // the builder takes the shape (recipient, memo, change) before anything is signed
+    let f = sh.shield_fee(
+        target,
+        &shield_inputs,
+        &dest,
+        amount as u64,
+        (change > 0).then_some(change_row.hash160),
+    )? as i64;
+    debug_assert_eq!(f, fee);
+    Ok(ShieldPlan {
+        to: to.to_string(),
+        dest,
+        memo,
+        amount,
+        amount_bumped: false,
+        fee,
+        change,
+        change_address: (change > 0).then(|| (change_row.address_s.clone(), change_row.hash160)),
         inputs,
         shield_inputs,
         target,
@@ -283,6 +365,7 @@ pub async fn confirm_shield(
                     plan.target,
                     &plan.shield_inputs,
                     &secrets,
+                    &plan.dest,
                     plan.amount as u64,
                     plan.change_address
                         .as_ref()
@@ -511,6 +594,183 @@ mod tests {
             &w.receive_address(false).unwrap().address_s
         )
         .is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn params_dir() -> std::path::PathBuf {
+        if let Ok(d) = std::env::var("YEW_SAPLING_PARAMS") {
+            return d.into();
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        if cfg!(target_os = "macos") {
+            format!("{home}/Library/Application Support/ZcashParams").into()
+        } else {
+            format!("{home}/.zcash-params").into()
+        }
+    }
+
+    /// WEB-REAL MEDIUM-4: public YEC pays ANOTHER wallet's Sapling address. Through the send
+    /// dispatch (`plan_yec_send`, the app's and the browser's path) with too little private YEC:
+    /// the public balance pays by a shield to the recipient. Only plain `YEC` coins (never the
+    /// reserve, a token, a held or a vault output); one Sapling output that decrypts with the
+    /// RECIPIENT's viewing key to the amount and the memo; no Sapling spend, valueBalance =
+    /// -amount; the change to a fresh change key of this wallet; the fee = ycash6 z_sendmany's
+    /// for the shape (peroutput, 1,000 zat) = inputs - outputs; the gate's Shield path admits it.
+    /// A dust or TOKEN_VALUE change goes to the fee, never to the recipient; a public balance
+    /// too small is the private shortfall error.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn public_yec_pays_another_wallets_sapling_address() {
+        use crate::build::yec_private::plan_yec_send;
+        use crate::tx::Transaction;
+        let (mut w, dir) = wallet_with(
+            "third",
+            &[
+                (3_000_000, UtxoClass::Yec),
+                (105_000, UtxoClass::FeeReserve),
+                (TOKEN_VALUE, UtxoClass::Token),
+                (90_000_000, UtxoClass::Held),
+                (70_000_000, UtxoClass::Vault),
+            ],
+        );
+        w.set_vault_activation(Some(1)).unwrap();
+        // a synced private balance of 0.0005 YEC: too little for the send
+        w.shielded_mut()
+            .unwrap()
+            .receive_for_test(100, 120, &[50_000], &params_dir());
+        let other = crate::shielded_keys::SaplingAccount::from_mnemonic(
+            "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong",
+            "",
+            Network::Regtest,
+        )
+        .unwrap();
+        let (_, to) = other.default_address();
+        assert_ne!(to, w.shielded().unwrap().default_address().1);
+        let p = plan_yec_send(&mut w, &to, 1_000_000, false, Some("for you"), 120, 1).unwrap();
+        assert!(!p.reveals_shielded);
+        let s = shield(&p);
+        assert_eq!(s.to, to);
+        assert_eq!(s.memo.as_deref(), Some("for you"));
+        assert_eq!((s.amount, s.fee), (1_000_000, 1_000));
+        assert_eq!(s.fee, ShieldTo::node_fee() as i64);
+        assert_eq!(s.inputs.len(), 1);
+        assert!(s.inputs.iter().all(|u| u.class == UtxoClass::Yec));
+        assert_eq!(s.change, 3_000_000 - 1_000_000 - 1_000);
+        let (change_addr, change_h) = s.change_address.clone().unwrap();
+        assert!(change_addr.starts_with('s') || change_addr.starts_with('t'));
+        assert_eq!((s.target, s.expiry_height), (121, 161));
+        // built: the vector
+        let secrets: Vec<[u8; 32]> = s
+            .shield_inputs
+            .iter()
+            .map(|i| {
+                w.key_for_hash(&i.hash160)
+                    .unwrap()
+                    .unwrap()
+                    .secret
+                    .to_secret_bytes()
+            })
+            .collect();
+        let built = w
+            .shielded_mut()
+            .unwrap()
+            .build_shield(
+                s.target,
+                &s.shield_inputs,
+                &secrets,
+                &s.dest,
+                s.amount as u64,
+                Some((change_h, s.change as u64)),
+                &params_dir(),
+            )
+            .unwrap();
+        assert_eq!(built.fee_zat, 1_000);
+        let (tx, txid) = Transaction::parse(&built.raw).unwrap();
+        assert_eq!(txid, built.txid);
+        assert_eq!(tx.shielded.spends, 0);
+        assert_eq!(tx.shielded.outputs, 2, "one output, padded to two");
+        assert_eq!(tx.shielded.value_balance, -1_000_000);
+        assert_eq!(tx.vin.len(), 1);
+        assert_eq!(tx.vout.len(), 1);
+        assert_eq!(tx.vout[0].value, s.change);
+        assert_eq!(tx.vout[0].script_pubkey, script::p2pkh_script(&change_h));
+        assert_eq!(
+            3_000_000 - tx.vout[0].value + tx.shielded.value_balance,
+            1_000,
+            "inputs - outputs = the node's fee"
+        );
+        let branch =
+            zcash_protocol::consensus::BranchId::try_from(crate::params::VAULT_BRANCH_ID).unwrap();
+        let ztx = zcash_primitives::transaction::Transaction::read(&built.raw[..], branch).unwrap();
+        let sb = ztx.sapling_bundle().cloned().unwrap();
+        let ivk = |a: &crate::shielded_keys::SaplingAccount| {
+            sapling_crypto::note_encryption::PreparedIncomingViewingKey::new(
+                &a.extended_spending_key()
+                    .to_diversifiable_full_viewing_key()
+                    .to_ivk(zip32::Scope::External),
+            )
+        };
+        let decrypt = |k: &sapling_crypto::note_encryption::PreparedIncomingViewingKey| {
+            sb.shielded_outputs()
+                .iter()
+                .filter_map(|o| {
+                    sapling_crypto::note_encryption::try_sapling_note_decryption(
+                        k,
+                        o,
+                        sapling_crypto::note_encryption::Zip212Enforcement::On,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let paid = decrypt(&ivk(&other));
+        assert_eq!(paid.len(), 1, "the recipient reads one output");
+        assert_eq!(paid[0].0.value().inner(), 1_000_000);
+        assert_eq!(
+            zcash_keys::encoding::encode_payment_address(
+                Network::Regtest.sapling_address_hrp(),
+                &paid[0].1
+            ),
+            to
+        );
+        let memo = zcash_protocol::memo::Memo::from_bytes(paid[0].2.as_slice()).unwrap();
+        assert_eq!(
+            memo,
+            "for you".parse::<zcash_protocol::memo::Memo>().unwrap()
+        );
+        let mine =
+            crate::shielded_keys::SaplingAccount::from_mnemonic(PHRASE, "", Network::Regtest)
+                .unwrap();
+        assert!(decrypt(&ivk(&mine)).is_empty(), "nothing to this wallet");
+        // the gate's local layer: the Shield path admits it with the coin's class
+        let class = |op: &OutPoint| w.store.utxo_class(op).ok().flatten();
+        assert!(gate::check(GatePath::Shield, &built.raw, class).is_ok());
+
+        // dust change (< MIN_CHANGE) goes to the fee, not to the recipient
+        let p = plan_yec_send(&mut w, &to, 3_000_000 - 1_000 - 50, false, None, 120, 1).unwrap();
+        let s = shield(&p);
+        assert_eq!((s.amount, s.fee, s.change), (3_000_000 - 1_050, 1_050, 0));
+        assert!(s.change_address.is_none());
+        // a change of exactly TOKEN_VALUE: to the fee as well
+        let p = plan_yec_send(
+            &mut w,
+            &to,
+            3_000_000 - 1_000 - TOKEN_VALUE,
+            false,
+            None,
+            120,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            (shield(&p).fee, shield(&p).change),
+            (1_000 + TOKEN_VALUE, 0)
+        );
+        // more than the public plain YEC: the private shortfall error, as before
+        let e = plan_yec_send(&mut w, &to, 3_000_000, false, None, 120, 1).unwrap_err();
+        assert!(e.to_string().contains("Not enough private YEC"), "{e}");
+        // the private balance still pays when it can (privacy first)
+        let p = plan_yec_send(&mut w, &to, 20_000, false, None, 120, 1).unwrap();
+        assert!(matches!(p.funding, Funding::Shielded(_)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

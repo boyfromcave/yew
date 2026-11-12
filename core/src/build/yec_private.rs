@@ -6,8 +6,9 @@
 //! combined (transparent + shielded) sync the send runs first.
 //!
 //! Funding rule, one default, no manual choice:
-//! 1. A Sapling recipient (`ys1…`) is paid from shielded notes, with an optional memo. Shielded
-//!    funds only: YEW's transparent builder makes no Sapling outputs (shielding is S4).
+//! 1. A Sapling recipient (`ys1…`) is paid from shielded notes, with an optional memo; when the
+//!    notes fall short, from the public balance by a shielding send to the recipient
+//!    (`yec_move::plan_shield_to`, WEB-REAL MEDIUM-4: the node's `z_sendmany` shape and fee).
 //! 2. A transparent recipient is paid from shielded notes when they cover amount + fee and the
 //!    wallet is scanned to the tip; the plan then says [`YecSendPlan::reveals_shielded`] (the
 //!    amber line: "This send leaves the private pool"). No memo can go to a transparent address.
@@ -110,11 +111,28 @@ pub fn plan_yec_send(
     let memo = memo.map(str::trim_end).filter(|m| !m.is_empty());
     let sapling_recipient = crate::shielded_keys::is_sapling_address(wallet.network, to);
     if sapling_recipient {
-        let plan = wallet.shielded_mut()?.plan(to, amount as u64, memo)?;
-        return Ok(YecSendPlan {
-            funding: Funding::Shielded(Box::new(plan)),
-            reveals_shielded: false,
-        });
+        return match wallet.shielded_mut()?.plan(to, amount as u64, memo) {
+            Ok(plan) => Ok(YecSendPlan {
+                funding: Funding::Shielded(Box::new(plan)),
+                reveals_shielded: false,
+            }),
+            // Too little private YEC: the public balance pays, a shielding send to the
+            // recipient (WEB-REAL MEDIUM-4; `yec_move::plan_shield_to`). When the public balance
+            // cannot pay either, the private shortfall is the error the user sees.
+            Err(e @ ShieldedError::Insufficient { .. }) => {
+                match crate::build::yec_move::plan_shield_to(wallet, to, memo, amount, tip) {
+                    Ok(p) => Ok(YecSendPlan {
+                        funding: Funding::Shield(Box::new(p)),
+                        reveals_shielded: false,
+                    }),
+                    Err(WalletError::Coins(crate::coins::CoinError::Insufficient { .. })) => {
+                        Err(e.into())
+                    }
+                    Err(other) => Err(other),
+                }
+            }
+            Err(e) => Err(e.into()),
+        };
     }
     if memo.is_some() {
         return Err(ShieldedError::Memo(

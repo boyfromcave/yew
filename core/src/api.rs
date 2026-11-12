@@ -2300,7 +2300,7 @@ fn yec_preview_of(o: &Open, plan: &YecSendPlan, reserved: i64) -> YecPreview {
             txid: String::new(),
             funding: YecFunding::Transparent,
             reveals_shielded: false,
-            memo: None,
+            memo: p.memo.clone(),
             params_needed: !sapling_params::status(&o.params_dir).present(),
         },
     }
