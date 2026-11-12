@@ -231,8 +231,18 @@ pub fn stored_note_txs(
 
 /// The go-ahead question for `n` transactions the store lacks.
 pub fn note_lookup_text(n: usize) -> String {
+    lookup_text(n, "")
+}
+
+/// The go-ahead question when `n` is only an upper bound of the transactions that will be
+/// fetched (the mint pre-check counts every spendable note; review YEW-REVIEW-10 L3): "up to n".
+pub fn note_lookup_text_up_to(n: usize) -> String {
+    lookup_text(n, "up to ")
+}
+
+fn lookup_text(n: usize, bound: &str) -> String {
     format!(
-        "{NOTE_LOOKUP_NEEDED}To spend older notes the app must ask the server for {n} transaction{s}; the server can then tell which notes this payment spends. Nothing was sent. Sync again and the wallet reads {them} with its other received transactions, or confirm to ask the server now.",
+        "{NOTE_LOOKUP_NEEDED}To spend older notes the app must ask the server for {bound}{n} transaction{s}; the server can then tell which notes this payment spends. Nothing was sent. Sync again and the wallet reads {them} with its other received transactions, or confirm to ask the server now.",
         s = if n == 1 { "" } else { "s" },
         them = if n == 1 { "it" } else { "them" },
     )
@@ -724,6 +734,12 @@ mod tests {
         assert!(y
             .message
             .starts_with("To spend older notes the app must ask the server for 3 transactions;"));
+        let u = note_lookup_text_up_to(2);
+        assert!(u.starts_with(NOTE_LOOKUP_NEEDED));
+        assert!(
+            u.contains("ask the server for up to 2 transactions;"),
+            "{u}"
+        );
         // what memo enhancement leaves in the store: the transaction's raw bytes on its row
         // (this test chain's paying transaction is not value-balanced, which
         // `decrypt_and_store_transaction` refuses, so the column is written directly)

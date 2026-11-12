@@ -207,7 +207,7 @@ void main() {
     await tester.scrollUntilVisible(find.byKey(const Key('start')), 200, scrollable: find.byType(Scrollable).first);
     await tester.pumpAndSettle();
     // review YEW-REVIEW-8 M1: notes the wallet's store lacks need the go-ahead; cancel sends nothing
-    h.api.noteLookupText = 'To spend older notes the app must ask the server for 1 transaction; the server can then tell which notes this payment spends. Nothing was sent.';
+    h.api.noteLookupText = 'To spend older notes the app must ask the server for up to 1 transaction; the server can then tell which notes this payment spends. Nothing was sent.';
     await tester.tap(find.byKey(const Key('start')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('note-lookup-dialog')), findsOneWidget);

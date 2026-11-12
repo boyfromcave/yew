@@ -140,7 +140,10 @@ pub(crate) fn note_lookup_settled(wallet: &Wallet, allow: bool) -> Result<(), Wa
     if missing.is_empty() {
         Ok(())
     } else {
-        Err(other(super::sapling_pq::note_lookup_text(missing.len())))
+        // an upper bound: "up to n" (review YEW-REVIEW-10 L3)
+        Err(other(super::sapling_pq::note_lookup_text_up_to(
+            missing.len(),
+        )))
     }
 }
 
@@ -433,6 +436,13 @@ mod tests {
         let e = note_lookup_settled(&w, false).unwrap_err();
         let y = crate::api::YewError::from(e);
         assert_eq!(y.kind, crate::api::ErrorKind::NoteLookupNeeded);
+        // the count is an upper bound here (review YEW-REVIEW-10 L3)
+        assert!(
+            y.message
+                .contains("ask the server for up to 1 transaction;"),
+            "{}",
+            y.message
+        );
         assert_eq!(w.store.addresses().unwrap(), keys_before);
         assert_eq!(w.receive_address(false).unwrap(), next_before);
         // the go-ahead: nothing asked
