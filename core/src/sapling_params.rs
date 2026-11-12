@@ -80,12 +80,19 @@ pub const OUTPUT: ParamFile = ParamFile {
 /// Both files, in download order.
 pub const FILES: [ParamFile; 2] = [SPEND, OUTPUT];
 
-/// Where the files are fetched when Settings names no address, tried in order. A Ycash-hosted
-/// mirror is listed first as soon as one exists (owner, 2026-10-04: the Ycash Foundation is
-/// being asked). Until then the only entry is the base URL ycashd's own parameter fetcher
-/// downloads from (`DOWNLOAD_URL`, `ycash/zcutil/fetch-params.sh:20`). Every file is checked
-/// against [`FILES`]' pinned SHA-256 whatever its source.
-pub const DEFAULT_SOURCES: &[&str] = &["https://download.z.cash/downloads/"];
+/// Where the files are fetched when Settings names no address (the app, the CLI), tried in
+/// order: the base URL ycashd's own parameter fetcher downloads from (`DOWNLOAD_URL`,
+/// `ycash/zcutil/fetch-params.sh:20`), then the Ycash developers' own mirror, the release
+/// `zcash-params-v1` of ycash-infra (unchanged copies of the same files, the same sums:
+/// ycash-infra `bundles/zcash-params/`), tried when the first fails. Every file is checked
+/// against [`FILES`]' pinned SHA-256 whatever its source. The browser does not use these
+/// (neither sends a CORS header): [`WEB_DEFAULT_SOURCES`].
+pub const DEFAULT_SOURCES: &[&str] = &["https://download.z.cash/downloads/", RELEASE_MIRROR];
+
+/// The Ycash developers' mirror of the parameter files: ycash-infra's GitHub release
+/// `zcash-params-v1` (the Yellowback lead architect, 2026-11-12).
+pub const RELEASE_MIRROR: &str =
+    "https://github.com/boyfromcave/ycash-infra/releases/download/zcash-params-v1/";
 
 /// Where the browser wallet fetches the files when Settings names no mirror: its own origin, at
 /// [`WEB_PARAMS_PATH`] (the Yellowback lead architect, 2026-11-12, real-stack run WEB-REAL
@@ -1021,7 +1028,14 @@ mod tests {
             .all(|s| s.starts_with('/') && !s.starts_with("//") && s.ends_with('/')));
         assert!(!default_sources(true).iter().any(|s| s.contains("z.cash")));
         assert_eq!(default_sources(false), DEFAULT_SOURCES);
-        assert_eq!(DEFAULT_SOURCES, &["https://download.z.cash/downloads/"]);
+        assert_eq!(DEFAULT_SOURCES[0], "https://download.z.cash/downloads/");
+        // the release mirror is the app's fallback, and parses as an https source
+        assert_eq!(DEFAULT_SOURCES[1], RELEASE_MIRROR);
+        assert!(matches!(
+            ParamsSource::parse(RELEASE_MIRROR).unwrap(),
+            ParamsSource::Http { tls: true, port: 443, ref host, ref path }
+                if host == "github.com" && path == "/boyfromcave/ycash-infra/releases/download/zcash-params-v1/"
+        ));
     }
 
     #[test]
