@@ -12,10 +12,13 @@
 //! (the Vault branch from its regtest height).
 
 use rand_core::OsRng;
+use sapling_crypto::bundle::GrothProofBytes;
+use sapling_crypto::circuit;
 use sapling_crypto::keys::OutgoingViewingKey;
-use sapling_crypto::value::NoteValue;
+use sapling_crypto::prover::{OutputProver, SpendProver};
+use sapling_crypto::value::{NoteValue, ValueCommitTrapdoor};
 use sapling_crypto::zip32::ExtendedSpendingKey;
-use sapling_crypto::{Anchor, MerklePath, Node, Note, PaymentAddress};
+use sapling_crypto::{Anchor, MerklePath, Node, Note, PaymentAddress, Rseed};
 use yewd_proto::{refuse, KeyRef, SaplingBuildRequest, SaplingOut};
 use zcash_primitives::transaction::builder::{BuildConfig, Builder};
 use zcash_primitives::transaction::fees::fixed::FeeRule;
@@ -284,30 +287,108 @@ fn sapling_build(
             ),
         );
     }
-    let dir = std::path::Path::new(&r.params_dir);
-    yew_core::sapling_params::ensure_verified(dir)
-        .map_err(|e| (refuse::FAILED, format!("the Sapling parameters: {e}")))?;
-    let prover = zcash_proofs::prover::LocalTxProver::new(
-        &dir.join(yew_core::sapling_params::SPEND.name),
-        &dir.join(yew_core::sapling_params::OUTPUT.name),
-    );
-    let built = builder
-        .build(
-            &signing,
-            &[extsk, internal_extsk],
-            &[],
-            OsRng,
-            &prover,
-            &prover,
-            &FeeRule::non_standard(zat(r.fee_zat, "fee")?),
-        )
-        .map_err(|e| (refuse::FAILED, format!("the Sapling build: {e}")))?;
+    let fee = FeeRule::non_standard(zat(r.fee_zat, "fee")?);
+    let keys = [extsk, internal_extsk];
+    // a send with no Sapling spend and no Sapling output has no Sapling bundle, so nothing is
+    // proven: it neither needs nor loads the Sapling parameters (a transparent-only z_sendmany
+    // works before the 50 MB download)
+    let shielded = !r.spends.is_empty()
+        || r.outputs
+            .iter()
+            .any(|o| matches!(o, SaplingOut::Shielded { .. }));
+    let built = if shielded {
+        let dir = std::path::Path::new(&r.params_dir);
+        yew_core::sapling_params::ensure_verified(dir)
+            .map_err(|e| (refuse::FAILED, format!("the Sapling parameters: {e}")))?;
+        let prover = zcash_proofs::prover::LocalTxProver::new(
+            &dir.join(yew_core::sapling_params::SPEND.name),
+            &dir.join(yew_core::sapling_params::OUTPUT.name),
+        );
+        builder.build(&signing, &keys, &[], OsRng, &prover, &prover, &fee)
+    } else {
+        builder.build(&signing, &keys, &[], OsRng, &NoProofs, &NoProofs, &fee)
+    }
+    .map_err(|e| (refuse::FAILED, format!("the Sapling build: {e}")))?;
     let mut out = Vec::new();
     built
         .transaction()
         .write(&mut out)
         .map_err(|e| (refuse::FAILED, e.to_string()))?;
     Ok(hex::encode(out))
+}
+
+/// The prover of a build without a Sapling bundle (no Sapling spend, no Sapling output): the
+/// builder prepares and proves only the spends and outputs it was given, so neither proof
+/// method is ever reached. Circuit preparation is the parameters' own (it needs no parameters).
+struct NoProofs;
+
+/// Reached only if the builder made a Sapling bundle from no spends and no outputs.
+const NO_PROOFS: &str = "a build without Sapling spends or outputs created a Sapling proof";
+
+impl SpendProver for NoProofs {
+    type Proof = GrothProofBytes;
+
+    fn prepare_circuit(
+        proof_generation_key: sapling_crypto::ProofGenerationKey,
+        diversifier: sapling_crypto::Diversifier,
+        rseed: Rseed,
+        value: NoteValue,
+        alpha: jubjub::Fr,
+        rcv: ValueCommitTrapdoor,
+        anchor: bls12_381::Scalar,
+        merkle_path: MerklePath,
+    ) -> Option<circuit::Spend> {
+        <circuit::SpendParameters as SpendProver>::prepare_circuit(
+            proof_generation_key,
+            diversifier,
+            rseed,
+            value,
+            alpha,
+            rcv,
+            anchor,
+            merkle_path,
+        )
+    }
+
+    fn create_proof<R: rand_core::RngCore>(&self, _: circuit::Spend, _: &mut R) -> GrothProofBytes {
+        unreachable!("{NO_PROOFS}")
+    }
+
+    fn encode_proof(proof: GrothProofBytes) -> GrothProofBytes {
+        proof
+    }
+}
+
+impl OutputProver for NoProofs {
+    type Proof = GrothProofBytes;
+
+    fn prepare_circuit(
+        esk: &sapling_crypto::keys::EphemeralSecretKey,
+        payment_address: PaymentAddress,
+        rcm: jubjub::Fr,
+        value: NoteValue,
+        rcv: ValueCommitTrapdoor,
+    ) -> circuit::Output {
+        <circuit::OutputParameters as OutputProver>::prepare_circuit(
+            esk,
+            payment_address,
+            rcm,
+            value,
+            rcv,
+        )
+    }
+
+    fn create_proof<R: rand_core::RngCore>(
+        &self,
+        _: circuit::Output,
+        _: &mut R,
+    ) -> GrothProofBytes {
+        unreachable!("{NO_PROOFS}")
+    }
+
+    fn encode_proof(proof: GrothProofBytes) -> GrothProofBytes {
+        proof
+    }
 }
 
 #[cfg(test)]
