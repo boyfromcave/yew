@@ -820,12 +820,32 @@ impl Wallet {
             )
         })?;
         let mut preset = 0i64;
+        // each named input's scriptSig size: a post-quantum (`TX_PQPKH`) coin's real signature
+        // pushes, as ycashd's dummy signatures size it (YEWD-PARITY gap 2)
+        let mut preset_sizes = Vec::with_capacity(base.vin.len());
         for i in &base.vin {
             match node_coin(node, &i.prevout).await? {
-                Some(c) => preset += c.value,
+                Some(c) => {
+                    preset += c.value;
+                    preset_sizes.push(
+                        yew_core::pq::pqpkh_of(&c.script)
+                            .and_then(|id| yew_core::pq::pq_sig_pushes_size(id.scheme))
+                            .unwrap_or(MAX_P2PKH_SCRIPT_SIG),
+                    );
+                }
                 None => return Err(RpcError::new(code::INTERNAL_ERROR, "Insufficient funds")),
             }
         }
+        let pq_input = base
+            .vin
+            .iter()
+            .zip(&preset_sizes)
+            .any(|(_, s)| *s != MAX_P2PKH_SCRIPT_SIG);
+        let pq_terms = if pq_input {
+            Some(pq_fee_params(node).await)
+        } else {
+            None
+        };
         let used: BTreeSet<(String, u32)> = base
             .vin
             .iter()
@@ -863,7 +883,8 @@ impl Wallet {
                     },
                 ));
             }
-            let change = got - need.max(0);
+            // the named inputs may cover more than the outputs and the fee: the excess is change too
+            let change = got - need;
             let mut changepos = -1i64;
             if change > DUST {
                 let sc = self.new_change()?;
@@ -873,10 +894,29 @@ impl Wallet {
                 });
                 changepos = tx.vout.len() as i64 - 1;
             }
-            let sizes = vec![MAX_P2PKH_SCRIPT_SIG; tx.vin.len()];
-            let want = tx
+            let mut sizes = preset_sizes.clone();
+            sizes.resize(tx.vin.len(), MAX_P2PKH_SCRIPT_SIG);
+            let conventional = tx
                 .zip317_conventional_fee(&sizes)
                 .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
+            // ycashd CreateTransaction with a post-quantum input: max(min(max(fee, the plain PQ
+            // rate x size), PQMaxTxFee()), the ZIP-317 conventional fee), the size with the
+            // inputs' dummy signatures (quantum plan §4.5)
+            let want = match pq_terms {
+                Some((rate, cap)) => {
+                    let bytes = tx
+                        .size_with_script_sigs(&sizes)
+                        .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
+                    yew_core::build::any_to_any::pq_builder_fee(
+                        conventional,
+                        bytes,
+                        conventional,
+                        rate,
+                        cap,
+                    )
+                }
+                None => conventional,
+            };
             if want > fee {
                 fee = want;
                 continue;

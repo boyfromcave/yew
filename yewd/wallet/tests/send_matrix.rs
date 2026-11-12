@@ -1205,3 +1205,76 @@ async fn stock_sends_without_spendable_pq_coins_keep_the_insufficient_funds_erro
     }
     assert!(f.node.0.lock().unwrap().sent.is_empty());
 }
+
+/// YEWD-PARITY gap 2: a post-quantum input NAMED in `fundrawtransaction` is priced by its real
+/// size, as ycashd's `CreateTransaction` prices it with dummy signatures: max(min(max(the
+/// ZIP-317 fee, the plain PQ rate x size), PQMaxTxFee()), the ZIP-317 conventional fee), the
+/// conventional fee counting the SLH-DSA signature's bytes. It used to be priced as a P2PKH input
+/// (10,000 zat, a seventh of the conventional fee alone).
+#[tokio::test]
+async fn fundrawtransaction_prices_a_named_pq_input_by_size() {
+    let mut f = fixture("fund-named-pq").await;
+    let rate = 40_000i64;
+    let cap = 4_000_000i64;
+    {
+        let mut c = f.node.0.lock().unwrap();
+        c.yed_info = Some(json!({"healthy": true, "unhealthyReason": "",
+            "params": {"fees": {"network": {"plain": {"zatPerKB": rate},
+                                            "yellowback": {"maxTxFeeZat": cap}}}}}));
+    }
+    let to = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x35; 20]);
+    // the fixture's 5 YEC SLH-DSA coin, as the wallet lists it
+    let list: Value =
+        serde_json::from_str(&f.w.call(&f.node, "listunspent", &[]).await.unwrap().text()).unwrap();
+    let coin = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["address"].as_str() == Some(f.slh.as_str()))
+        .expect("the SLH-DSA coin")
+        .clone();
+    let mut txid: [u8; 32] = hex::decode(coin["txid"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    txid.reverse();
+    let mut raw = Transaction::new_v4();
+    raw.vin.push(TxIn::new(OutPoint {
+        txid,
+        n: coin["vout"].as_u64().unwrap() as u32,
+    }));
+    raw.vout.push(TxOut {
+        value: COIN,
+        script_pubkey: addr_script(&to),
+    });
+    let r =
+        f.w.call(
+            &f.node,
+            "fundrawtransaction",
+            &[json!(hex::encode(raw.serialize().unwrap()))],
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    let v: Value = serde_json::from_str(&r.text()).unwrap();
+    let tx = Transaction::parse(&hex::decode(v["hex"].as_str().unwrap()).unwrap())
+        .unwrap()
+        .0;
+    let slh = yew_core::pq::pq_sig_pushes_size(yew_core::pq::SCHEME_SLH_DSA_SHA2_128S).unwrap();
+    let mut sizes = vec![slh];
+    sizes.resize(tx.vin.len(), yew_core::tx::MAX_P2PKH_SCRIPT_SIG);
+    let bytes = tx.size_with_script_sigs(&sizes).unwrap();
+    let conventional = tx.zip317_conventional_fee(&sizes).unwrap();
+    let want = (rate * bytes as i64 / 1000)
+        .max(conventional)
+        .min(cap)
+        .max(conventional);
+    let fee = (v["fee"].as_f64().unwrap() * COIN as f64).round() as i64;
+    assert_eq!(fee, want, "bytes {bytes} conventional {conventional}");
+    assert!(fee > 300_000, "{fee}");
+    let paid: i64 = 5 * COIN - tx.vout.iter().map(|o| o.value).sum::<i64>()
+        + tx.vin[1..]
+            .iter()
+            .map(|i| f.prevout(&i.prevout.txid, i.prevout.n).1)
+            .sum::<i64>();
+    assert_eq!(paid, fee);
+}
