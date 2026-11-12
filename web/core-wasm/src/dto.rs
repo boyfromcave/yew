@@ -472,7 +472,8 @@ pub fn mint_estimate(e: &CoreMintEstimate, from: &str, estimate_id: String) -> M
         carrier_zat: amt(params::CARRIER_VALUE),
         token_zat: amt(params::TOKEN_VALUE),
         network_fee_zat: amt(e.network_fee_zat),
-        total_zat: amt(e.total_zat),
+        // what leaves the source once both steps are mined (the screen's "Total from …")
+        total_zat: amt(e.spend_zat()),
         available_zat: amt(e.available_zat),
         affordable: e.affordable(),
         p_mint_micro_usd: (e.p_mint > 0).then(|| amt(e.p_mint)),

@@ -327,6 +327,16 @@ impl MintEstimate {
         self.available_zat >= self.total_zat
     }
 
+    /// What the mint takes from the source's balance once both steps are mined: [`total_zat`]
+    /// less `CARRIER_VALUE`, which the carrier holds only until the MINT spends it into its own
+    /// outputs and fee (real-stack run WEB-FIX: the run's public mint spent exactly this,
+    /// 6.02656000 YEC, against a total of 6.02666000).
+    ///
+    /// [`total_zat`]: MintEstimate::total_zat
+    pub fn spend_zat(&self) -> i64 {
+        self.total_zat - CARRIER_VALUE
+    }
+
     /// The terms a start re-checks, taken from this estimate (review YEW-REVIEW-10 L2): the
     /// collateral, fee, payee and class the user saw, the carrier fee as the cap on the funding,
     /// and the acknowledgement tokens the caller passes back (each is compared with the guard's
@@ -2881,6 +2891,10 @@ mod tests {
         );
         // more than the coins hold: no estimate from the selection
         assert_eq!(ecc_mint_fee(&w, 800_000_000), None);
+        // the spend shown is the need less the carrier's value, which the MINT spends back
+        let mut e = sample_estimate();
+        e.total_zat = 602_666_000;
+        assert_eq!(e.spend_zat(), 602_656_000);
     }
 
     #[test]
