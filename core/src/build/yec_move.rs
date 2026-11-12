@@ -249,7 +249,7 @@ fn plan_shield(
 /// Plan a send of `amount` zat from the public balance to another wallet's Sapling address `to`
 /// (real-stack run WEB-REAL MEDIUM-4: before, a Sapling recipient was paid from private notes
 /// only). The shape of ycash6's `z_sendmany` from transparent addresses to a Sapling address:
-/// transparent `YEC` coins only (`coins::select_yec` without the reserve, so the fee reserve and
+/// transparent `YEC` coins only (`coins::select_yec_linking` without the reserve, so the fee reserve and
 /// every YED-bearing, locked, pending or held output stay where they are), one Sapling output to
 /// `to` with the optional `memo`, transparent change to a fresh change address of this wallet (as
 /// the node's change from transparent addresses, and as every other public-balance send here),
@@ -257,11 +257,18 @@ fn plan_shield(
 /// exactly `amount`: a change of exactly `TOKEN_VALUE` or of dust goes to the fee, never to the
 /// recipient. Confirm is [`confirm_shield`] (gate path [`GatePath::Shield`], the held-YED guard,
 /// the provenance layer, the built fee equal to the previewed one).
+///
+/// The coins come from one public address, as every other public-balance send (beta2 D-5,
+/// [`coins::select_yec_linking`]): when only several addresses together cover the send the
+/// answer is [`coins::CoinError::LinkingNeeded`], and `allow_linking` (the user's go-ahead after
+/// that question) combines them. A shell with no go-ahead step (the browser) passes `false` and
+/// shows the refusal.
 pub fn plan_shield_to(
     wallet: &Wallet,
     to: &str,
     memo: Option<&str>,
     amount: i64,
+    allow_linking: bool,
     tip: u64,
 ) -> Result<ShieldPlan, WalletError> {
     if amount <= 0 {
@@ -280,7 +287,7 @@ pub fn plan_shield_to(
     let base_fee = ShieldTo::node_fee() as i64;
     let target = (tip as u32).saturating_add(1);
     let spendable = wallet.spendable_utxos()?;
-    let inputs = coins::select_yec(&spendable, amount + base_fee, false)?;
+    let inputs = coins::select_yec_linking(&spendable, amount + base_fee, false, allow_linking)?;
     let total: i64 = inputs.iter().map(|u| u.value).sum();
     let mut change = total - amount - base_fee;
     let mut fee = base_fee;
@@ -699,7 +706,17 @@ mod tests {
         .unwrap();
         let (_, to) = other.default_address();
         assert_ne!(to, w.shielded().unwrap().default_address().1);
-        let p = plan_yec_send(&mut w, &to, 1_000_000, false, Some("for you"), 120, 1).unwrap();
+        let p = plan_yec_send(
+            &mut w,
+            &to,
+            1_000_000,
+            false,
+            false,
+            Some("for you"),
+            120,
+            1,
+        )
+        .unwrap();
         assert!(!p.reveals_shielded);
         let s = shield(&p);
         assert_eq!(s.to, to);
@@ -799,7 +816,17 @@ mod tests {
         assert!(gate::check(GatePath::Shield, &built.raw, class).is_ok());
 
         // dust change (< MIN_CHANGE) goes to the fee, not to the recipient
-        let p = plan_yec_send(&mut w, &to, 3_000_000 - 1_000 - 50, false, None, 120, 1).unwrap();
+        let p = plan_yec_send(
+            &mut w,
+            &to,
+            3_000_000 - 1_000 - 50,
+            false,
+            false,
+            None,
+            120,
+            1,
+        )
+        .unwrap();
         let s = shield(&p);
         assert_eq!((s.amount, s.fee, s.change), (3_000_000 - 1_050, 1_050, 0));
         assert!(s.change_address.is_none());
@@ -808,6 +835,7 @@ mod tests {
             &mut w,
             &to,
             3_000_000 - 1_000 - TOKEN_VALUE,
+            false,
             false,
             None,
             120,
@@ -819,11 +847,75 @@ mod tests {
             (1_000 + TOKEN_VALUE, 0)
         );
         // more than the public plain YEC: the private shortfall error, as before
-        let e = plan_yec_send(&mut w, &to, 3_000_000, false, None, 120, 1).unwrap_err();
+        let e = plan_yec_send(&mut w, &to, 3_000_000, false, false, None, 120, 1).unwrap_err();
         assert!(e.to_string().contains("Not enough private YEC"), "{e}");
         // the private balance still pays when it can (privacy first)
-        let p = plan_yec_send(&mut w, &to, 20_000, false, None, 120, 1).unwrap();
+        let p = plan_yec_send(&mut w, &to, 20_000, false, false, None, 120, 1).unwrap();
         assert!(matches!(p.funding, Funding::Shielded(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The merge of WEB-REAL MEDIUM-4 with beta2 D-5: the shield to another wallet's Sapling
+    /// address takes one public address's coins, as every other public-balance send. Two
+    /// addresses that only together cover the send: the linking question (the app asks; the
+    /// browser, with no go-ahead step, shows it as the refusal, kind `linking`), never a silent
+    /// combination and never the private shortfall; with the go-ahead both coins are spent at
+    /// the node's fee. One address that covers it alone is taken without asking.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn public_yec_to_sapling_keeps_addresses_apart_unless_allowed() {
+        use crate::api::{ErrorKind, YewError};
+        use crate::build::yec_private::plan_yec_send;
+        let (mut w, dir) = wallet_with(
+            "third-link",
+            &[(1_000_000, UtxoClass::Yec), (1_000_000, UtxoClass::Yec)],
+        );
+        assert_eq!(coins::distinct_addresses(&w.spendable_utxos().unwrap()), 2);
+        w.shielded_mut()
+            .unwrap()
+            .receive_for_test(100, 120, &[50_000], &params_dir());
+        let other = crate::shielded_keys::SaplingAccount::from_mnemonic(
+            "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong",
+            "",
+            Network::Regtest,
+        )
+        .unwrap();
+        let (_, to) = other.default_address();
+        // one address covers it: no question, one input
+        let p = plan_yec_send(&mut w, &to, 900_000, false, false, None, 120, 1).unwrap();
+        assert_eq!((shield(&p).inputs.len(), shield(&p).fee), (1, 1_000));
+        // only both together cover it: the question, without the go-ahead
+        let e = plan_yec_send(&mut w, &to, 1_500_000, false, false, None, 120, 1).unwrap_err();
+        assert!(
+            matches!(
+                e,
+                WalletError::Coins(coins::CoinError::LinkingNeeded {
+                    need: 1_501_000,
+                    best_one: 1_000_000
+                })
+            ),
+            "{e}"
+        );
+        let text = e.to_string();
+        assert!(!text.contains("Not enough private YEC"), "{text}");
+        let api = YewError::from(e);
+        assert_eq!(api.kind, ErrorKind::AddressLinkingNeeded);
+        assert_eq!(api.message, text);
+        // with the go-ahead: both coins, the node's fee, change to a fresh own change key
+        let p = plan_yec_send(&mut w, &to, 1_500_000, false, true, None, 120, 1).unwrap();
+        let s = shield(&p);
+        assert_eq!((s.inputs.len(), s.amount, s.fee), (2, 1_500_000, 1_000));
+        assert_eq!(s.change, 2_000_000 - 1_500_000 - 1_000);
+        let (_, change_h) = s.change_address.clone().unwrap();
+        assert!(s
+            .inputs
+            .iter()
+            .all(|u| u.script != script::p2pkh_script(&change_h)));
+        // more than both: the private shortfall, as before (the go-ahead changes nothing)
+        for allow in [false, true] {
+            let e = plan_yec_send(&mut w, &to, 2_000_000, false, allow, None, 120, 1).unwrap_err();
+            assert!(e.to_string().contains("Not enough private YEC"), "{e}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

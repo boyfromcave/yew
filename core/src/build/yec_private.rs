@@ -94,8 +94,9 @@ pub struct Confirmed {
 
 /// Plan a YEC send of `amount` zat to `to` by the funding rule above, after a sync at `tip`
 /// with the server's `branch_id` (the transparent path signs with it). `memo` is for Sapling
-/// recipients only. `allow_linking`: the transparent path may combine coins of several public
-/// addresses (the user's go-ahead, [`yec_send::build_yec_send`]).
+/// recipients only. `allow_linking`: a public-balance path (to a transparent recipient, and the
+/// shield to another wallet's Sapling address) may combine coins of several public addresses
+/// (the user's go-ahead, [`yec_send::build_yec_send`], `yec_move::plan_shield_to`).
 #[allow(clippy::too_many_arguments)]
 pub fn plan_yec_send(
     wallet: &mut Wallet,
@@ -121,9 +122,18 @@ pub fn plan_yec_send(
             }),
             // Too little private YEC: the public balance pays, a shielding send to the
             // recipient (WEB-REAL MEDIUM-4; `yec_move::plan_shield_to`). When the public balance
-            // cannot pay either, the private shortfall is the error the user sees.
+            // cannot pay either, the private shortfall is the error the user sees; when only
+            // several public addresses together can, the linking question (beta2 D-5), as on
+            // the transparent path.
             Err(e @ ShieldedError::Insufficient { .. }) => {
-                match crate::build::yec_move::plan_shield_to(wallet, to, memo, amount, tip) {
+                match crate::build::yec_move::plan_shield_to(
+                    wallet,
+                    to,
+                    memo,
+                    amount,
+                    allow_linking,
+                    tip,
+                ) {
                     Ok(p) => Ok(YecSendPlan {
                         funding: Funding::Shield(Box::new(p)),
                         reveals_shielded: false,
