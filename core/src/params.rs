@@ -35,25 +35,216 @@ pub const PQ_FALCON_HEIGHT_TESTNET: u64 = 0;
 /// The three Ycash networks. The chain name is what `GetLightdInfo.chainName` reports
 /// (`"main"`, `"test"`, `"regtest"`) and what `yellowback::Params::network` holds
 /// (`ycash-dd/src/yellowback/params.cpp:140,154,186`).
+///
+/// `Testnet` is **testnet-yb-fast**, the node's `-testnet -testnetprofile=fast` and kogany's
+/// `network = "Testnet"` ([`TestnetProfile::Fast`], the only profile this build signs for; see
+/// [`TestnetProfile`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Network {
     /// Ycash mainnet.
     Mainnet,
-    /// Ycash testnet.
+    /// Ycash testnet: the testnet-yb-fast profile ([`TestnetProfile::Fast`]).
     Testnet,
     /// Regtest, the devnet.
     Regtest,
 }
 
+/// The node's testnet profiles (`-testnetprofile=<profile>`, ycash6
+/// `src/chainparamsbase.cpp:96-150`; kogany `network = "Testnet" | "TestnetSlow" | "TestnetLegacy"`):
+/// three different chains that all report `chainName` `"test"` and share the testnet address
+/// prefixes, but not their upgrade heights or branch ids.
+///
+/// - `fast`: the re-forked testnet (`CTestNetParams` + `CTestNetFastParams`): Zcash testnet
+///   history to 510,247, the Ycash fork at 510,248, Blossom / Heartwood / Canopy two blocks
+///   apart, Vault at 510,400; the YED module's fast lifecycle column. **This is
+///   [`Network::Testnet`].**
+/// - `slow`, `legacy`: shadow forks of mainnet (`CTestNetShadowParams`): mainnet's heights to
+///   H_S, then the shadow upgrade under their own branch ids (`0x57a24d5d`, `0x35706728`) and,
+///   on slow, Vault under `0xe1f1cc08`. librustzcash6 (the `zcash_protocol` YEW signs Sapling
+///   with) has no `BranchId` for those ids, so YEW cannot sign for them: selecting one is
+///   refused ([`TestnetProfile::network`]) rather than signing for the wrong chain.
+///
+/// The heights and branch ids are pinned against the node by
+/// `core/tests/vectors/testnet_profiles.json` (generated from ycash6, `scripts/check-testnet-profiles.sh`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TestnetProfile {
+    /// testnet-yb-fast.
+    Fast,
+    /// testnet-yb-slow (a shadow fork of mainnet).
+    Slow,
+    /// testnet-legacy (a shadow fork of mainnet, Vault never scheduled).
+    Legacy,
+}
+
+impl TestnetProfile {
+    /// Parse a `-testnetprofile=` value (the node's spelling: `fast`, `slow`, `legacy`).
+    pub fn from_name(name: &str) -> Option<TestnetProfile> {
+        match name {
+            "fast" => Some(TestnetProfile::Fast),
+            "slow" => Some(TestnetProfile::Slow),
+            "legacy" => Some(TestnetProfile::Legacy),
+            _ => None,
+        }
+    }
+
+    /// The `-testnetprofile=` spelling (what ycashd's `getblockchaininfo.testnetprofile` reports).
+    pub fn name(self) -> &'static str {
+        match self {
+            TestnetProfile::Fast => "fast",
+            TestnetProfile::Slow => "slow",
+            TestnetProfile::Legacy => "legacy",
+        }
+    }
+
+    /// The node's data directory for the profile (ycash6 `src/chainparamsbase.cpp:61-63`).
+    pub fn datadir(self) -> &'static str {
+        match self {
+            TestnetProfile::Fast => "testnet-yb-fast",
+            TestnetProfile::Slow => "testnet-yb-slow",
+            TestnetProfile::Legacy => "testnet-legacy",
+        }
+    }
+
+    /// The node's default RPC port for the profile (ycash6 `src/chainparamsbase.cpp:61-63`).
+    pub fn rpc_port(self) -> u16 {
+        match self {
+            TestnetProfile::Fast => 18832,
+            TestnetProfile::Slow => 18932,
+            TestnetProfile::Legacy => 19032,
+        }
+    }
+
+    /// The YEW network for the profile: `fast` is [`Network::Testnet`]; `slow` and `legacy` are
+    /// refused with the reason (their shadow-fork branch ids are not in librustzcash6).
+    pub fn network(self) -> Result<Network, String> {
+        match self {
+            TestnetProfile::Fast => Ok(Network::Testnet),
+            TestnetProfile::Slow | TestnetProfile::Legacy => Err(format!(
+                "testnet profile {:?} is not supported by this build: it is a shadow fork of mainnet \
+                 whose branch ids (shadow 0x{:08x}{}) librustzcash6 does not define, so nothing could \
+                 be signed for it; use the fast profile",
+                self.name(),
+                match self {
+                    TestnetProfile::Slow => SLOW_SHADOW_BRANCH_ID,
+                    _ => LEGACY_SHADOW_BRANCH_ID,
+                },
+                if self == TestnetProfile::Slow {
+                    format!(", vault 0x{SLOW_VAULT_BRANCH_ID:08x}")
+                } else {
+                    String::new()
+                }
+            )),
+        }
+    }
+}
+
+/// testnet-yb-slow's shadow upgrade branch id (ycash6 `src/consensus/upgrades.h:45`): never
+/// accepted by this build ([`TestnetProfile::network`]).
+pub const SLOW_SHADOW_BRANCH_ID: u32 = 0x57a2_4d5d;
+/// testnet-yb-slow's Vault branch id (ycash6 `src/consensus/upgrades.h:46`).
+pub const SLOW_VAULT_BRANCH_ID: u32 = 0xe1f1_cc08;
+/// testnet-legacy's shadow upgrade branch id (ycash6 `src/consensus/upgrades.h:47`).
+pub const LEGACY_SHADOW_BRANCH_ID: u32 = 0x3570_6728;
+
+/// One network upgrade of a network's consensus table: the branch id a transaction for a block
+/// at or above `height` commits to (ZIP-243), `None` = not scheduled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Upgrade {
+    /// The fixture's name (`overwinter` … `canopy`, `nu5`, `vault`).
+    pub name: &'static str,
+    /// The consensus branch id.
+    pub branch_id: u32,
+    /// The activation height, `None` when the network does not schedule it.
+    pub height: Option<u64>,
+}
+
+const fn up(name: &'static str, branch_id: u32, height: Option<u64>) -> Upgrade {
+    Upgrade {
+        name,
+        branch_id,
+        height,
+    }
+}
+
+/// Ycash mainnet's upgrades (ycash6 `src/chainparams.cpp` `CMainParams`, `:115-162`): no NU5 and
+/// no Vault height (the gate-passing release sets it, P8).
+pub const MAINNET_UPGRADES: [Upgrade; 8] = [
+    up("overwinter", 0x5ba8_1b19, Some(347_500)),
+    up("sapling", 0x76b8_09bb, Some(419_200)),
+    up("ycash", 0x374d_694f, Some(570_000)),
+    up("blossom", 0x8e47_1bd6, Some(1_100_000)),
+    up("heartwood", 0x6631_4da3, Some(1_100_003)),
+    up("canopy", 0x19bd_2d2f, Some(1_100_006)),
+    up("nu5", 0xf919_a198, None),
+    up("vault", VAULT_BRANCH_ID, None),
+];
+
+/// testnet-yb-fast's upgrades (ycash6 `src/chainparams.cpp` `CTestNetParams` `:440-476`,
+/// `CTestNetFastParams` `:652`): Vault at 510,400 (H_V, a placeholder until the testnet's launch
+/// ceremony fixes it). Not librustzcash6's `TEST_NETWORK`, which still carries the old Ycash
+/// testnet's Blossom 661,610 / Heartwood 661,622 / Canopy 661,634 and no Vault.
+pub const TESTNET_FAST_UPGRADES: [Upgrade; 8] = [
+    up("overwinter", 0x5ba8_1b19, Some(207_500)),
+    up("sapling", 0x76b8_09bb, Some(280_000)),
+    up("ycash", 0x374d_694f, Some(510_248)),
+    up("blossom", 0x8e47_1bd6, Some(510_250)),
+    up("heartwood", 0x6631_4da3, Some(510_252)),
+    up("canopy", 0x19bd_2d2f, Some(510_254)),
+    up("nu5", 0xf919_a198, None),
+    up("vault", VAULT_BRANCH_ID, Some(510_400)),
+];
+
 impl Network {
-    /// Parse a `chainName` / `--network` string.
+    /// Parse a `chainName` / `--network` string. `testnet-yb-fast` names the testnet too;
+    /// `testnet-yb-slow` and `testnet-legacy` are not networks this build signs for
+    /// ([`TestnetProfile::network`]).
     pub fn from_name(name: &str) -> Option<Network> {
         match name {
             "main" | "mainnet" => Some(Network::Mainnet),
-            "test" | "testnet" => Some(Network::Testnet),
+            "test" | "testnet" | "testnet-yb-fast" => Some(Network::Testnet),
             "regtest" => Some(Network::Regtest),
             _ => None,
         }
+    }
+
+    /// The testnet profile this network is (`Some(Fast)` on testnet, `None` elsewhere).
+    pub fn testnet_profile(self) -> Option<TestnetProfile> {
+        match self {
+            Network::Testnet => Some(TestnetProfile::Fast),
+            Network::Mainnet | Network::Regtest => None,
+        }
+    }
+
+    /// The compiled-in upgrade table: mainnet's and testnet-yb-fast's; `None` on regtest, whose
+    /// heights are the node's `-nuparams` (the server's `GetChainInfo.upgrades`).
+    pub fn upgrades(self) -> Option<&'static [Upgrade; 8]> {
+        match self {
+            Network::Mainnet => Some(&MAINNET_UPGRADES),
+            Network::Testnet => Some(&TESTNET_FAST_UPGRADES),
+            Network::Regtest => None,
+        }
+    }
+
+    /// The compiled-in activation height of the upgrade named `name` (the fixture's names).
+    pub fn activation_height(self, name: &str) -> Option<u64> {
+        self.upgrades()?
+            .iter()
+            .find(|u| u.name == name)
+            .and_then(|u| u.height)
+    }
+
+    /// The branch id a transaction for a block at `height` commits to, by the compiled-in table
+    /// (`CurrentEpochBranchId`): the latest scheduled upgrade at or below `height`, Sprout (`0`)
+    /// before Overwinter. `None` on regtest.
+    pub fn branch_id_at(self, height: u64) -> Option<u32> {
+        let table = self.upgrades()?;
+        Some(
+            table
+                .iter()
+                .filter(|u| u.height.is_some_and(|h| h <= height))
+                .max_by_key(|u| u.height)
+                .map_or(0, |u| u.branch_id),
+        )
     }
 
     /// The `chainName` string the server reports for this network.
@@ -216,7 +407,7 @@ impl TermClass {
     }
 }
 
-/// Mainnet and testnet (`ycash-dd/src/yellowback/params.cpp` `SetCommon`, branch
+/// Mainnet (and testnet-yb-slow) (`ycash-dd/src/yellowback/params.cpp` `SetCommon`, branch
 /// `upgrade/vault-in-term`; in-term plan D-IT-4, D-IT-9, D-IT-10): three flat tiers — A 30–90
 /// days at 300 %, B 91–180 days at 400 %, C 181–365 days at 500 % (hardening H-5's disabling of B
 /// and C is reversed), with the early-redeem fee 5 / 2.5 / 1 % (D-IT-16).
@@ -242,6 +433,36 @@ const MAIN_CLASSES: [TermClass; 3] = [
         letter: "C",
         min_blocks: 207_361,
         max_blocks: 420_480,
+        base_ratio_bps: 50_000,
+        early_redeem_fee_bps: 100,
+    },
+];
+
+/// testnet-yb-fast's column (ycash6 `src/yellowback/params.cpp` `TestFastParams`, testnet plan
+/// T-16: every lifecycle window `max(floor, ⌈mainnet / 336⌉)`): A 103–309, B 310–618, C 619–1,252
+/// blocks; the ratios and early-redeem fees are mainnet's.
+const TEST_FAST_CLASSES: [TermClass; 3] = [
+    TermClass {
+        index: 0,
+        letter: "A",
+        min_blocks: 103,
+        max_blocks: 309,
+        base_ratio_bps: 30_000,
+        early_redeem_fee_bps: 500,
+    },
+    TermClass {
+        index: 1,
+        letter: "B",
+        min_blocks: 310,
+        max_blocks: 618,
+        base_ratio_bps: 40_000,
+        early_redeem_fee_bps: 250,
+    },
+    TermClass {
+        index: 2,
+        letter: "C",
+        min_blocks: 619,
+        max_blocks: 1_252,
         base_ratio_bps: 50_000,
         early_redeem_fee_bps: 100,
     },
@@ -278,7 +499,8 @@ impl Network {
     /// The three term classes of this network.
     pub fn term_classes(self) -> &'static [TermClass; 3] {
         match self {
-            Network::Mainnet | Network::Testnet => &MAIN_CLASSES,
+            Network::Mainnet => &MAIN_CLASSES,
+            Network::Testnet => &TEST_FAST_CLASSES,
             Network::Regtest => &REGTEST_CLASSES,
         }
     }
@@ -294,7 +516,9 @@ impl Network {
     /// `:213`).
     pub fn grace(self) -> u32 {
         match self {
-            Network::Mainnet | Network::Testnet => 34_560,
+            Network::Mainnet => 34_560,
+            // testnet-yb-fast's column (ycash6 `src/yellowback/params.cpp` `TestFastParams`).
+            Network::Testnet => 103,
             Network::Regtest => 24,
         }
     }
@@ -342,7 +566,8 @@ impl Network {
 
     /// One day in blocks **on the network's own calendar**, the lead of the "claim opens
     /// soon" warning (H-9.2: from `claimHeight − 1 day`): `⌈GRACE / 30⌉`, since `GRACE` is
-    /// 30 days (`params.cpp:46`). Mainnet and testnet: 1,152 blocks (= 86,400 s / 75 s);
+    /// 30 days (`params.cpp:46`). Mainnet: 1,152 blocks (= 86,400 s / 75 s); testnet-yb-fast
+    /// (GRACE 103): 4;
     /// regtest, whose classes and grace are scaled to blocks a laptop can mine (GRACE 24): 1.
     pub fn day_blocks(self) -> u32 {
         self.grace().div_ceil(30)
@@ -377,18 +602,21 @@ impl Network {
     /// server reporting another value is refused.
     pub fn claim_delay(self) -> i64 {
         match self {
-            Network::Mainnet | Network::Testnet => 576,
+            Network::Mainnet => 576,
+            // testnet-yb-fast's column (ycash6 `src/yellowback/params.cpp` `TestFastParams`).
+            Network::Testnet => 20,
             Network::Regtest => 10,
         }
     }
 
-    /// The `UPGRADE_VAULT` activation height compiled into this build: `None` on every network
-    /// today (upgrade plan §15.1: mainnet and testnet `NO_ACTIVATION_HEIGHT` until P8 sets them;
-    /// regtest by `-nuparams=6d5b7a31:<h>`). Regtest takes the server's height
-    /// ([`Network::vault_activation_from_server`]); on mainnet and testnet a server announcing an
-    /// activation this build does not know is not believed (see [`signing_branch_id`]).
+    /// The `UPGRADE_VAULT` activation height compiled into this build: 510,400 on testnet
+    /// (testnet-yb-fast, ycash6 `src/chainparams.cpp:652`), `None` on mainnet (upgrade plan
+    /// §15.1: `NO_ACTIVATION_HEIGHT` until P8 sets it) and on regtest (`-nuparams=6d5b7a31:<h>`).
+    /// Regtest takes the server's height ([`Network::vault_activation_from_server`]); on mainnet
+    /// and testnet a server announcing an activation this build does not know is not believed
+    /// (see [`signing_branch_id`]).
     pub fn vault_activation_height(self) -> Option<u64> {
-        None
+        self.activation_height("vault")
     }
 
     /// True when this network takes the vault activation height from the server (regtest only).
@@ -1072,8 +1300,10 @@ mod tests {
 
     #[test]
     fn protocol_table_matches_the_node() {
-        // params.cpp SetCommon / RegtestParams.
-        for n in [Network::Mainnet, Network::Testnet] {
+        // params.cpp SetCommon / RegtestParams; testnet-yb-fast's column (TestFastParams) below
+        // and pinned against the node by tests/testnet_profiles.rs.
+        {
+            let n = Network::Mainnet;
             assert_eq!(n.grace(), 34_560);
             assert_eq!(n.class_for_lock_blocks(34_560).unwrap().letter, "A");
             assert_eq!(n.class_for_lock_blocks(103_680).unwrap().letter, "A");
@@ -1102,6 +1332,18 @@ mod tests {
             assert_eq!(n.day_blocks(), 1_152);
             assert_eq!(n.day_blocks() as i64 * n.target_spacing_secs(), 86_400);
         }
+        let t = Network::Testnet;
+        assert_eq!(t.grace(), 103);
+        assert_eq!(t.claim_delay(), 20);
+        assert_eq!(t.class_for_lock_blocks(103).unwrap().letter, "A");
+        assert_eq!(t.class_for_lock_blocks(310).unwrap().letter, "B");
+        assert_eq!(t.class_for_lock_blocks(1_252).unwrap().letter, "C");
+        assert!(t.class_for_lock_blocks(102).is_none());
+        assert!(t.class_for_lock_blocks(1_253).is_none());
+        assert_eq!(t.attest_fee_bps(), 5_000);
+        assert_eq!(t.max_mint_cents(), 10_000_000);
+        assert_eq!(t.mint_requires_armed(), Some(true));
+        assert_eq!(t.day_blocks(), 4);
         assert_eq!(Network::Regtest.enabled_classes().count(), 3);
         assert_eq!(Network::Regtest.attest_fee_bps(), 2_500);
         assert_eq!(Network::Regtest.max_mint_cents(), 10_000_000);

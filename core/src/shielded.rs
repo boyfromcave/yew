@@ -230,6 +230,57 @@ pub fn ycash_network_with_upgrades(
     }
 }
 
+/// Whether the light library's consensus parameters for `n` (librustzcash6's `MAIN_NETWORK` /
+/// `TEST_NETWORK`, which every Sapling transaction's branch id and note format come from) agree
+/// with the node's, YEW's compiled-in table ([`Network::upgrades`], pinned against ycash6 by
+/// `core/tests/vectors/testnet_profiles.json`). `Err` names the first disagreement; nothing
+/// Sapling may be built then, since the node would reject it (a wrong ZIP-243 branch id, or a
+/// pre-Canopy note plaintext). Regtest is always `Ok` (its heights come from the server).
+///
+/// Today testnet fails it: librustzcash6 6ff87bc9 still has the old Ycash testnet's Blossom
+/// 661,610 / Heartwood 661,622 / Canopy 661,634 and no Vault, testnet-yb-fast has 510,250 /
+/// 510,252 / 510,254 / 510,400 (`wt/handoff/YEW-TESTNET.md`).
+pub fn check_light_params(n: Network) -> Result<(), String> {
+    let Some(table) = n.upgrades() else {
+        return Ok(());
+    };
+    let lib = ycash_network(n);
+    for u in table {
+        let nu = match u.name {
+            "overwinter" => NetworkUpgrade::Overwinter,
+            "sapling" => NetworkUpgrade::Sapling,
+            "ycash" => NetworkUpgrade::Ycash,
+            "blossom" => NetworkUpgrade::Blossom,
+            "heartwood" => NetworkUpgrade::Heartwood,
+            "canopy" => NetworkUpgrade::Canopy,
+            "nu5" => NetworkUpgrade::Nu5,
+            "vault" => NetworkUpgrade::Vault,
+            other => return Err(format!("unknown upgrade {other:?} in the network table")),
+        };
+        let theirs = lib.activation_height(nu).map(u64::from);
+        let branch = u32::from(BranchId::for_height(
+            &lib,
+            BlockHeight::from_u32(u.height.unwrap_or(0) as u32),
+        ));
+        if theirs != u.height || (u.height.is_some() && branch != u.branch_id) {
+            return Err(format!(
+                "this build's Sapling parameters for {} do not match the node's: {} activates at \
+                 {} in librustzcash6 but at {} on the node; a private transaction built here would \
+                 be rejected, so none is built (librustzcash6 needs the node's heights first)",
+                if n == Network::Testnet {
+                    "testnet-yb-fast"
+                } else {
+                    n.chain_name()
+                },
+                u.name,
+                theirs.map_or("never".to_string(), |h| h.to_string()),
+                u.height.map_or("never".to_string(), |h| h.to_string()),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn ycash_network_base(n: Network) -> YcashNetwork {
     match n {
         Network::Mainnet => YcashNetwork::Main,
@@ -1128,6 +1179,7 @@ impl Shielded {
         plan: &SpendPlan,
         params_dir: &Path,
     ) -> Result<SpendBuilt, ShieldedError> {
+        check_light_params(self.network).map_err(ShieldedError::Create)?;
         let params_millis = self.load_prover(params_dir)?;
         let t1 = now_ms();
         let Some((_, prover)) = self.prover.take() else {
@@ -1198,6 +1250,7 @@ impl Shielded {
         amount_zat: u64,
         change: Option<([u8; 20], u64)>,
     ) -> Result<Builder<'static, YcashNetwork, ()>, ShieldedError> {
+        check_light_params(self.network).map_err(ShieldedError::Create)?;
         let mut b = Builder::new(
             self.params,
             BlockHeight::from_u32(target),

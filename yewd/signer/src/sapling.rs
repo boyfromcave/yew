@@ -79,6 +79,9 @@ fn sapling_build(
     r: &SaplingBuildRequest,
     transparent: impl Fn(u32, u32) -> Result<(secp256k1::SecretKey, [u8; 33]), Refused>,
 ) -> Result<String, Refused> {
+    // the light library's heights must be the node's, or the branch id and the note format are
+    // wrong and the node rejects the transaction (testnet-yb-fast: wt/handoff/YEW-TESTNET.md)
+    yew_core::shielded::check_light_params(network).map_err(|e| (refuse::FAILED, e))?;
     let dfvk = extsk.to_diversifiable_full_viewing_key();
     let internal_extsk = extsk.derive_internal();
     let mut params =
