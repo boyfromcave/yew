@@ -201,6 +201,9 @@ def phase_arm():
 def phase_yed():
     import mint
     A = addrs()
+    # the pool's quote ages out (an hour or so into a run): quote again so the fast window fills
+    d.cli(0, 'yed_setquote', 50000000, 1)
+    d.mine(9)
     d.cli(0, 'sendtoaddress', A['ecc'], 10)
     d.cli(0, 'sendtoaddress', A['pq_falcon'], 10)
     d.mine(1)
