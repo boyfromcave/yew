@@ -1,8 +1,8 @@
 import { mount } from "../dom";
 import { clear, go, h } from "../dom";
 import { formatYec, formatYed, shorten } from "../format";
-import type { Balances, Vault } from "../core";
-import { YellowbackVm } from "../vm/yellowback";
+import type { Balances, MintStatus, Vault } from "../core";
+import { YellowbackVm, claimStage } from "../vm/yellowback";
 import { errorCard, feeLine, previewCard, resultCard, slideToConfirm, unusualFeeCard } from "../widgets";
 
 /** The owner's redeem: open at any height after the mint (in-term claims, D-IT-15); before the term ends it
@@ -27,15 +27,29 @@ function claimNotice(v: Vault): HTMLElement | null {
   return null;
 }
 
+const usd = (micro: string) => `$${(Number(micro) / 1e6).toFixed(4)}`;
+
+/** Final-run D-2: the mints and claims left between their two steps (a reload, a closed tab), each with
+ *  where it stands and the way back into it. */
+function pendingList(vm: YellowbackVm, rows: MintStatus[]): HTMLElement | null {
+  if (!rows.length) return null;
+  return h("div", { class: "card", "data-pending": "" }, h("h3", null, "In progress"),
+    h("ul", { class: "list" }, rows.map((m) => h("li", null,
+      h("span", null, h("div", null, `${m.kind === "claim" ? "Claim" : "Mint"} · ${formatYed(m.cents)}${m.kind === "claim" ? " debt" : ""} · ${m.state}`),
+        h("div", { class: "small" }, `${m.kind === "claim" ? claimStage(m) : m.note || "the carrier is sent; the mint follows it"} · carrier ${shorten(m.carrierTxid, 6, 4)}`)),
+      h("button", { class: "secondary", "data-resume": String(m.mintId), disabled: vm.state.busy, on: { click: () => { void vm.resume(m.mintId).then(() => go(m.kind === "claim" ? "claimable" : "mint")); } } }, "Continue")))));
+}
+
 export function renderYellowback(root: HTMLElement, vm: YellowbackVm, yedCents: string) {
   const draw = () => {
     clear(root);
     const s = vm.state;
-    if (s.txid && !s.mint) { mount(root, resultCard("Sent", s.txid, () => { vm.reset(); draw(); })); return; }
+    if (s.txid && !s.mint && s.mintId === null) { mount(root, resultCard("Sent", s.txid, () => { vm.reset(); draw(); })); return; }
     const vaults = s.vaults.filter((v) => v.open);
     mount(root, h("h2", null, "Yellowback"), h("div", { class: "card" }, h("h3", null, "YED you hold"), h("div", { class: "big yed" }, yedCents ? formatYed(yedCents) : "—"),
         h("div", { class: "actions" }, h("button", { on: { click: () => go("mint") } }, "Mint"), h("button", { class: "secondary", on: { click: () => go("claimable") } }, "Claimable"))),
       errorCard(s.error, s.errorKind),
+      pendingList(vm, s.pending),
       h("h3", null, "Your vaults"), vaults.length === 0 ? h("p", { class: "small" }, "No open vault. Mint YED to open one.") : null,
       h("ul", { class: "list" }, vaults.map((v) => h("li", { on: { click: () => go("vault", v.vaultTxid) } },
         h("span", null, h("div", null, `${formatYed(v.cents)} · ${formatYec(v.collateralZat)} YEC`), h("div", { class: "small" }, `class ${v.termClass} · ${v.status} · ${redeemLabel(v)}`)),
@@ -49,6 +63,7 @@ export function renderMint(root: HTMLElement, vm: YellowbackVm, balances: () => 
   const draw = () => {
     clear(root);
     const s = vm.state; const e = s.estimate; const a = s.availability;
+    if (s.mintStatus?.kind === "claim") { mount(root, h("h2", null, "Mint YED"), h("p", null, "A claim is in progress."), h("div", { class: "actions" }, h("button", { on: { click: () => go("claimable") } }, "Go to the claim"), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Mint instead"))); return; }
     if (s.mintStatus && !s.mintStatus.inProgress) { mount(root, resultCard(s.mintStatus.state === "DONE" ? `Minted ${formatYed(s.mintStatus.cents)}` : s.mintStatus.state, s.mintStatus.vaultTxid || s.txid, () => { vm.reset(); go("yellowback"); })); return; }
     const amount = h("input", { type: "text", inputmode: "decimal", placeholder: "25.00", value: e ? (Number(e.cents) / 100).toFixed(2) : "" });
     const lock = h("input", { type: "number", min: 1, value: e ? String(e.lockBlocks) : "100" });
@@ -106,18 +121,48 @@ export function renderVault(root: HTMLElement, vm: YellowbackVm, vaultTxid: stri
   draw(); if (!vm.state.vaults.length) vm.load(); return vm.subscribe(draw);
 }
 
+/** Final-run D-2: a claim after its carrier — where it stands (carrier sent, claim sent, or why it stopped)
+ *  and the step it is ready for: send the CLAIM once the carrier is confirmed, sweep the carrier back if
+ *  the window closed. Never "Claim sent" before the CLAIM itself is. */
+function claimProgress(vm: YellowbackVm, m: MintStatus | null): HTMLElement[] {
+  const s = vm.state;
+  if (!m) return [h("div", { class: "card", "data-claim-state": "CARRIER_SENT" }, h("h3", null, "Claim: step 1 of 2"), h("p", null, "The claim's carrier is sent; the claim itself follows once it is confirmed."), h("p", { class: "small" }, `carrier ${shorten(s.txid)}`))];
+  const done = () => { vm.reset(); go("yellowback"); };
+  if (m.state === "MAIN_SENT" || m.state === "DONE") return [resultCard(m.state === "DONE" ? "Claimed" : "Claim sent", m.mainTxid || s.txid, done), h("p", { class: "small", "data-claim-state": m.state }, `${claimStage(m)} Carrier ${shorten(m.carrierTxid)}.`)];
+  if (!m.inProgress && !m.canSweep) return [h("div", { class: "card", "data-claim-state": m.state }, h("h3", null, "Claim stopped"), h("p", null, claimStage(m)), h("p", { class: "small" }, `carrier ${shorten(m.carrierTxid)}${m.sweepTxid ? ` · sweep ${shorten(m.sweepTxid)}` : ""}`), h("div", { class: "actions" }, h("button", { on: { click: done } }, "Done")))];
+  return [h("div", { class: "card", "data-claim-state": m.state }, h("h3", null, m.canSweep ? "Claim: window closed" : m.state === "CARRIER_SENT" ? "Claim: step 1 of 2 sent" : "Claim: step 2 of 2"), h("p", null, claimStage(m)),
+    h("p", { class: "small" }, `${formatYed(m.cents)} debt · carrier ${shorten(m.carrierTxid)}${m.note ? ` · ${m.note}` : ""}`),
+    s.step && m.canFinish ? slideToConfirm("Slide to send the claim", () => vm.mintStepConfirm(), s.busy) : null,
+    // the claim's fee rose above what its start accepted: nothing was sent; the new fee needs its own yes
+    // before the window closes (review of #31 M-1; the Mint screen's card, here for a claim)
+    s.finishFee ? [unusualFeeCard(s.finishFee.note, s.feeAccepted, () => vm.acceptFee()),
+      s.feeAccepted ? slideToConfirm("Slide to send the claim at this fee", () => vm.acceptFinishFee(), s.busy) : null] : null,
+    h("div", { class: "actions" }, !m.canFinish && !m.canSweep ? h("button", { disabled: s.busy, on: { click: () => vm.mintFinish() } }, s.busy ? "Checking…" : "Check the carrier") : null,
+      m.canSweep && !s.step ? h("button", { class: "secondary", on: { click: () => vm.mintSweep() } }, "Sweep the carrier back") : null,
+      s.step && m.canSweep ? slideToConfirm("Slide to sweep", () => vm.mintStepConfirm(), s.busy) : null))];
+}
+
 export function renderClaimable(root: HTMLElement, vm: YellowbackVm) {
   const draw = () => {
     clear(root);
     const s = vm.state;
-    if (s.txid) { mount(root, resultCard("Claim sent", s.txid, () => { vm.reset(); go("yellowback"); })); return; }
-    mount(root, h("h2", null, "Claimable vaults"), h("p", { class: "small" }, "Underwater vaults any YED holder may claim: burn the debt, receive the collateral less the fee and the owner's residual. The core refuses to sign if the server's numbers would burn more or pay less than shown."),
+    // a claim under way: its row (kind "claim"), or the moment between the carrier's confirm and its row
+    const row = s.mintStatus?.kind === "claim" ? s.mintStatus : null;
+    const underway = row !== null || (s.mintId !== null && s.mintStatus === null && !s.mint && !!s.txid);
+    if (underway) { mount(root, h("h2", null, "Claim"), errorCard(s.error, s.errorKind), claimProgress(vm, row)); return; }
+    // final-run D-3: only what the node judges claimable at its tip can be claimed; the rest is listed apart
+    const now = s.claimable.filter((c) => c.claimable), later = s.claimable.filter((c) => !c.claimable);
+    mount(root, h("h2", null, "Claimable vaults"), h("p", { class: "small" }, "Underwater vaults any YED holder may claim: burn the debt, receive the collateral less the fee and the owner's residual. The core refuses to sign if the server's numbers would burn more or pay less than shown. A claim is two transactions, like a mint: its carrier, then the claim."),
       errorCard(s.error, s.errorKind),
-      !s.claim ? (s.claimable.length === 0 && !s.busy ? h("p", null, "Nothing is claimable right now.") : h("ul", { class: "list" }, s.claimable.map((c) => h("li", { on: { click: () => vm.claimPreview(c.vaultTxid) } },
-        h("span", null, h("div", null, `${formatYed(c.cents)} debt · ${formatYec(c.collateralZat)} YEC`), h("div", { class: "small" }, `you keep about ${formatYec(c.claimantZat)} YEC · clause ${c.claimPath} · ${shorten(c.ownerAddress, 8, 4)}`)))))) : null,
-      s.claim ? [previewCard("Claim", [["YED burned (at most)", formatYed(s.claim.maxBurnCents)], ["You receive (at least)", `${formatYec(s.claim.minOutZat)} YEC`], ["Enforcement fee", feeLine(s.claim.item.feeZat)], ["Clause", s.claim.item.claimPath]]),
+      pendingList(vm, s.pending.filter((m) => m.kind === "claim")),
+      !s.claim ? [now.length === 0 ? h("p", null, s.busy ? "Asking the node…" : "Nothing is claimable right now.") : h("ul", { class: "list", "data-claimable": "now" }, now.map((c) => h("li", { on: { click: () => vm.claimPreview(c.vaultTxid) } },
+        h("span", null, h("div", null, `${formatYed(c.cents)} debt · ${formatYec(c.collateralZat)} YEC`), h("div", { class: "small" }, `claimable now${c.inTerm ? " (in term)" : ""} · you keep about ${formatYec(c.claimantZat)} YEC · clause ${c.claimPath} · ${shorten(c.ownerAddress, 8, 4)}`))))),
+        later.length ? [h("h3", null, "Not claimable now"), h("ul", { class: "list", "data-claimable": "later" }, later.map((c) => h("li", { "aria-disabled": "true" },
+          h("span", null, h("div", null, `${formatYed(c.cents)} debt · ${formatYec(c.collateralZat)} YEC`), h("div", { class: "small pending" }, `not claimable: above ${usd(c.underwaterAtMicroUsd)} · ${shorten(c.ownerAddress, 8, 4)}`)))))] : null] : null,
+      s.claim ? [previewCard("Claim", [["YED burned (at most)", formatYed(s.claim.maxBurnCents)], ["You receive (at least)", `${formatYec(s.claim.minOutZat)} YEC`], ["Enforcement fee", feeLine(s.claim.item.feeZat)], ["Clause", s.claim.item.claimPath], ["Then", "the carrier is sent now; the claim itself once it is confirmed"]]),
         unusualFeeCard(s.claim.feeNote, s.feeAccepted, () => vm.acceptFee()),
         slideToConfirm("Slide to claim", () => vm.confirm(), s.busy || (!!s.claim.unusualFeeAck && !s.feeAccepted)), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Cancel")] : null);
   };
-  draw(); vm.loadClaimable(); return vm.subscribe(draw);
+  // load first (busy at once), so the first frame never reads "Nothing is claimable" before the node answered
+  void vm.loadClaimable(); draw(); return vm.subscribe(draw);
 }

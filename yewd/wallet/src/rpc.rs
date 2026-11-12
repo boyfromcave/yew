@@ -2318,8 +2318,11 @@ impl Wallet {
     /// `z_validateaddress "address"`, answered here (`rpc/misc.cpp` `DescribePaymentAddressVisitor`):
     /// ycash6 started with `-disablewallet` dereferences its absent wallet in this call
     /// (`LOCK2(cs_main, pwalletMain->cs_wallet)`) and stops, so it is never forwarded to it. Every
-    /// field comes from the address itself plus `ismine`. Sprout and unified addresses are not
-    /// Ycash v4 wallet forms; they answer `isvalid: false` here.
+    /// field comes from the address itself plus `ismine`. A post-quantum address (`sqf…`/`sqs…`,
+    /// `tqf…`/`tqs…`, `rqf…`/`rqs…`) answers `address_type` "pq" with its scheme and key hash, as
+    /// ycashd since beta2 audit L-4 (`misc.cpp` `z_validateaddress`). Sprout and unified addresses
+    /// are not Ycash v4 wallet forms; they answer `isvalid: false` here, and so do the YED forms
+    /// (`yb…`), which ycashd's `DecodeDestination` does not read either.
     pub fn z_validateaddress(&self, p: &[Value]) -> Result<J, RpcError> {
         if p.len() != 1 {
             return Err(RpcError::new(
@@ -2342,6 +2345,19 @@ impl Wallet {
             o.push("diversifier", J::Str(hex::encode(&bytes[..11])));
             o.push("diversifiedtransmissionkey", J::Str(hex::encode(pkd)));
             o.push("ismine", J::Bool(self.view.owns_address(a).is_some()));
+        } else if let Ok(id) = ykeys::parse_pq_yec_address(self.network, a) {
+            // beta2 audit L-4 (ycash6 6f770db7f, ycash-dd 7d6451251): a post-quantum address is a
+            // payment address too; ycashd answers validateaddress's post-quantum fields, in this order
+            let mine = yew_core::pq::pqpkh_script(&id)
+                .is_some_and(|s| self.book.owns_script(&s).is_some());
+            o.push("isvalid", J::Bool(true));
+            o.push("address", J::Str(a.into()));
+            o.push("address_type", J::Str("pq".into()));
+            o.push("type", J::Str("pq".into()));
+            o.push("ismine", J::Bool(mine));
+            o.push("pqscheme", J::from(id.scheme as i64));
+            o.push("pqschemename", J::Str(pq_scheme_name(id.scheme).into()));
+            o.push("pqkeyhash", J::Str(hex::encode(id.hash)));
         } else if let Some(script) = parse_taddr_script(self.network, a)
             .filter(|_| ykeys::parse_pq_yec_address(self.network, a).is_err())
         {

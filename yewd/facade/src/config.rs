@@ -14,13 +14,17 @@ use std::path::{Path, PathBuf};
 use crate::allowip::AllowIp;
 
 /// The network, which picks the default RPC port and the data subdirectory (as ycashd's
-/// `chainparamsbase.cpp`).
+/// `chainparamsbase.cpp`). `Test` is testnet-yb-fast (`-testnet -testnetprofile=fast`, the one
+/// testnet profile YEW signs for: `yew_core::params::TestnetProfile`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Network {
     Main,
     Test,
     Regtest,
 }
+
+/// The testnet's data subdirectory before yewd took ycashd's per-profile name (`testnet-yb-fast`).
+pub const OLD_TESTNET_SUBDIR: &str = "testnet";
 
 impl Network {
     /// ycashd's default RPC port, so tools that assume it reach the façade.
@@ -31,12 +35,30 @@ impl Network {
         }
     }
 
-    /// The subdirectory of `-datadir` that holds `.cookie` (empty on mainnet).
+    /// The subdirectory of `-datadir` that holds `.cookie` and the wallet (empty on mainnet):
+    /// ycashd's (`chainparamsbase.cpp`), so on testnet it is the profile's, `testnet-yb-fast`.
     pub fn subdir(self) -> &'static str {
         match self {
             Network::Main => "",
-            Network::Test => "testnet",
+            Network::Test => yew_core::params::TestnetProfile::Fast.datadir(),
             Network::Regtest => "regtest",
+        }
+    }
+
+    /// The testnet profile (`Some("fast")` on testnet), as ycashd's `getblockchaininfo.testnetprofile`.
+    pub fn testnet_profile(self) -> Option<&'static str> {
+        match self {
+            Network::Test => Some(yew_core::params::TestnetProfile::Fast.name()),
+            Network::Main | Network::Regtest => None,
+        }
+    }
+
+    /// How the startup line names the network: `main`, `test (testnet profile fast)`, `regtest`.
+    pub fn label(self) -> String {
+        match (self, self.testnet_profile()) {
+            (_, Some(p)) => format!("test (testnet profile {p})"),
+            (Network::Main, None) => "main".into(),
+            _ => "regtest".into(),
         }
     }
 }
@@ -48,6 +70,7 @@ pub const KNOWN: &[&str] = &[
     "datadir",
     "regtest",
     "testnet",
+    "testnetprofile",
     "rpcbind",
     "rpcport",
     "rpcuser",
@@ -265,6 +288,22 @@ fn parse_bind(v: &str, port: u16) -> Result<SocketAddr, ConfigError> {
 }
 
 impl Config {
+    /// A testnet wallet directory of an older yewd (`<datadir>/testnet`) with no
+    /// `<datadir>/testnet-yb-fast` beside it: refuse rather than start an empty wallet next to it.
+    pub fn check_old_testnet_dir(network: Network, datadir: &Path) -> Result<(), ConfigError> {
+        let old = datadir.join(OLD_TESTNET_SUBDIR);
+        let new = datadir.join(network.subdir());
+        if network == Network::Test && old.is_dir() && !new.exists() {
+            return err(format!(
+                "yewd: {} is the testnet directory of an older yewd; testnet-yb-fast's is now {} \
+                 (ycashd's name for the profile): move it there and start again",
+                old.display(),
+                new.display()
+            ));
+        }
+        Ok(())
+    }
+
     /// Resolve the command line, reading `-conf` (default `<datadir>/yewd.conf`, optional).
     pub fn load(cli: Args) -> Result<Self, ConfigError> {
         let (a, datadir) = Self::merged(cli)?;
@@ -294,11 +333,30 @@ impl Config {
     }
 
     /// The network the merged options name.
+    /// `-testnetprofile=<profile>` as ycashd's (`chainparamsbase.cpp` `ChainNameFromCommandLine`):
+    /// only with `-testnet`; `fast`, `slow` or `legacy`. yewd signs for `fast` only, so `slow` and
+    /// `legacy` are refused with the reason; `-testnet` alone is `fast` (ycashd requires the
+    /// option, yewd has one profile to default to).
     pub fn network_of(a: &Args) -> Result<Network, ConfigError> {
-        match (a.flag("regtest"), a.flag("testnet")) {
+        use yew_core::params::TestnetProfile;
+        let testnet = a.flag("testnet");
+        let profile = a.get("testnetprofile");
+        if profile.is_some() && !testnet {
+            return err("yewd: -testnetprofile requires -testnet");
+        }
+        match (a.flag("regtest"), testnet) {
             (true, true) => err("yewd: -regtest and -testnet together"),
             (true, false) => Ok(Network::Regtest),
-            (false, true) => Ok(Network::Test),
+            (false, true) => {
+                let name = profile.unwrap_or("fast");
+                let p = TestnetProfile::from_name(name).ok_or_else(|| {
+                    ConfigError(format!(
+                        "yewd: unknown -testnetprofile '{name}': fast, slow or legacy"
+                    ))
+                })?;
+                p.network().map_err(|e| ConfigError(format!("yewd: {e}")))?;
+                Ok(Network::Test)
+            }
             _ => Ok(Network::Main),
         }
     }
@@ -323,6 +381,7 @@ impl Config {
             (u, Some(p)) => Some((u.unwrap_or("").to_string(), p.to_string())),
         };
         let netdir = datadir.join(network.subdir());
+        Self::check_old_testnet_dir(network, &datadir)?;
         let cookie_file = match a.get("rpccookiefile") {
             Some(p) if Path::new(p).is_relative() => netdir.join(p),
             Some(p) => PathBuf::from(p),
@@ -480,6 +539,68 @@ mod tests {
         assert!(!c.stop_backend);
         assert_eq!(c.backend_lost_exit, 10);
         assert_eq!(c.backend, "127.0.0.1:28832".parse().unwrap());
+    }
+
+    /// `-testnetprofile` as ycashd's: fast (the default with `-testnet`) is testnet-yb-fast, with
+    /// ycashd's data subdirectory and RPC port; slow and legacy are refused with the reason; the
+    /// option without `-testnet` and an unknown profile are errors. Mainnet and regtest unchanged.
+    #[test]
+    fn testnet_profiles() {
+        let dir = std::env::temp_dir().join(format!("yewd-tp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for args in [
+            &["-testnet", "-backendrpcport=1", "-backendrpcpassword=x"][..],
+            &[
+                "-testnet",
+                "-testnetprofile=fast",
+                "-backendrpcport=1",
+                "-backendrpcpassword=x",
+            ][..],
+        ] {
+            let c = Config::resolve(cli(args), dir.clone()).unwrap();
+            assert_eq!(c.network, Network::Test);
+            assert_eq!(c.network.testnet_profile(), Some("fast"));
+            assert_eq!(c.network.label(), "test (testnet profile fast)");
+            assert_eq!(c.bind[0].port(), 18832);
+            assert_eq!(c.cookie_file, dir.join("testnet-yb-fast/.cookie"));
+            assert!(c.ignored.is_empty(), "{:?}", c.ignored);
+        }
+        for (args, want) in [
+            (&["-testnet", "-testnetprofile=slow"][..], "not supported"),
+            (&["-testnet", "-testnetprofile=legacy"][..], "not supported"),
+            (
+                &["-testnet", "-testnetprofile=testnet3"][..],
+                "unknown -testnetprofile",
+            ),
+            (&["-testnetprofile=fast"][..], "requires -testnet"),
+        ] {
+            let mut a = args.to_vec();
+            a.extend(["-backendrpcport=1", "-backendrpcpassword=x"]);
+            let e = Config::resolve(cli(&a), dir.clone()).unwrap_err();
+            assert!(e.0.contains(want), "{args:?}: {}", e.0);
+        }
+        // an older yewd's <datadir>/testnet is not silently replaced by an empty wallet
+        std::fs::create_dir_all(dir.join("testnet")).unwrap();
+        let e = Config::resolve(
+            cli(&["-testnet", "-backendrpcport=1", "-backendrpcpassword=x"]),
+            dir.clone(),
+        )
+        .unwrap_err();
+        assert!(e.0.contains("move it there"), "{}", e.0);
+        std::fs::create_dir_all(dir.join("testnet-yb-fast")).unwrap();
+        assert!(Config::resolve(
+            cli(&["-testnet", "-backendrpcport=1", "-backendrpcpassword=x"]),
+            dir.clone()
+        )
+        .is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+        // mainnet and regtest: no profile, their directories and ports as before
+        assert_eq!(Network::Main.testnet_profile(), None);
+        assert_eq!(Network::Main.subdir(), "");
+        assert_eq!(Network::Regtest.subdir(), "regtest");
+        assert_eq!(Network::Main.default_rpc_port(), 8832);
+        assert_eq!(Network::Main.label(), "main");
+        assert_eq!(Network::Regtest.label(), "regtest");
     }
 
     #[test]

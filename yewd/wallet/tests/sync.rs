@@ -781,3 +781,100 @@ async fn z_gettotalbalance_and_listaddresses_over_the_mock_chain() {
     );
     assert!(w.call(&node, "listaddresses", &[json!(1)]).await.is_err());
 }
+
+/// Final-run D-4 (beta2 audit L-4, ycash6 6f770db7f / ycash-dd 7d6451251): `z_validateaddress` of
+/// a post-quantum address answers what ycashd answers, field for field and in its order:
+/// `isvalid`, `address`, `address_type` and `type` "pq", `ismine`, `pqscheme`, `pqschemename`,
+/// `pqkeyhash` (SHA256(scheme ‖ pk), as in the TX_PQPKH script) — for each network's prefixes
+/// (`sqf…`/`sqs…`, `tqf…`/`tqs…`, `rqf…`/`rqs…`). A YED form (`yb…`) stays `isvalid: false`, as
+/// ycashd's `DecodeDestination` does not read it.
+#[tokio::test]
+async fn z_validateaddress_answers_a_post_quantum_address_as_ycashd() {
+    let expect = |a: &str, id: &yew_core::pq::PqKeyId, mine: bool| {
+        let name = if id.scheme == 1 {
+            "SLH-DSA-SHA2-128s"
+        } else {
+            "FN-DSA-512"
+        };
+        format!(
+            r#"{{"isvalid":true,"address":"{a}","address_type":"pq","type":"pq","ismine":{mine},"pqscheme":{},"pqschemename":"{name}","pqkeyhash":"{}"}}"#,
+            id.scheme,
+            hex::encode(id.hash)
+        )
+    };
+    let node = MockNode::default();
+    genesis(&node);
+    node.0.lock().unwrap().vault_height = Some(1);
+    let d = dir("zvalidate-pq");
+    let mut w = Wallet::open(&d, Network::Regtest, signer(), 0).unwrap();
+    w.sync(&node).await.unwrap();
+    // an SLH-DSA address from getnewaddress (the mock has no Falcon height, so "pq" is SLH-DSA too)
+    // and the book's first FN-DSA key
+    let slh = w
+        .call(&node, "getnewaddress", &[json!("pqslh")])
+        .await
+        .unwrap()
+        .text()
+        .trim_matches('"')
+        .to_string();
+    let fn_id = w.book.pq_key(2, 0).unwrap().id;
+    let fn_addr = yew_core::keys::encode_pq_yec(Network::Regtest, &fn_id).unwrap();
+    for (a, prefix) in [(fn_addr, "rqf"), (slh, "rqs")] {
+        assert!(a.starts_with(prefix), "{a}");
+        let id = yew_core::keys::parse_pq_yec_address(Network::Regtest, &a).unwrap();
+        let got = w.z_validateaddress(&[json!(a)]).unwrap().text();
+        assert_eq!(got, expect(&a, &id, true));
+        // the YED form of the same key is not a payment address
+        let yed = yew_core::keys::encode_pq_yellowback(Network::Regtest, &id);
+        if let Some(yed) = yed {
+            assert_eq!(
+                w.z_validateaddress(&[json!(yed)]).unwrap().text(),
+                r#"{"isvalid":false}"#
+            );
+        }
+    }
+    // a foreign key of each scheme on each network: valid, not mine; another network's prefix is
+    // not this network's address
+    let foreign_seed = [7u8; 48];
+    for (net, f, s) in [
+        (Network::Mainnet, "sqf", "sqs"),
+        (Network::Testnet, "tqf", "tqs"),
+        (Network::Regtest, "rqf", "rqs"),
+    ] {
+        for (scheme, prefix) in [(2u8, f), (1u8, s)] {
+            let id = yew_core::pq::PqKey::from_seed(scheme, &foreign_seed)
+                .unwrap()
+                .id();
+            let a = yew_core::keys::encode_pq_yec(net, &id).unwrap();
+            assert!(a.starts_with(prefix), "{a}");
+            let got = w.z_validateaddress(&[json!(a)]).unwrap().text();
+            if net == Network::Regtest {
+                assert_eq!(got, expect(&a, &id, false));
+            } else {
+                assert_eq!(got, r#"{"isvalid":false}"#, "{a} on regtest");
+            }
+        }
+    }
+    for net in [Network::Mainnet, Network::Testnet] {
+        let dn = dir(&format!("zvalidate-pq-{}", net.chain_name()));
+        let wn = Wallet::open(
+            &dn,
+            net,
+            Box::new(TestSigner(yewd_signer::Keystore::from_mnemonic(
+                net, PHRASE,
+            ))),
+            0,
+        )
+        .unwrap();
+        for scheme in [2u8, 1] {
+            let id = yew_core::pq::PqKey::from_seed(scheme, &foreign_seed)
+                .unwrap()
+                .id();
+            let a = yew_core::keys::encode_pq_yec(net, &id).unwrap();
+            assert_eq!(
+                wn.z_validateaddress(&[json!(a)]).unwrap().text(),
+                expect(&a, &id, false)
+            );
+        }
+    }
+}

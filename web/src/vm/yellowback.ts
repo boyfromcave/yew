@@ -23,6 +23,27 @@ export interface YellowbackState {
   from: string; sources: PqSource[]; unavailable: Unavailable[];
   /** The user pressed "Pay this fee" for the estimate's unusual carrier fee (its own confirmation). */
   carrierFeeAccepted: boolean;
+  /** Final-run D-2: the two-step rows (mints and claims) still in flight or with a carrier to sweep, as
+   *  the store keeps them: a reload between the carrier and the main step resumes from here. */
+  pending: MintStatus[];
+}
+
+/** A two-step row the user still has to act on or wait for: in flight, or lapsed with its carrier to sweep. */
+export function isPending(m: MintStatus): boolean { return m.inProgress || m.canSweep; }
+
+/** Final-run D-2: where a claim stands, in words — its carrier sent, the CLAIM sent, or why it stopped. */
+export function claimStage(m: MintStatus): string {
+  switch (m.state) {
+    case "CARRIER_SENT": return "Step 1 of 2 sent: the claim's carrier is waiting for its first confirmation; the claim itself is sent after it.";
+    case "CARRIER_CONFIRMED": return m.canFinish ? "Step 1 of 2 confirmed: send the claim (step 2)." : "The carrier is confirmed, but the claim's window has closed.";
+    case "MAIN_SENT": return "Claim sent (step 2 of 2): waiting for it to be mined.";
+    case "DONE": return "Claimed: the claim is mined.";
+    case "LAPSED": return "The claim was not sent in time and its window has closed: nothing was claimed. Sweep the carrier back.";
+    case "SWEEP_SENT": return "The carrier is being swept back.";
+    case "SWEPT": return "The carrier was swept back: nothing was claimed.";
+    case "FAILED": return `The claim failed${m.note ? `: ${m.note}` : ""}.`;
+    default: return m.state;
+  }
 }
 
 /** The acknowledgement in a finish refusal (`unusual-fee: … accept-unusual-fee:<fee>:row:<id> …`). */
@@ -35,7 +56,7 @@ export function finishAck(message: string): { note: string; ack: string } | null
 
 export class YellowbackVm extends Vm<YellowbackState> {
   constructor(private core: Core) {
-    super({ vaults: [], claimable: [], busy: false, error: "", errorKind: "", availability: null, estimate: null, mint: null, mintId: null, mintStatus: null, step: null, redeem: null, claim: null, txid: "", feeAccepted: false, finishFee: null, from: "", sources: [], unavailable: [], carrierFeeAccepted: false });
+    super({ vaults: [], claimable: [], busy: false, error: "", errorKind: "", availability: null, estimate: null, mint: null, mintId: null, mintStatus: null, step: null, redeem: null, claim: null, txid: "", feeAccepted: false, finishFee: null, from: "", sources: [], unavailable: [], carrierFeeAccepted: false, pending: [] });
   }
   private async run(f: () => Promise<void>) {
     this.set({ busy: true, error: "", errorKind: "" });
@@ -60,14 +81,25 @@ export class YellowbackVm extends Vm<YellowbackState> {
     if (!this.state.feeAccepted) throw new Error("invalid: this fee is unusual; press \"Pay this fee\" first");
     return ack;
   }
-  load() { return this.run(async () => this.set({ vaults: await this.core.vaults() })); }
+  load() { return this.run(async () => { this.set({ vaults: await this.core.vaults() }); await this.loadPending(); }); }
+  /** The two-step rows still to act on (final-run D-2: a reload between a claim's carrier and its CLAIM). */
+  async loadPending() { this.set({ pending: (await this.core.mints()).filter(isPending) }); }
+  /** Pick up a pending row (after a reload): its row, then the step it is ready for. */
+  resume(mintId: number) {
+    return this.run(async () => {
+      const row = (await this.core.mints()).find((m) => m.mintId === mintId);
+      if (!row) throw new Error(`invalid: no mint or claim with id ${mintId}`);
+      this.set({ mintId, mintStatus: row, step: null, txid: row.carrierTxid, mint: null, estimate: null, claim: null, redeem: null, finishFee: null, feeAccepted: false });
+      if (row.state === "CARRIER_SENT" || row.state === "CARRIER_CONFIRMED") await this.stageFinish();
+    });
+  }
   /** The node's mint gate (H-1/H-5): shown on the Mint screen; a halted mint is not estimated. */
   loadAvailability() { return this.run(async () => this.set({ availability: await this.core.mint_availability() })); }
   /** The gate again, quietly (after a sync): a failed read keeps the last answer; the sync's own error shows on Home. */
   private async refreshAvailability() {
     try { this.set({ availability: await this.core.mint_availability() }); } catch { /* keep the last answer */ }
   }
-  loadClaimable() { return this.run(async () => this.set({ claimable: await this.core.claimable() })); }
+  loadClaimable() { return this.run(async () => { this.set({ claimable: await this.core.claimable() }); await this.loadPending(); }); }
 
   estimate(amount: string, lockBlocks: number) {
     return this.run(async () => {
@@ -119,11 +151,14 @@ export class YellowbackVm extends Vm<YellowbackState> {
    *  row (and the vaults) so the screen moves to "Minted" without a click. */
   onSynced() {
     if (this.state.busy) return;
+    // the pending list (a claim or mint left between its steps) follows the chain (final-run D-2)
+    void this.loadPending().catch(() => { /* keep the last list */ });
     // no mint in progress: the mint gate follows the chain, so a Mint screen opened while the price was
     // missing reads "Minting is open" after the sync that brings it, without a reload (real-stack run WEB-FIX)
     if (this.state.mintId === null) { if (this.state.availability) void this.refreshAvailability(); return; }
     const st = this.state.mintStatus;
-    if (st && st.inProgress && !st.canFinish && !this.state.step) { this.run(async () => {
+    // a carrier still waiting: stage again so the row (and the slide) follow the sync, staged before or not
+    if (st && st.inProgress && !st.canFinish && st.state !== "MAIN_SENT") { this.run(async () => {
       const id = this.state.mintId!; try { const step = await this.core.mint_finish(id); this.set({ step, mintStatus: step.row }); }
       catch (e) { if (kindOf(e) !== "build") throw e; }
     }); return; }
@@ -164,12 +199,30 @@ export class YellowbackVm extends Vm<YellowbackState> {
   mintSweep() { return this.run(async () => { const id = this.state.mintId; if (id === null) return; const step = await this.core.mint_sweep(id); this.set({ step, mintStatus: step.row }); }); }
 
   redeemPreview(vaultTxid: string) { return this.run(async () => this.set({ redeem: await this.core.redeem_preview(vaultTxid), claim: null, txid: "" })); }
-  claimPreview(vaultTxid: string) { return this.run(async () => this.set({ claim: await this.core.claim_preview(vaultTxid), redeem: null, txid: "", feeAccepted: false })); }
+  claimPreview(vaultTxid: string) {
+    return this.run(async () => {
+      // final-run D-3: only a vault the node judges claimable at its tip (`claimable: true`)
+      const row = this.state.claimable.find((c) => c.vaultTxid === vaultTxid);
+      if (row && !row.claimable) throw new Error("invalid: The node does not judge this vault claimable now.");
+      this.set({ claim: await this.core.claim_preview(vaultTxid), redeem: null, txid: "", feeAccepted: false });
+    });
+  }
   get previewId() { return this.state.redeem?.previewId ?? this.state.claim?.previewId ?? ""; }
   confirm() {
     return this.run(async () => {
       const id = this.previewId; if (!id) throw new Error("invalid: nothing to confirm");
-      const r = await this.core.confirm(id, this.ackFor(this.state.claim?.unusualFeeAck));
+      const claim = this.state.claim;
+      const r = await this.core.confirm(id, this.ackFor(claim?.unusualFeeAck));
+      if (claim) {
+        // final-run D-2: a claim is two steps like a mint (app: claimable.dart → MintProgressScreen). The
+        // confirm sent only the carrier and answered the row; the CLAIM goes out from mint_finish once the
+        // carrier is confirmed. Keep the row: the screen shows the carrier as sent, never "Claim sent".
+        if (r.mintId == null) throw new Error("build: the core did not record the claim");
+        this.set({ txid: r.txid, mintId: r.mintId, mintStatus: null, step: null, claim: null, redeem: null, feeAccepted: false });
+        await this.stageFinish();
+        await this.loadPending();
+        return;
+      }
       this.set({ txid: r.txid, redeem: null, claim: null, feeAccepted: false });
       this.set({ vaults: await this.core.vaults() });
     });
