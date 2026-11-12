@@ -253,6 +253,17 @@ jobs:
         with:
           workspaces: yewd
           save-if: ${{ github.event_name != 'pull_request' }}
+      # The Sapling parameters the wallet tests' shielded sends prove with (held_yed's
+      # z_sendmany to a Sapling address; yewd's default -paramsdir ~/.zcash-params), checked
+      # against the sums ycash6's zcutil/fetch-params.sh pins. Restore only: the core jobs save
+      # the cache. No skip path: a missing or mismatched file fails the job.
+      - name: restore zcash params
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.zcash-params
+          key: zcash-params-8e48ffd2-2f0ebbcb-b685d700
+      - name: fetch and verify zcash params
+        run: scripts/fetch-zcash-params.sh
       # Its own Cargo workspace, so the root workspace's jobs are unchanged.
       - run: yewd/scripts/check-yewd.sh
 

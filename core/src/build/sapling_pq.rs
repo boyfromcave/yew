@@ -744,10 +744,27 @@ mod tests {
     /// change is again internal, and spends again: a third send.
     #[test]
     fn sapling_to_pq_twice_spends_the_change() {
-        let (mut w, dir, f) = wallet_with_notes("twice", &[2_000_000]);
+        sapling_to_pq_thrice(crate::pq::SCHEME_SLH_DSA_SHA2_128S, "twice");
+    }
+
+    /// Review of the real-run fixes, test gap: the same with an FN-DSA-512 recipient.
+    #[test]
+    fn sapling_to_fn_dsa_twice_spends_the_change() {
+        sapling_to_pq_thrice(crate::pq::SCHEME_FN_DSA_512, "twice-fn");
+    }
+
+    /// Three Sapling -> post-quantum sends to a recipient of `scheme`, each spending the change
+    /// of the one before once mined.
+    fn sapling_to_pq_thrice(scheme: u8, name: &str) {
+        let (mut w, dir, f) = wallet_with_notes(name, &[2_000_000]);
+        if scheme == crate::pq::SCHEME_FN_DSA_512 {
+            let mut t = w.pq_terms();
+            t.falcon_active = true;
+            w.set_pq_terms_for_test(t);
+        }
         let first_raw = f.values().next().unwrap().clone();
         let id = crate::pq::PqKeyId {
-            scheme: crate::pq::SCHEME_SLH_DSA_SHA2_128S,
+            scheme,
             hash: [0x5d; 32],
         };
         let to = keys::encode_pq_yec(w.network, &id).unwrap();

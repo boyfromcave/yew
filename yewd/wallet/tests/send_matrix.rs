@@ -1206,6 +1206,47 @@ async fn stock_sends_without_spendable_pq_coins_keep_the_insufficient_funds_erro
     assert!(f.node.0.lock().unwrap().sent.is_empty());
 }
 
+/// Review LOW-2 and LOW-3 of the ECC-only selection: the C++ texts. Every post-quantum coin an
+/// output YED holds (Yellowback live): the refusal names them in the node's order instead of a
+/// bare "Insufficient funds". The payment covered by the ECC coins but not its fee: the amounts
+/// carry the unit (`DisplayMoney`). Nothing is broadcast.
+#[tokio::test]
+async fn stock_sends_give_the_cpp_yed_and_fee_texts() {
+    let mut f = fixture("cpp-texts").await;
+    let to = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x37; 20]);
+    let (slh, fn_) = (f.coin_at(&f.slh.clone()), f.coin_at(&f.fn_.clone()));
+    {
+        let mut c = f.node.0.lock().unwrap();
+        c.yed_info = Some(json!({"healthy": true, "unhealthyReason": ""}));
+        c.tokens = vec![
+            json!({"txid": slh.txid, "vout": slh.vout}),
+            json!({"txid": fn_.txid, "vout": fn_.vout}),
+        ];
+    }
+    let mut held = [(slh.txid.clone(), slh.vout), (fn_.txid.clone(), fn_.vout)];
+    held.sort_by_key(|(t, n)| (yew_core::tx::txid_from_hex(t).unwrap(), *n));
+    let list = held
+        .iter()
+        .map(|(t, n)| format!("{t}:{n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let refusal = format!("refusing to spend a Yellowback outpoint as plain YEC: {list} (its YED would burn; lock it again with yed_lockcoins)");
+    let got = f.stock_sends(&to, 12.0).await;
+    let want = [
+        ("sendtoaddress", -6),
+        ("sendmany", -6),
+        ("fundrawtransaction", -32603),
+    ];
+    for ((name, r), (n2, c)) in got.into_iter().zip(want) {
+        assert_eq!(name, n2);
+        assert_eq!(r, Err((c, refusal.clone())), "{name}");
+    }
+    // 9 YEC of ECC coins pay 9 YEC but not the fee
+    let e = f.stock_send("sendtoaddress", &to, 9.0).await.unwrap_err();
+    assert_eq!(e, (-6, "Error: Insufficient funds to pay the fee. This transaction needs to spend 9.00 YEC plus a fee of at least 0.0001 YEC, but only 9.00 YEC is available".to_string()));
+    assert!(f.node.0.lock().unwrap().sent.is_empty());
+}
+
 /// YEWD-PARITY gap 2: a post-quantum input NAMED in `fundrawtransaction` is priced by its real
 /// size, as ycashd's `CreateTransaction` prices it with dummy signatures: max(min(max(the
 /// ZIP-317 fee, the plain PQ rate x size), PQMaxTxFee()), the ZIP-317 conventional fee), the
