@@ -350,6 +350,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
         foreign.clone(),
         JsValue::from_str(&SEND_T_ZAT.to_string()),
         None,
+        None,
     )
     .await
     .expect("t→t preview");
@@ -423,6 +424,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
     let p = yew_web_core::move_preview(
         "to_private".into(),
         JsValue::from_str(&SHIELD_ZAT.to_string()),
+        None,
     )
     .await
     .expect("shield preview");
@@ -526,6 +528,7 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
         other.clone(),
         JsValue::from_str(&SEND_Z_ZAT.to_string()),
         Some(MEMO.into()),
+        None,
     )
     .await
     .expect("z→z preview");
@@ -539,7 +542,9 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
     let z_id = field_str(&p, "previewId");
     let z_fee = field_amt(&p, "fee");
     let t8 = now();
-    let c = yew_web_core::confirm(z_id, None).await.expect("z→z confirm");
+    let c = yew_web_core::confirm(z_id, None)
+        .await
+        .expect("z→z confirm");
     let z_txid = field_str(&c, "txid");
     console_log!(
         "yew-web-core: z→z {z_txid} (fee {z_fee}) proved and broadcast in {:.0} ms",
@@ -592,13 +597,14 @@ async fn fresh_wallet_syncs_receives_sends_shields_and_previews() {
         foreign.clone(),
         JsValue::from_str("1000"),
         Some("x".into()),
+        None,
     )
     .await
     .expect_err("memo to t");
     assert!(message(&e).starts_with("invalid: "), "{}", message(&e));
     // A shielded recipient is paid from the private pool: a transparent recipient too when
     // the notes cover it (the amber line).
-    let p = yew_web_core::send_yec_preview(foreign.clone(), JsValue::from_str("1000"), None)
+    let p = yew_web_core::send_yec_preview(foreign.clone(), JsValue::from_str("1000"), None, None)
         .await
         .expect("reveal preview");
     assert_eq!(field_str(&p, "funding"), "shielded");
