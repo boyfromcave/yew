@@ -51,27 +51,23 @@ pub(crate) fn script_sig_size(script: &[u8]) -> usize {
     yew_core::build::any_to_any::script_sig_size(script)
 }
 
-/// ycashd's fee of a transaction with a post-quantum input (`CWallet::CreateTransaction`,
-/// quantum plan §4.5, D-Q-23 (b), D-Q-26): max(min(max(policy fee, PQSizeFee(LEGACY_DEFAULT_FEE,
-/// bytes)), PQMaxTxFee()), the ZIP-317 conventional fee), the plain rate and the cap as the node
-/// reports them (`yed_getinfo.params.fees.network`: `plain.zatPerKB`, `yellowback.maxTxFeeZat`);
-/// without a live Yellowback the -pqfeerate default (the relay floor, 100 zat/kB) and -maxtxfee.
-async fn pq_spend_fee(
-    node: &dyn Node,
-    tx: &Transaction,
-    sizes: &[usize],
-    conventional: i64,
-) -> Result<i64, RpcError> {
-    const LEGACY_DEFAULT_FEE: i64 = 1000;
-    let (rate, cap) = pq_fee_params(node).await;
-    let unsigned = tx
-        .serialize()
-        .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?
-        .len();
-    let compact = |n: usize| if n <= 252 { 1 } else { 3 };
-    let bytes = unsigned + sizes.iter().map(|n| n + compact(*n) - 1).sum::<usize>();
-    let size_fee = LEGACY_DEFAULT_FEE.max(rate * bytes as i64 / 1000);
-    Ok(conventional.max(size_fee).min(cap).max(conventional))
+/// The refusal of a coin-selecting send whose ordinary (ECC) coins fall short while the wallet holds
+/// post-quantum coins `z_sendmany` would spend (ycash6 `CWallet::CreateTransaction`, beta2 audit M-1;
+/// the text and the amount's format are the C++ lines').
+pub(crate) fn pq_refusal(pq: i64) -> String {
+    format!(
+        "Insufficient funds in ordinary transparent addresses; this wallet also holds {} YEC at post-quantum addresses: send from one with z_sendmany, which returns the change to it",
+        crate::rpc::format_money(pq)
+    )
+}
+
+/// The stock call a coin-selecting send answers for: the refusal's code is that call's (ycash6
+/// `SendMoney` answers `RPC_WALLET_ERROR` after its own fee check, `sendmany`
+/// `RPC_WALLET_INSUFFICIENT_FUNDS`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Caller {
+    SendToAddress,
+    SendMany,
 }
 
 /// The plain fee rate (zat/kB) and the post-quantum fee cap (`PQMaxTxFee`) the node reports
@@ -136,17 +132,19 @@ impl Wallet {
 
     /// The coins `CreateTransaction` may spend: mature, unlocked, unspent wallet P2PKH coins,
     /// confirmed or trusted mempool change (`-spendzeroconfchange`), never YED (H5); largest first.
+    /// Ordinary (ECC) coins only (beta2 audit M-1, review LOW-1, as ycash6 `SelectCoins`): a
+    /// post-quantum coin is spent by naming its address in `z_sendmany`, which returns the change
+    /// to it; [`Wallet::pq_selectable`] names what is left out when the ECC coins fall short.
     async fn spendable_yec(
         &self,
         node: &dyn Node,
         min_depth: i64,
-        with_pq: bool,
     ) -> Result<Vec<(OutPoint, i64, Vec<u8>)>, RpcError> {
         let spent = self.mempool_spent();
         let reserved = self.yed_reserved(node).await?;
         let mut v = Vec::new();
         for (c, d) in self.available_coins(None) {
-            if !(matches!(c.owner, Owner::T(..)) || with_pq && matches!(c.owner, Owner::Pq(..)))
+            if !matches!(c.owner, Owner::T(..))
                 || spent.contains(&(c.txid.clone(), c.vout))
                 || reserved.contains(&(c.txid.clone(), c.vout))
             {
@@ -174,18 +172,47 @@ impl Wallet {
             .collect())
     }
 
-    /// `CreateTransaction` + `CommitTransaction` for plain YEC recipients: largest-first coins, the
-    /// ZIP-317 conventional fee, change to a new change key.
+    /// ycash6 `CWallet::PQSelectableValue` (beta2 review LOW-2): the post-quantum coins a
+    /// coin-selecting send leaves out, counted only where `z_sendmany` from their address would
+    /// spend them (`run_pq_source`): once the vault upgrade is active at the next block, confirmed
+    /// (its default minconf 1), not coinbase, unlocked, not spent by a mempool transaction of this
+    /// wallet, never an output YED holds ([`Wallet::yed_reserved`]), and FN-DSA-512 only once
+    /// Falcon is active at the next block.
+    pub(crate) async fn pq_selectable(&self, node: &dyn Node) -> Result<i64, RpcError> {
+        if !self.vault_active_next() {
+            return Ok(0);
+        }
+        let falcon = self.falcon_next();
+        let spent = self.mempool_spent();
+        let reserved = self.yed_reserved(node).await?;
+        Ok(self
+            .available_coins(None)
+            .into_iter()
+            .filter(|(c, d)| {
+                let Owner::Pq(scheme, _) = c.owner else {
+                    return false;
+                };
+                *d >= 1
+                    && !c.coinbase
+                    && (scheme != yew_core::pq::SCHEME_FN_DSA_512 || falcon)
+                    && !spent.contains(&(c.txid.clone(), c.vout))
+                    && !reserved.contains(&(c.txid.clone(), c.vout))
+            })
+            .map(|(c, _)| c.value)
+            .sum())
+    }
+
+    /// `CreateTransaction` + `CommitTransaction` for plain YEC recipients: largest-first ECC
+    /// coins, the ZIP-317 conventional fee, change to a new change key.
     async fn send_yec(
         &mut self,
         node: &dyn Node,
         recipients: &[(Vec<u8>, i64, bool)],
         min_depth: i64,
+        caller: Caller,
     ) -> Result<String, RpcError> {
         let next = next_block(node).await?;
-        // ycashd's AvailableCoins: the wallet's TX_PQPKH coins are selected too (wallet_pq_address.py,
-        // yellowback_fees_reaccept.py), priced as a PQ spend below
-        let coins = self.spendable_yec(node, min_depth, true).await?;
+        let coins = self.spendable_yec(node, min_depth).await?;
         let total: i64 = recipients.iter().map(|r| r.1).sum();
         let subtract = recipients.iter().filter(|r| r.2).count() as i64;
         let mut fee = 10_000i64;
@@ -231,6 +258,34 @@ impl Wallet {
             }
             if got < need {
                 let available: i64 = coins.iter().map(|c| c.1).sum();
+                let pq = self.pq_selectable(node).await?;
+                if pq > 0 {
+                    // SendMoney's own check comes first: the payment is covered by the ECC
+                    // coins, but the fee is not, and not by the whole balance either
+                    let balance = self.balance(None, 0);
+                    if caller == Caller::SendToAddress
+                        && subtract == 0
+                        && total <= available
+                        && total + fee > balance
+                    {
+                        return Err(RpcError::new(
+                            code::WALLET_INSUFFICIENT_FUNDS,
+                            format!(
+                                "Error: Insufficient funds to pay the fee. This transaction needs to spend {} plus a fee of at least {}, but only {} is available",
+                                crate::rpc::format_money(total),
+                                crate::rpc::format_money(fee),
+                                crate::rpc::format_money(balance)
+                            ),
+                        ));
+                    }
+                    return Err(RpcError::new(
+                        match caller {
+                            Caller::SendToAddress => code::WALLET_ERROR,
+                            Caller::SendMany => code::WALLET_INSUFFICIENT_FUNDS,
+                        },
+                        pq_refusal(pq),
+                    ));
+                }
                 if subtract == 0 && total <= available {
                     return Err(RpcError::new(
                         code::WALLET_INSUFFICIENT_FUNDS,
@@ -283,15 +338,9 @@ impl Wallet {
                 }
             }
             let sizes: Vec<usize> = chosen.iter().map(|c| script_sig_size(&c.2)).collect();
-            let mut want = tx
+            let want = tx
                 .zip317_conventional_fee(&sizes)
                 .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
-            if chosen
-                .iter()
-                .any(|c| yew_core::pq::pqpkh_of(&c.2).is_some())
-            {
-                want = pq_spend_fee(node, &tx, &sizes, want).await?;
-            }
             if want > fee {
                 fee = want;
                 continue;
@@ -356,7 +405,8 @@ impl Wallet {
             ));
         }
         Ok(J::Str(
-            self.send_yec(node, &[(script, amount, sub)], 0).await?,
+            self.send_yec(node, &[(script, amount, sub)], 0, Caller::SendToAddress)
+                .await?,
         ))
     }
 
@@ -414,7 +464,10 @@ impl Wallet {
                 "Wallet has insufficient funds",
             ));
         }
-        Ok(J::Str(self.send_yec(node, &recipients, min).await?))
+        Ok(J::Str(
+            self.send_yec(node, &recipients, min, Caller::SendMany)
+                .await?,
+        ))
     }
 
     /// `lockunspent unlock ( [{"txid","vout"},...] )`.
@@ -742,7 +795,8 @@ fn local_completeness(tx: &Transaction, signed_hex: String) -> J {
 impl Wallet {
     /// `fundrawtransaction "hexstring" ( includeWatching )` (`CWallet::FundTransaction`): the
     /// transaction's outputs paid from its own inputs plus this wallet's coins, a change output
-    /// appended, the ZIP-317 conventional fee; nothing is signed.
+    /// appended, the ZIP-317 conventional fee; nothing is signed. The coins added are ordinary
+    /// (ECC) coins only (review LOW-1): a post-quantum input stays only when the transaction names it.
     async fn fundrawtransaction(&mut self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
         if p.is_empty() || p.len() > 2 {
             return Err(RpcError::new(
@@ -778,7 +832,7 @@ impl Wallet {
             .map(|i| (txid_hex(&i.prevout.txid), i.prevout.n))
             .collect();
         let coins: Vec<_> = self
-            .spendable_yec(node, 0, false)
+            .spendable_yec(node, 0)
             .await?
             .into_iter()
             .filter(|c| !used.contains(&(txid_hex(&c.0.txid), c.0.n)))
@@ -798,7 +852,16 @@ impl Wallet {
                 n_new += 1;
             }
             if got < need {
-                return Err(RpcError::new(code::INTERNAL_ERROR, "Insufficient funds"));
+                // the post-quantum coins left out are named (ycash6 FundTransaction, review LOW-1)
+                let pq = self.pq_selectable(node).await?;
+                return Err(RpcError::new(
+                    code::INTERNAL_ERROR,
+                    if pq > 0 {
+                        pq_refusal(pq)
+                    } else {
+                        "Insufficient funds".to_string()
+                    },
+                ));
             }
             let change = got - need.max(0);
             let mut changepos = -1i64;

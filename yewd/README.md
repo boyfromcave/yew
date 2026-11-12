@@ -195,6 +195,17 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
   Yellowback is not live on the connected node, …") unless yewd runs with `-yellowback=0`. The
   C++ lines refuse to start in that case; yewd refuses at send time instead, because it can be
   pointed at another node without a restart.
+- **`sendtoaddress`, `sendmany`, `fundrawtransaction`: ordinary (ECC) coins only (beta2 audit
+  M-1, review LOW-1/LOW-2, as the C++ lines).** The coins these calls choose are P2PKH coins; a
+  post-quantum coin is spent by naming its address in `z_sendmany`, which returns the change to it
+  (a `fundrawtransaction` input the transaction already names stays). When the ECC coins do not
+  cover the payment and the wallet holds post-quantum coins `z_sendmany` would spend (confirmed,
+  not coinbase, unlocked, not an output YED holds, FN-DSA-512 only once Falcon is active), the
+  call is refused with the C++ lines' text, "Insufficient funds in ordinary transparent addresses;
+  this wallet also holds <amount> YEC at post-quantum addresses: send from one with z_sendmany,
+  which returns the change to it", and each call's code (`sendtoaddress` -4, `sendmany` -6,
+  `fundrawtransaction` -32603); otherwise the insufficient-funds errors are unchanged.
+  `z_shieldcoinbase` from a post-quantum address points to `z_sendmany`.
 - **A submission's answer lost (review M1).** A transaction the node accepted always returns its
   txid (a failing sync after it is a warning). When `sendrawtransaction`'s answer is lost, the
   wallet asks the node for the txid of the bytes; not found, the call answers "…status unknown,

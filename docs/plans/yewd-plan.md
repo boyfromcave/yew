@@ -567,7 +567,8 @@ and the runner knows it.
   `listtransactions`, `z_listaddresses`, F-S5-1), the z_* post-quantum refusals and the refusal-only
   `z_shieldcoinbase`/`z_mergetoaddress` (F-S5-10);
 - ycashd wallet behaviours: `ReacceptWalletTransactions` at open, the chain facts read once at open,
-  plain sends that select and price **PQ coins** (`CreateTransaction`'s PQ fee), `EnsurePQRecipientPayable`,
+  plain sends that select and price **PQ coins** (`CreateTransaction`'s PQ fee; withdrawn in beta2, audit M-1:
+  `sendtoaddress`/`sendmany`/`fundrawtransaction` choose ECC coins only, as the C++ lines), `EnsurePQRecipientPayable`,
   the dust refusals (`GetPQDustThreshold`), the size-priced fee fallback to `-pqfeerate` (default the
   relay floor) without a price, `-pqfalconheight` read by the wallet itself, `yed_sweepcarriers` on a
   locked wallet, a mempool intent's vault for `vault_buildcancel`, vault/intent owner keys marked used
