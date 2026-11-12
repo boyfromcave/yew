@@ -222,6 +222,23 @@ async fn read_rpcs_over_the_mock_chain() {
     );
     let z = w.call(&node, "z_getnewaddress", &[]).await.unwrap().text();
     assert!(z.starts_with("\"yregtestsapling1"));
+    // ycashd's refusals: Sprout after Canopy names the type, anything else is the short text
+    let e = w
+        .call(&node, "z_getnewaddress", &[json!("sprout")])
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (e.code, e.message.as_str()),
+        (
+            -8,
+            "Invalid address type, \"sprout\" is not allowed after Canopy"
+        )
+    );
+    let e = w
+        .call(&node, "z_getnewaddress", &[json!("bogus")])
+        .await
+        .unwrap_err();
+    assert_eq!((e.code, e.message.as_str()), (-8, "Invalid address type"));
     let zb = w
         .call(&node, "z_getbalance", &[serde_json::from_str(&z).unwrap()])
         .await

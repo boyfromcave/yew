@@ -43,6 +43,27 @@ void main() {
     expect(find.text('Move YEC'), findsNothing);
   });
 
+  testWidgets('beta2 D-5: shielding coins of several public addresses together needs the go-ahead', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.balancesAnswer = synced;
+    h.api.linkingText = 'No single public address of this wallet holds 1.00015000 YEC (the most one holds is 0.80000000 YEC). Paying it would combine coins from several of your public addresses in one transaction, which shows everyone that they belong to the same wallet. Nothing was sent.';
+    await openMove(tester, h);
+    await tester.enterText(find.byKey(const Key('move-amount')), '1');
+    await tester.tap(find.byKey(const Key('move-preview')));
+    await tester.pumpAndSettle();
+    expect(find.text(h.api.linkingText!), findsOneWidget);
+    await tester.tap(find.byKey(const Key('address-linking-cancel')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, isNot(contains('movePreview toPrivate 100000000 link')));
+    expect(find.byKey(const Key('slide-to-confirm')), findsNothing);
+    await tester.tap(find.byKey(const Key('move-preview')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('address-linking-accept')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('movePreview toPrivate 100000000 link'));
+    expect(find.byKey(const Key('slide-to-confirm')), findsOneWidget);
+  });
+
   testWidgets('to public, all: the amount becomes visible, said in amber', (tester) async {
     final h = Harness(withWallet: true);
     h.api.balancesAnswer = synced;

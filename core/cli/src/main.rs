@@ -9,7 +9,7 @@
 //!         [--seed-file PATH | YEW_SEED=<mnemonic>] [--passphrase P | YEW_PASSPHRASE=P]
 //!         [--birthday H] <command>
 //! commands: status | yed-info | price | address [--new] [--shielded] [--falcon] | balance | sync | coins
-//!           | send-yec <addr> <zat> [--all] [--memo TEXT] | send-yed <addr> <cents> [<addr> <cents> ...]
+//!           | send-yec <addr> <zat> [--all] [--link] [--memo TEXT] | send-yed <addr> <cents> [<addr> <cents> ...]
 //!           | params-status | params-download <base-url>
 //!           | export-wif <addr> | import-wif <wif> | history | version
 //!           | mint-estimate <cents> <lockBlocks> | mint-start <cents> <lockBlocks>
@@ -65,7 +65,7 @@ fn usage() -> ! {
         "usage: yew-cli [--server host:port] [--plain] [--ca-pem PATH] [--wallet PATH] [--network N] \
          [--seed-file PATH] [--passphrase P] [--birthday H] [--params DIR] <command>\n\
          commands: status | yed-info | price | address [--new] [--shielded] [--falcon] | balance | sync | coins\n\
-         \x20         | send-yec <addr> <zat> [--all] [--memo TEXT] | send-yed <addr> <cents> [<addr> <cents> ...]\n\
+         \x20         | send-yec <addr> <zat> [--all] [--link] [--memo TEXT] | send-yed <addr> <cents> [<addr> <cents> ...]\n\
          \x20         | params-status | params-download <base-url>\n\
          \x20         | export-wif <addr> | import-wif <wif> | history | version | fee-reference [--reset]\n\
          \x20         | mint-estimate <cents> <lockBlocks> | mint-start <cents> <lockBlocks>\n\
@@ -599,6 +599,8 @@ async fn main() {
                 _ => usage(),
             };
             let all = o.rest.iter().any(|a| a == "--all");
+            // --link: combine coins of several public addresses (beta2 D-5, links them publicly)
+            let link = o.rest.iter().any(|a| a == "--link");
             let memo = o
                 .rest
                 .iter()
@@ -610,6 +612,7 @@ async fn main() {
                 &to,
                 zat,
                 all,
+                link,
                 memo.as_deref(),
                 r.tip,
                 r.branch_id,

@@ -106,6 +106,32 @@ void main() {
     expect(find.text('aa' * 32), findsOneWidget);
   });
 
+  testWidgets('beta2 D-5: combining coins of several public addresses needs the go-ahead', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.linkingText = 'No single public address of this wallet holds 0.50001000 YEC (the most one holds is 0.30000000 YEC). Paying it would combine coins from several of your public addresses in one transaction, which shows everyone that they belong to the same wallet. Nothing was sent.';
+    await openSend(tester, h);
+    await tester.tap(find.text('YEC'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('address')), 'smRecipient');
+    await tester.enterText(find.byKey(const Key('amount')), '0.5');
+    // declined: the core's text, no preview, nothing built with the go-ahead
+    await tester.tap(find.byKey(const Key('preview')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('address-linking-dialog')), findsOneWidget);
+    expect(find.text(h.api.linkingText!), findsOneWidget);
+    await tester.tap(find.byKey(const Key('address-linking-cancel')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, isNot(contains('yecPreview smRecipient 50000000 false link')));
+    expect(find.byKey(const Key('slide-to-confirm')), findsNothing);
+    // accepted: the same call again with the go-ahead, then the usual preview
+    await tester.tap(find.byKey(const Key('preview')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('address-linking-accept')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('yecPreview smRecipient 50000000 false link'));
+    expect(find.byKey(const Key('slide-to-confirm')), findsOneWidget);
+  });
+
   // Post-quantum destinations (D-Q-20/D-Q-21): YEC to rq…/sq…, YED to a 53-character yr…/yb…
   // Falcon holder; the other way round is refused before the core, with the reason.
   const pqYec = 'rqf37MAujTiHQadywBQeNWk42bweehqf1UdcCrXg4oAqhqZQhCebM';

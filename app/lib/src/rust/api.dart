@@ -149,16 +149,20 @@ Future<HistoryPage> history({required int page, required int pageSize}) =>
 /// bytes) from private notes; a transparent recipient from private notes when they cover it
 /// (`reveals_shielded` set: the amber line), else from transparent YEC exactly as before.
 /// A transparent preview is signed already; a private one is proved and signed at confirm.
-/// Nothing is broadcast.
+/// Nothing is broadcast. Transparent funding takes the coins of one public address; when only
+/// several together cover the send the answer is [`ErrorKind::AddressLinkingNeeded`], and the
+/// call with `allow_linking` (the user's go-ahead) combines them.
 Future<YecPreview> sendYecPreview({
   required String to,
   required PlatformInt64 zat,
   required bool sendEverything,
+  required bool allowLinking,
   String? memo,
 }) => RustLib.instance.api.crateApiSendYecPreview(
   to: to,
   zat: zat,
   sendEverything: sendEverything,
+  allowLinking: allowLinking,
   memo: memo,
 );
 
@@ -166,13 +170,17 @@ Future<YecPreview> sendYecPreview({
 /// between the wallet's own public and private balances, after a sync of both (yew-shielded
 /// plan S4, `build::yec_move`). To private spends plain public YEC only, never the fee reserve
 /// or anything YED. The preview is the send preview (`to` is the wallet's own address); confirm
-/// with [`move_confirm`]. Both directions prove at confirm (`params_needed`).
+/// with [`move_confirm`]. Both directions prove at confirm (`params_needed`). To private takes
+/// the coins of one public address unless `allow_linking` (the user's go-ahead after
+/// [`ErrorKind::AddressLinkingNeeded`]).
 Future<YecPreview> movePreview({
   required MoveDirection direction,
   PlatformInt64? amountZat,
+  required bool allowLinking,
 }) => RustLib.instance.api.crateApiMovePreview(
   direction: direction,
   amountZat: amountZat,
+  allowLinking: allowLinking,
 );
 
 /// Broadcast a [`move_preview`] (the same gate and bookkeeping as [`send_yec_confirm`]).
@@ -1138,6 +1146,13 @@ enum ErrorKind {
   /// `message` says so in plain words. Sync again, or repeat the call with the go-ahead
   /// (`allow_note_lookup`) after the user agreed.
   noteLookupNeeded,
+
+  /// No single public address holds the amount; paying it would combine coins of several of
+  /// the wallet's public addresses in one transaction and so link them on the chain (beta2
+  /// D-5: ycashd's `z_sendmany` refuses this under its default privacy policy). `message`
+  /// says so in plain words. Repeat the call with the go-ahead (`allow_linking`) after the
+  /// user agreed.
+  addressLinkingNeeded,
 }
 
 /// One history row.

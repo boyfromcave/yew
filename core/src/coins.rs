@@ -168,6 +168,28 @@ pub enum CoinError {
         /// The amount selectable.
         have: i64,
     },
+    /// No single transparent address of the wallet holds enough, but several together do:
+    /// spending them in one transaction links those addresses publicly. ycashd refuses the same
+    /// transaction under its default privacy policy (`wallet_tx_builder.cpp`
+    /// `GetRequiredPrivacyPolicy`, beta2 D-5); the app asks the user and builds it only with the
+    /// go-ahead ([`select_yec_linking`]'s `allow_linking`).
+    #[error("{}", linking_text(*need, *best_one))]
+    LinkingNeeded {
+        /// The amount needed.
+        need: i64,
+        /// The most any one address can give.
+        best_one: i64,
+    },
+}
+
+fn linking_text(need: i64, best_one: i64) -> String {
+    format!(
+        "No single public address of this wallet holds {} (the most one holds is {}). \
+         Paying it would combine coins from several of your public addresses in one \
+         transaction, which shows everyone that they belong to the same wallet. Nothing was sent.",
+        crate::wallet::yec(need),
+        crate::wallet::yec(best_one)
+    )
 }
 
 /// The classifier for an output the server listed for an own address (plan §3.7):
@@ -366,6 +388,63 @@ pub fn select_yec(utxos: &[Utxo], needed: i64, use_reserve: bool) -> Result<Vec<
     })
 }
 
+/// [`select_yec`] that keeps the wallet's transparent addresses apart (beta2 D-5, the privacy
+/// policy of ycashd's `z_sendmany`): unless `allow_linking`, the coins all come from one address
+/// (one `scriptPubKey`). Every address that can cover `needed` alone is tried with the same
+/// smallest-first rule; the one needing the fewest inputs wins, then the smallest total, then
+/// the lowest script (deterministic). When no single address covers it but the addresses
+/// together do, the answer is [`CoinError::LinkingNeeded`]: the caller asks the user and calls
+/// again with `allow_linking` (then exactly [`select_yec`]).
+pub fn select_yec_linking(
+    utxos: &[Utxo],
+    needed: i64,
+    use_reserve: bool,
+    allow_linking: bool,
+) -> Result<Vec<Utxo>, CoinError> {
+    if allow_linking || needed <= 0 {
+        return select_yec(utxos, needed, use_reserve);
+    }
+    let mut by_script: std::collections::BTreeMap<&[u8], Vec<Utxo>> = Default::default();
+    for u in utxos {
+        by_script
+            .entry(u.script.as_slice())
+            .or_default()
+            .push(u.clone());
+    }
+    let mut best: Option<Vec<Utxo>> = None;
+    let mut best_one = 0i64;
+    for group in by_script.values() {
+        match select_yec(group, needed, use_reserve) {
+            Ok(sel) => {
+                let key = |v: &[Utxo]| (v.len(), v.iter().map(|u| u.value).sum::<i64>());
+                if best.as_deref().is_none_or(|b| key(&sel) < key(b)) {
+                    best = Some(sel);
+                }
+            }
+            Err(CoinError::Insufficient { have, .. }) => best_one = best_one.max(have),
+            Err(e) => return Err(e),
+        }
+    }
+    if let Some(sel) = best {
+        return Ok(sel);
+    }
+    // No one address covers it: the whole pool decides between "insufficient" and "linking".
+    select_yec(utxos, needed, use_reserve)?;
+    Err(CoinError::LinkingNeeded {
+        need: needed,
+        best_one,
+    })
+}
+
+/// The number of distinct transparent addresses (scripts) the coins come from.
+pub fn distinct_addresses(coins: &[Utxo]) -> usize {
+    coins
+        .iter()
+        .map(|u| u.script.as_slice())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
 /// `RankedCoins` (`txbuilder.cpp:501-510`): the spendable YED coins in the selector's canonical
 /// order `(cents, txid, vout)` — the txid compared as its internal bytes, as `uint256::operator<`
 /// does — so two wallets with the same coins select the same inputs (H1).
@@ -429,6 +508,76 @@ mod tests {
             class,
             cents: 0,
         }
+    }
+
+    fn at(n: u32, value: i64, addr: u8) -> Utxo {
+        Utxo {
+            script: vec![addr],
+            ..u(n, value, UtxoClass::Yec)
+        }
+    }
+
+    /// beta2 D-5 (lane KG-YEWD-FIX): one address when one covers the amount, the refusal when
+    /// only several together do, the plain selector with the go-ahead.
+    #[test]
+    fn select_yec_keeps_addresses_apart_unless_allowed() {
+        // address 1: 30 + 40; address 2: 50; address 3: 10 + 10 + 10
+        let coins = vec![
+            at(1, 30, 1),
+            at(2, 40, 1),
+            at(3, 50, 2),
+            at(4, 10, 3),
+            at(5, 10, 3),
+            at(6, 10, 3),
+        ];
+        // the plain selector links: smallest-first takes 10+10+10+30 from addresses 1 and 3
+        let plain = select_yec(&coins, 60, false).unwrap();
+        assert_eq!(distinct_addresses(&plain), 2);
+        // one address: address 1 (30 + 40) is the only one holding 60
+        let one = select_yec_linking(&coins, 60, false, false).unwrap();
+        assert_eq!(distinct_addresses(&one), 1);
+        assert_eq!(one.iter().map(|u| u.value).sum::<i64>(), 70);
+        // fewest inputs wins: address 2's one coin (50) over address 1's two
+        let one = select_yec_linking(&coins, 45, false, false).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].value, 50);
+        // then the smallest total: 25 from address 3 (30) beats address 1 (30 + 40 = 70)
+        let one = select_yec_linking(&coins, 25, false, false).unwrap();
+        assert_eq!(one.iter().map(|u| u.value).sum::<i64>(), 30);
+        assert_eq!(distinct_addresses(&one), 1);
+        // only several together hold 100: refused, naming the best single address
+        let e = select_yec_linking(&coins, 100, false, false).unwrap_err();
+        assert_eq!(
+            e,
+            CoinError::LinkingNeeded {
+                need: 100,
+                best_one: 70
+            }
+        );
+        assert!(e.to_string().contains("several of your public addresses"));
+        // with the go-ahead: the plain selector, input for input
+        assert_eq!(
+            select_yec_linking(&coins, 100, false, true).unwrap(),
+            select_yec(&coins, 100, false).unwrap()
+        );
+        // more than everything: still "insufficient", never the linking question
+        assert!(matches!(
+            select_yec_linking(&coins, 1_000, false, false),
+            Err(CoinError::Insufficient {
+                need: 1_000,
+                have: 150
+            })
+        ));
+        // the reserve override keeps the rule: a reserve coin at address 2 joins only address 2
+        let mut with_reserve = coins.clone();
+        with_reserve.push(Utxo {
+            class: UtxoClass::FeeReserve,
+            ..at(7, 25, 2)
+        });
+        assert!(select_yec_linking(&with_reserve, 75, false, false).is_err());
+        let r = select_yec_linking(&with_reserve, 75, true, false).unwrap();
+        assert_eq!(distinct_addresses(&r), 1);
+        assert_eq!(r.iter().map(|u| u.value).sum::<i64>(), 75);
     }
 
     #[test]

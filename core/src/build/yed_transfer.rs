@@ -980,7 +980,8 @@ mod tests {
                 .map(|u| (u.outpoint, u.class))
                 .collect();
             let amount = 1 + rng(100_000) as i64;
-            if let Ok(p) = yec_send::build_yec_send(&w, &dest(), amount, rng(2) == 0, 100, 1) {
+            if let Ok(p) = yec_send::build_yec_send(&w, &dest(), amount, rng(2) == 0, true, 100, 1)
+            {
                 let (tx, _) = Transaction::parse(&p.raw).unwrap();
                 for i in &tx.vin {
                     assert!(
