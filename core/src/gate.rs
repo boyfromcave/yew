@@ -1136,13 +1136,13 @@ mod tests {
         UtxoClass::Foreign,
     ];
 
-    /// A tiny deterministic PRNG (xorshift) so the property test needs no crate.
     /// `Path::Carrier` bound to the `[9; 20]` carrier P2SH the older tests build, no change.
     const ECC_CARRIER: Path = Path::Carrier(EccCarrierOutputs {
         carrier_hash: [9; 20],
         change_key: None,
     });
 
+    /// A tiny deterministic PRNG (xorshift) so the property test needs no crate.
     struct Rng(u64);
     impl Rng {
         fn next(&mut self) -> u64 {
@@ -2200,6 +2200,24 @@ mod tests {
         let other_p2sh = script::p2sh_script(&[0x14; 20]);
         let op_ret = transfer_payload_script();
         let carrier = (crate::params::CARRIER_VALUE, p2sh.clone());
+        let ecc_bound = Path::Carrier(EccCarrierOutputs {
+            carrier_hash: want_out.carrier_hash,
+            change_key: Some(want_out.staged_key),
+        });
+        // the carrier and the change alone, from one input: `Carrier` takes it from a YEC coin
+        // and refuses it from a PQ_OWNED one (the input class is the only difference)
+        let pair = raw_paying(
+            &[OutPoint {
+                txid: [1; 32],
+                n: 0,
+            }],
+            &[carrier.clone(), (5_000, p2pkh.clone())],
+        );
+        assert!(check(ecc_bound, &pair, |_| Some(UtxoClass::Yec)).is_ok());
+        assert!(matches!(
+            check(ecc_bound, &pair, |_| Some(UtxoClass::PqOwned)),
+            Err(GateError::ForbiddenInput { .. })
+        ));
         let mut rng = Rng(0x1c3a_5e7f_9b2d_4086);
         let mut passed = 0;
         for _ in 0..4000 {
@@ -2275,11 +2293,17 @@ mod tests {
             let r = check_with_scripts(Path::CarrierFromPq(src, want_out), &raw, class, scripts);
             assert_eq!(r.is_ok(), want, "{inputs:?} {outs:?}: {r:?}");
             assert!(check(Path::CarrierFromPq(src, want_out), &raw, class).is_err());
+            // review YEW-REVIEW-10 L1: `Path::Carrier` bound to this test's carrier and staged
+            // key, so a PQ_OWNED input is refused for its class, never for the outputs
             if inputs
                 .iter()
                 .any(|op| class(op) == Some(UtxoClass::PqOwned))
             {
-                assert!(check(ECC_CARRIER, &raw, class).is_err());
+                let r = check(ecc_bound, &raw, class);
+                assert!(
+                    matches!(r, Err(GateError::ForbiddenInput { .. })),
+                    "{inputs:?} {outs:?}: {r:?}"
+                );
             }
             passed += usize::from(want);
         }
@@ -2363,6 +2387,25 @@ mod tests {
             5_000_000,
             123_456_789,
         ];
+        let ecc_bound = Path::Carrier(EccCarrierOutputs {
+            carrier_hash: want.carrier_hash,
+            change_key: Some(want.staged_key),
+        });
+        // the same two outputs from one YEC coin and no Sapling part: `Carrier` takes them, so
+        // its refusal below is for the Sapling funding and the missing transparent input alone
+        let transparent = raw_paying(
+            &[OutPoint {
+                txid: [1; 32],
+                n: 0,
+            }],
+            &[(cv, carrier.clone()), (7_000_000, staged.clone())],
+        );
+        assert!(check(ecc_bound, &transparent, |_| Some(UtxoClass::Yec)).is_ok());
+        let no_vin = raw_paying(&[], &[(cv, carrier.clone()), (7_000_000, staged.clone())]);
+        assert_eq!(
+            check(ecc_bound, &no_vin, |_| Some(UtxoClass::Yec)).unwrap_err(),
+            GateError::NoInputs
+        );
         let mut rng = Rng(0x7e11_93c4_02ab_5d68);
         let mut passed = 0;
         for _ in 0..4000 {
@@ -2427,8 +2470,13 @@ mod tests {
                 ] {
                     assert!(check(Path::CarrierFromSapling(other), &raw, class).is_err());
                 }
-                // and no other path takes it
-                assert!(check(ECC_CARRIER, &raw, class).is_err());
+                // and no other path takes it: `Carrier` bound to this carrier and staged key
+                // refuses it as a Sapling-funded transaction with no transparent input
+                // (review YEW-REVIEW-10 L1)
+                assert_eq!(
+                    check(ecc_bound, &raw, class).unwrap_err(),
+                    GateError::Shielded
+                );
             }
             passed += usize::from(ok);
         }
