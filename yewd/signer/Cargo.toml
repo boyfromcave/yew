@@ -32,8 +32,8 @@ getrandom.workspace = true
 zcash_primitives = { workspace = true, features = ["transparent-inputs", "circuits"] }
 zcash_protocol.workspace = true
 zcash_keys.workspace = true
-zcash_transparent = { version = "=0.8.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false, features = ["std", "transparent-inputs"] }
-zcash_proofs = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "cc6068eac5aa19a9ce3ae71e7386094262c407ee", default-features = false, features = ["local-prover"] }
+zcash_transparent = { version = "=0.8.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "6ff87bc9f564fcb7891e1f32698c7ad91ba85ca2", default-features = false, features = ["std", "transparent-inputs"] }
+zcash_proofs = { version = "=0.28.0", git = "https://github.com/boyfromcave/librustzcash6.git", rev = "6ff87bc9f564fcb7891e1f32698c7ad91ba85ca2", default-features = false, features = ["local-prover"] }
 sapling-crypto.workspace = true
 # the scalar types of the Sapling prover traits (a transparent-only build's prover: sapling.rs)
 jubjub = { version = "=0.10.0", default-features = false }
