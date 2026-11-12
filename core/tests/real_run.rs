@@ -3,7 +3,7 @@
 // file LICENSE or https://www.opensource.org/licenses/mit-license.php .
 
 //! The YEW core's app API against a real regtest stack (ycash6 + lightwalletd-dd), ignored unless
-//! `YEW_REAL=1`. The orchestrator (workspace `wt/scratch/yew-real/yew_real_light.py`) starts the
+//! `YEW_REAL=1`. The orchestrator (`scripts/real-run/yew_real_light.py`) starts the
 //! node and lightwalletd and sets:
 //! `YEW_REAL_SERVER` (host:port, plaintext gRPC), `YEW_REAL_CLI` (the node's `ycash-cli` command line,
 //! space separated), `YEW_REAL_DIR` (a scratch directory), `YEW_REAL_PARAMS` (the Sapling parameters).

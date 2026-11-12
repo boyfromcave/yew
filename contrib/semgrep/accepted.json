@@ -574,6 +574,97 @@
       "reason": "web/scripts/smoke.py: the browser smoke test's WebDriver and funding-helper URLs are the developer's own command-line arguments (local chromedriver, loopback helper); test script, never shipped. Checked 2026-10-28.",
       "by": "secops triage (yew/web)",
       "date": "2026-10-28"
+    },
+    "b53a38250b157fea": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/shielded.rs",
+      "reason": "core/src/shielded.rs receive_for_test: inside #[cfg(all(test, not(target_arch = \"wasm32\")))] impl Shielded, a test chain built by the store's own scanner (no server reply is involved); test code, never compiled into a release. Checked 2026-11-11.",
+      "by": "beta2 YEW-CI",
+      "date": "2026-11-11"
+    },
+    "4fe20d3ebbb6c8b4": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/shielded.rs",
+      "reason": "core/src/shielded.rs receive_for_test: inside #[cfg(all(test, not(target_arch = \"wasm32\")))] impl Shielded, a test chain built by the store's own scanner (no server reply is involved); test code, never compiled into a release. Checked 2026-11-11.",
+      "by": "beta2 YEW-CI",
+      "date": "2026-11-11"
+    },
+    "e1cb7f8e1391202d": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/shielded.rs",
+      "reason": "core/src/shielded.rs receive_for_test: inside #[cfg(all(test, not(target_arch = \"wasm32\")))] impl Shielded, a test chain built by the store's own scanner (no server reply is involved); test code, never compiled into a release. Checked 2026-11-11.",
+      "by": "beta2 YEW-CI",
+      "date": "2026-11-11"
+    },
+    "03be9cb271130124": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/shielded.rs",
+      "reason": "core/src/shielded.rs receive_for_test: inside #[cfg(all(test, not(target_arch = \"wasm32\")))] impl Shielded, a test chain built by the store's own scanner (no server reply is involved); test code, never compiled into a release. Checked 2026-11-11.",
+      "by": "beta2 YEW-CI",
+      "date": "2026-11-11"
+    },
+    "f2c61e48e6742d62": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/shielded.rs",
+      "reason": "core/src/shielded.rs receive_for_test: inside #[cfg(all(test, not(target_arch = \"wasm32\")))] impl Shielded, a test chain built by the store's own scanner (no server reply is involved); test code, never compiled into a release. Checked 2026-11-11.",
+      "by": "beta2 YEW-CI",
+      "date": "2026-11-11"
+    },
+    "544e9512fae7ca36": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/shielded.rs",
+      "reason": "core/src/shielded.rs receive_for_test: inside #[cfg(all(test, not(target_arch = \"wasm32\")))] impl Shielded, a test chain built by the store's own scanner (no server reply is involved); test code, never compiled into a release. Checked 2026-11-11.",
+      "by": "beta2 YEW-CI",
+      "date": "2026-11-11"
+    },
+    "63c397f0267ffa08": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/shielded.rs",
+      "reason": "core/src/shielded.rs receive_for_test: inside #[cfg(all(test, not(target_arch = \"wasm32\")))] impl Shielded, a test chain built by the store's own scanner (no server reply is involved); test code, never compiled into a release. Checked 2026-11-11.",
+      "by": "beta2 YEW-CI",
+      "date": "2026-11-11"
+    },
+    "b207364b8202e57f": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/shielded.rs",
+      "reason": "core/src/shielded.rs receive_for_test: inside #[cfg(all(test, not(target_arch = \"wasm32\")))] impl Shielded, a test chain built by the store's own scanner (no server reply is involved); test code, never compiled into a release. Checked 2026-11-11.",
+      "by": "beta2 YEW-CI",
+      "date": "2026-11-11"
+    },
+    "0fa0461a12d26f71": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/shielded.rs",
+      "reason": "core/src/shielded.rs receive_for_test: inside #[cfg(all(test, not(target_arch = \"wasm32\")))] impl Shielded, a test chain built by the store's own scanner (no server reply is involved); test code, never compiled into a release. Checked 2026-11-11.",
+      "by": "beta2 YEW-CI",
+      "date": "2026-11-11"
+    },
+    "2d3d726e8d590e14": {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "path": "core/src/api.rs",
+      "reason": "core/src/api.rs (send_sapling_pq): expect(\"connected\") on the lightwalletd connection that ensure_conn(o).await? set on the line above (it returns early on error); a local invariant, as the other accepted ensure_conn expects. Checked 2026-11-11.",
+      "by": "beta2 YEW-CI",
+      "date": "2026-11-11"
+    },
+    "227ae3569f614fcb": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/sync.rs",
+      "reason": "core/src/sync.rs join_all: the poll_fn returns Ready only once no future is pending, i.e. every output slot is Some; expect(\"ready\") is that local invariant, not a server reply (the replies are the outputs, returned unchanged). Checked 2026-11-11.",
+      "by": "beta2 YEW-CI",
+      "date": "2026-11-11"
+    },
+    "5d5d14f1ed5c42fd": {
+      "rule": "yew.net.unwrap-on-server-response",
+      "path": "core/src/wallet.rs",
+      "reason": "core/src/wallet.rs set_fee_reference_for_test: #[cfg(test)] helper writing a test price to the local store; no server reply, never compiled into a release. Checked 2026-11-11.",
+      "by": "beta2 YEW-CI",
+      "date": "2026-11-11"
+    },
+    "5fabb0ee458e62bf": {
+      "rule": "rust.lang.security.temp-dir",
+      "path": "core/src/store.rs",
+      "reason": "Test code only (#[cfg(test)] mod tests, provenance_verdicts_carry_their_classifier): a per-process scratch directory for a test store. The app stores its wallet under the platform's app-private directory. Checked 2026-11-11.",
+      "by": "beta2 YEW-CI",
+      "date": "2026-11-11"
     }
   },
   "rule_paths": [
@@ -605,6 +696,24 @@
       "reason": "Regtest gate and rig scripts: they start ycashd, yewd, zakurad and lightwalletd from paths the developer or the CI job sets (ZCASHD, YEWD_BIN, the rig dir) with argv lists, no shell except a fixed watchdog loop formatted with integer pids; test tooling, never shipped.",
       "by": "kogany PR checks",
       "date": "2026-11-03"
+    },
+    {
+      "rule": "trailofbits.rs.panic-in-function-returning-result",
+      "paths": [
+        "yewd/*/tests/*"
+      ],
+      "reason": "yewd's integration tests (yewd/<crate>/tests/, compiled only by cargo test, never into the yewd binaries): their helpers return the RPC answer as a Result and panic on a malformed mock reply, which is how a test fails.",
+      "by": "beta2 YEW-CI",
+      "date": "2026-11-11"
+    },
+    {
+      "rule": "rust.lang.security.temp-dir",
+      "paths": [
+        "yewd/*/tests/*"
+      ],
+      "reason": "yewd's integration tests (never compiled into the yewd binaries): per-process scratch directories for test wallets and signer stores. yewd itself keeps its wallet under -datadir.",
+      "by": "beta2 YEW-CI",
+      "date": "2026-11-11"
     }
   ]
 }

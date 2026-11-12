@@ -241,9 +241,25 @@ impl Wallet {
     pub fn set_vault_activation(&mut self, vault: Option<u64>) -> Result<(), WalletError> {
         self.store
             .set_meta("vault_activation_height", &vault.unwrap_or(0).to_string())?;
+        let upgrades = self.chain_upgrades()?;
         if let Some(sh) = self.shielded.as_mut() {
-            sh.set_vault_activation(vault)?;
+            sh.set_chain_upgrades(vault, upgrades)?;
         }
+        Ok(())
+    }
+
+    /// The server's upgrade heights before the vault upgrade that the last sync recorded
+    /// (`GetChainInfo`, a `name=height` list; regtest only takes them, see
+    /// [`crate::shielded::ycash_network_with_upgrades`]), `None` when the server listed none.
+    pub fn chain_upgrades(&self) -> Result<Option<String>, WalletError> {
+        Ok(self.store.meta("chain_upgrades")?.filter(|s| !s.is_empty()))
+    }
+
+    /// Record the server's upgrade heights ([`Wallet::chain_upgrades`]); the shielded side takes
+    /// them with the next [`Wallet::set_vault_activation`].
+    pub fn set_chain_upgrades(&mut self, upgrades: Option<String>) -> Result<(), WalletError> {
+        self.store
+            .set_meta("chain_upgrades", upgrades.as_deref().unwrap_or(""))?;
         Ok(())
     }
 

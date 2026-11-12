@@ -298,3 +298,26 @@ async fn the_marker_survives_restart_and_book_migration() {
     let w = Wallet::open(&dir, Network::Regtest, core_signer(&dir.join("signer")), 0).unwrap();
     assert!(!w.st.yed_held);
 }
+
+/// A transparent-only `z_sendmany` builds no Sapling bundle, so it needs no Sapling parameters;
+/// a send with a Sapling output is refused without them (the signer checks them only then).
+#[tokio::test]
+async fn a_transparent_send_needs_no_sapling_parameters() {
+    let mut f = fixture("held-noparams").await;
+    let empty = f.dir.join("no-params");
+    std::fs::create_dir_all(&empty).unwrap();
+    f.w.opts.params_dir = Some(empty.clone());
+    let to = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x44; 20]);
+    let (ecc, slh, zaddr) = (f.ecc.clone(), f.slh.clone(), f.zaddr.clone());
+    f.zsend(&ecc, &to).await.expect("ecc to transparent");
+    f.zsend(&slh, &to).await.expect("pq to transparent");
+    let (c, m) = f.zsend(&ecc, &zaddr).await.unwrap_err();
+    assert_eq!(c, -4);
+    assert_eq!(
+        m,
+        format!(
+            "yewd-signer refused (failed): the Sapling parameters: the Sapling proving parameters are not downloaded yet ({})",
+            empty.display()
+        )
+    );
+}
