@@ -10,6 +10,8 @@ import { HistoryVm } from "../src/vm/history";
 import { SettingsVm } from "../src/vm/settings";
 import { YellowbackVm } from "../src/vm/yellowback";
 import type { Unlock, WalletMeta } from "../src/keystore";
+import { localize, setNetwork } from "../src/prefixes";
+import { termsRefusedText } from "../src/screens/home";
 
 class FakeKeystore {
   saved: { seed: string; unlock: Unlock; meta: WalletMeta } | null = null; forgotten = false;
@@ -227,5 +229,35 @@ describe("serialized core", () => {
     const { serialized } = await import("../src/core");
     const core = serialized(new MockCore({ delayMs: 20 })); await core.open(MOCK_SEED, 0, "http://x", "regtest");
     const [a, b] = await Promise.all([core.vaults(), core.balances()]); expect(a).toHaveLength(1); expect(b.yedCents).toBe("12500");
+  });
+});
+
+describe("real-stack run WEB-REAL (2026-11-12)", () => {
+  it("refused fee terms: the FN-DSA and YED balances say why instead of 0 (LOW-5)", () => {
+    const t = termsRefusedText("inconsistent-server: plain.zatPerKB 800000");
+    expect(t).toContain("cannot be computed"); expect(t).toContain("inconsistent-server");
+  });
+  it("labels name the prefixes of the network in use (LOW-4): rqs…/rqf… on regtest, tqs…/tqf… on testnet", () => {
+    expect(localize("PQ · SLH-DSA (sqs…)", "regtest")).toBe("PQ · SLH-DSA (rqs…)");
+    expect(localize("ys1… (private), s…, sqf… or sqs… address", "testnet")).toBe("ytestsapling1… (private), s…, tqf… or tqs… address");
+    expect(localize("post-quantum YED address (ybf…/ybs…) … a yb… address", "regtest")).toBe("post-quantum YED address (yrf…/yrs…) … a yr… address");
+    expect(localize("sqf… sqs…", "mainnet")).toBe("sqf… sqs…");
+    setNetwork("regtest");
+    try { expect(destinationMismatch("yed", "pq_yec")).toBe("This is a post-quantum YEC address (rqf…/rqs…): it receives YEC, not YED. Ask for a yr… address."); }
+    finally { setNetwork("mainnet"); }
+  });
+  it("a restore with birthday 0 (\"scan everything\") reaches the core as height 1, never 0 (the core's new-seed tip start)", () => {
+    const vm = new OnboardingVm(new MockCore(), new FakeKeystore());
+    vm.startRestore(); vm.restore(MOCK_SEED, 0); expect(vm.state.step).toBe("server"); expect(vm.state.birthday).toBe(1);
+    vm.restore(MOCK_SEED, 2500); expect(vm.state.birthday).toBe(2500);
+  });
+  it("a private send's message does not outlive it: the form clears after confirm, and a hidden message goes with its field", async () => {
+    const core = await openWallet(); await core.fetch_params(() => {}); const vm = new SendVm(core, "yec");
+    await vm.setTo("ys1qprivaterecipient00000000000000000000"); vm.state.amount = "0.1"; vm.state.memo = "hello";
+    await vm.preview(); expect(vm.state.error).toBe(""); await vm.confirm(); expect(vm.state.txid).not.toBe("");
+    expect(vm.state.memo).toBe(""); expect(vm.state.to).toBe(""); expect(vm.state.amount).toBe("");
+    vm.reset(); await vm.setTo("ys1qprivaterecipient00000000000000000000"); vm.state.memo = "typed, then the address changed";
+    await vm.setTo("s1PublicRecipient0000000000000000000"); expect(vm.state.memo).toBe(""); vm.state.amount = "0.1";
+    await vm.preview(); expect(vm.state.error).not.toContain("needs a private");
   });
 });

@@ -820,7 +820,14 @@ pub fn balances() -> Result<JsValue, JsValue> {
             None => Default::default(),
         };
         let staged = yew_core::build::mint::staged_for_mint_zat(&s.wallet).map_err(wallet_err)?;
-        to_js(&dto::balances(&b, &z, held, s.synced_tip()?, staged))
+        to_js(&dto::balances(
+            &b,
+            &z,
+            held,
+            s.synced_tip()?,
+            staged,
+            s.wallet.terms_refused(),
+        ))
     })
 }
 
@@ -1023,7 +1030,8 @@ pub async fn params_status() -> Result<JsValue, JsValue> {
 }
 
 /// Fetch the Sapling proving parameters (52 MB) into the Cache API — from `sources` (base
-/// URLs ending in `/`; the default `download.z.cash` when empty) — verify them against the
+/// URLs ending in `/`; when empty, this page's own server at `/sapling-params/`,
+/// `sapling_params::WEB_DEFAULT_SOURCES`) — verify them against the
 /// pinned SHA-256s and load the prover (`api::download_params`; `sapling_params::fetch_with`).
 /// `f({bytesDone, bytesTotal, name})` before and after each file. A rejected fetch caches
 /// nothing. Must run before a private send or shield is confirmed.
@@ -1060,7 +1068,7 @@ pub async fn fetch_params(f: Option<js_sys::Function>, sources: JsValue) -> Resu
             .map_err(|e| {
                 err(
                     match e {
-                        ParamsError::Mismatch { .. } => "params",
+                        ParamsError::Mismatch { .. } | ParamsError::Refused(_) => "params",
                         _ => "network",
                     },
                     e,

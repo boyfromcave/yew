@@ -64,7 +64,7 @@ async fn fixture(name: &str) -> Fix {
     for n in 2..14 {
         txs.push(payment(foreign(n), addr_script(&ecc), COIN));
     }
-    // sendtoaddress and sendmany select post-quantum coins too (largest first)
+    // post-quantum coins beside them (sendtoaddress and sendmany spend the ECC coins only)
     for n in 14..18 {
         txs.push(payment(foreign(n), addr_script(&slh), 5 * COIN));
     }

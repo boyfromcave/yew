@@ -992,3 +992,330 @@ async fn folded_fee_cap_and_change_dust() {
     assert_eq!((n, have), (3, 3 * COIN));
     assert_eq!(e, (-8, "Insufficient funds: have 3.00, need 0.00000024 more to avoid creating invalid change output 0.0000003 (dust threshold is 0.00000054); note that coinbase outputs will not be selected if you specify ANY_TADDR, any transparent recipients are included, or if the `privacyPolicy` parameter is not set to `AllowRevealedSenders` or weaker.".into()));
 }
+
+/// A call's answer: its text, or its (code, message).
+type Answer = Result<String, (i64, String)>;
+
+/// ycash6 `CWallet::CreateTransaction`'s refusal when the ECC coins fall short and the wallet holds
+/// post-quantum coins `z_sendmany` would spend (beta2 audit M-1).
+fn pq_refusal(pq: i64) -> String {
+    format!(
+        "Insufficient funds in ordinary transparent addresses; this wallet also holds {} YEC at post-quantum addresses: send from one with z_sendmany, which returns the change to it",
+        yewd_wallet::rpc::format_money(pq)
+    )
+}
+
+impl Fix {
+    /// One stock coin-selecting call paying `amount` to `to`.
+    async fn stock_send(
+        &mut self,
+        call: &str,
+        to: &str,
+        amount: f64,
+    ) -> Result<String, (i64, String)> {
+        let p = match call {
+            "sendtoaddress" => vec![json!(to), json!(amount)],
+            "sendmany" => {
+                let mut m = serde_json::Map::new();
+                m.insert(to.to_string(), json!(amount));
+                vec![json!(""), Value::Object(m)]
+            }
+            _ => {
+                let mut raw = Transaction::new_v4();
+                raw.vout.push(TxOut {
+                    value: (amount * COIN as f64) as i64,
+                    script_pubkey: addr_script(to),
+                });
+                vec![json!(hex::encode(raw.serialize().unwrap()))]
+            }
+        };
+        self.w
+            .call(&self.node, call, &p)
+            .await
+            .map(|v| v.text())
+            .map_err(|e| (e.code, e.message))
+    }
+
+    /// The three stock coin-selecting calls, each paying `amount` to `to`: (call, its answer).
+    async fn stock_sends(&mut self, to: &str, amount: f64) -> Vec<(&'static str, Answer)> {
+        let mut out = Vec::new();
+        for name in ["sendtoaddress", "sendmany", "fundrawtransaction"] {
+            out.push((name, self.stock_send(name, to, amount).await));
+        }
+        out
+    }
+
+    /// The scripts of the coins `tx` spends (every one a wallet coin).
+    fn input_scripts(&self, tx: &Transaction) -> Vec<Vec<u8>> {
+        tx.vin
+            .iter()
+            .map(|i| self.prevout(&i.prevout.txid, i.prevout.n).0)
+            .collect()
+    }
+
+    fn coin_at(&self, a: &str) -> yewd_wallet::Coin {
+        self.w
+            .coins
+            .iter()
+            .find(|c| c.script == addr_script(a))
+            .unwrap()
+            .clone()
+    }
+}
+
+/// `sendtoaddress`, `sendmany` and `fundrawtransaction` select ordinary (ECC) coins only (beta2
+/// audit M-1, review LOW-1, the C++ lines' `SelectCoins`): 8 YEC is covered by the 9 YEC of ECC
+/// coins, so no post-quantum coin is spent even though two of the three 5 YEC coins are
+/// post-quantum (largest first used to take them, with the change on a new ECC key).
+#[tokio::test]
+async fn stock_sends_spend_ecc_coins_only() {
+    let to = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x34; 20]);
+    for call in ["sendtoaddress", "sendmany", "fundrawtransaction"] {
+        let mut f = fixture(&format!("ecc-only-{call}")).await;
+        let ecc = addr_script(&f.ecc.clone());
+        let r = f
+            .stock_send(call, &to, 8.0)
+            .await
+            .unwrap_or_else(|e| panic!("{call}: {e:?}"));
+        let tx = if call == "fundrawtransaction" {
+            let v: Value = serde_json::from_str(&r).unwrap();
+            let raw = hex::decode(v["hex"].as_str().unwrap()).unwrap();
+            Transaction::parse(&raw).unwrap().0
+        } else {
+            f.last_sent().0
+        };
+        let scripts = f.input_scripts(&tx);
+        assert!(!scripts.is_empty(), "{call}");
+        for s in &scripts {
+            assert_eq!(s, &ecc, "{call}: a post-quantum coin was selected");
+        }
+        // the change, if any, is a new ECC key's (never a post-quantum one)
+        for o in &tx.vout {
+            assert!(yew_core::pq::pqpkh_of(&o.script_pubkey).is_none(), "{call}");
+        }
+    }
+}
+
+/// ECC coins short, post-quantum coins present: each call refuses with the C++ lines' text and
+/// its own code (`sendtoaddress` -4 after SendMoney's checks, `sendmany` -6, `fundrawtransaction`
+/// -32603), naming only the post-quantum value `z_sendmany` would spend: no FN-DSA coin before
+/// Falcon, no output YED holds, no unconfirmed coin, no locked coin. A YED-bearing ECC output is
+/// never selected or counted either. Without such post-quantum coins the errors stay the ordinary
+/// insufficient-funds ones. Nothing is broadcast.
+#[tokio::test]
+async fn stock_sends_name_the_post_quantum_value_when_ecc_coins_fall_short() {
+    let mut f = fixture("ecc-short").await;
+    let to = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x35; 20]);
+    let codes = [
+        ("sendtoaddress", -4),
+        ("sendmany", -6),
+        ("fundrawtransaction", -32603),
+    ];
+    let expect = |got: Vec<(&'static str, Answer)>, pq: i64| {
+        for ((name, r), (n2, c)) in got.into_iter().zip(codes) {
+            assert_eq!(name, n2);
+            assert_eq!(r, Err((c, pq_refusal(pq))), "{name}");
+        }
+    };
+    // 12 YEC: 9 at ECC, 5 SLH-DSA + 5 FN-DSA
+    let got = f.stock_sends(&to, 12.0).await;
+    expect(got, 10 * COIN);
+    // before Falcon an FN-DSA coin is not one z_sendmany would spend
+    f.w.chain.falcon_active = Some(false);
+    let got = f.stock_sends(&to, 12.0).await;
+    expect(got, 5 * COIN);
+    f.w.chain.falcon_active = Some(true);
+    // an unconfirmed post-quantum payment is not counted (z_sendmany's minconf 1)
+    f.node.to_mempool(payment(
+        OutPoint {
+            txid: [6; 32],
+            n: 0,
+        },
+        addr_script(&f.slh.clone()),
+        3 * COIN,
+    ));
+    f.w.sync(&f.node).await.unwrap();
+    let got = f.stock_sends(&to, 12.0).await;
+    expect(got, 10 * COIN);
+    // outputs YED holds (Yellowback live, the index listing them): the SLH-DSA coin is not
+    // counted, the ECC 5 YEC coin neither counted nor selected
+    let (slh_coin, ecc_coin) = (f.coin_at(&f.slh.clone()), f.coin_at(&f.ecc.clone()));
+    let ecc_coin =
+        f.w.coins
+            .iter()
+            .find(|c| c.script == ecc_coin.script && c.value == 5 * COIN)
+            .unwrap()
+            .clone();
+    {
+        let mut c = f.node.0.lock().unwrap();
+        c.yed_info = Some(json!({"healthy": true, "unhealthyReason": ""}));
+        c.tokens = vec![
+            json!({"txid": slh_coin.txid, "vout": slh_coin.vout}),
+            json!({"txid": ecc_coin.txid, "vout": ecc_coin.vout}),
+        ];
+    }
+    // 4.5 YEC: the ECC coins without the token hold 4
+    let got = f.stock_sends(&to, 4.5).await;
+    expect(got, 5 * COIN);
+    assert!(
+        f.node.0.lock().unwrap().sent.is_empty(),
+        "nothing broadcast"
+    );
+    // 3 YEC is covered by the ECC coins: the token is not among the inputs
+    f.w.call(&f.node, "sendtoaddress", &[json!(to), json!(3.0)])
+        .await
+        .unwrap();
+    let (tx, _) = f.last_sent();
+    assert!(tx
+        .vin
+        .iter()
+        .all(|i| (yew_core::tx::txid_hex(&i.prevout.txid), i.prevout.n)
+            != (ecc_coin.txid.clone(), ecc_coin.vout)));
+    for s in f.input_scripts(&tx) {
+        assert!(yew_core::pq::pqpkh_of(&s).is_none());
+    }
+}
+
+/// ECC coins short and no post-quantum coin `z_sendmany` would spend (here: locked): the ordinary
+/// insufficient-funds errors, unchanged.
+#[tokio::test]
+async fn stock_sends_without_spendable_pq_coins_keep_the_insufficient_funds_errors() {
+    let mut f = fixture("ecc-short-no-pq").await;
+    let to = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x36; 20]);
+    let (slh, fn_) = (f.coin_at(&f.slh.clone()), f.coin_at(&f.fn_.clone()));
+    f.w.call(
+        &f.node,
+        "lockunspent",
+        &[
+            json!(false),
+            json!([{"txid": slh.txid, "vout": slh.vout}, {"txid": fn_.txid, "vout": fn_.vout}]),
+        ],
+    )
+    .await
+    .unwrap();
+    let got = f.stock_sends(&to, 12.0).await;
+    let want = [
+        ("sendtoaddress", (-6, "Insufficient funds")),
+        ("sendmany", (-6, "Insufficient funds")),
+        ("fundrawtransaction", (-32603, "Insufficient funds")),
+    ];
+    for ((name, r), (n2, (c, m))) in got.into_iter().zip(want) {
+        assert_eq!(name, n2);
+        assert_eq!(r, Err((c, m.to_string())), "{name}");
+    }
+    assert!(f.node.0.lock().unwrap().sent.is_empty());
+}
+
+/// Review LOW-2 and LOW-3 of the ECC-only selection: the C++ texts. Every post-quantum coin an
+/// output YED holds (Yellowback live): the refusal names them in the node's order instead of a
+/// bare "Insufficient funds". The payment covered by the ECC coins but not its fee: the amounts
+/// carry the unit (`DisplayMoney`). Nothing is broadcast.
+#[tokio::test]
+async fn stock_sends_give_the_cpp_yed_and_fee_texts() {
+    let mut f = fixture("cpp-texts").await;
+    let to = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x37; 20]);
+    let (slh, fn_) = (f.coin_at(&f.slh.clone()), f.coin_at(&f.fn_.clone()));
+    {
+        let mut c = f.node.0.lock().unwrap();
+        c.yed_info = Some(json!({"healthy": true, "unhealthyReason": ""}));
+        c.tokens = vec![
+            json!({"txid": slh.txid, "vout": slh.vout}),
+            json!({"txid": fn_.txid, "vout": fn_.vout}),
+        ];
+    }
+    let mut held = [(slh.txid.clone(), slh.vout), (fn_.txid.clone(), fn_.vout)];
+    held.sort_by_key(|(t, n)| (yew_core::tx::txid_from_hex(t).unwrap(), *n));
+    let list = held
+        .iter()
+        .map(|(t, n)| format!("{t}:{n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let refusal = format!("refusing to spend a Yellowback outpoint as plain YEC: {list} (its YED would burn; lock it again with yed_lockcoins)");
+    let got = f.stock_sends(&to, 12.0).await;
+    let want = [
+        ("sendtoaddress", -6),
+        ("sendmany", -6),
+        ("fundrawtransaction", -32603),
+    ];
+    for ((name, r), (n2, c)) in got.into_iter().zip(want) {
+        assert_eq!(name, n2);
+        assert_eq!(r, Err((c, refusal.clone())), "{name}");
+    }
+    // 9 YEC of ECC coins pay 9 YEC but not the fee
+    let e = f.stock_send("sendtoaddress", &to, 9.0).await.unwrap_err();
+    assert_eq!(e, (-6, "Error: Insufficient funds to pay the fee. This transaction needs to spend 9.00 YEC plus a fee of at least 0.0001 YEC, but only 9.00 YEC is available".to_string()));
+    assert!(f.node.0.lock().unwrap().sent.is_empty());
+}
+
+/// YEWD-PARITY gap 2: a post-quantum input NAMED in `fundrawtransaction` is priced by its real
+/// size, as ycashd's `CreateTransaction` prices it with dummy signatures: max(min(max(the
+/// ZIP-317 fee, the plain PQ rate x size), PQMaxTxFee()), the ZIP-317 conventional fee), the
+/// conventional fee counting the SLH-DSA signature's bytes. It used to be priced as a P2PKH input
+/// (10,000 zat, a seventh of the conventional fee alone).
+#[tokio::test]
+async fn fundrawtransaction_prices_a_named_pq_input_by_size() {
+    let mut f = fixture("fund-named-pq").await;
+    let rate = 40_000i64;
+    let cap = 4_000_000i64;
+    {
+        let mut c = f.node.0.lock().unwrap();
+        c.yed_info = Some(json!({"healthy": true, "unhealthyReason": "",
+            "params": {"fees": {"network": {"plain": {"zatPerKB": rate},
+                                            "yellowback": {"maxTxFeeZat": cap}}}}}));
+    }
+    let to = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x35; 20]);
+    // the fixture's 5 YEC SLH-DSA coin, as the wallet lists it
+    let list: Value =
+        serde_json::from_str(&f.w.call(&f.node, "listunspent", &[]).await.unwrap().text()).unwrap();
+    let coin = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["address"].as_str() == Some(f.slh.as_str()))
+        .expect("the SLH-DSA coin")
+        .clone();
+    let mut txid: [u8; 32] = hex::decode(coin["txid"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    txid.reverse();
+    let mut raw = Transaction::new_v4();
+    raw.vin.push(TxIn::new(OutPoint {
+        txid,
+        n: coin["vout"].as_u64().unwrap() as u32,
+    }));
+    raw.vout.push(TxOut {
+        value: COIN,
+        script_pubkey: addr_script(&to),
+    });
+    let r =
+        f.w.call(
+            &f.node,
+            "fundrawtransaction",
+            &[json!(hex::encode(raw.serialize().unwrap()))],
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    let v: Value = serde_json::from_str(&r.text()).unwrap();
+    let tx = Transaction::parse(&hex::decode(v["hex"].as_str().unwrap()).unwrap())
+        .unwrap()
+        .0;
+    let slh = yew_core::pq::pq_sig_pushes_size(yew_core::pq::SCHEME_SLH_DSA_SHA2_128S).unwrap();
+    let mut sizes = vec![slh];
+    sizes.resize(tx.vin.len(), yew_core::tx::MAX_P2PKH_SCRIPT_SIG);
+    let bytes = tx.size_with_script_sigs(&sizes).unwrap();
+    let conventional = tx.zip317_conventional_fee(&sizes).unwrap();
+    let want = (rate * bytes as i64 / 1000)
+        .max(conventional)
+        .min(cap)
+        .max(conventional);
+    let fee = (v["fee"].as_f64().unwrap() * COIN as f64).round() as i64;
+    assert_eq!(fee, want, "bytes {bytes} conventional {conventional}");
+    assert!(fee > 300_000, "{fee}");
+    let paid: i64 = 5 * COIN - tx.vout.iter().map(|o| o.value).sum::<i64>()
+        + tx.vin[1..]
+            .iter()
+            .map(|i| f.prevout(&i.prevout.txid, i.prevout.n).1)
+            .sum::<i64>();
+    assert_eq!(paid, fee);
+}

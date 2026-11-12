@@ -122,7 +122,7 @@ ycashd's wallet arguments (`-keypool`, `-exportdir`, …) and a ycashd-format `y
 |---|---|---|
 | `-datadir=<dir>` | `~/.yewd` | data directory |
 | `-conf=<file>` | `<datadir>/yewd.conf` (optional) | configuration file; relative to `-datadir`; a named file must exist |
-| `-regtest` / `-testnet` | mainnet | picks the default `-rpcport` and the cookie subdirectory (`regtest/`, `testnet/`) |
+| `-regtest` / `-testnet` | mainnet | picks the default `-rpcport` and the cookie subdirectory (`regtest/`, `testnet/`); on regtest the upgrade heights are the backend's (`getblockchaininfo.upgrades`, so a Canopy above height 1 is followed: pre-ZIP-212 notes before it; a transaction with a post-quantum input or a mint carrier, built only from the vault upgrade on, assumes Canopy before the vault upgrade, as on every real network), mainnet and testnet use the compiled ones |
 | `-rpcbind=<ip>[:port]` | `127.0.0.1` | listen address, repeatable |
 | `-rpcport=<port>` | 8832; 18832 on testnet and regtest | listen port (ycashd's defaults: the façade stands where ycashd stood) |
 | `-rpcuser=<u>` `-rpcpassword=<p>` | — | client credentials; without `-rpcpassword`, cookie authentication |
@@ -195,6 +195,17 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
   Yellowback is not live on the connected node, …") unless yewd runs with `-yellowback=0`. The
   C++ lines refuse to start in that case; yewd refuses at send time instead, because it can be
   pointed at another node without a restart.
+- **`sendtoaddress`, `sendmany`, `fundrawtransaction`: ordinary (ECC) coins only (beta2 audit
+  M-1, review LOW-1/LOW-2, as the C++ lines).** The coins these calls choose are P2PKH coins; a
+  post-quantum coin is spent by naming its address in `z_sendmany`, which returns the change to it
+  (a `fundrawtransaction` input the transaction already names stays). When the ECC coins do not
+  cover the payment and the wallet holds post-quantum coins `z_sendmany` would spend (confirmed,
+  not coinbase, unlocked, not an output YED holds, FN-DSA-512 only once Falcon is active), the
+  call is refused with the C++ lines' text, "Insufficient funds in ordinary transparent addresses;
+  this wallet also holds <amount> YEC at post-quantum addresses: send from one with z_sendmany,
+  which returns the change to it", and each call's code (`sendtoaddress` -4, `sendmany` -6,
+  `fundrawtransaction` -32603); otherwise the insufficient-funds errors are unchanged.
+  `z_shieldcoinbase` from a post-quantum address points to `z_sendmany`.
 - **A submission's answer lost (review M1).** A transaction the node accepted always returns its
   txid (a failing sync after it is a warning). When `sendrawtransaction`'s answer is lost, the
   wallet asks the node for the txid of the bytes; not found, the call answers "…status unknown,

@@ -41,7 +41,7 @@ use crate::{code, txid_hex, RpcError, Wallet};
 /// `RefusePQSource` (ycashd `wallet/rpcwallet.cpp`, quantum spec A-15), now only for the
 /// operations outside K-25 (`z_shieldcoinbase`, D-7; `z_mergetoaddress`, whose merging yewd does
 /// not serve): z_sendmany spends and pays `TX_PQPKH` (beta2 D-2).
-const PQ_SOURCE: &str = " cannot spend from a post-quantum address; use sendtoaddress or sendmany";
+const PQ_SOURCE: &str = " cannot spend from a post-quantum address; use z_sendmany";
 const PQ_RECIPIENT: &str = " cannot pay a post-quantum address; use sendtoaddress or sendmany";
 
 pub(crate) fn refuse_pq(
@@ -757,6 +757,7 @@ impl Wallet {
             target_height: next.height,
             expiry_height: next.height + TX_EXPIRY_DELTA,
             vault_height: self.chain.vault_activation,
+            upgrades: self.chain.upgrades.clone(),
             inputs: sel_t
                 .iter()
                 .map(|c| SaplingTInput {

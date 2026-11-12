@@ -30,7 +30,8 @@ use zip32::Scope;
 use crate::sign::{no, Refused, SignerCore};
 // review YEW-PORT-5 R3: the hybrid builder and its helpers moved to yew-core (a pure move)
 use yew_core::build::hybrid::{
-    hex32, sapling_extsk, sapling_prepare, script_of, taddr_of, zat, Hybrid,
+    hex32, owns_in_scope, rseed_of, sapling_extsk, sapling_prepare, script_of, taddr_of, zat,
+    Hybrid,
 };
 use yew_core::params::Network;
 
@@ -80,8 +81,14 @@ fn sapling_build(
 ) -> Result<String, Refused> {
     let dfvk = extsk.to_diversifiable_full_viewing_key();
     let internal_extsk = extsk.derive_internal();
-    let params =
+    let mut params =
         yew_core::shielded::ycash_network_with_vault(network, r.vault_height.map(u64::from));
+    // regtest: the node's own upgrade heights (a Canopy above height 1 decides the notes' format)
+    if let (Network::Regtest, Some(spec)) = (network, r.upgrades.as_deref()) {
+        params = params
+            .with_upgrades(spec)
+            .map_err(|e| (refuse::MALFORMED, format!("upgrades: {e}")))?;
+    }
     // the spends: each note rebuilt from its parts, each path checked against the anchor
     // outputs alone still need an anchor for the bundle: the empty tree's root
     let anchor = if r.spends.is_empty() {
@@ -114,26 +121,16 @@ fn sapling_build(
             })?;
         let addr = PaymentAddress::from_bytes(&addr_bytes)
             .ok_or_else(|| (refuse::MALFORMED, "spend recipient".to_string()))?;
-        if !s.after_zip212 {
-            return no(
-                refuse::MALFORMED,
-                "a pre-ZIP-212 note is not spent by this signer",
-            );
-        }
-        let note = Note::from_parts(
-            addr,
-            NoteValue::from_raw(s.value),
-            Rseed::AfterZip212(hex32(&s.rseed, "rseed")?),
-        );
+        // before ZIP-212 (a note from before Canopy) the façade hands in its `rcm`
+        let note = Note::from_parts(addr, NoteValue::from_raw(s.value), rseed_of(s)?);
         // the note must be this account's in the scope the façade says
         let scope = if s.internal {
             Scope::Internal
         } else {
             Scope::External
         };
-        match dfvk.decrypt_diversifier(&addr) {
-            Some((_, sc)) if sc == scope => {}
-            _ => return no(refuse::KEY_MISMATCH, "a spent note is not this account's"),
+        if !owns_in_scope(&dfvk, &addr, scope) {
+            return no(refuse::KEY_MISMATCH, "a spent note is not this account's");
         }
         if s.path.len() != 32 {
             return no(refuse::MALFORMED, "a Merkle path has 32 nodes");
@@ -391,5 +388,218 @@ impl OutputProver for NoProofs {
 
     fn encode_proof(proof: GrothProofBytes) -> GrothProofBytes {
         proof
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use incrementalmerkletree::{Hashable, Level};
+    use sapling_crypto::Rseed;
+    use yewd_proto::SaplingSpend;
+
+    const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    fn params_dir() -> String {
+        if let Ok(d) = std::env::var("YEW_SAPLING_PARAMS") {
+            return d;
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        if cfg!(target_os = "macos") {
+            format!("{home}/Library/Application Support/ZcashParams")
+        } else {
+            format!("{home}/.zcash-params")
+        }
+    }
+
+    /// One note of `value` to `addr` at position 0 of an otherwise empty tree: its spend (the
+    /// path of empty subtrees) and the anchor that path leads to.
+    fn lone_spend(
+        addr: &PaymentAddress,
+        value: u64,
+        rseed: Rseed,
+        internal: bool,
+    ) -> (SaplingSpend, String) {
+        let note = Note::from_parts(*addr, NoteValue::from_raw(value), rseed);
+        let mut cur = Node::from_cmu(&note.cmu());
+        let mut path = Vec::with_capacity(32);
+        for i in 0..32u8 {
+            let sib = Node::empty_root(Level::from(i));
+            path.push(hex::encode(sib.to_bytes()));
+            cur = Node::combine(Level::from(i), &cur, &sib);
+        }
+        let (rseed, after_zip212) = match note.rseed() {
+            Rseed::AfterZip212(r) => (hex::encode(r), true),
+            Rseed::BeforeZip212(r) => (hex::encode(r.to_bytes()), false),
+        };
+        (
+            SaplingSpend {
+                recipient: hex::encode(addr.to_bytes()),
+                value,
+                rseed,
+                after_zip212,
+                internal,
+                position: 0,
+                path,
+            },
+            hex::encode(cur.to_bytes()),
+        )
+    }
+
+    /// Spend the lone note back to the account's change address, paying `fee`.
+    fn build_lone(
+        extsk: &ExtendedSpendingKey,
+        spend: SaplingSpend,
+        anchor: String,
+    ) -> Result<String, Refused> {
+        let fee = 1_000;
+        let r = SaplingBuildRequest {
+            target_height: 200,
+            expiry_height: 240,
+            vault_height: Some(1),
+            upgrades: None,
+            inputs: Vec::new(),
+            outputs: vec![SaplingOut::Change {
+                value: spend.value as i64 - fee,
+            }],
+            spends: vec![spend],
+            fee_zat: fee,
+            anchor,
+            outflow_cap_zat: fee,
+            params_dir: params_dir(),
+        };
+        sapling_build(extsk.clone(), Network::Regtest, &r, |_, _| {
+            no(refuse::KEY_MISMATCH, "no transparent input here")
+        })
+    }
+
+    /// Real-stack run YEW-REAL finding 2: on a regtest whose node activates Canopy above height
+    /// 1, a build before Canopy makes pre-ZIP-212 notes (lead byte 0x01), which the node and every
+    /// wallet decrypt there; without the node's heights it made ZIP-212 notes (0x02) that ycashd
+    /// before Canopy never decrypts. After Canopy, and without the node's heights, ZIP-212.
+    #[test]
+    fn regtest_notes_follow_the_nodes_canopy_height() {
+        use sapling_crypto::note_encryption::{
+            try_sapling_note_decryption, PreparedIncomingViewingKey, Zip212Enforcement,
+        };
+        let extsk = sapling_extsk(PHRASE, Network::Regtest).unwrap();
+        let dfvk = extsk.to_diversifiable_full_viewing_key();
+        let ivk = PreparedIncomingViewingKey::new(&dfvk.to_ivk(Scope::Internal));
+        let (_, change) = dfvk.change_address();
+        let lead_byte = |upgrades: Option<&str>, target: u32| -> u8 {
+            let (spend, anchor) = lone_spend(&change, 500_000, Rseed::AfterZip212([3; 32]), true);
+            let r = SaplingBuildRequest {
+                target_height: target,
+                expiry_height: target + 40,
+                vault_height: None,
+                upgrades: upgrades.map(str::to_string),
+                inputs: Vec::new(),
+                outputs: vec![SaplingOut::Change { value: 499_000 }],
+                spends: vec![spend],
+                fee_zat: 1_000,
+                anchor,
+                outflow_cap_zat: 1_000,
+                params_dir: params_dir(),
+            };
+            let raw = hex::decode(
+                sapling_build(extsk.clone(), Network::Regtest, &r, |_, _| {
+                    no(refuse::KEY_MISMATCH, "none")
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            let branch = if upgrades.is_some_and(|u| u.contains("canopy=500")) && target < 500 {
+                zcash_protocol::consensus::BranchId::Heartwood
+            } else {
+                zcash_protocol::consensus::BranchId::Canopy
+            };
+            let tx = zcash_primitives::transaction::Transaction::read(&raw[..], branch).unwrap();
+            let outs = tx.sapling_bundle().unwrap().shielded_outputs();
+            for (enforcement, byte) in [(Zip212Enforcement::Off, 1u8), (Zip212Enforcement::On, 2)] {
+                if outs
+                    .iter()
+                    .any(|o| try_sapling_note_decryption(&ivk, o, enforcement).is_some())
+                {
+                    return byte;
+                }
+            }
+            panic!("the change does not decrypt");
+        };
+        let node = "overwinter=1,sapling=1,ycash=1,blossom=1,heartwood=1,canopy=500";
+        assert_eq!(lead_byte(Some(node), 300), 1, "before the node's Canopy");
+        assert_eq!(lead_byte(Some(node), 600), 2, "after it");
+        assert_eq!(lead_byte(None, 300), 2, "the devnet's Canopy at 1");
+    }
+
+    /// Real-stack run YEW-REAL finding 1: a note from before Canopy (pre-ZIP-212: its `rcm`, a
+    /// Jubjub scalar, in place of an `rseed`) is spent, external or change; it used to be refused
+    /// ("a pre-ZIP-212 note is not spent by this signer"). A `rcm` that is not a scalar is not.
+    #[test]
+    fn a_pre_zip212_note_is_spent() {
+        let extsk = sapling_extsk(PHRASE, Network::Regtest).unwrap();
+        let dfvk = extsk.to_diversifiable_full_viewing_key();
+        // the façade's encoding of a pre-ZIP-212 note (yewd/wallet zsend.rs): rcm's bytes
+        let mut b = [0u8; 32];
+        b[0] = 0x2a;
+        let probe = SaplingSpend {
+            recipient: String::new(),
+            value: 0,
+            rseed: hex::encode(b),
+            after_zip212: false,
+            internal: false,
+            position: 0,
+            path: Vec::new(),
+        };
+        let rcm = rseed_of(&probe).unwrap();
+        assert!(matches!(rcm, Rseed::BeforeZip212(_)));
+        for (addr, internal) in [
+            (dfvk.default_address().1, false),
+            (dfvk.change_address().1, true),
+        ] {
+            let (s, a) = lone_spend(&addr, 600_000, rcm, internal);
+            assert!(!s.after_zip212);
+            build_lone(&extsk, s, a).expect("a pre-ZIP-212 note spends");
+        }
+        let (mut s, a) = lone_spend(&dfvk.default_address().1, 600_000, rcm, false);
+        s.rseed = hex::encode([0xff; 32]);
+        assert_eq!(build_lone(&extsk, s, a).unwrap_err().0, refuse::MALFORMED);
+    }
+
+    /// Real-stack run YEW-REAL finding 0: a note received on the internal (change) scope is
+    /// this account's and is spent; it used to be refused as "not this account's" (sapling-crypto
+    /// 0.7.0's `decrypt_diversifier` never answers the internal scope). The check itself stands:
+    /// a note's scope must be the one the façade names, and another account's note is refused.
+    #[test]
+    fn a_change_note_is_spent_in_its_own_scope_only() {
+        let extsk = sapling_extsk(PHRASE, Network::Regtest).unwrap();
+        let dfvk = extsk.to_diversifiable_full_viewing_key();
+        let (_, change) = dfvk.change_address();
+        let (_, ext) = dfvk.default_address();
+        let rs = || Rseed::AfterZip212([7; 32]);
+        let (s, a) = lone_spend(&change, 500_000, rs(), true);
+        build_lone(&extsk, s, a).expect("the change note spends");
+        let (s, a) = lone_spend(&ext, 500_000, rs(), false);
+        build_lone(&extsk, s, a).expect("an external note spends");
+        // the wrong scope, either way
+        for (addr, internal) in [(&change, false), (&ext, true)] {
+            let (s, a) = lone_spend(addr, 500_000, rs(), internal);
+            let e = build_lone(&extsk, s, a).unwrap_err();
+            assert_eq!(e.0, refuse::KEY_MISMATCH, "{e:?}");
+        }
+        // another account's notes, in either scope
+        let other = sapling_extsk(
+            "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong",
+            Network::Regtest,
+        )
+        .unwrap()
+        .to_diversifiable_full_viewing_key();
+        for (addr, internal) in [
+            (other.change_address().1, true),
+            (other.default_address().1, false),
+        ] {
+            let (s, a) = lone_spend(&addr, 500_000, rs(), internal);
+            let e = build_lone(&extsk, s, a).unwrap_err();
+            assert_eq!(e.0, refuse::KEY_MISMATCH, "{e:?}");
+        }
     }
 }

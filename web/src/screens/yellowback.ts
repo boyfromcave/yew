@@ -33,7 +33,7 @@ export function renderYellowback(root: HTMLElement, vm: YellowbackVm, yedCents: 
     const s = vm.state;
     if (s.txid && !s.mint) { mount(root, resultCard("Sent", s.txid, () => { vm.reset(); draw(); })); return; }
     const vaults = s.vaults.filter((v) => v.open);
-    mount(root, h("h2", null, "Yellowback"), h("div", { class: "card" }, h("h3", null, "YED you hold"), h("div", { class: "big yed" }, formatYed(yedCents)),
+    mount(root, h("h2", null, "Yellowback"), h("div", { class: "card" }, h("h3", null, "YED you hold"), h("div", { class: "big yed" }, yedCents ? formatYed(yedCents) : "—"),
         h("div", { class: "actions" }, h("button", { on: { click: () => go("mint") } }, "Mint"), h("button", { class: "secondary", on: { click: () => go("claimable") } }, "Claimable"))),
       errorCard(s.error, s.errorKind),
       h("h3", null, "Your vaults"), vaults.length === 0 ? h("p", { class: "small" }, "No open vault. Mint YED to open one.") : null,

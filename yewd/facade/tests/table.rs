@@ -165,6 +165,12 @@ async fn help_lists_the_wallet_table() {
         v["result"].as_str().unwrap(),
         yewd_facade::ycashd::help("z_importpqkey").unwrap()
     );
+    // the D-9 post-quantum prefixes, as the node's getnewaddress help names them (YEW-REAL
+    // finding 4): f = FN-DSA-512, s = SLH-DSA, on each network
+    let gna = yewd_facade::ycashd::help("getnewaddress").unwrap();
+    for p in ["sqf", "sqs", "tqf", "tqs", "rqf", "rqs"] {
+        assert!(gna.contains(&format!("{p}…")), "{p}: {gna}");
+    }
     // a node method's help is the backend's, without the wallet section
     let (_, v, _) = call(&c, "help", r#"["getblockcount"]"#).await;
     assert!(!v["result"].as_str().unwrap().contains("yewd"));

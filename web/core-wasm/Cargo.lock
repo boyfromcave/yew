@@ -3908,6 +3908,7 @@ dependencies = [
  "hmac 0.13.0-pre.4",
  "incrementalmerkletree",
  "js-sys",
+ "jubjub",
  "orchard",
  "prost",
  "prost-build",
