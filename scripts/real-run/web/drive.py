@@ -171,7 +171,8 @@ def sync_once(timeout=180):
         time.sleep(0.5)
 
 
-ROWS = {'Private': 'private', 'Public (ECC)': 'ecc', 'PQ · SLH-DSA (sqs…)': 'pq_slh', 'PQ · FN-DSA-512 (sqf…)': 'pq_falcon'}
+# the labels carry the network's prefixes (rqs…/rqf… on regtest): matched without them
+ROWS = {'Private': 'private', 'Public (ECC)': 'ecc', 'PQ · SLH-DSA': 'pq_slh', 'PQ · FN-DSA-512': 'pq_falcon'}
 
 
 def balances():
@@ -184,7 +185,7 @@ def balances():
     for i, line in enumerate(lines):
         for label, key in ROWS.items():
             if line.startswith(label):
-                rest = line[len(label):].strip() or (lines[i + 1] if i + 1 < len(lines) else '')
+                rest = line[len(label):] + ' ' + (lines[i + 1] if i + 1 < len(lines) else '')
                 m = re.search(r'(\d+\.\d{8}) YEC', rest)
                 if m:
                     out[key] = int(Decimal(m.group(1)) * COIN)

@@ -23,6 +23,17 @@ def own_ecc(A):
     return json.load(open(p)) if os.path.exists(p) else [A['ecc']]
 
 
+def record_own(txid, to=''):
+    """Add the transaction's own ECC outputs (its change; not `to`) to own_ecc.json: a Move or a
+    mint also makes change on a fresh key, which the ECC comparison must count."""
+    A = json.load(open(os.path.join(OUT, 'addrs.json')))
+    own = own_ecc(A)
+    for o in d.tx_summary(txid)['vout']:
+        if o['addr'] and o['addr'] != to and o['addr'].startswith('sm') and o['addr'] not in own:
+            own.append(o['addr'])
+    json.dump(own, open(os.path.join(OUT, 'own_ecc.json'), 'w'))
+
+
 def run(label, src, dst, amount, expect_refusal=False):
     A = json.load(open(os.path.join(OUT, 'addrs.json')))
     st = d.stack()

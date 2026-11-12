@@ -18,6 +18,9 @@
 #   Y   this yew tree (web/ built: scripts/build-core-wasm.sh, npm ci, npm run build)
 #   CHROMEDRIVER  a chromedriver of Chrome's major version (Chrome for Testing)
 #   PORTSEED [5713] LWD_PORT [29767] WEB_PORT [29771] GRPCWEB_PORT [29769] WD_PORT [9615]
+#   WEB_IMAGE     serve the page from this ycash-infra web image (images/web: the bundle and the
+#                 Sapling proving files at /sapling-params/) instead of `vite preview`
+#   NAME          the container name prefix [web-real]
 set -euo pipefail
 W=${W:-/Users/boy/projects/yellowback-workspace}
 S=${S:-$W/wt/scratch/web-real}
@@ -30,7 +33,9 @@ GRPCWEB_PORT=${GRPCWEB_PORT:-29769}; WD_PORT=${WD_PORT:-9615}
 RUN=${RUN:-$S/run1}
 PARAMS_DIR=${PARAMS_DIR:-$HOME/.cache/yew-web/sapling-params}   # sapling-{spend,output}.params (web/scripts/test-spike-prover.sh fetches them)
 PY=${PY:-$W/.venv/bin/python}
-ENVOY=web-real-envoy
+NAME=${NAME:-web-real}
+ENVOY=$NAME-envoy
+WEBC=$NAME-web
 
 case "${1:-}" in
 up)
@@ -41,11 +46,17 @@ up)
   sed -e 's/LWD_HOST/host.docker.internal/' -e "s/LWD_PORT/$LWD_PORT/" "$HERE/envoy.yaml" > "$RUN/envoy.yaml"
   docker rm -f "$ENVOY" >/dev/null 2>&1 || true
   docker run -d --name "$ENVOY" -p "127.0.0.1:$GRPCWEB_PORT:8080" -v "$RUN/envoy.yaml:/etc/envoy/envoy.yaml:ro" envoyproxy/envoy:v1.32.3 >/dev/null
-  (cd "$Y/web" && nohup npx vite preview --port "$WEB_PORT" --strictPort > "$RUN/preview.log" 2>&1 & echo $! > "$RUN/preview.pid")
+  if [ -n "${WEB_IMAGE:-}" ]; then
+    # as ycash-infra serves it: nginx with COOP/COEP/CSP; the gRPC-web front is another origin here
+    docker rm -f "$WEBC" >/dev/null 2>&1 || true
+    docker run -d --name "$WEBC" -p "127.0.0.1:$WEB_PORT:8080" -e "CSP_CONNECT_SRC_EXTRA=http://127.0.0.1:$GRPCWEB_PORT http://127.0.0.1:${MIRROR_PORT:-29777} http://127.0.0.1:${MIRROR_BAD_PORT:-29775} http://127.0.0.1:1" "$WEB_IMAGE" >/dev/null
+  else
+    (cd "$Y/web" && nohup npx vite preview --port "$WEB_PORT" --strictPort > "$RUN/preview.log" 2>&1 & echo $! > "$RUN/preview.pid")
+  fi
   nohup "$CHROMEDRIVER" --port="$WD_PORT" > "$RUN/chromedriver.log" 2>&1 & echo $! > "$RUN/chromedriver.pid"
   # the proving files from a loopback mirror with CORS, and a corrupt copy (the pins must refuse it)
-  nohup "$PY" -I "$HERE/params_mirror.py" 29777 "$PARAMS_DIR" > "$RUN/mirror.log" 2>&1 & echo $! > "$RUN/mirror.pid"
-  nohup "$PY" -I "$HERE/params_mirror.py" 29775 "$PARAMS_DIR" --corrupt > "$RUN/mirror-corrupt.log" 2>&1 & echo $! > "$RUN/mirror-corrupt.pid"
+  nohup "$PY" -I "$HERE/params_mirror.py" "${MIRROR_PORT:-29777}" "$PARAMS_DIR" > "$RUN/mirror.log" 2>&1 & echo $! > "$RUN/mirror.pid"
+  nohup "$PY" -I "$HERE/params_mirror.py" "${MIRROR_BAD_PORT:-29775}" "$PARAMS_DIR" --corrupt > "$RUN/mirror-corrupt.log" 2>&1 & echo $! > "$RUN/mirror-corrupt.pid"
   echo "waiting for the stack (YED activation: several minutes)"
   until grep -q 'STACK READY' "$RUN/log"; do grep -q -E 'Traceback|Assertion|failed' "$RUN/log" && { tail -20 "$RUN/log"; exit 1; }; sleep 5; done
   echo "up: page http://localhost:$WEB_PORT/ server http://127.0.0.1:$GRPCWEB_PORT stack $(ls "$RUN"/t/*/stack.json)"
@@ -53,12 +64,13 @@ up)
 walk)
   STACK_JSON=$(ls "$RUN"/t/*/stack.json) WEB_REAL_OUT=$RUN WD_URL=http://127.0.0.1:$WD_PORT WD_STATE=$RUN/wd-session \
     PAGE=http://localhost:$WEB_PORT/ SERVER=http://127.0.0.1:$GRPCWEB_PORT \
-    "$PY" "$HERE/web_real_walk.py" "${WALK_PHASES:-addr,fund,sends,params,private,arm,yed,persist,restore}"
+    MIRROR=http://127.0.0.1:${MIRROR_PORT:-29777}/ MIRROR_CORRUPT=http://127.0.0.1:${MIRROR_BAD_PORT:-29775}/ \
+    "$PY" "$HERE/web_real_walk.py" "${WALK_PHASES:-addr,fund,params,sends,private,arm,yed,persist,restore}"
   ;;
 down)
   touch "$RUN"/t/*/stop 2>/dev/null || true
   for p in preview chromedriver mirror mirror-corrupt; do [ -f "$RUN/$p.pid" ] && kill "$(cat "$RUN/$p.pid")" 2>/dev/null || true; done
-  docker rm -f "$ENVOY" >/dev/null 2>&1 || true
+  docker rm -f "$ENVOY" "$WEBC" >/dev/null 2>&1 || true
   [ -f "$RUN/stack.pid" ] && while kill -0 "$(cat "$RUN/stack.pid")" 2>/dev/null; do sleep 1; done
   echo down
   ;;
