@@ -1082,6 +1082,13 @@ impl Wallet {
     fn z_getnewaddress(&mut self, p: &[Value]) -> Result<J, RpcError> {
         arity("z_getnewaddress", p, 1)?;
         let typ = p_str(p, 0)?.unwrap_or("sapling");
+        if typ == "sprout" {
+            // ycashd's text (rpcwallet.cpp z_getnewaddress): Canopy is active on every network a
+            // Ycash wallet runs on, and this wallet never makes a Sprout address
+            return Err(invalid(
+                "Invalid address type, \"sprout\" is not allowed after Canopy",
+            ));
+        }
         if typ != "sapling" {
             return Err(invalid("Invalid address type"));
         }
