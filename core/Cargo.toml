@@ -145,7 +145,7 @@ hex = "=0.4.3"
 incrementalmerkletree = "=0.8.2"
 orchard = { version = "=0.14.0", default-features = false }
 rand_core = { version = "=0.6.4", features = ["getrandom"] }
-# Real-stack run YEW-REAL finding 1 (2026-11-11, approved by the Yellowback lead architect): a
+# Real-stack run YEW-REAL finding 1 (2026-11-11, the beta2 decision): a
 # pre-ZIP-212 Sapling note's `rseed` is a Jubjub scalar (`Rseed::BeforeZip212(jubjub::Fr)`), so the
 # hybrid builder spends notes from before Canopy. The version both Cargo.lock files already hold.
 jubjub = { version = "=0.10.0", default-features = false }

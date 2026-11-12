@@ -90,12 +90,12 @@ pub const FILES: [ParamFile; 2] = [SPEND, OUTPUT];
 pub const DEFAULT_SOURCES: &[&str] = &["https://download.z.cash/downloads/", RELEASE_MIRROR];
 
 /// The Ycash developers' mirror of the parameter files: ycash-infra's GitHub release
-/// `zcash-params-v1` (the Yellowback lead architect, 2026-11-12).
+/// `zcash-params-v1` (the beta2 decision, 2026-11-12).
 pub const RELEASE_MIRROR: &str =
     "https://github.com/boyfromcave/ycash-infra/releases/download/zcash-params-v1/";
 
 /// Where the browser wallet fetches the files when Settings names no mirror: its own origin, at
-/// [`WEB_PARAMS_PATH`] (the Yellowback lead architect, 2026-11-12, real-stack run WEB-REAL
+/// [`WEB_PARAMS_PATH`] (the beta2 decision, 2026-11-12, real-stack run WEB-REAL
 /// HIGH-2). `download.z.cash` sends no CORS header, so a web page can never read it; the server
 /// that hands out the web bundle serves the two files beside it (ycash-infra's web image fetches
 /// them at build time against the same SHA-256s). The pins below still decide: a wrong file from
