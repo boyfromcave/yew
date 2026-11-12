@@ -16,6 +16,14 @@ that show their scheme. No consensus change.
   SLH-DSA) for YEC, `ybf…`/`ybs…` for YED on mainnet; `tqf`/`tqs`/`ytf`/`yts` on testnet;
   `rqf`/`rqs`/`yrf`/`yrs` on regtest. The earlier form is refused everywhere.
 - `yewd` rewrites its address book to the new form once, at load, keeping labels.
+- **The YED receive address is the Falcon holder in the app and the web wallet.** Both take it from
+  one function in the YEW core. The web wallet used to show the ECC-key form (35 characters), which
+  senders refuse from the Falcon height (`bad-yed-holder`; on mainnet and testnet, from the first
+  block), so it could not receive YED from another wallet. No YED could arrive at the old form, so
+  none is stranded there.
+- `yewd z_validateaddress` answers for a post-quantum address with ycashd's fields, in ycashd's
+  order: `isvalid`, `address`, `address_type` and `type` (`pq`), `ismine`, `pqscheme`,
+  `pqschemename`, `pqkeyhash`. Before, it answered `isvalid: false`.
 - The wallet requires RPC contract version 9 exactly (`yed_getinfo.rpcversion`). It does not work
   with a node or lightwalletd at version 8.
 - `yewd getnewaddress` takes the type first (`pq`, `pqslh`, `p2pkh`); `getnewaddress "" <type>`
@@ -73,6 +81,20 @@ that show their scheme. No consensus change.
   carrier), from coins and from Sapling notes, before it broadcasts the carrier, as ycashd does.
   The app's mint estimate prices the inputs the mint will take, and the mint total shown is what
   leaves the balance. An unarmed price feed blocks a mint up front on every network.
+
+### Claims in the web wallet
+
+- **A claim in the browser completes.** It runs in two steps, as in the app: the carrier first,
+  then the claim itself once the carrier is confirmed. Before, the web wallet sent the carrier,
+  reported "Claim sent" and never sent the claim. The screen now says which step was sent
+  ("Claim: step 1 of 2 sent").
+- A claim or mint left between its steps is listed under **In progress** on the Yellowback and
+  Claimable screens. **Continue** resumes it, also after a reload. When the claim's window has
+  closed, the screen offers to sweep the carrier back.
+- A claim whose second-step fee rose above what its start accepted asks again ("Slide to send the
+  claim at this fee").
+- The Claimable list offers only vaults the node judges claimable. The others are listed apart
+  under "Not claimable now" and are refused if chosen.
 
 ### Fees
 
@@ -134,6 +156,46 @@ that show their scheme. No consensus change.
   `z_getnewaddress sprout` is refused with ycashd's text.
 - On regtest, yewd and the core take the network-upgrade heights from the
   node or server instead of assuming Canopy from height 1.
+<!-- yew #30: drop the next item if #30 does not merge for beta2 -->
+- **`yewd vault_lock "from"` answers the vault RPC contract's codes, with the C++ nodes' texts.**
+  `from: not an address of this wallet` and `from: an FN-DSA-512 (scheme 2) address cannot be spent
+  before Falcon is active at the next block` answer `-5` (they were `-4` and `-8`). A Sprout address
+  answers `-5` `bad-address: from: Sprout addresses are not supported`. A Yellowback outpoint at the
+  address is refused with `… (its YED would burn; lock it again with yed_lockcoins)`. yew carries a
+  pinned copy of the vault RPC contract, and a test checks every `"from"` error row against it.
+
+### Testnet is the fast profile
+
+- **The testnet YEW and yewd sign for is testnet-yb-fast**, the profile the project's testnet seeds
+  run (`-testnet -testnetprofile=fast` on ycashd): Overwinter 207,500, Sapling 280,000, Ycash
+  510,248, Blossom 510,250, Heartwood 510,252, Canopy 510,254, **Vault 510,400**, and the fast YED
+  terms (grace 103 blocks, claim delay 20 blocks, term classes of 103 to 309, 310 to 618 and 619 to
+  1,252 blocks). The heights are pinned by a fixture generated from ycash6, which CI regenerates and
+  compares. Before, the app and the web wallet signed nothing on testnet from the Vault height on,
+  and YEW read testnet's YED terms with mainnet's values. Mainnet and regtest are unchanged.
+- `yewd -testnetprofile=fast` is the default with `-testnet`. `slow` and `legacy` are refused: they
+  are shadow forks of mainnet whose branch ids librustzcash6 does not define. `-testnetprofile`
+  without `-testnet` is refused, as on ycashd.
+- yewd keeps its testnet wallet and cookie in `<datadir>/testnet-yb-fast/`, ycashd's name. If an
+  older yewd's `<datadir>/testnet/` exists and the new one does not, yewd stops at start with
+  `yewd: <old> is the testnet directory of an older yewd; testnet-yb-fast's is now <new> (ycashd's
+  name for the profile): move it there and start again`.
+- yewd checks that its node is on testnet-yb-fast (`chain`, `testnetprofile` and the Vault height
+  in `getblockchaininfo`); otherwise wallet calls fail with `yewd: the backend is not on
+  testnet-yb-fast: …`. The startup line names the network (`network test (testnet profile fast)`).
+- On testnet, private (Sapling) transactions are refused (see Known limitations): the refusal names
+  the first upgrade height on which librustzcash6 and the node disagree.
+
+### Dependencies
+
+- yew builds against librustzcash6 6ff87bc9, rusqlite 0.41.1 (bundled SQLite 3.54.1) and, in the
+  browser, sqlite-wasm-rs 0.6.3 with sqlite-wasm-vfs 0.3 (SQLite 3.54.1). This fixes
+  RUSTSEC-2026-0459 (CVE-2026-119375) in both builds, and its exception is removed from every
+  scanner configuration.
+- A wallet written by the earlier build opens under the new one. For the app and yewd a test opens
+  stores written by SQLite 3.51.3. For the web wallet, a funded wallet made by the earlier bundle was
+  opened by the new bundle in the same Chrome profile: same addresses, birthday, balances and
+  history.
 
 ### Tested against real nodes
 
@@ -141,8 +203,11 @@ yewd was run against ycash6 and against koganyd (koganyd as its node and miner),
 a headless browser against a node, lightwalletd-dd and a gRPC-web front. yewd: all sixteen send
 shapes between address types accepted, mined and balanced against both nodes; vault locks from every
 source, mints, YED sends and redeems; seed restore. Web wallet: all fourteen browser send shapes,
-mints from the public balance and an FN-DSA-512 address. No YED was ever spent as plain YEC. Not
-yet run in a browser: redeem and claim, and the unusual-fee confirmation.
+mints from the public balance and an FN-DSA-512 address, a redeem, and the unusual-fee confirmation
+completing a send. After the web fixes above, the browser received YED from a ycashd wallet at its
+Falcon holder, spent it, and completed a claim through both steps, including a reload between them.
+No YED was ever spent as plain YEC. Not run in a real browser: sweeping back a lapsed claim carrier
+(covered by the web tests only).
 
 ## Known limitations
 
@@ -162,6 +227,19 @@ yet run in a browser: redeem and claim, and the unusual-fee confirmation.
   with Yellowback.
 - **YED cannot be minted on the fast testnet** with the current node builds: no attestor set is
   compiled in.
+- **No private (Sapling) transactions on testnet.** librustzcash6 still has the old Ycash testnet's
+  Blossom, Heartwood and Canopy heights (661,610 / 661,622 / 661,634) and no Vault height, so a
+  Sapling transaction built for testnet-yb-fast would carry the wrong branch id and note format.
+  The app, the web wallet and yewd refuse to build one, and the private balance cannot be synced
+  there. Public and post-quantum sends are not affected. The fix is a librustzcash6 change carrying
+  the fast heights, then a dependency bump in yew.
+- **The slow and legacy testnet profiles are refused.** Signing for them needs librustzcash6 to
+  define their shadow-fork branch ids.
+- **The app and web wallet reuse an existing testnet wallet file silently.** The store keeps its
+  name (`yew-test.sqlite`) under the new testnet parameters; its keys are unchanged. yewd, by
+  contrast, stops until an old testnet directory is moved.
+- **Not tested:** a web wallet store that the earlier bundle left with a hot journal (a tab closed
+  in the middle of a write), and the web wallet in Firefox.
 - **`yewd` does not serve `z_mergetoaddress`**; it answers only its refusals.
 - `yewd` prices sends with no post-quantum party at the ZIP-317 fee, where ycash6 defaults to a flat
   1,000 zat; both are at or above the node's rule. Aligning them follows after beta2.
