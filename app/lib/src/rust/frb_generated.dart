@@ -165,6 +165,7 @@ abstract class RustLibApi extends BaseApi {
   Future<YecPreview> crateApiMovePreview({
     required MoveDirection direction,
     PlatformInt64? amountZat,
+    required bool allowLinking,
   });
 
   Future<AddressPair> crateApiNewShieldedAddress();
@@ -221,6 +222,7 @@ abstract class RustLibApi extends BaseApi {
     required String to,
     required PlatformInt64 zat,
     required bool sendEverything,
+    required bool allowLinking,
     String? memo,
   });
 
@@ -1050,6 +1052,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<YecPreview> crateApiMovePreview({
     required MoveDirection direction,
     PlatformInt64? amountZat,
+    required bool allowLinking,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -1057,6 +1060,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_move_direction(direction, serializer);
           sse_encode_opt_box_autoadd_i_64(amountZat, serializer);
+          sse_encode_bool(allowLinking, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -1069,7 +1073,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_yew_error,
         ),
         constMeta: kCrateApiMovePreviewConstMeta,
-        argValues: [direction, amountZat],
+        argValues: [direction, amountZat, allowLinking],
         apiImpl: this,
       ),
     );
@@ -1077,7 +1081,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiMovePreviewConstMeta => const TaskConstMeta(
     debugName: "move_preview",
-    argNames: ["direction", "amountZat"],
+    argNames: ["direction", "amountZat", "allowLinking"],
   );
 
   @override
@@ -1520,6 +1524,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     required String to,
     required PlatformInt64 zat,
     required bool sendEverything,
+    required bool allowLinking,
     String? memo,
   }) {
     return handler.executeNormal(
@@ -1529,6 +1534,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(to, serializer);
           sse_encode_i_64(zat, serializer);
           sse_encode_bool(sendEverything, serializer);
+          sse_encode_bool(allowLinking, serializer);
           sse_encode_opt_String(memo, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
@@ -1542,7 +1548,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_yew_error,
         ),
         constMeta: kCrateApiSendYecPreviewConstMeta,
-        argValues: [to, zat, sendEverything, memo],
+        argValues: [to, zat, sendEverything, allowLinking, memo],
         apiImpl: this,
       ),
     );
@@ -1550,7 +1556,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiSendYecPreviewConstMeta => const TaskConstMeta(
     debugName: "send_yec_preview",
-    argNames: ["to", "zat", "sendEverything", "memo"],
+    argNames: ["to", "zat", "sendEverything", "allowLinking", "memo"],
   );
 
   @override

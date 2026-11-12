@@ -208,6 +208,22 @@ that server and a burn. They are listed in the order a coin meets them.
     the wallet. The change stays private.
 - **Spends from a post-quantum address** reveal the source address and its coins, as any
   transparent spend does (`AllowFullyTransparent`).
+- **Linking public addresses (consent).** A transaction that spends coins of two of the
+  wallet's public addresses shows everyone that they belong to one wallet. The full node's
+  `z_sendmany` refuses such a send under its default policy and asks for `NoPrivacy` (a public
+  recipient) or `AllowLinkingAccountAddresses` (a private one).
+  - The app's public send and its move to private take the coins of **one** public address
+    (`coins::select_yec_linking`): the address needing the fewest coins, then the smallest total.
+  - When no single address holds the amount but several together do, the core stops with
+    `AddressLinkingNeeded` and asks, in plain words. It builds the combined transaction only after
+    the user agrees (`allow_linking`). Declining sends nothing.
+  - "Move all" to private spends every public address's coins, so it asks whenever there is more
+    than one.
+  - A send from a post-quantum address spends that one address only, by design.
+  - The Yellowback operations (mint, transfer, redeem, claim, release) take their YEC fee coins
+    from any public address, as the full node's `yed_*` calls do. They are outside this rule.
+  - The web wallet refuses with the `linking:` kind and the same text. Its screens do not yet
+    offer the go-ahead.
 - **Note-lookup consent.** A private spend built by the hybrid builder (private → post-quantum, a
   mint from the private balance) must decrypt each spent note again from the transaction that
   created it. The wallet reads those transactions from its own store; memo enhancement keeps every

@@ -320,6 +320,39 @@ pub fn sapling_prepare(
     })
 }
 
+/// A spend's note randomness: after ZIP-212 (Canopy) the 32-byte `rseed`; before it the note
+/// commitment randomness `rcm` itself, a Jubjub scalar in its canonical little-endian encoding
+/// (`Rseed::BeforeZip212`, a note from before Canopy: on mainnet below height 1,100,006).
+pub fn rseed_of(s: &crate::sapling_part::SaplingSpend) -> Result<Rseed, Refused> {
+    let b = hex32(&s.rseed, "rseed")?;
+    if s.after_zip212 {
+        return Ok(Rseed::AfterZip212(b));
+    }
+    Option::<jubjub::Fr>::from(jubjub::Fr::from_bytes(&b))
+        .map(Rseed::BeforeZip212)
+        .ok_or_else(|| (refuse::MALFORMED, "rcm: not a Jubjub scalar".to_string()))
+}
+
+/// Whether `addr` is an address of `dfvk` in `scope`: its transmission key is the one that
+/// scope's incoming viewing key gives for its diversifier (`pk_d = [ivk] g_d`).
+///
+/// Not `DiversifiableFullViewingKey::decrypt_diversifier`: in sapling-crypto 0.7.0 its internal
+/// arm derives the internal diversifier index but rebuilds the address with the EXTERNAL key
+/// (`self.address(j_internal)`), so it never answers `Scope::Internal` and every change note
+/// (sent to `change_address()`) was refused as "not this account's" (real-stack run YEW-REAL,
+/// finding 0: the second private -> post-quantum send).
+pub fn owns_in_scope(
+    dfvk: &sapling_crypto::zip32::DiversifiableFullViewingKey,
+    addr: &PaymentAddress,
+    scope: Scope,
+) -> bool {
+    let derived = match scope {
+        Scope::External => dfvk.diversified_address(*addr.diversifier()),
+        Scope::Internal => dfvk.diversified_change_address(*addr.diversifier()),
+    };
+    derived.as_ref() == Some(addr)
+}
+
 /// A spend's note, path and full viewing key, checked as yewd-signer's `sapling_build` does.
 fn spend_parts(
     dfvk: &sapling_crypto::zip32::DiversifiableFullViewingKey,
@@ -337,25 +370,14 @@ fn spend_parts(
         })?;
     let addr = PaymentAddress::from_bytes(&addr_bytes)
         .ok_or_else(|| (refuse::MALFORMED, "spend recipient".to_string()))?;
-    if !s.after_zip212 {
-        return no(
-            refuse::MALFORMED,
-            "a pre-ZIP-212 note is not spent by this signer",
-        );
-    }
-    let note = Note::from_parts(
-        addr,
-        NoteValue::from_raw(s.value),
-        Rseed::AfterZip212(hex32(&s.rseed, "rseed")?),
-    );
+    let note = Note::from_parts(addr, NoteValue::from_raw(s.value), rseed_of(s)?);
     let scope = if s.internal {
         Scope::Internal
     } else {
         Scope::External
     };
-    match dfvk.decrypt_diversifier(&addr) {
-        Some((_, sc)) if sc == scope => {}
-        _ => return no(refuse::KEY_MISMATCH, "a spent note is not this account's"),
+    if !owns_in_scope(dfvk, &addr, scope) {
+        return no(refuse::KEY_MISMATCH, "a spent note is not this account's");
     }
     if s.path.len() != 32 {
         return no(refuse::MALFORMED, "a Merkle path has 32 nodes");
@@ -559,6 +581,141 @@ pub fn sign_hybrid(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::sapling_part::{SaplingPart, SaplingSpend};
+    use incrementalmerkletree::{Hashable, Level};
+
+    const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    fn params_dir() -> std::path::PathBuf {
+        if let Ok(d) = std::env::var("YEW_SAPLING_PARAMS") {
+            return d.into();
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        if cfg!(target_os = "macos") {
+            format!("{home}/Library/Application Support/ZcashParams").into()
+        } else {
+            format!("{home}/.zcash-params").into()
+        }
+    }
+
+    /// One note of `value` to `addr` at position 0 of an otherwise empty tree: its spend (the
+    /// path of empty subtrees) and the anchor that path leads to.
+    fn lone_spend(
+        addr: &PaymentAddress,
+        value: u64,
+        rseed: Rseed,
+        internal: bool,
+    ) -> (SaplingSpend, String) {
+        let note = Note::from_parts(*addr, NoteValue::from_raw(value), rseed);
+        let mut cur = Node::from_cmu(&note.cmu());
+        let mut path = Vec::with_capacity(32);
+        for i in 0..32u8 {
+            let sib = Node::empty_root(Level::from(i));
+            path.push(hex::encode(sib.to_bytes()));
+            cur = Node::combine(Level::from(i), &cur, &sib);
+        }
+        let (rseed, after_zip212) = match note.rseed() {
+            Rseed::AfterZip212(r) => (hex::encode(r), true),
+            Rseed::BeforeZip212(r) => (hex::encode(r.to_bytes()), false),
+        };
+        (
+            SaplingSpend {
+                recipient: hex::encode(addr.to_bytes()),
+                value,
+                rseed,
+                after_zip212,
+                internal,
+                position: 0,
+                path,
+            },
+            hex::encode(cur.to_bytes()),
+        )
+    }
+
+    /// Spend `spend` back to the change address, prove, authorize and finish: the bundle must
+    /// verify (proofs, spend authorization, binding signature) under the Vault branch.
+    fn spend_and_verify(extsk: &ExtendedSpendingKey, spend: SaplingSpend, anchor: String) {
+        use zcash_primitives::transaction::sighash::SignableInput;
+        use zcash_primitives::transaction::sighash_v4::v4_signature_hash;
+        let branch_id = crate::params::VAULT_BRANCH_ID;
+        let part = SaplingPart {
+            target_height: 300,
+            vault_height: Some(1),
+            outputs: vec![SaplingOut::Change {
+                value: spend.value as i64 - 1_000,
+            }],
+            spends: vec![spend],
+            anchor,
+            params_dir: params_dir().display().to_string(),
+        };
+        let tx = yew_core::tx::Transaction::new_v4();
+        let h = sapling_prepare(
+            extsk.clone(),
+            Network::Regtest,
+            &part,
+            &tx,
+            branch_id,
+            rand_core::OsRng,
+        )
+        .unwrap_or_else(|e| panic!("prepare: {e:?}"));
+        let (_, raw) = sign_hybrid(h, tx, &[], branch_id, rand_core::OsRng).unwrap();
+        let branch = zcash_protocol::consensus::BranchId::try_from(branch_id).unwrap();
+        let ztx = zcash_primitives::transaction::Transaction::read(&raw[..], branch).unwrap();
+        let sighash: [u8; 32] = v4_signature_hash(&ztx, &SignableInput::Shielded)
+            .as_ref()
+            .try_into()
+            .unwrap();
+        let sb = ztx.sapling_bundle().cloned().unwrap();
+        let d = params_dir();
+        let params = zcash_proofs::load_parameters(
+            &d.join(crate::sapling_params::SPEND.name),
+            &d.join(crate::sapling_params::OUTPUT.name),
+            None,
+        );
+        let mut bv = sapling_crypto::BatchValidator::new();
+        assert!(bv.check_bundle(sb, sighash));
+        assert!(bv.validate(
+            &params.spend_params.verifying_key(),
+            &params.output_params.verifying_key(),
+            rand_core::OsRng
+        ));
+    }
+
+    /// Real-stack run YEW-REAL findings 0 and 1, the hybrid builder's spends: a change note
+    /// (internal scope; it used to be refused as "not this account's") and a note from before
+    /// Canopy (pre-ZIP-212, spent by its `rcm`; it used to be refused) are spent and the bundle
+    /// verifies; a note in the scope the caller does not name, or a `rcm` that is not a Jubjub
+    /// scalar, is still refused.
+    #[test]
+    fn change_and_pre_zip212_notes_are_spent() {
+        let extsk = sapling_extsk(PHRASE, Network::Regtest).unwrap();
+        let dfvk = extsk.to_diversifiable_full_viewing_key();
+        let (_, change) = dfvk.change_address();
+        let (_, ext) = dfvk.default_address();
+        let (s, a) = lone_spend(&change, 400_000, Rseed::AfterZip212([9; 32]), true);
+        spend_and_verify(&extsk, s, a);
+        let mut rcm = [0u8; 32];
+        rcm[0] = 0x2a;
+        let rcm = Option::<jubjub::Fr>::from(jubjub::Fr::from_bytes(&rcm)).unwrap();
+        let (s, a) = lone_spend(&ext, 400_000, Rseed::BeforeZip212(rcm), false);
+        assert!(!s.after_zip212);
+        spend_and_verify(&extsk, s, a);
+        let (s, a) = lone_spend(&change, 400_000, Rseed::BeforeZip212(rcm), true);
+        spend_and_verify(&extsk, s, a);
+        // the scope must be the one named
+        let (s, a) = lone_spend(&change, 400_000, Rseed::AfterZip212([9; 32]), false);
+        let anchor = Anchor::from_bytes(hex32(&a, "a").unwrap()).unwrap();
+        let e = spend_parts(&dfvk, &s, &anchor).unwrap_err();
+        assert_eq!(e.0, refuse::KEY_MISMATCH, "{e:?}");
+        // a non-canonical scalar (the field modulus's top byte exceeded) is refused
+        let (mut s, a) = lone_spend(&ext, 400_000, Rseed::BeforeZip212(rcm), false);
+        s.rseed = hex::encode([0xff; 32]);
+        let anchor = Anchor::from_bytes(hex32(&a, "a").unwrap()).unwrap();
+        let e = spend_parts(&dfvk, &s, &anchor).unwrap_err();
+        assert_eq!(e.0, refuse::MALFORMED, "{e:?}");
+    }
+
     /// Review YEW-REVIEW-6 L3: the app bridge's only input (`crate::api`, flutter_rust_bridge.yaml
     /// `rust_input`) and the browser build's exports (`web/core-wasm`) name nothing from this
     /// module, so no app call reaches these primitives except through a gated builder.

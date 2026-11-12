@@ -264,8 +264,13 @@ impl Facade {
                 _ => self.forward(path, body.clone(), id).await,
             };
         }
-        // ycash6's table arity check (rpc/server.cpp), before the handler: -32602 with the help text
-        if matches!(class, Some(Class::Wallet { .. } | Class::Local)) {
+        // ycash6's table arity check (rpc/server.cpp), before the handler: -32602 with the help text;
+        // for the forwarded and augmented node methods too, before the backend sees the call
+        // (koganyd answers -1 "Invalid params" there; lane KG-YEWD-FIX)
+        if matches!(
+            class,
+            Some(Class::Wallet { .. } | Class::Local | Class::Augmented) | None
+        ) {
             if let Ok(p) = params_of(env.params) {
                 let encrypted = matches!(method.as_str(), "walletlock" | "walletpassphrase")
                     && self.wallet.encrypted().await;

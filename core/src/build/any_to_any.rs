@@ -647,6 +647,60 @@ pub fn check_signed_fee(
 mod tests {
     use super::*;
 
+    /// Fee parity with the node (real-stack run YEW-REAL finding 3, re-run 2026-11-11 in
+    /// `scripts/real-run`, ycash6 6.22.0-beta2): the eight post-quantum-source cells of the matrix,
+    /// each the node's own `z_sendmany` (wallet coin 1 YEC, change back to the source) as it was
+    /// mined, with no attested price (the relay floor, 100 zat/kB: the ZIP-317 conventional fee
+    /// rules) and at $50 per YEC (the plain rate, 40,000 zat/kB). The app (`build::pq_send`) and
+    /// yewd plan through this function; it must give the node's fee and size for each.
+    /// (`size`, fee without a price, fee at the price), per (source, recipient).
+    #[test]
+    fn pq_source_fees_equal_the_nodes_z_sendmany() {
+        const FN: u8 = pq::SCHEME_FN_DSA_512;
+        const SLH: u8 = pq::SCHEME_SLH_DSA_SHA2_128S;
+        let ecc = crate::script::p2pkh_script(&[0x21; 20]);
+        // recipient: Some(script) transparent, None Sapling
+        type Cell = (u8, Option<Vec<u8>>, usize, i64, i64);
+        let cells: [Cell; 8] = [
+            (FN, Some(ecc.clone()), 1_727, 5_500, 69_080),
+            (FN, None, 3_653, 6_500, 146_120),
+            (FN, Some(pq_script(FN, 0x31)), 1_737, 5_500, 69_480),
+            (FN, Some(pq_script(SLH, 0x32)), 1_737, 5_500, 69_480),
+            (SLH, Some(ecc.clone()), 8_088, 27_000, 323_520),
+            (SLH, None, 10_014, 28_000, 400_560),
+            (SLH, Some(pq_script(FN, 0x33)), 8_098, 27_000, 323_920),
+            (SLH, Some(pq_script(SLH, 0x34)), 8_098, 27_000, 323_920),
+        ];
+        for (scheme, to, size, fee_unpriced, fee_priced) in cells {
+            let source = pq_script(scheme, 0x40);
+            let coins = [coin(100_000_000, 0, &source)];
+            let r = [PlanRecipient {
+                script: to.clone(),
+                amount: 20_000_000,
+            }];
+            for (rate, cap, want) in [
+                (100, 10_000_000, fee_unpriced),
+                (40_000, 4_000_000, fee_priced),
+            ] {
+                let p = plan_pq_source(
+                    &coins,
+                    &source,
+                    &r,
+                    None,
+                    "AllowFullyTransparent",
+                    rate,
+                    cap,
+                )
+                .unwrap();
+                assert_eq!(
+                    (p.estimated_bytes, p.fee),
+                    (size, want),
+                    "scheme {scheme} to {to:?} at {rate} zat/kB"
+                );
+            }
+        }
+    }
+
     fn pq_script(scheme: u8, b: u8) -> Vec<u8> {
         pq::pqpkh_script(&pq::PqKeyId {
             scheme,

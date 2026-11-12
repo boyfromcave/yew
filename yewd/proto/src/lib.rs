@@ -483,6 +483,12 @@ pub struct SaplingBuildRequest {
     pub expiry_height: u32,
     /// Regtest's vault activation height (`-nuparams=6d5b7a31:<h>`), if any.
     pub vault_height: Option<u32>,
+    /// Regtest's other upgrade heights as the node reports them (`getblockchaininfo.upgrades`),
+    /// `name=height` pairs, `none` for an upgrade the node does not activate: the build's branch
+    /// and its notes' format (ZIP-212 from Canopy) follow the node, not the devnet's all-at-1.
+    /// Ignored on mainnet and testnet. Absent: the devnet's heights.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrades: Option<String>,
     pub inputs: Vec<SaplingTInput>,
     pub spends: Vec<SaplingSpend>,
     pub outputs: Vec<SaplingOut>,

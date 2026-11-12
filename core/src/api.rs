@@ -132,6 +132,12 @@ pub enum ErrorKind {
     /// `message` says so in plain words. Sync again, or repeat the call with the go-ahead
     /// (`allow_note_lookup`) after the user agreed.
     NoteLookupNeeded,
+    /// No single public address holds the amount; paying it would combine coins of several of
+    /// the wallet's public addresses in one transaction and so link them on the chain (beta2
+    /// D-5: ycashd's `z_sendmany` refuses this under its default privacy policy). `message`
+    /// says so in plain words. Repeat the call with the go-ahead (`allow_linking`) after the
+    /// user agreed.
+    AddressLinkingNeeded,
 }
 
 /// The one error type of the surface. `message` is complete and showable as-is.
@@ -170,6 +176,9 @@ impl From<WalletError> for YewError {
         match e {
             WalletError::Gate(g) => YewError::new(ErrorKind::Gate, gate_message(&g)),
             WalletError::Net(n) => YewError::from(n),
+            WalletError::Coins(c @ crate::coins::CoinError::LinkingNeeded { .. }) => {
+                YewError::new(ErrorKind::AddressLinkingNeeded, c.to_string())
+            }
             WalletError::Coins(c) => YewError::new(ErrorKind::NeedYecForFees, c.to_string()),
             WalletError::Transfer(t) => YewError::new(ErrorKind::Refused, t.to_string()),
             WalletError::Key(k) => YewError::new(ErrorKind::Input, k.to_string()),
@@ -2207,11 +2216,14 @@ pub fn history(page: u32, page_size: u32) -> Result<HistoryPage, YewError> {
 /// bytes) from private notes; a transparent recipient from private notes when they cover it
 /// (`reveals_shielded` set: the amber line), else from transparent YEC exactly as before.
 /// A transparent preview is signed already; a private one is proved and signed at confirm.
-/// Nothing is broadcast.
+/// Nothing is broadcast. Transparent funding takes the coins of one public address; when only
+/// several together cover the send the answer is [`ErrorKind::AddressLinkingNeeded`], and the
+/// call with `allow_linking` (the user's go-ahead) combines them.
 pub fn send_yec_preview(
     to: String,
     zat: i64,
     send_everything: bool,
+    allow_linking: bool,
     memo: Option<String>,
 ) -> Result<YecPreview, YewError> {
     with_open_async(|o| {
@@ -2228,6 +2240,7 @@ pub fn send_yec_preview(
                 &to,
                 zat,
                 send_everything,
+                allow_linking,
                 memo.as_deref(),
                 r.tip,
                 r.branch_id,
@@ -2300,7 +2313,7 @@ fn yec_preview_of(o: &Open, plan: &YecSendPlan, reserved: i64) -> YecPreview {
             txid: String::new(),
             funding: YecFunding::Transparent,
             reveals_shielded: false,
-            memo: None,
+            memo: p.memo.clone(),
             params_needed: !sapling_params::status(&o.params_dir).present(),
         },
     }
@@ -2320,10 +2333,13 @@ pub enum MoveDirection {
 /// between the wallet's own public and private balances, after a sync of both (yew-shielded
 /// plan S4, `build::yec_move`). To private spends plain public YEC only, never the fee reserve
 /// or anything YED. The preview is the send preview (`to` is the wallet's own address); confirm
-/// with [`move_confirm`]. Both directions prove at confirm (`params_needed`).
+/// with [`move_confirm`]. Both directions prove at confirm (`params_needed`). To private takes
+/// the coins of one public address unless `allow_linking` (the user's go-ahead after
+/// [`ErrorKind::AddressLinkingNeeded`]).
 pub fn move_preview(
     direction: MoveDirection,
     amount_zat: Option<i64>,
+    allow_linking: bool,
 ) -> Result<YecPreview, YewError> {
     with_open_async(|o| {
         Box::pin(async move {
@@ -2337,6 +2353,7 @@ pub fn move_preview(
                     MoveDirection::ToPublic => yec_move::Direction::ToPublic,
                 },
                 amount_zat,
+                allow_linking,
                 r.tip,
             )?;
             let out = yec_preview_of(o, &plan, r.yec.1);

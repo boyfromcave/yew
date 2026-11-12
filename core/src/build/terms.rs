@@ -1389,6 +1389,15 @@ pub fn mint_gate(
             "Minting is paused: the price feed is not armed (attestation {}). The node refuses every mint until enough attestors arm it. Redeeming and claiming are not affected.",
             if price.attest_status.is_empty() { "status unknown" } else { price.attest_status.as_str() }
         ))
+    } else if !price.armed {
+        // A test network without MINT_REQUIRES_ARMED (regtest, devnet): the node would accept
+        // an unarmed mint, but this wallet builds every MINT on an attestor bundle and an unarmed
+        // feed has none to give (real-stack run WEB-REAL LOW-3: the start failed late with
+        // `bundle-insufficient: 0 of 0 selected attestors`). Refused here, before anything.
+        Some(format!(
+            "Minting is not available: the price feed is not armed (attestation {}), and this wallet mints only with the attestors' signed bundle, which an unarmed feed cannot give. Arm the attestors first (on a test network the node's own yed_mint can mint without them).",
+            if price.attest_status.is_empty() { "status unknown" } else { price.attest_status.as_str() }
+        ))
     } else if mintable_classes.is_empty() {
         Some(if stats.halt_mask.iter().any(|h| h == "NO_PRICE") {
             WAITING_FOR_PRICE.to_string()
@@ -2405,9 +2414,15 @@ mod tests {
         // Armed, every class: open.
         let g = mint_gate(r, &info(false), &price(true), &stats(&["A", "B", "C"], &[])).unwrap();
         assert!(g.blocked.is_none() && g.mintable_classes == ["A", "B", "C"]);
-        // Regtest without the flag: an unarmed price does not block (the node does not either).
+        // Regtest without the flag: the node would mint unarmed, but the wallet needs a bundle
+        // an unarmed feed cannot give: blocked up front with the reason (WEB-REAL LOW-3).
         let g = mint_gate(r, &info(false), &price(false), &stats(&["A"], &[])).unwrap();
-        assert!(g.blocked.is_none() && !g.requires_armed);
+        assert!(!g.requires_armed);
+        let why = g.blocked.as_deref().unwrap();
+        assert!(
+            why.contains("not armed (attestation PENDING)") && why.contains("signed bundle"),
+            "{why}"
+        );
         // Regtest with the flag: blocked, with the attestation status in the reason.
         let g = mint_gate(r, &info(true), &price(false), &stats(&[], &[])).unwrap();
         assert!(g.requires_armed);

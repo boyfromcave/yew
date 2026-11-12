@@ -64,7 +64,7 @@ async fn fixture(name: &str) -> Fix {
     for n in 2..14 {
         txs.push(payment(foreign(n), addr_script(&ecc), COIN));
     }
-    // sendtoaddress and sendmany select post-quantum coins too (largest first)
+    // post-quantum coins beside them (sendtoaddress and sendmany spend the ECC coins only)
     for n in 14..18 {
         txs.push(payment(foreign(n), addr_script(&slh), 5 * COIN));
     }
@@ -251,7 +251,15 @@ async fn a_token_seen_at_sync_marks() {
 async fn the_override_proceeds() {
     let mut f = fixture("held-ack").await;
     f.mark("p2pkh").await;
+    let v: Value = serde_json::from_str(&f.call("getwalletinfo", &[]).await.unwrap()).unwrap();
+    assert_eq!(
+        (&v["yed_held"], &v["yed_unlocked"]),
+        (&json!(true), &json!(false))
+    );
     f.w.opts.yellowback_ack = true;
+    // ycash6 #97: getwalletinfo says the held wallet's YED outputs are not locked
+    let v: Value = serde_json::from_str(&f.call("getwalletinfo", &[]).await.unwrap()).unwrap();
+    assert_eq!(v["yed_unlocked"], json!(true));
     for (name, r, _) in f.every_spend().await {
         r.unwrap_or_else(|e| panic!("{name}: {e:?}"));
     }

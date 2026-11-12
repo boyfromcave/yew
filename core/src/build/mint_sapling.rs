@@ -462,6 +462,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Real-stack run YEW-REAL finding 0, the carrier arm: a second mint funded from the private
+    /// balance spends the Sapling change (internal scope) the first carrier left, once mined. It
+    /// used to be refused before signing ("key-mismatch: a spent note is not this account's").
+    #[test]
+    fn carrier_from_sapling_twice_spends_the_change() {
+        let dir = std::env::temp_dir().join(format!("yew-mintsapling2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.sqlite");
+        let mut w = Wallet::open(
+            path.to_str().unwrap(),
+            params::Network::Regtest,
+            PHRASE,
+            "",
+            Some(100),
+        )
+        .unwrap();
+        w.set_vault_activation(Some(1)).unwrap();
+        let raw =
+            w.shielded_mut()
+                .unwrap()
+                .receive_for_test(100, 120, &[30_000_000], &params_dir());
+        let mut mined = vec![raw];
+        let flat = w.pq_terms().flat_zat;
+        let side = SaplingSide::of(&w, &params_dir()).unwrap();
+        let mut height = 120u32;
+        for (round, staged) in [(0, 20_000_000i64), (1, 5_000_000)] {
+            let fetched: std::collections::HashMap<[u8; 32], Vec<u8>> = mined
+                .iter()
+                .map(|r| (Transaction::parse(r).unwrap().1, r.clone()))
+                .collect();
+            let picked = w
+                .shielded_mut()
+                .unwrap()
+                .select_spends((CARRIER_VALUE + staged) as u64, |n| {
+                    mint::sapling_carrier_fee(flat, n) as u64
+                })
+                .unwrap();
+            assert_eq!(picked.notes.len(), 1);
+            assert_eq!(picked.notes[0].internal, round == 1, "round {round}");
+            let c = build_carrier_from_sapling(
+                &w,
+                (&[0xb7u8; 40], picked.fee_zat as i64, staged),
+                (&picked, &fetched, &side),
+                (height as u64, VAULT_BRANCH_ID, height + 40),
+            )
+            .unwrap_or_else(|e| panic!("carrier {}: {e}", round + 1));
+            w.shielded_mut()
+                .unwrap()
+                .record_sent(&c.raw, VAULT_BRANCH_ID)
+                .unwrap();
+            let earlier: Vec<&[u8]> = mined.iter().map(|r| r.as_slice()).collect();
+            w.shielded_mut()
+                .unwrap()
+                .mine_for_test(&earlier, height + 1, height + 20, &c.raw);
+            height += 20;
+            mined.push(c.raw);
+        }
+        drop(w);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Beta2 D-3, a mint funded from the private balance, through the builder `mint_start` uses:
     /// the notes and paths from the store; no transparent input; `vout` exactly the carrier (the
     /// P2SH of the script the core built from its carrier key and the bundle) and the staged need

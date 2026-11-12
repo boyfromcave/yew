@@ -106,11 +106,14 @@ abstract class WalletApi {
 
   Future<HistoryPage> history({required int page, required int pageSize});
 
-  /// Funded privacy first by the core; [memo] only for a private (`ys1…`) recipient.
+  /// Funded privacy first by the core; [memo] only for a private (`ys1…`) recipient. Public
+  /// funding takes one public address's coins; with [allowLinking] (after the user agreed to
+  /// ErrorKind.addressLinkingNeeded's text, beta2 D-5) the core may combine several addresses.
   Future<YecPreview> sendYecPreview({
     required String to,
     required int zat,
     required bool sendEverything,
+    bool allowLinking = false,
     String? memo,
   });
 
@@ -118,7 +121,8 @@ abstract class WalletApi {
 
   /// Move YEC between the wallet's own private and public balances (yew-shielded plan S4);
   /// [amountZat] null = all, less the fee. The preview is a send preview to the own address.
-  Future<YecPreview> movePreview({required MoveDirection direction, int? amountZat});
+  /// [allowLinking]: as [sendYecPreview], for a move to the private balance.
+  Future<YecPreview> movePreview({required MoveDirection direction, int? amountZat, bool allowLinking = false});
 
   Future<SendResult> moveConfirm({required String previewId});
 

@@ -434,6 +434,7 @@ impl Wallet {
                 format!("refusing to spend as plain YEC while the Yellowback index is unhealthy ({reason}): the wallet's YED coin locks cannot be trusted; restart with -reindex-yellowback"),
             )
         };
+        let mut index_height = None;
         let live = match node::call(node, "yed_getinfo", serde_json::json!([])).await {
             Err(NodeError::Rpc { code: c, .. }) if c == code::METHOD_NOT_FOUND => {
                 // a wallet that has held YED cannot tell its YED outputs from plain YEC here
@@ -457,6 +458,7 @@ impl Wallet {
                         ),
                     ));
                 }
+                index_height = Some(v["height"].as_i64().unwrap_or(-1));
                 true
             }
         };
@@ -495,23 +497,53 @@ impl Wallet {
                 ));
             }
         }
-        r.extend(self.payload_reserved());
+        r.extend(self.payload_reserved(index_height));
         Ok(r)
     }
 
-    /// Every output of a mempool wallet transaction that carries a Yellowback payload.
-    fn payload_reserved(&self) -> BTreeSet<(String, u32)> {
+    /// The outputs a wallet transaction's own Yellowback payload keeps out of plain YEC where the
+    /// node's index has not judged it (the C++ lines' `YellowbackInputRefusal`: unconfirmed, or
+    /// Yellowback not live, `index_height` `None`; also confirmed above the index's height):
+    /// - in the mempool: every output of a transaction carrying a payload;
+    /// - confirmed but not judged: every output the payload makes hold YED
+    ///   ([`yew_core::payload::payload_assigns`]: a MINT's token, TRANSFER / REDEEM / claim
+    ///   assignments, a claim cancel's CAN-1 refund), or every output for a payload this build does
+    ///   not know.
+    fn payload_reserved(&self, index_height: Option<i64>) -> BTreeSet<(String, u32)> {
         let mut r = BTreeSet::new();
         for (txid, p) in self.parsed_all() {
-            let mempool = self.st.wtx.get(txid).is_some_and(|w| w.block.is_none());
+            let block = self
+                .st
+                .wtx
+                .get(txid)
+                .map(|w| w.block.as_ref().map(|b| b.height));
             let payload = p.tx.vout.iter().any(|o| {
                 yew_core::script::is_op_return(&o.script_pubkey)
                     && !yewd_proto::act::is_act_output(&o.script_pubkey)
             });
-            if mempool && payload {
-                for n in 0..p.tx.vout.len() {
-                    r.insert((txid.clone(), n as u32));
+            if !payload {
+                continue;
+            }
+            match block {
+                Some(None) => {
+                    for n in 0..p.tx.vout.len() {
+                        r.insert((txid.clone(), n as u32));
+                    }
                 }
+                Some(Some(h)) if index_height.is_none_or(|i| h as i64 > i) => {
+                    let unknown = yew_core::payload::unknown_yellowback(&p.tx);
+                    let found = yew_core::payload::find_payload(&p.tx);
+                    for n in 0..p.tx.vout.len() as u32 {
+                        let held = unknown
+                            || found
+                                .as_ref()
+                                .is_some_and(|f| yew_core::payload::payload_assigns(&f.payload, n));
+                        if held {
+                            r.insert((txid.clone(), n));
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         r

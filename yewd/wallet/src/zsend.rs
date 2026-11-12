@@ -41,7 +41,7 @@ use crate::{code, txid_hex, RpcError, Wallet};
 /// `RefusePQSource` (ycashd `wallet/rpcwallet.cpp`, quantum spec A-15), now only for the
 /// operations outside K-25 (`z_shieldcoinbase`, D-7; `z_mergetoaddress`, whose merging yewd does
 /// not serve): z_sendmany spends and pays `TX_PQPKH` (beta2 D-2).
-const PQ_SOURCE: &str = " cannot spend from a post-quantum address; use sendtoaddress or sendmany";
+const PQ_SOURCE: &str = " cannot spend from a post-quantum address; use z_sendmany";
 const PQ_RECIPIENT: &str = " cannot pay a post-quantum address; use sendtoaddress or sendmany";
 
 pub(crate) fn refuse_pq(
@@ -208,6 +208,11 @@ enum Source {
 
 /// What an input-selection or build failure reports (`ThrowInputSelectionError`): the
 /// operation fails with it.
+/// ycashd's hint after an ANY_TADDR "Insufficient funds" when the policy does not allow linking the
+/// account's addresses (asyncrpcoperation_common.cpp ThrowInputSelectionError); it replaces the
+/// message's final full stop.
+const LINKING_HINT: &str = ". (This transaction may require selecting transparent coins that were sent to multiple addresses, which is not enabled by default because it would create a public link between those addresses. THIS MAY AFFECT YOUR PRIVACY. Resubmit with the `privacyPolicy` parameter set to `AllowLinkingAccountAddresses` or weaker if you wish to allow this transaction to proceed anyway.)";
+
 fn op_error(code: i64, m: impl Into<String>) -> RpcError {
     RpcError::new(code, m)
 }
@@ -593,6 +598,10 @@ impl Wallet {
             + z_notes.iter().map(|n| n.value as i64).sum::<i64>();
         // selection at the conventional fee (or the given one), the change decided with it
         let z_source = matches!(source, Source::Z(_));
+        // ycashd's suggestLinkingAddresses (asyncrpcoperation_common.cpp ThrowInputSelectionError):
+        // ANY_TADDR (the account's pattern) under a policy that does not allow linking its addresses
+        let suggest_linking = matches!(source, Source::AnyTaddr)
+            && !plan::policy_allows(policy, "AllowLinkingAccountAddresses");
         // the first pass already asks for the fee of the outputs alone (ycashd's target in its
         // "Insufficient funds: have …, need …" is amount + fee: vault_pq_wallet.py)
         let mut need_fee =
@@ -633,7 +642,7 @@ impl Wallet {
                 if !z_source && !coinbase_ok {
                     msg.push_str("; note that coinbase outputs will not be selected if you specify ANY_TADDR, any transparent recipients are included, or if the `privacyPolicy` parameter is not set to `AllowRevealedSenders` or weaker");
                 }
-                msg.push('.');
+                msg.push_str(if suggest_linking { LINKING_HINT } else { "." });
                 return Err(op_error(code::INVALID_PARAMETER, msg));
             }
             if !enough(got) {
@@ -649,7 +658,7 @@ impl Wallet {
                 if !z_source && !coinbase_ok {
                     msg.push_str("; note that coinbase outputs will not be selected if you specify ANY_TADDR, any transparent recipients are included, or if the `privacyPolicy` parameter is not set to `AllowRevealedSenders` or weaker");
                 }
-                msg.push('.');
+                msg.push_str(if suggest_linking { LINKING_HINT } else { "." });
                 return Err(op_error(code::INVALID_PARAMETER, msg));
             }
             change = got - need;
@@ -683,6 +692,29 @@ impl Wallet {
             }
         }
         let fee_zat = need_fee;
+        // ycashd's TransactionEffects::GetRequiredPrivacyPolicy (wallet_tx_builder.cpp:1181-1236):
+        // coins from more than one transparent address link those addresses publicly, so ANY_TADDR
+        // may combine them only under AllowLinkingAccountAddresses (no transparent recipient) or
+        // NoPrivacy (with one); one address needs AllowRevealedSenders / AllowFullyTransparent
+        if !sel_t.is_empty() {
+            let addresses: std::collections::BTreeSet<&Vec<u8>> =
+                sel_t.iter().map(|c| &c.2).collect();
+            let required = match (addresses.len() > 1, has_t) {
+                (true, true) => "NoPrivacy",
+                (true, false) => "AllowLinkingAccountAddresses",
+                (false, true) => "AllowFullyTransparent",
+                (false, false) => "AllowRevealedSenders",
+            };
+            if !plan::policy_allows(policy, required) {
+                return Err(op_error(
+                    code::WALLET_ERROR,
+                    format!(
+                        "Failed to build transaction: The specified privacy policy, {policy}, does not permit the creation of the requested transaction. Select {required}{} to allow this transaction to be constructed.",
+                        if required == "NoPrivacy" { "" } else { " or weaker" }
+                    ),
+                ));
+            }
+        }
         // the Sapling paths of the spent notes, at the tip
         let (anchor, paths) = if sel_z.is_empty() {
             (String::new(), Vec::new())
@@ -757,6 +789,7 @@ impl Wallet {
             target_height: next.height,
             expiry_height: next.height + TX_EXPIRY_DELTA,
             vault_height: self.chain.vault_activation,
+            upgrades: self.chain.upgrades.clone(),
             inputs: sel_t
                 .iter()
                 .map(|c| SaplingTInput {

@@ -252,7 +252,7 @@ fn lookup_text(n: usize, bound: &str) -> String {
 /// its creating transaction (`fetched`, by txid) with the account's incoming viewing key of the
 /// note's scope, and bound to the store's note: the fetched bytes must hash to the txid, the
 /// output must decrypt, its commitment must equal the store's (so value, recipient and `rcm` are
-/// the store's), and it must be a ZIP-212 note (its `rseed`). The paths are the store's.
+/// the store's); a note from before ZIP-212 is spent by its `rcm`. The paths are the store's.
 pub fn note_spends(
     extsk: &sapling_crypto::zip32::ExtendedSpendingKey,
     notes: &[crate::shielded::SelectedNote],
@@ -306,17 +306,16 @@ pub fn note_spends(
                 n.output_index
             )));
         }
-        let rseed = match note.rseed() {
-            sapling_crypto::Rseed::AfterZip212(r) => *r,
-            sapling_crypto::Rseed::BeforeZip212(_) => return Err(other(
-                "a note from before ZIP-212 cannot be spent by this app; move it with a full node",
-            )),
+        // a note from before Canopy (pre-ZIP-212) is spent by its `rcm` (YEW-REAL finding 1)
+        let (rseed, after_zip212) = match note.rseed() {
+            sapling_crypto::Rseed::AfterZip212(r) => (*r, true),
+            sapling_crypto::Rseed::BeforeZip212(r) => (r.to_bytes(), false),
         };
         out.push(crate::sapling_part::SaplingSpend {
             recipient: hex::encode(addr.to_bytes()),
             value: n.value,
             rseed: hex::encode(rseed),
-            after_zip212: true,
+            after_zip212,
             internal: n.internal,
             position: n.position,
             path: n.path.clone(),
@@ -571,8 +570,10 @@ mod tests {
             },
         )
         .unwrap();
-        let e = crate::build::yec_private::plan_yec_send(&mut w, &pq, 1_000, false, None, 120, 1)
-            .expect_err("no public coins");
+        let e = crate::build::yec_private::plan_yec_send(
+            &mut w, &pq, 1_000, false, false, None, 120, 1,
+        )
+        .expect_err("no public coins");
         assert!(matches!(e, WalletError::Coins(_)), "{e}");
         assert!(crate::build::yec_private::pq_recipient_needs_private(
             &w, &pq, &e
@@ -733,6 +734,78 @@ mod tests {
         assert_eq!(after.spendable_zat, 0, "{after:?}");
         let e = err(build(&mut w, &side, &to, 100_000, VAULT_BRANCH_ID, &f));
         assert!(e.starts_with("Not enough private YEC"), "{e}");
+        drop(w);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Real-stack run YEW-REAL finding 0: the second private -> post-quantum send. The first send
+    /// leaves its change at the account's internal address; once mined, that change note is the
+    /// only spendable note, recorded with the internal scope, and the second send spends it (it
+    /// used to be refused before signing: "key-mismatch: a spent note is not this account's",
+    /// sapling-crypto 0.7.0's `decrypt_diversifier` never answers the internal scope). Its own
+    /// change is again internal, and spends again: a third send.
+    #[test]
+    fn sapling_to_pq_twice_spends_the_change() {
+        sapling_to_pq_thrice(crate::pq::SCHEME_SLH_DSA_SHA2_128S, "twice");
+    }
+
+    /// Review of the real-run fixes, test gap: the same with an FN-DSA-512 recipient.
+    #[test]
+    fn sapling_to_fn_dsa_twice_spends_the_change() {
+        sapling_to_pq_thrice(crate::pq::SCHEME_FN_DSA_512, "twice-fn");
+    }
+
+    /// Three Sapling -> post-quantum sends to a recipient of `scheme`, each spending the change
+    /// of the one before once mined.
+    fn sapling_to_pq_thrice(scheme: u8, name: &str) {
+        let (mut w, dir, f) = wallet_with_notes(name, &[2_000_000]);
+        if scheme == crate::pq::SCHEME_FN_DSA_512 {
+            let mut t = w.pq_terms();
+            t.falcon_active = true;
+            w.set_pq_terms_for_test(t);
+        }
+        let first_raw = f.values().next().unwrap().clone();
+        let id = crate::pq::PqKeyId {
+            scheme,
+            hash: [0x5d; 32],
+        };
+        let to = keys::encode_pq_yec(w.network, &id).unwrap();
+        let side = SaplingSide::of(&w, &params_dir()).unwrap();
+        let mut mined: Vec<Vec<u8>> = vec![first_raw];
+        let mut height = 120u32;
+        let mut have = 2_000_000i64;
+        for round in 0..3 {
+            let mut fetched = Fetched::new();
+            for r in &mined {
+                let (_, t) = Transaction::parse(r).unwrap();
+                fetched.insert(t, r.clone());
+            }
+            let p = build(&mut w, &side, &to, 300_000, VAULT_BRANCH_ID, &fetched)
+                .unwrap_or_else(|e| panic!("send {}: {e}", round + 1));
+            assert_eq!(p.notes, 1);
+            assert_eq!(p.amount + p.fee + p.change, have);
+            have = p.change;
+            w.shielded_mut()
+                .unwrap()
+                .record_sent(&p.raw, VAULT_BRANCH_ID)
+                .unwrap();
+            let earlier: Vec<&[u8]> = mined.iter().map(|r| r.as_slice()).collect();
+            w.shielded_mut()
+                .unwrap()
+                .mine_for_test(&earlier, height + 1, height + 20, &p.raw);
+            height += 20;
+            mined.push(p.raw.clone());
+            let b = w.shielded().unwrap().balance().unwrap();
+            assert_eq!(b.spendable_zat as i64, have, "round {round}: {b:?}");
+            // the change note the store will hand the next send is internal
+            let spends = w
+                .shielded_mut()
+                .unwrap()
+                .select_spends(100_000, |_| 2_000)
+                .unwrap();
+            assert_eq!(spends.notes.len(), 1);
+            assert!(spends.notes[0].internal, "round {round}");
+        }
         drop(w);
         let _ = std::fs::remove_dir_all(&dir);
     }

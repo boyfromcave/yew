@@ -560,6 +560,21 @@ pub fn find_op_return(tx: &Transaction) -> Option<usize> {
     found
 }
 
+/// Whether payload `p` makes output `n` of its transaction hold YED: every way an output comes to
+/// hold YED (ycash6 `src/yellowback/state.cpp`, the four `TokenRecord` writes): a MINT's
+/// `vout[1]` (`ApplyMint`), a TRANSFER's assignments (`ApplyTransfer`), a REDEEM's or claim's
+/// assignments on a vault spend (`ApplyVaultSpend`), and CAN-1's refund on a claim cancel, which
+/// carries CANCEL_COSIGN (`ApplyIntentSpend`: the lowest output at index >= 1 paying the
+/// claimant's refund script, at any non-zero value, from vault state; over-approximated here as
+/// every output at index >= 1).
+pub fn payload_assigns(p: &Payload, n: u32) -> bool {
+    match p {
+        Payload::Mint { .. } => n == 1,
+        Payload::CancelCosign => n >= 1,
+        p => p.assignments().iter().any(|a| a.vout as u32 == n),
+    }
+}
+
 /// True when `tx`'s only `OP_RETURN` carries the Yellowback magic, in the size range, with a
 /// type byte this build does not know or a version above that type's (the node, if it is
 /// newer, may give it a meaning, YED-creating or not; this build cannot tell). Layer 3 of the

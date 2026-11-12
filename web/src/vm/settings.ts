@@ -7,7 +7,7 @@ import type { WalletMeta } from "../keystore";
 import { storeDirOf } from "../keystore";
 export interface SettingsState {
   params: ParamsStatus | null; fetching: ParamsProgress | null; wif: string; error: string; status: string;
-  /** Base URL (ending in `/`) the proving files are fetched from; "" = the standard source. */
+  /** Base URL (ending in `/`) the proving files are fetched from; "" = this page's own server, `/sapling-params/`. */
   paramsSource: string;
 }
 export interface Forgettable { forget(): Promise<void> }

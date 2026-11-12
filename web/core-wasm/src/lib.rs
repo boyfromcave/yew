@@ -79,6 +79,7 @@ fn wallet_err(e: WalletError) -> JsValue {
         WalletError::Key(_) => "invalid",
         WalletError::Mint(MintError::BadAmount { .. } | MintError::BadLock { .. }) => "invalid",
         WalletError::Shielded(s) => shielded_kind(s),
+        WalletError::Coins(yew_core::coins::CoinError::LinkingNeeded { .. }) => "linking",
         WalletError::Coins(_)
         | WalletError::Tx(_)
         | WalletError::Transfer(_)
@@ -820,7 +821,14 @@ pub fn balances() -> Result<JsValue, JsValue> {
             None => Default::default(),
         };
         let staged = yew_core::build::mint::staged_for_mint_zat(&s.wallet).map_err(wallet_err)?;
-        to_js(&dto::balances(&b, &z, held, s.synced_tip()?, staged))
+        to_js(&dto::balances(
+            &b,
+            &z,
+            held,
+            s.synced_tip()?,
+            staged,
+            s.wallet.terms_refused(),
+        ))
     })
 }
 
@@ -1023,7 +1031,8 @@ pub async fn params_status() -> Result<JsValue, JsValue> {
 }
 
 /// Fetch the Sapling proving parameters (52 MB) into the Cache API — from `sources` (base
-/// URLs ending in `/`; the default `download.z.cash` when empty) — verify them against the
+/// URLs ending in `/`; when empty, this page's own server at `/sapling-params/`,
+/// `sapling_params::WEB_DEFAULT_SOURCES`) — verify them against the
 /// pinned SHA-256s and load the prover (`api::download_params`; `sapling_params::fetch_with`).
 /// `f({bytesDone, bytesTotal, name})` before and after each file. A rejected fetch caches
 /// nothing. Must run before a private send or shield is confirmed.
@@ -1060,7 +1069,7 @@ pub async fn fetch_params(f: Option<js_sys::Function>, sources: JsValue) -> Resu
             .map_err(|e| {
                 err(
                     match e {
-                        ParamsError::Mismatch { .. } => "params",
+                        ParamsError::Mismatch { .. } | ParamsError::Refused(_) => "params",
                         _ => "network",
                     },
                     e,
@@ -1085,12 +1094,16 @@ pub async fn fetch_params(f: Option<js_sys::Function>, sources: JsValue) -> Resu
 /// private notes when they cover it — `revealsShielded` —, else from public YEC). A public
 /// preview is signed already; a private one is proved and signed at [`confirm`]. A post-quantum
 /// recipient is paid from public YEC only (the browser has no private → post-quantum builder):
-/// short of it while private YEC exists, the answer is `unsupported:` with the reason.
+/// short of it while private YEC exists, the answer is `unsupported:` with the reason. Public
+/// funding takes one public address's coins; when only several together cover the send the
+/// answer is `linking:` with the reason, and `allow_linking` (the user's go-ahead, beta2 D-5)
+/// combines them.
 #[wasm_bindgen]
 pub async fn send_yec_preview(
     to: String,
     zat: JsValue,
     memo: Option<String>,
+    allow_linking: Option<bool>,
 ) -> Result<JsValue, JsValue> {
     let zat = amount_arg(&zat, "zat")?;
     with_session(|s| {
@@ -1105,6 +1118,7 @@ pub async fn send_yec_preview(
                 &to,
                 zat,
                 false,
+                allow_linking.unwrap_or(false),
                 memo.as_deref(),
                 r.tip,
                 r.branch_id,
@@ -1222,9 +1236,14 @@ pub async fn pq_send_preview(from: String, to: String, zat: JsValue) -> Result<J
 /// Plan a move between the wallet's own public and private balances
 /// (`api::move_preview`): `to_private` shields public YEC (never the reserve or anything YED),
 /// `to_public` unshields to the wallet's own public address. `zat` `null` = everything that
-/// direction can move. Both prove at [`confirm`].
+/// direction can move. Both prove at [`confirm`]. `to_private` takes one public address's coins
+/// unless `allow_linking` (the go-ahead after a `linking:` refusal, beta2 D-5).
 #[wasm_bindgen]
-pub async fn move_preview(direction: String, zat: JsValue) -> Result<JsValue, JsValue> {
+pub async fn move_preview(
+    direction: String,
+    zat: JsValue,
+    allow_linking: Option<bool>,
+) -> Result<JsValue, JsValue> {
     let zat = if zat.is_undefined() || zat.is_null() {
         None
     } else {
@@ -1244,8 +1263,14 @@ pub async fn move_preview(direction: String, zat: JsValue) -> Result<JsValue, Js
         Box::pin(async move {
             let r = s.sync().await?;
             s.sync_shielded(yec_private::no_progress()).await?;
-            let plan =
-                yec_move::plan_move(&mut s.wallet, direction, zat, r.tip).map_err(wallet_err)?;
+            let plan = yec_move::plan_move(
+                &mut s.wallet,
+                direction,
+                zat,
+                allow_linking.unwrap_or(false),
+                r.tip,
+            )
+            .map_err(wallet_err)?;
             let id = s.next_preview_id();
             let out = dto::yec_preview(id.clone(), &plan, r.yec.1, s.has_prover());
             s.previews.insert(id, Preview::Yec(Box::new(plan)));

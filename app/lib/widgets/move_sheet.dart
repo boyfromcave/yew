@@ -13,6 +13,7 @@ import '../api/wallet_api.dart';
 import '../format.dart';
 import '../state/app_scope.dart';
 import '../theme.dart';
+import 'address_linking.dart';
 import 'params_sheet.dart';
 import 'preview_card.dart';
 import 'slide_to_confirm.dart';
@@ -72,7 +73,16 @@ class _MoveSheetState extends State<MoveSheet> {
       _error = null;
     });
     try {
-      final p = await app.api.movePreview(direction: _dir, amountZat: zat);
+      // beta2 D-5: shielding coins of several public addresses together links them; the core
+      // asks first (its text, verbatim)
+      YecPreview p;
+      try {
+        p = await app.api.movePreview(direction: _dir, amountZat: zat);
+      } catch (e) {
+        if (kindOf(e) != ErrorKind.addressLinkingNeeded) rethrow;
+        if (!mounted || !await askAddressLinking(context, messageOf(e))) return;
+        p = await app.api.movePreview(direction: _dir, amountZat: zat, allowLinking: true);
+      }
       setState(() => _preview = p);
     } catch (e) {
       setState(() => _error = messageOf(e));

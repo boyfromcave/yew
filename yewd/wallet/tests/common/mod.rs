@@ -96,6 +96,8 @@ pub struct Chain {
     pub fail_syncs: u32,
     /// Copied into `fail_syncs` when `sendrawtransaction` accepts (a sync failing right after).
     pub fail_syncs_after_send: u32,
+    /// Fixed answers for methods the mock does not model (an `Err` is the node's `(code, message)`).
+    pub answers: std::collections::HashMap<String, Result<Value, (i64, String)>>,
 }
 
 #[derive(Clone, Default)]
@@ -349,12 +351,21 @@ impl Node for MockNode {
                         }
                     }
                 }
-                m => {
-                    return Err(NodeError::Rpc {
-                        code: -32601,
-                        message: format!("mock: {m}"),
-                    })
-                }
+                m => match c.answers.get(m) {
+                    Some(Ok(v)) => v.clone(),
+                    Some(Err((code, message))) => {
+                        return Err(NodeError::Rpc {
+                            code: *code,
+                            message: message.clone(),
+                        })
+                    }
+                    None => {
+                        return Err(NodeError::Rpc {
+                            code: -32601,
+                            message: format!("mock: {m}"),
+                        })
+                    }
+                },
             })
         })
     }

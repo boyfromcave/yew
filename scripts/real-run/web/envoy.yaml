@@ -1,0 +1,58 @@
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+#
+# gRPC-web front for a local lightwalletd-dd (plaintext gRPC on the host), as ycash-infra's
+# kind gateway does it (grpc_web + cors filters, CORS any origin, grpc-status exposed).
+# LWD_HOST/LWD_PORT are substituted by run.sh (Docker Desktop: host.docker.internal).
+static_resources:
+  listeners:
+    - name: grpcweb
+      address: { socket_address: { address: 0.0.0.0, port_value: 8080 } }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: grpcweb
+                codec_type: AUTO
+                stream_idle_timeout: 0s
+                route_config:
+                  name: local
+                  virtual_hosts:
+                    - name: lwd
+                      domains: ["*"]
+                      typed_per_filter_config:
+                        envoy.filters.http.cors:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+                          allow_origin_string_match: [{ safe_regex: { regex: ".*" } }]
+                          allow_methods: "POST, OPTIONS"
+                          allow_headers: "*"
+                          expose_headers: "grpc-status, grpc-message, grpc-status-details-bin"
+                          max_age: "86400"
+                      routes:
+                        - match: { prefix: "/" }
+                          route: { cluster: lwd, timeout: 120s, max_stream_duration: { grpc_timeout_header_max: 0s } }
+                http_filters:
+                  - name: envoy.filters.http.grpc_web
+                    typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.grpc_web.v3.GrpcWeb }
+                  - name: envoy.filters.http.cors
+                    typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors }
+                  - name: envoy.filters.http.router
+                    typed_config: { "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router }
+  clusters:
+    - name: lwd
+      type: LOGICAL_DNS
+      dns_lookup_family: V4_ONLY
+      connect_timeout: 5s
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config: { http2_protocol_options: {} }
+      load_assignment:
+        cluster_name: lwd
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: LWD_HOST, port_value: LWD_PORT } } }
+admin:
+  address: { socket_address: { address: 127.0.0.1, port_value: 9901 } }

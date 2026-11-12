@@ -75,6 +75,9 @@ class FakeWalletApi implements WalletApi {
   /// When set, a private-source preview / mint start without the go-ahead refuses with
   /// ErrorKind.noteLookupNeeded and this text.
   String? noteLookupText;
+  /// When set, a YEC preview / move preview without the go-ahead refuses with
+  /// ErrorKind.addressLinkingNeeded and this text (beta2 D-5).
+  String? linkingText;
   Object? mintStartError;
   Object? mintFinishError;
   Object? mintSweepError;
@@ -528,8 +531,9 @@ class FakeWalletApi implements WalletApi {
   Future<HistoryPage> history({required int page, required int pageSize}) async => HistoryPage(rows: historyAnswer, page: page, total: historyAnswer.length);
 
   @override
-  Future<YecPreview> sendYecPreview({required String to, required int zat, required bool sendEverything, String? memo}) async {
-    calls.add('yecPreview $to $zat $sendEverything${memo == null ? '' : ' memo=$memo'}');
+  Future<YecPreview> sendYecPreview({required String to, required int zat, required bool sendEverything, bool allowLinking = false, String? memo}) async {
+    calls.add('yecPreview $to $zat $sendEverything${memo == null ? '' : ' memo=$memo'}${allowLinking ? ' link' : ''}');
+    if (linkingText != null && !allowLinking) throw YewError(kind: ErrorKind.addressLinkingNeeded, message: linkingText!);
     if (yecPreviewError != null) throw yecPreviewError!;
     final private = yecFunding == YecFunding.shielded;
     return YecPreview(previewId: 'p1', to: to, amountZat: zat, amountBumped: zat == 10000, feeZat: private ? 10000 : 1000, changeZat: 150000000 - zat - 1000, inputs: 1, usesReserve: sendEverything, keepsReservedZat: 105000, expiryHeight: 524, txid: private ? '' : 'aa' * 32, funding: yecFunding, revealsShielded: revealsShielded, memo: memo, paramsNeeded: private && paramsNeeded);
@@ -550,8 +554,9 @@ class FakeWalletApi implements WalletApi {
   Object? movePreviewError;
 
   @override
-  Future<YecPreview> movePreview({required MoveDirection direction, int? amountZat}) async {
-    calls.add('movePreview ${direction.name} ${amountZat ?? 'all'}');
+  Future<YecPreview> movePreview({required MoveDirection direction, int? amountZat, bool allowLinking = false}) async {
+    calls.add('movePreview ${direction.name} ${amountZat ?? 'all'}${allowLinking ? ' link' : ''}');
+    if (linkingText != null && !allowLinking) throw YewError(kind: ErrorKind.addressLinkingNeeded, message: linkingText!);
     if (movePreviewError != null) throw movePreviewError!;
     final toPrivate = direction == MoveDirection.toPrivate;
     const fee = 15000;

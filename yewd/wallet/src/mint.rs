@@ -184,41 +184,20 @@ impl Wallet {
     }
 
     /// Plain YEC coins for a Yellowback build, optionally only those paying `only`: confirmed,
-    /// smallest first (`PickYecCoins` without the fee follower: P2PKH inputs only here).
-    async fn yec_for(
+    /// unlocked P2PKH coins (`eligible`; `PickYecCoins` without the fee follower,
+    /// [`select_smallest`] chooses among them).
+    async fn yec_candidates(
         &self,
         node: &dyn Node,
-        needed: i64,
         only: Option<&[u8]>,
-    ) -> Result<Vec<(OutPoint, i64, Vec<u8>)>, RpcError> {
-        if needed <= 0 {
-            return Ok(vec![]);
-        }
-        let mut cand: Vec<(OutPoint, i64, Vec<u8>)> = self
+    ) -> Result<Vec<Coin>, RpcError> {
+        Ok(self
             .eligible(node, &Default::default())
             .await?
             .into_iter()
             .filter(|c| only.is_none_or(|o| c.script == o))
             .map(|c| (c.outpoint, c.value, c.script))
-            .collect();
-        cand.sort_by_key(|c| c.1);
-        let mut got = 0;
-        let mut out = Vec::new();
-        for c in cand {
-            if got >= needed {
-                break;
-            }
-            got += c.1;
-            out.push(c);
-        }
-        if got < needed {
-            return Err(build_error(format!(
-                "insufficient-yec: need {}, have {} confirmed and unlocked",
-                crate::rpc::format_money(needed),
-                crate::rpc::format_money(got)
-            )));
-        }
-        Ok(out)
+            .collect())
     }
 
     /// Fund `tx` (outputs already set; `input_value` from its other inputs) with plain YEC at the
@@ -237,41 +216,15 @@ impl Wallet {
             Some(o) => o.to_vec(),
             None => self.new_change()?,
         };
-        let mut fee = flat;
-        for _ in 0..6 {
-            let mut tx = base.clone();
-            let needed = tx.output_total() + fee - input_value;
-            let coins = self.yec_for(node, needed, only).await?;
-            for c in &coins {
-                tx.vin.push(TxIn::new(c.0));
-            }
-            for (o, _) in extra {
-                tx.vin.push(TxIn::new(*o));
-            }
-            let got: i64 = coins.iter().map(|c| c.1).sum();
-            let change = got - needed.max(0);
-            if change > 0 {
-                tx.vout.push(TxOut {
-                    value: change,
-                    script_pubkey: change_script.clone(),
-                });
-            }
-            let mut sizes: Vec<usize> = coins
-                .iter()
-                .map(|c| yew_core::tx::script_sig_size_bound(&c.2))
-                .collect();
-            sizes.extend(extra.iter().map(|(_, n)| *n));
-            let conventional = tx.zip317_conventional_fee(&sizes).unwrap_or(fee);
-            if conventional > fee {
-                fee = conventional;
-                continue;
-            }
-            return Ok((tx, coins));
+        let cand = self.yec_candidates(node, only).await?;
+        match plan_fund(base, input_value, flat, &cand, &change_script, extra) {
+            Ok(p) => Ok((p.tx, p.coins)),
+            Err(FundShort::Coins { needed, have, .. }) => Err(insufficient_yec(needed, have)),
+            Err(_) => Err(RpcError::new(
+                code::WALLET_ERROR,
+                "the fee did not converge",
+            )),
         }
-        Err(RpcError::new(
-            code::WALLET_ERROR,
-            "the fee did not converge",
-        ))
     }
 
     /// The mint's preflight estimate at `R` (ycashd `PreflightMint`: `MintGate`, then `BundleAt`
@@ -412,6 +365,19 @@ impl Wallet {
         // BundleAt (the pool's bundle, or bundleHex) and, while armed, AFEE-W at completion (F-S2-4)
         let facts = self.bundle_at(node, r, "", &bundle_bytes).await?;
         let bundle = facts.bundle.clone();
+        // the whole mint must be coverable before the carrier is broadcast (real-stack run
+        // YEW-REAL finding 5, review M-1/M-2)
+        self.check_mint_funds(
+            node,
+            &info,
+            &est,
+            &facts,
+            cents,
+            lock_blocks,
+            &from,
+            only.as_deref(),
+        )
+        .await?;
         // the carrier
         let z_from = self.is_sapling(&from).then(|| from.clone());
         let carrier = self
@@ -710,10 +676,8 @@ impl Wallet {
         let info = node::call(node, "yed_getinfo", serde_json::json!([])).await?;
         let prm = info["params"].clone();
         let flat = prm["feeZat"].as_i64().unwrap_or(10_000);
-        let ref_window = prm["refWindow"].as_i64().unwrap_or(40);
-        let claim_delay = prm["claimDelay"].as_i64().unwrap_or(0);
-        let attestor_set = yew_core::tx::txid_from_hex(prm["attestorSetId"].as_str().unwrap_or(""))
-            .map_err(|e| RpcError::new(code::MISC_ERROR, format!("yewd: attestorSetId: {e}")))?;
+        let consts = MintConsts::of(&prm)?;
+        let ref_window = consts.ref_window;
         let next = next_block(node).await?;
         let rec = self
             .st
@@ -756,14 +720,8 @@ impl Wallet {
             return Err(RpcError::new(code::WALLET_ERROR, format!("collateral-above-max: the mint needs {collateral} zat of collateral, above the maxCollateralZat of {}", pm.max_collateral)));
         }
         // pMint = min(xMint, aMint) while armed (CombineMint); the estimate's for the pool's bundle
-        let p_mint = if pm.facts.armed && pm.facts.a_mint.is_some() {
-            crate::armed::mint_price(est["xMint"].as_i64(), &pm.facts)
-                .unwrap_or_else(|| est["pMint"].as_i64().unwrap_or(0))
-        } else {
-            est["pMint"].as_i64().unwrap_or(0)
-        };
+        let p_mint = mint_price_of(&pm.est, &pm.facts);
         let term_class = est["termClass"].as_str().unwrap_or("A").to_string();
-        let class_idx = "ABC".find(&term_class).unwrap_or(0) as u8;
         let lock_height = r + pm.lock_blocks;
         let claim_height = est["claimHeight"].as_i64().unwrap_or(lock_height);
         // the owner: a fresh SLH-DSA key; the token: a fresh holder (P2PKH, Falcon from its height)
@@ -810,57 +768,22 @@ impl Wallet {
         let attest = self
             .attest_payee(node, r, &[], &pm.facts, protocol_fee)
             .await?;
-        let vp =
-            yew_core::vault::yed_mint_vault_params(&attestor_set, claim_delay, &owner, r as u32);
-        let vault_script = yew_core::vault::build_vault(&vp)
-            .ok_or_else(|| build_error("mint-bad-lock: cannot build the vault script".into()))?;
-        let fee_vout = if payee.is_some() { 3u8 } else { FEE_VOUT_NONE };
-        let pl = payload::encode(&Payload::Mint {
-            term_class: class_idx,
-            cents: pm.cents as u32,
-            lock_height: lock_height as u32,
-            ref_height: r as u32,
-            owner,
-            fee_vout,
-            attest_fee_vout: match (&attest, payee.is_some()) {
-                (None, _) => FEE_VOUT_NONE,
-                (Some(_), true) => 4,
-                (Some(_), false) => 3,
-            },
-        })
-        .ok_or_else(|| RpcError::new(code::WALLET_ERROR, "cannot encode the mint payload"))?;
-        let mut base = Transaction::new_v4();
-        base.expiry_height = (r + ref_window) as u32;
-        base.vout.push(TxOut {
-            value: collateral,
-            script_pubkey: vault_script,
-        });
-        base.vout.push(TxOut {
-            value: TOKEN_VALUE,
-            script_pubkey: token_script,
-        });
-        base.vout.push(TxOut {
-            value: 0,
-            script_pubkey: payload::payload_script(&pl),
-        });
-        if let Some(a) = &payee {
-            let s = crate::rpc::parse_taddr_script(self.network, a).ok_or_else(|| {
-                RpcError::new(
-                    code::MISC_ERROR,
-                    format!("yewd: the payee {a} is not an address"),
-                )
-            })?;
-            base.vout.push(TxOut {
-                value: fee_zat,
-                script_pubkey: s,
-            });
-        }
-        if let Some(a) = &attest {
-            base.vout.push(TxOut {
-                value: a.fee_zat,
-                script_pubkey: a.script.clone(),
-            });
-        }
+        let payee_out = match &payee {
+            Some(a) => Some((fee_zat, payee_script(self.network, a)?)),
+            None => None,
+        };
+        let base = mint_base(
+            &consts,
+            est,
+            r,
+            pm.cents,
+            pm.lock_blocks,
+            collateral,
+            &owner,
+            token_script,
+            payee_out,
+            attest.as_ref().map(|a| (a.fee_zat, a.script.clone())),
+        )?;
         let attest_fee = attest.as_ref().map(|a| a.fee_zat).unwrap_or(0);
         let only = from_script(self, &pm.from)?;
         let bundle = hex::decode(&rec.bundle).unwrap_or_default();
@@ -1110,8 +1033,594 @@ fn raw_or_null(v: &Value) -> J {
     }
 }
 
+/// A plain YEC coin: its outpoint, value and script.
+pub(crate) type Coin = (OutPoint, i64, Vec<u8>);
+
+/// `insufficient-yec` with the amounts.
+pub(crate) fn insufficient_yec(needed: i64, have: i64) -> RpcError {
+    build_error(format!(
+        "insufficient-yec: need {}, have {} confirmed and unlocked",
+        crate::rpc::format_money(needed),
+        crate::rpc::format_money(have)
+    ))
+}
+
+/// `PickYecCoins` without the fee follower: the smallest coins first until they cover `needed`
+/// (none when `needed <= 0`); `Err(the total of every coin)` when all of them fall short.
+pub(crate) fn select_smallest(cand: &[Coin], needed: i64) -> Result<Vec<Coin>, i64> {
+    if needed <= 0 {
+        return Ok(Vec::new());
+    }
+    let mut cand = cand.to_vec();
+    cand.sort_by_key(|c| c.1);
+    let mut got = 0;
+    let mut out = Vec::new();
+    for c in cand {
+        if got >= needed {
+            break;
+        }
+        got += c.1;
+        out.push(c);
+    }
+    if got < needed {
+        return Err(got);
+    }
+    Ok(out)
+}
+
+/// Why a funding plan failed.
+#[derive(Debug, PartialEq)]
+pub(crate) enum FundShort {
+    /// The coins (or notes) fall short of `needed` at the network fee `fee`; `have` is all of them.
+    Coins {
+        needed: i64,
+        have: i64,
+        fee: i64,
+    },
+    /// Covering `needed` would take `spends` Sapling notes, above `MAX_SAPLING_SPENDS`.
+    TooMany {
+        needed: i64,
+        spends: usize,
+        fee: i64,
+    },
+    NoConvergence,
+}
+
+/// A funded transaction: the coins it spends, its change (0: none) and its network fee.
+#[derive(Debug)]
+pub(crate) struct FundPlan {
+    pub tx: Transaction,
+    pub coins: Vec<Coin>,
+    pub change: i64,
+    pub fee: i64,
+}
+
+/// [`Wallet::fund_yed`]'s plan over the candidate coins `cand`: the outputs of `base` plus the
+/// network fee, less `input_value`, from the smallest coins; the fee starts at `flat` and rises to
+/// the ZIP-317 conventional fee of the shape; the change pays `change_script`; `extra` inputs (a
+/// carrier, with its scriptSig size) come after the funding.
+pub(crate) fn plan_fund(
+    base: &Transaction,
+    input_value: i64,
+    flat: i64,
+    cand: &[Coin],
+    change_script: &[u8],
+    extra: &[(OutPoint, usize)],
+) -> Result<FundPlan, FundShort> {
+    let mut fee = flat;
+    for _ in 0..6 {
+        let mut tx = base.clone();
+        let needed = tx.output_total() + fee - input_value;
+        let coins =
+            select_smallest(cand, needed).map_err(|have| FundShort::Coins { needed, have, fee })?;
+        for c in &coins {
+            tx.vin.push(TxIn::new(c.0));
+        }
+        for (o, _) in extra {
+            tx.vin.push(TxIn::new(*o));
+        }
+        let got: i64 = coins.iter().map(|c| c.1).sum();
+        let change = got - needed.max(0);
+        if change > 0 {
+            tx.vout.push(TxOut {
+                value: change,
+                script_pubkey: change_script.to_vec(),
+            });
+        }
+        let mut sizes: Vec<usize> = coins
+            .iter()
+            .map(|c| yew_core::tx::script_sig_size_bound(&c.2))
+            .collect();
+        sizes.extend(extra.iter().map(|(_, n)| *n));
+        let conventional = tx.zip317_conventional_fee(&sizes).unwrap_or(fee);
+        if conventional > fee {
+            fee = conventional;
+            continue;
+        }
+        return Ok(FundPlan {
+            tx,
+            coins,
+            change: change.max(0),
+            fee,
+        });
+    }
+    Err(FundShort::NoConvergence)
+}
+
+/// A stand-in outpoint for a plan (a carrier or a change output not yet broadcast).
+fn planned_outpoint(n: u32) -> OutPoint {
+    OutPoint {
+        txid: [0xee; 32],
+        n,
+    }
+}
+
+/// What both transactions of a mint take from the wallet: the MINT's outputs (collateral,
+/// `TOKEN_VALUE`, the protocol fee, the attestor fee) and the carrier's and the MINT's network
+/// fees. The carrier's `CARRIER_VALUE` returns as a MINT input, so it is not counted.
+pub(crate) fn mint_need(mint_outputs: i64, carrier_fee: i64, mint_fee: i64) -> i64 {
+    mint_outputs
+        .saturating_add(carrier_fee)
+        .saturating_add(mint_fee)
+}
+
+/// The two fundings of a mint from plain coins, as [`Wallet::fund_yed`] makes them: the carrier
+/// (`carrier`, no input yet) from the smallest coins, its change back among the coins, then the
+/// MINT (`mint`, the outputs only) with the carrier as its last input (`carrier_ss` bytes of
+/// scriptSig). `Ok(the whole need)`, or `Err((the whole need, every coin))` when either falls short.
+pub(crate) fn plan_mint_from_coins(
+    cand: &[Coin],
+    carrier: &Transaction,
+    mint: &Transaction,
+    flat: i64,
+    carrier_ss: usize,
+) -> Result<i64, (i64, i64)> {
+    let have: i64 = cand.iter().map(|c| c.1).sum();
+    let outlay = mint.output_total();
+    let change_script = yew_core::script::p2pkh_script(&[0; 20]);
+    let c = match plan_fund(carrier, 0, flat, cand, &change_script, &[]) {
+        Ok(c) => c,
+        Err(FundShort::Coins { fee, .. }) => return Err((mint_need(outlay, fee, flat), have)),
+        Err(_) => return Err((mint_need(outlay, flat, flat), have)),
+    };
+    let mut rest: Vec<Coin> = cand
+        .iter()
+        .filter(|x| !c.coins.iter().any(|y| y.0 == x.0))
+        .cloned()
+        .collect();
+    if c.change > 0 {
+        rest.push((planned_outpoint(1), c.change, change_script.clone()));
+    }
+    let extra = [(planned_outpoint(0), carrier_ss)];
+    match plan_fund(mint, CARRIER_VALUE, flat, &rest, &change_script, &extra) {
+        Ok(m) => Ok(mint_need(outlay, c.fee, m.fee)),
+        Err(FundShort::Coins { fee, .. }) => Err((mint_need(outlay, c.fee, fee), have)),
+        Err(_) => Err((mint_need(outlay, c.fee, flat), have)),
+    }
+}
+
+/// The two fundings of a mint from the notes of a Sapling address (largest first, `values`), as
+/// [`Wallet::z_fund_and_sign`] makes them: the carrier, its change note back to the address, then
+/// the MINT (`mint` with the carrier already its one transparent input). `Ok(the whole need)`, or
+/// the shortfall with the whole need.
+pub(crate) fn plan_mint_from_notes(
+    values: &[i64],
+    carrier: &Transaction,
+    mint: &Transaction,
+    flat: i64,
+    carrier_ss: usize,
+) -> Result<i64, FundShort> {
+    let have: i64 = values.iter().sum();
+    let outlay = mint.output_total();
+    let c = crate::zfund::plan_zfund(values, carrier, &[], 0, flat).map_err(|s| match s {
+        FundShort::Coins { fee, .. } => FundShort::Coins {
+            needed: mint_need(outlay, fee, flat),
+            have,
+            fee,
+        },
+        other => other,
+    })?;
+    let mut rest: Vec<i64> = values.iter().skip(c.spends).copied().collect();
+    if c.change > 0 {
+        rest.push(c.change);
+    }
+    rest.sort_by(|a, b| b.cmp(a));
+    let m =
+        crate::zfund::plan_zfund(&rest, mint, &[carrier_ss], CARRIER_VALUE, flat).map_err(|s| {
+            match s {
+                FundShort::Coins { fee, .. } => FundShort::Coins {
+                    needed: mint_need(outlay, c.fee, fee),
+                    have,
+                    fee,
+                },
+                other => other,
+            }
+        })?;
+    Ok(mint_need(outlay, c.fee, m.fee))
+}
+
+/// The yed_getinfo constants a MINT's shape depends on.
+pub(crate) struct MintConsts {
+    pub attestor_set: yew_core::vault::SetId,
+    pub claim_delay: i64,
+    pub ref_window: i64,
+}
+
+impl MintConsts {
+    pub(crate) fn of(prm: &Value) -> Result<MintConsts, RpcError> {
+        Ok(MintConsts {
+            attestor_set: yew_core::tx::txid_from_hex(prm["attestorSetId"].as_str().unwrap_or(""))
+                .map_err(|e| {
+                    RpcError::new(code::MISC_ERROR, format!("yewd: attestorSetId: {e}"))
+                })?,
+            claim_delay: prm["claimDelay"].as_i64().unwrap_or(0),
+            ref_window: prm["refWindow"].as_i64().unwrap_or(40),
+        })
+    }
+}
+
+/// pMint of a MINT: `min(xMint, aMint)` while armed (`CombineMint`), else the estimate's.
+pub(crate) fn mint_price_of(est: &Value, facts: &crate::armed::BundleFacts) -> i64 {
+    if facts.armed && facts.a_mint.is_some() {
+        crate::armed::mint_price(est["xMint"].as_i64(), facts)
+            .unwrap_or_else(|| est["pMint"].as_i64().unwrap_or(0))
+    } else {
+        est["pMint"].as_i64().unwrap_or(0)
+    }
+}
+
+/// The script of the pool-fee payee `a`.
+fn payee_script(network: yew_core::params::Network, a: &str) -> Result<Vec<u8>, RpcError> {
+    crate::rpc::parse_taddr_script(network, a).ok_or_else(|| {
+        RpcError::new(
+            code::MISC_ERROR,
+            format!("yewd: the payee {a} is not an address"),
+        )
+    })
+}
+
+/// `BuildMint`'s outputs on a v4 transaction expiring at `r + refWindow`: V (the collateral), the
+/// token, the payload, the pool fee (`payee`) and the attestor fee (`attest`), in that order.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn mint_base(
+    consts: &MintConsts,
+    est: &Value,
+    r: i64,
+    cents: i64,
+    lock_blocks: i64,
+    collateral: i64,
+    owner: &yew_core::pq::PqKeyId,
+    token_script: Vec<u8>,
+    payee: Option<(i64, Vec<u8>)>,
+    attest: Option<(i64, Vec<u8>)>,
+) -> Result<Transaction, RpcError> {
+    let term_class = est["termClass"].as_str().unwrap_or("A");
+    let class_idx = "ABC".find(term_class).unwrap_or(0) as u8;
+    let vp = yew_core::vault::yed_mint_vault_params(
+        &consts.attestor_set,
+        consts.claim_delay,
+        owner,
+        r as u32,
+    );
+    let vault_script = yew_core::vault::build_vault(&vp)
+        .ok_or_else(|| build_error("mint-bad-lock: cannot build the vault script".into()))?;
+    let fee_vout = if payee.is_some() { 3u8 } else { FEE_VOUT_NONE };
+    let pl = payload::encode(&Payload::Mint {
+        term_class: class_idx,
+        cents: cents as u32,
+        lock_height: (r + lock_blocks) as u32,
+        ref_height: r as u32,
+        owner: *owner,
+        fee_vout,
+        attest_fee_vout: match (&attest, payee.is_some()) {
+            (None, _) => FEE_VOUT_NONE,
+            (Some(_), true) => 4,
+            (Some(_), false) => 3,
+        },
+    })
+    .ok_or_else(|| RpcError::new(code::WALLET_ERROR, "cannot encode the mint payload"))?;
+    let mut base = Transaction::new_v4();
+    base.expiry_height = (r + consts.ref_window) as u32;
+    base.vout.push(TxOut {
+        value: collateral,
+        script_pubkey: vault_script,
+    });
+    base.vout.push(TxOut {
+        value: TOKEN_VALUE,
+        script_pubkey: token_script,
+    });
+    base.vout.push(TxOut {
+        value: 0,
+        script_pubkey: payload::payload_script(&pl),
+    });
+    for (value, script_pubkey) in payee.into_iter().chain(attest) {
+        base.vout.push(TxOut {
+            value,
+            script_pubkey,
+        });
+    }
+    Ok(base)
+}
+
+/// The carrier's output on a v4 transaction expiring at `r + refWindow` (a stand-in script of the
+/// carrier's P2SH size).
+fn carrier_base(r: i64, ref_window: i64) -> Transaction {
+    let mut base = Transaction::new_v4();
+    base.expiry_height = (r + ref_window) as u32;
+    base.vout.push(TxOut {
+        value: CARRIER_VALUE,
+        script_pubkey: yew_core::script::p2sh_of(&[]),
+    });
+    base
+}
+
+/// The scriptSig bound of a carrier input spending `bundle`'s carrier.
+fn carrier_script_sig_size(bundle: &[u8]) -> usize {
+    3 + bundle.len() + 74 + 73
+}
+
+impl Wallet {
+    /// The whole mint must be coverable before its carrier is broadcast (YEW-REAL finding 5,
+    /// review M-1 and M-2): the source (plain coins: `from` empty or a transparent address; or
+    /// the notes of a Sapling `from`) must fund the carrier and then the MINT: the collateral,
+    /// `TOKEN_VALUE`, the protocol fee (when the window has a payee), the attestor fee (armed),
+    /// and both network fees, each as its builder will set it. A wallet short of that by one
+    /// zatoshi is refused here and nothing is broadcast. The check reads the wallet at this
+    /// moment: a spend between it and the MINT can still leave the carrier stranded
+    /// (`yed_sweepcarriers` reclaims it).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn check_mint_funds(
+        &self,
+        node: &dyn Node,
+        info: &Value,
+        est: &Value,
+        facts: &crate::armed::BundleFacts,
+        cents: i64,
+        lock_blocks: i64,
+        from: &str,
+        only: Option<&[u8]>,
+    ) -> Result<(), RpcError> {
+        use yew_core::pq::{PqKeyId, SCHEME_FN_DSA_512, SCHEME_SLH_DSA_SHA2_128S};
+        let prm = &info["params"];
+        let flat = prm["feeZat"].as_i64().unwrap_or(10_000);
+        let consts = MintConsts::of(prm)?;
+        let r = est["refHeight"].as_i64().unwrap_or(0);
+        let collateral = est["requiredZatFloored"]
+            .as_i64()
+            .or_else(|| est["requiredZat"].as_i64())
+            .unwrap_or(0);
+        let protocol_fee =
+            yew_core::params::protocol_fee_zat(cents as u64, mint_price_of(est, facts))
+                .ok_or_else(|| {
+                    build_error("mint-unsatisfiable: no protocol fee at this price".into())
+                })?;
+        // FEE-2: whether the window has a payee depends on R only (the selector picks among them)
+        let payee = match node::call(node, "yed_getfeepayee", serde_json::json!([r])).await {
+            Ok(v) => Some(
+                v["preferred"]
+                    .as_str()
+                    .or_else(|| v["default"]["payoutAddress"].as_str())
+                    .and_then(|a| crate::rpc::parse_taddr_script(self.network, a))
+                    .unwrap_or_else(|| yew_core::script::p2pkh_script(&[0; 20])),
+            ),
+            Err(NodeError::Rpc { message, .. }) if message.contains("fee-no-eligible-payee") => {
+                None
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let attest = self.attest_payee(node, r, &[], facts, protocol_fee).await?;
+        // the MINT's shape with stand-in keys of the real ones' sizes
+        let owner = PqKeyId {
+            scheme: SCHEME_SLH_DSA_SHA2_128S,
+            hash: [0; 32],
+        };
+        let token_script = if self.falcon_next() {
+            yew_core::pq::pqpkh_script(&PqKeyId {
+                scheme: SCHEME_FN_DSA_512,
+                hash: [0; 32],
+            })
+            .unwrap_or_default()
+        } else {
+            yew_core::script::p2pkh_script(&[0; 20])
+        };
+        let mint = mint_base(
+            &consts,
+            est,
+            r,
+            cents,
+            lock_blocks,
+            collateral,
+            &owner,
+            token_script,
+            payee.map(|s| (protocol_fee, s)),
+            attest.map(|a| (a.fee_zat, a.script)),
+        )?;
+        let carrier = carrier_base(r, consts.ref_window);
+        let carrier_ss = carrier_script_sig_size(&facts.bundle);
+        if self.is_sapling(from) {
+            let values = self.z_note_values(from);
+            let mut mint_in = mint;
+            mint_in.vin.push(TxIn::new(planned_outpoint(0)));
+            return match plan_mint_from_notes(&values, &carrier, &mint_in, flat, carrier_ss) {
+                Ok(_) => Ok(()),
+                Err(FundShort::Coins { needed, have, .. }) => Err(build_error(format!(
+                    "insufficient-yec: need {}, have {} in confirmed Sapling notes at {from}",
+                    crate::rpc::format_money(needed),
+                    crate::rpc::format_money(have)
+                ))),
+                Err(FundShort::TooMany { spends, .. }) => Err(build_error(format!(
+                    "too-many-notes: the mint would spend {spends} Sapling notes (limit {}); consolidate with z_mergetoaddress first",
+                    crate::zfund::MAX_SAPLING_SPENDS
+                ))),
+                Err(FundShort::NoConvergence) => {
+                    Err(build_error("the fee did not converge".into()))
+                }
+            };
+        }
+        let cand = self.yec_candidates(node, only).await?;
+        plan_mint_from_coins(&cand, &carrier, &mint, flat, carrier_ss)
+            .map(|_| ())
+            .map_err(|(needed, have)| insufficient_yec(needed, have))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    const COIN: i64 = 100_000_000;
+    const FLAT: i64 = 10_000;
+    const COLLATERAL: i64 = 6 * COIN;
+
+    /// A carrier and a MINT of the real shapes: the vault, the token, the payload, and the pool and
+    /// attestor fees when given.
+    fn shapes(fee: Option<i64>, attest: Option<i64>) -> (Transaction, Transaction) {
+        let consts = MintConsts {
+            attestor_set: [0x11; 32],
+            claim_delay: 10,
+            ref_window: 40,
+        };
+        let est = serde_json::json!({"termClass": "A"});
+        let owner = yew_core::pq::PqKeyId {
+            scheme: yew_core::pq::SCHEME_SLH_DSA_SHA2_128S,
+            hash: [3; 32],
+        };
+        let p2pkh = |b: u8| yew_core::script::p2pkh_script(&[b; 20]);
+        let mint = mint_base(
+            &consts,
+            &est,
+            100,
+            20_000,
+            1000,
+            COLLATERAL,
+            &owner,
+            p2pkh(1),
+            fee.map(|f| (f, p2pkh(2))),
+            attest.map(|a| (a, p2pkh(3))),
+        )
+        .unwrap();
+        (carrier_base(100, 40), mint)
+    }
+
+    fn coins(values: &[i64]) -> Vec<Coin> {
+        values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                (
+                    OutPoint {
+                        txid: [i as u8 + 1; 32],
+                        n: 0,
+                    },
+                    *v,
+                    yew_core::script::p2pkh_script(&[9; 20]),
+                )
+            })
+            .collect()
+    }
+
+    /// Review M-1: a mint from plain coins needs every output of its MINT (collateral,
+    /// `TOKEN_VALUE`, the protocol fee, the attestor fee) and both network fees; one zatoshi less,
+    /// however the coins are split, is refused with that need.
+    #[test]
+    fn a_mint_from_coins_needs_every_output_and_both_fees() {
+        let ss = carrier_script_sig_size(&[0xaa; 3 * 74]);
+        for (fee, attest) in [
+            (None, None),
+            (Some(50_000), None),
+            (Some(50_000), Some(5_000)),
+        ] {
+            let (carrier, mint) = shapes(fee, attest);
+            let need = COLLATERAL + TOKEN_VALUE + fee.unwrap_or(0) + attest.unwrap_or(0) + 2 * FLAT;
+            let splits = |total: i64| {
+                vec![
+                    vec![total],
+                    vec![COIN, total - COIN],
+                    vec![5_000, 30_000, COIN, total - COIN - 35_000],
+                ]
+            };
+            for v in splits(need) {
+                assert_eq!(
+                    plan_mint_from_coins(&coins(&v), &carrier, &mint, FLAT, ss),
+                    Ok(need),
+                    "{fee:?} {attest:?} {v:?}"
+                );
+            }
+            for v in splits(need - 1) {
+                assert_eq!(
+                    plan_mint_from_coins(&coins(&v), &carrier, &mint, FLAT, ss),
+                    Err((need, need - 1)),
+                    "{fee:?} {attest:?} {v:?}"
+                );
+            }
+        }
+    }
+
+    /// Review M-2: a mint from a Sapling address needs the same from its notes: the carrier's
+    /// funding and fee, then the MINT's outputs and fee (its change note from the carrier counts).
+    #[test]
+    fn a_mint_from_sapling_notes_needs_every_output_and_both_fees() {
+        let ss = carrier_script_sig_size(&[0xaa; 3 * 74]);
+        for (fee, attest) in [
+            (None, None),
+            (Some(50_000), None),
+            (Some(50_000), Some(5_000)),
+        ] {
+            let (carrier, mut mint) = shapes(fee, attest);
+            mint.vin.push(TxIn::new(planned_outpoint(0)));
+            let need = COLLATERAL + TOKEN_VALUE + fee.unwrap_or(0) + attest.unwrap_or(0) + 2 * FLAT;
+            let splits = |total: i64| {
+                vec![
+                    vec![total],
+                    vec![total - COIN, COIN],
+                    vec![total - COIN - 35_000, COIN, 30_000, 5_000],
+                ]
+            };
+            for v in splits(need) {
+                assert_eq!(
+                    plan_mint_from_notes(&v, &carrier, &mint, FLAT, ss),
+                    Ok(need),
+                    "{fee:?} {attest:?} {v:?}"
+                );
+            }
+            for v in splits(need - 1) {
+                assert!(
+                    matches!(
+                        plan_mint_from_notes(&v, &carrier, &mint, FLAT, ss),
+                        Err(FundShort::Coins { needed, have, .. }) if needed == need && have == need - 1
+                    ),
+                    "{fee:?} {attest:?} {v:?}"
+                );
+            }
+        }
+        // more notes than one transaction may spend: refused before the carrier as well
+        let (carrier, mut mint) = shapes(None, None);
+        mint.vin.push(TxIn::new(planned_outpoint(0)));
+        let many = vec![COIN / 50; 400];
+        assert!(matches!(
+            plan_mint_from_notes(&many, &carrier, &mint, FLAT, ss),
+            Err(FundShort::TooMany { .. })
+        ));
+    }
+
+    /// `z_fund_and_sign`'s plan: the flat fee, the largest notes first, the change note.
+    #[test]
+    fn plan_zfund_takes_the_largest_notes_first() {
+        let (carrier, _) = shapes(None, None);
+        let p = crate::zfund::plan_zfund(&[COIN, 50_000, 10_000], &carrier, &[], 0, FLAT).unwrap();
+        assert_eq!(
+            (p.need, p.spends, p.change, p.fee),
+            (CARRIER_VALUE + FLAT, 1, COIN - CARRIER_VALUE - FLAT, FLAT)
+        );
+        assert_eq!(
+            crate::zfund::plan_zfund(&[10_000, 9_999], &carrier, &[], 0, FLAT).unwrap_err(),
+            FundShort::Coins {
+                needed: CARRIER_VALUE + FLAT,
+                have: 19_999,
+                fee: FLAT
+            }
+        );
+    }
     #[test]
     fn mint10_divergence() {
         // 500 bps: 0.50 vs 0.525 is exactly 500 bps of the lower, not diverged; one more is
