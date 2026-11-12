@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+# Copyright (c) 2026 The Ycash developers
+# Distributed under the MIT software license, see the accompanying
+# file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+"""The web wallet's real-stack walk (WEB-REAL), in phases, against the stack run.sh started.
+
+  web_real_walk.py addr,fund,sends,params,private,arm,yed,persist,restore
+
+addr     new seed in the browser; the address of every kind; the node's validateaddress on each
+fund     3 YEC to the ECC address, 2 to each post-quantum address; balances per type = the node's
+sends    the public cells: ECC -> ECC/Sapling/FN-DSA/SLH-DSA (Automatic, nothing private yet),
+         FN-DSA and SLH-DSA -> ECC/FN-DSA/SLH-DSA, and -> Sapling (refused: app only)
+params   the proving files: the default source (download.z.cash: no CORS), an unreachable mirror,
+         a corrupt one (the pins refuse it), the loopback mirror (MIRROR, params_mirror.py)
+private  Move 0.5 to private, 1.5 YEC to the Sapling address from the node, private -> Sapling
+         with a memo, private -> ECC, private -> FN-DSA/SLH-DSA short of public YEC (refused),
+         Move 0.3 to public
+arm      three attestors on node 0 (yed_registerattestor), 20 blocks to ARMED; start attest_loop.py
+yed      mint $100 from the public balance, 1 YED to node 1, plain YEC to the YED holder key spent
+         from the browser (the token stays unspent), mint $100 from the FN-DSA address
+persist  reload + unlock: balances equal
+restore  wipe the site data (CDP Storage.clearDataForOrigin), restore with birthday 0: balances equal
+Results: $WEB_REAL_OUT/cells.jsonl, mints.jsonl, console.log, shots/.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import drive as d  # noqa: E402
+import wd  # noqa: E402
+import sendcell  # noqa: E402
+
+OUT = os.environ['WEB_REAL_OUT']
+PAGE = os.environ.get('PAGE', 'http://localhost:29771/')
+SERVER = os.environ.get('SERVER', 'http://127.0.0.1:29769')
+MIRROR = os.environ.get('MIRROR', 'http://127.0.0.1:29777/')
+CORRUPT = os.environ.get('MIRROR_CORRUPT', 'http://127.0.0.1:29775/')
+
+
+def addrs():
+    return json.load(open(os.path.join(OUT, 'addrs.json')))
+
+
+def phase_addr():
+    wd.new()
+    words = d.onboard(PAGE, SERVER)
+    json.dump(words, open(os.path.join(OUT, 'seed.json'), 'w'))
+    wd.wait('Public (ECC)', 60)
+    A = {}
+    for label, k in [('Private', 'sapling'), ('Public (ECC)', 'ecc'), ('PQ · FN-DSA-512', 'pq_falcon'), ('PQ · SLH-DSA', 'pq_slh'), ('YED', 'yed')]:
+        A[k] = d.receive(label)
+        d.shot('receive-' + k)
+    json.dump(A, open(os.path.join(OUT, 'addrs.json'), 'w'), indent=1)
+    for k, a in A.items():
+        v = d.cli(0, 'z_validateaddress' if k == 'sapling' else 'yed_validateaddress' if k == 'yed' else 'validateaddress', a)
+        print('ADDR', k, a, {x: v.get(x) for x in ('isvalid', 'pqscheme', 'pqschemename', 'pqkeyhash', 'transparentAddress') if x in v}, flush=True)
+
+
+def phase_fund():
+    A = addrs()
+    for k, amt in (('ecc', 3), ('pq_falcon', 2), ('pq_slh', 2)):
+        d.cli(0, 'sendtoaddress', A[k], amt)
+    d.mine(1)
+    b = d.settle(lambda b: b.get('ecc', 0) and b.get('pq_slh', 0) and b.get('pq_falcon', 0))
+    print('FUND browser', b, 'node', {k: d.addr_balance(A[k]) for k in ('ecc', 'pq_falcon', 'pq_slh')}, flush=True)
+
+
+def phase_sends():
+    for cell in (('ecc-ecc', 'auto', 'ecc'), ('ecc-sapling', 'auto', 'sapling'), ('ecc-pqf', 'auto', 'pq_falcon'), ('ecc-pqs', 'auto', 'pq_slh'),
+                 ('pqf-ecc', 'pq_falcon', 'ecc'), ('pqf-pqf', 'pq_falcon', 'pq_falcon'), ('pqf-pqs', 'pq_falcon', 'pq_slh'), ('pqf-sapling', 'pq_falcon', 'sapling'),
+                 ('pqs-ecc', 'pq_slh', 'ecc'), ('pqs-pqf', 'pq_slh', 'pq_falcon'), ('pqs-pqs', 'pq_slh', 'pq_slh'), ('pqs-sapling', 'pq_slh', 'sapling')):
+        r = sendcell.run(*cell, '0.1')
+        print('CELL', r['cell'], r['result'], r.get('tx', {}).get('fee'), r.get('message', ''), flush=True)
+
+
+def fetch_from(src, tag, secs=300):
+    d.nav('Home')
+    wd.click("//header//a[text()='Settings']")
+    wd.wait('Private sending files')
+    if 'Ready (' in wd.body_text():
+        return 'already cached'
+    wd.wait('Fetch (52 MB)', 20)
+    if src:
+        wd.type_into('input[type=url]', src)
+    t0 = time.time()
+    wd.click("//button[starts-with(text(),'Fetch')]")
+    time.sleep(1)
+    while time.time() - t0 < secs:
+        t = wd.body_text()
+        if 'Ready (' in t or ('Fetch (52 MB)' in t and ('network:' in t or 'params:' in t)):
+            break
+        time.sleep(0.5)
+    d.shot('params-' + tag)
+    msg = [x for x in wd.body_text().splitlines() if x.startswith(('network:', 'params:', 'Ready'))]
+    print('PARAMS', tag, round(time.time() - t0, 1), 's', [m[:300] for m in msg], flush=True)
+    return msg
+
+
+def phase_params():
+    fetch_from('', 'default')
+    fetch_from('http://127.0.0.1:1/', 'unreachable', 60)
+    fetch_from(CORRUPT, 'corrupt', 120)
+    fetch_from(MIRROR, 'mirror')
+
+
+def phase_private():
+    A = addrs()
+    txid, secs, _ = d.move('Public → private', '0.5')
+    print('MOVE to private', txid, secs, flush=True)
+    d.done()
+    d.mine(1)
+    z0 = d.cli(0, 'z_getnewaddress', 'sapling')
+    d.cli(0, 'z_shieldcoinbase', '*', z0)
+    time.sleep(5)
+    d.mine(1)
+    op = d.cli(0, 'z_sendmany', z0, json.dumps([{'address': A['sapling'], 'amount': 1.5}]), 1)
+    for _ in range(60):
+        st = d.cli(0, 'z_getoperationstatus', json.dumps([op]))[0]
+        if st['status'] in ('success', 'failed'):
+            break
+        time.sleep(1)
+    d.mine(1)
+    print('PRIVATE funded', d.settle(lambda b: b.get('private', 0) >= 200_000_000), flush=True)
+    os.environ['MEMO'] = 'hello from the browser'
+    sendcell.run('priv-sapling', 'auto', 'sapling', '0.3')
+    os.environ['MEMO'] = ''
+    for cell in (('priv-ecc', 'auto', 'ecc', '0.2'), ('priv-pqf-short', 'auto', 'pq_falcon', '9'), ('priv-pqs-short', 'auto', 'pq_slh', '9')):
+        r = sendcell.run(*cell)
+        print('CELL', r['cell'], r['result'], r.get('message', ''), flush=True)
+    txid, secs, _ = d.move('Private → public', '0.3')
+    print('MOVE to public', txid, secs, flush=True)
+    d.done()
+    d.mine(1)
+
+
+def phase_arm():
+    for _ in range(3):
+        d.cli(0, 'yed_registerattestor', 10, 200)
+        d.mine(1)
+        time.sleep(2)
+    d.mine(20)
+    print('ARM', d.cli(0, 'yed_getinfo')['attest'].get('status'), flush=True)
+    st = os.path.dirname(os.environ['STACK_JSON'])
+    subprocess.Popen([sys.executable, os.path.join(HERE, 'attest_loop.py'), '50000000', '0,1,2'],
+                     env=dict(os.environ, STOP_FILE=os.path.join(st, 'stop')),
+                     stdout=open(os.path.join(OUT, 'attest.log'), 'w'), stderr=subprocess.STDOUT)
+    time.sleep(4)
+    d.mine(1)
+
+
+def phase_yed():
+    import mint
+    A = addrs()
+    d.cli(0, 'sendtoaddress', A['ecc'], 10)
+    d.cli(0, 'sendtoaddress', A['pq_falcon'], 10)
+    d.mine(1)
+    d.settle()
+    mint.main('pub', '100.00', '48')
+    ye = d.cli(1, 'yed_getnewaddress')
+    d.nav('Send')
+    wd.wait('Preview', 30)
+    wd.click("//div[@class='seg']/button[text()='YED']")
+    wd.type_into('input[type=text]', ye, 0)
+    wd.click("//h2[text()='Send']")
+    time.sleep(1)
+    wd.type_into('input[inputmode=decimal]', '1.00', 0)
+    wd.click("//button[text()='Preview']")
+    wd.wait('Node verdict', 120)
+    txid, _ = d.confirm_and_txid()
+    d.done()
+    d.mine(1)
+    info = d.cli(0, 'yed_gettxinfo', txid)
+    print('YED send', txid, info['verdict'], info['assigned'], flush=True)
+    holder = [a for a in info['assigned'] if a['cents'] != 100][0]
+    hold_addr = d.cli(0, 'getrawtransaction', txid, 1)['vout'][holder['vout']]['scriptPubKey']['addresses'][0]
+    d.cli(0, 'sendtoaddress', hold_addr, 0.5)
+    d.mine(1)
+    d.settle()
+    A['holder'] = hold_addr
+    json.dump(A, open(os.path.join(OUT, 'addrs.json'), 'w'), indent=1)
+    wd.req('POST', wd.sess() + '/url', {'url': PAGE})
+    d.unlock()
+    wd.wait('Public (ECC)', 60)
+    sendcell.run('holder-ecc', 'holder', 'ecc', '0.49')
+    print('TOKEN still unspent:', d.cli(0, 'gettxout', txid, holder['vout']) is not None, flush=True)
+    mint.main('pqf', '100.00', '48', 'pq_falcon')
+
+
+def phase_persist():
+    before = d.settle()
+    wd.req('POST', wd.sess() + '/url', {'url': PAGE})
+    d.unlock()
+    wd.wait('Public (ECC)', 60)
+    time.sleep(2)
+    after = d.balances()
+    print('PERSIST equal:', {k: before.get(k) == after.get(k) for k in ('private', 'ecc', 'pq_slh', 'pq_falcon', 'yed_cents')}, flush=True)
+
+
+def phase_restore():
+    before = d.settle()
+    origin = PAGE.split('/#')[0].rstrip('/')
+    wd.req('POST', wd.sess() + '/goog/cdp/execute', {'cmd': 'Storage.clearDataForOrigin', 'params': {'origin': origin, 'storageTypes': 'all'}})
+    words = json.load(open(os.path.join(OUT, 'seed.json')))
+    d.onboard(PAGE, SERVER, words=words, birthday=0)
+    wd.wait('Public (ECC)', 120)
+    after = d.settle(lambda b: b.get('private', 0) > 0 and b.get('yed_cents', 0) > 0, timeout=600)
+    print('RESTORE equal:', {k: before.get(k) == after.get(k) for k in ('private', 'ecc', 'pq_slh', 'pq_falcon', 'yed_cents')}, flush=True)
+
+
+if __name__ == '__main__':
+    for p in sys.argv[1].split(','):
+        print('== phase', p, flush=True)
+        globals()['phase_' + p]()
