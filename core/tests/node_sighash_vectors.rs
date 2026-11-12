@@ -13,6 +13,9 @@
 //! `TX_PQPKH` input of those transactions was signed by ycashd (`signrawtransaction`) over the
 //! C++ node's own ZIP-243 digest, which covers the Sapling parts. The file records each such
 //! input's index, spent script and amount, but no digest: the anchor is the C++-made signature.
+//! The spent script and amount are taken from the recorded blocks themselves (the output the
+//! input spends, found by its outpoint), not from the recorder's metadata, which must agree
+//! (review YEW-REVIEW-8 L3).
 //! For every one, this test computes the digest the way `build::hybrid::Hybrid::digest` does
 //! (`SignableInput::from_parts` over the transparent bundle, `SIGHASH_ALL`, the script code and
 //! the amount, through `hybrid::script_of`, then `sighash_v4::v4_signature_hash`, which is generic
@@ -20,7 +23,11 @@
 //! proven-unsigned one) under branch 0x6d5b7a31, and checks the C++ signature against it with
 //! `pq::verify`; a digest one zat off must not verify. `Hybrid::digest` itself cannot take a
 //! finished transaction (it holds the builder's proven, unsigned Sapling bundle), so the test
-//! calls the function it delegates to with the arguments it builds.
+//! calls the function it delegates to with the arguments it builds. **What this does not anchor**
+//! (review YEW-REVIEW-8 L3): how `Hybrid` assembles the transaction it digests (`self.data`, its
+//! transparent bundle and the proven Sapling bundle). The two agree today by construction
+//! (`hybrid_vectors` pins the builder's own digests); against the node, that assembly is anchored
+//! only by the node's dry run of each signed transaction before it is sent.
 //!
 //! Covered: one `TX_PQPKH` input of each scheme with a Sapling part (`pq-slh-to-sapling`,
 //! `pq-falcon-to-sapling`) and one with a Sapling spend beside it (`sapling-and-pq-to-vault`).
@@ -84,6 +91,14 @@ fn raw_tx(chain: &serde_json::Value, height: u64, txid: &str) -> Vec<u8> {
     panic!("{txid} (height {height}) is not in the recorded chain");
 }
 
+/// The script and the amount of the output `op` spends, read from the recorded blocks.
+fn spent_output(chain: &serde_json::Value, op: &yew_core::tx::OutPoint) -> (Vec<u8>, u64) {
+    let raw = raw_tx(chain, 0, &yew_core::tx::txid_hex(&op.txid));
+    let (t, _) = Transaction::parse(&raw).unwrap();
+    let o = &t.vout[op.n as usize];
+    (o.script_pubkey.clone(), o.value as u64)
+}
+
 /// The digest of input `n` as `Hybrid::digest` computes it (`SIGHASH_ALL`).
 fn digest(raw: &[u8], n: usize, script: &[u8], amount: u64) -> [u8; 32] {
     let branch = zcash_protocol::consensus::BranchId::try_from(VAULT_BRANCH_ID).unwrap();
@@ -129,8 +144,19 @@ fn cxx_signed_pq_inputs_verify_over_the_hybrid_digest() {
         assert!(!inputs.is_empty(), "{name}");
         for i in inputs {
             let n = i["nIn"].as_u64().unwrap() as usize;
-            let script = hex::decode(i["scriptCode"].as_str().unwrap()).unwrap();
-            let amount = i["amount"].as_u64().unwrap();
+            // review YEW-REVIEW-8 L3: the spent output from the chain; the recorder's metadata
+            // must agree with it
+            let (script, amount) = spent_output(&c, &tx.vin[n].prevout);
+            assert_eq!(
+                hex::encode(&script),
+                i["scriptCode"].as_str().unwrap(),
+                "{name} input {n}: the recorded script"
+            );
+            assert_eq!(
+                Some(amount),
+                i["amount"].as_u64(),
+                "{name} input {n}: the recorded amount"
+            );
             let scheme = i["scheme"].as_u64().unwrap() as u8;
             let id = yew_core::pq::pqpkh_of(&script).expect("a TX_PQPKH prevout");
             assert_eq!(id.scheme, scheme, "{name}");
