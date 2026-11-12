@@ -795,6 +795,18 @@ pub async fn cached() -> Result<Option<(Vec<u8>, Vec<u8>)>, ParamsError> {
     Ok(Some((spend, output)))
 }
 
+/// What a browser says when its `fetch` of `url` rejects (no answer at all: the host is down, or
+/// it sends no CORS header, as `download.z.cash` does not, so the browser withholds the bytes):
+/// the URL, the browser's own one-line reason, and what the user can do. Never the JS stack
+/// (real-stack run WEB-REAL: the raw `JsValue(TypeError …)` dump reached the Settings screen).
+pub fn fetch_refused_text(url: &str, detail: &str) -> String {
+    let detail = detail.lines().next().unwrap_or("").trim();
+    format!(
+        "{url}: this browser could not download it ({}). The host is unreachable or does not let web pages download from it (no CORS header). Enter a mirror that does under Source, in Settings.",
+        if detail.is_empty() { "no answer" } else { detail }
+    )
+}
+
 #[cfg(target_arch = "wasm32")]
 mod web {
     use super::{ParamFile, ParamsError, CACHE_NAME};
@@ -863,7 +875,14 @@ mod web {
             let resp: web_sys::Response = match JsFuture::from(scope().fetch_with_str(&url)).await {
                 Ok(r) => r.unchecked_into(),
                 Err(e) => {
-                    last = ParamsError::Transfer(name.into(), format!("{url}: {e:?}"));
+                    let detail = e
+                        .dyn_ref::<js_sys::Error>()
+                        .map(|e| String::from(e.message()))
+                        .unwrap_or_else(|| format!("{e:?}"));
+                    last = ParamsError::Transfer(
+                        name.into(),
+                        super::fetch_refused_text(&url, &detail),
+                    );
                     continue;
                 }
             };
@@ -897,6 +916,18 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn a_refused_browser_fetch_reads_as_a_sentence() {
+        let t = fetch_refused_text(
+            "https://download.z.cash/downloads/sapling-spend.params",
+            "Failed to fetch\n    at __wbg_fetch (http://x/assets/a.js:1:8494)",
+        );
+        assert!(t.starts_with("https://download.z.cash/downloads/sapling-spend.params: this browser could not download it (Failed to fetch)."));
+        assert!(t.contains("no CORS header") && t.contains("Source, in Settings"));
+        assert!(!t.contains("__wbg") && !t.contains("JsValue"));
+        assert!(fetch_refused_text("http://127.0.0.1:1/x", "").contains("(no answer)"));
     }
 
     #[test]

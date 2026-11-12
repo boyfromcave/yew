@@ -15,7 +15,7 @@ export function renderSettings(root: HTMLElement, vm: SettingsVm, meta: WalletMe
     const wifIn = h("input", { type: "password", placeholder: "WIF from YecWallet", autocomplete: "off" });
     const wifBday = h("input", { type: "number", min: 0, value: "0" });
     const mb = (s.params?.bytes ?? 0) / 1e6;
-    const src = h("input", { type: "url", value: s.paramsSource, placeholder: "standard source (download.z.cash)", spellcheck: false, on: { input: () => vm.set({ paramsSource: src.value }) } });
+    const src = h("input", { type: "url", value: s.paramsSource, placeholder: "standard source (download.z.cash)", spellcheck: false, on: { input: () => (vm.state.paramsSource = src.value) } });   // no re-render per keystroke: the field would be rebuilt and lose all but its first character
     mount(root, h("h2", null, "Settings"),
       h("div", { class: "card" }, h("h3", null, "Server"), h("p", null, meta ? `${meta.serverUrl} · ${meta.network} · birthday ${meta.birthday}` : "—"), h("p", { class: "small" }, "Set at onboarding; to change it, forget this wallet and restore with the phrase.")),
       h("div", { class: "card" }, h("h3", null, "Private sending files"),
