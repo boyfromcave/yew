@@ -156,7 +156,6 @@ that show their scheme. No consensus change.
   `z_getnewaddress sprout` is refused with ycashd's text.
 - On regtest, yewd and the core take the network-upgrade heights from the
   node or server instead of assuming Canopy from height 1.
-<!-- yew #30: drop the next item if #30 does not merge for beta2 -->
 - **`yewd vault_lock "from"` answers the vault RPC contract's codes, with the C++ nodes' texts.**
   `from: not an address of this wallet` and `from: an FN-DSA-512 (scheme 2) address cannot be spent
   before Falcon is active at the next block` answer `-5` (they were `-4` and `-8`). A Sprout address
