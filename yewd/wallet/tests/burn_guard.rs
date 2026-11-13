@@ -133,11 +133,17 @@ async fn fixture(name: &str) -> (MockNode, Wallet, Vec<u8>, OutPoint) {
         txid: txid_of(&pay).0,
         n: 0,
     };
-    node.mine(vec![coinbase(1, vec![0x51], 0)], 1);
-    node.mine(vec![coinbase(2, vec![0x51], 0), pay], 2);
+    mine_next(&node, vec![coinbase(1, vec![0x51], 0)]);
+    mine_next(&node, vec![coinbase(2, vec![0x51], 0), pay]);
     w.sync(&node).await.unwrap();
     index_at(&node, 2);
     (node, w, script, plain)
+}
+
+/// Mine a block of `txs` on the tip; its salt is its height (sibling blocks never arise here).
+fn mine_next(node: &MockNode, txs: Vec<Vec<u8>>) {
+    let height = node.0.lock().unwrap().blocks.len();
+    node.mine(txs, u8::try_from(height).unwrap());
 }
 
 fn index_at(node: &MockNode, h: i64) {
@@ -187,7 +193,7 @@ async fn an_unconfirmed_claim_cancel_refund_is_refused() {
     assert_eq!(refusal(&w, &node, spend(&[plain], None)).await, None);
 
     // mined at 3, the index at 2: not judged yet
-    node.mine(vec![coinbase(3, vec![0x51], 0), raw], 3);
+    mine_next(&node, vec![coinbase(3, vec![0x51], 0), raw]);
     w.sync(&node).await.unwrap();
     assert_eq!(
         refusal(&w, &node, spend(&[refund], None)).await,
@@ -269,7 +275,7 @@ async fn an_output_the_wallet_has_not_seen_is_read_from_the_node() {
         refusal(&w, &node, spend(&[refund], None)).await,
         Some((WALLET_ERROR, unjudged_text(&format!("{cancel}:1"))))
     );
-    node.mine(vec![coinbase(3, vec![0x51], 0), raw], 3);
+    mine_next(&node, vec![coinbase(3, vec![0x51], 0), raw]);
     assert_eq!(
         refusal(&w, &node, spend(&[refund], None)).await,
         Some((WALLET_ERROR, unjudged_text(&format!("{cancel}:1"))))
