@@ -104,6 +104,17 @@ pub struct Chain {
     pub fail_syncs_after_send: u32,
     /// Fixed answers for methods the mock does not model (an `Err` is the node's `(code, message)`).
     pub answers: std::collections::HashMap<String, Result<Value, (i64, String)>>,
+    /// Every raw block read (`getblock <hash> 0`), by height, in order.
+    pub block_reads: Vec<usize>,
+    /// When set, the raw block read that would be the `n`-th (counting from 0 in `block_reads`)
+    /// fails once (the node unreachable: a scan stopped part-way).
+    pub fail_read_at: Option<usize>,
+    /// The node is in its initial block download (`getblockchaininfo`
+    /// `initial_block_download_complete: false`).
+    pub syncing: bool,
+    /// When set, right after the `n`-th raw block read the chain becomes `.1` (its blocks,
+    /// Sapling output counts and transactions): a reorg while the wallet reads.
+    pub reorg_after_read: Option<(usize, Box<Chain>)>,
 }
 
 #[derive(Clone, Default)]
@@ -241,6 +252,19 @@ impl Node for MockNode {
                                 message: "Block not found".into(),
                             })?;
                     if p[1].as_u64() == Some(0) {
+                        let raw = raw.clone();
+                        let at = c.blocks.iter().position(|(h, _)| h == want).unwrap();
+                        if c.fail_read_at == Some(c.block_reads.len()) {
+                            c.fail_read_at = None;
+                            return Err(NodeError::Unreachable("mock: connection refused".into()));
+                        }
+                        c.block_reads.push(at);
+                        if c.reorg_after_read.as_ref().map(|r| r.0) == Some(c.block_reads.len()) {
+                            let (_, alt) = c.reorg_after_read.take().unwrap();
+                            c.blocks = alt.blocks;
+                            c.sapling = alt.sapling;
+                            c.txs = alt.txs;
+                        }
                         json!(hex::encode(raw))
                     } else {
                         // the Sapling tree's size after this block: every Sapling output so far
@@ -249,16 +273,20 @@ impl Node for MockNode {
                         json!({"trees": {"sapling": {"size": size}}})
                     }
                 }
-                "getblockchaininfo" => match c.vault_height {
-                    Some(h) => json!({
-                        "blocks": tip,
-                        "upgrades": {"6d5b7a31": {"activationheight": h}},
-                        "consensus": {"nextblock": if tip as u64 + 1 >= h { "6d5b7a31" } else { "76b809bb" }},
-                    }),
-                    None => {
-                        json!({"blocks": tip, "upgrades": {}, "consensus": {"nextblock": "76b809bb"}})
-                    }
-                },
+                "getblockchaininfo" => {
+                    let mut v = match c.vault_height {
+                        Some(h) => json!({
+                            "blocks": tip,
+                            "upgrades": {"6d5b7a31": {"activationheight": h}},
+                            "consensus": {"nextblock": if tip as u64 + 1 >= h { "6d5b7a31" } else { "76b809bb" }},
+                        }),
+                        None => {
+                            json!({"blocks": tip, "upgrades": {}, "consensus": {"nextblock": "76b809bb"}})
+                        }
+                    };
+                    v["initial_block_download_complete"] = json!(!c.syncing);
+                    v
+                }
                 "sendrawtransaction" => {
                     let hexs = p[0].as_str().unwrap().to_string();
                     drop(c);

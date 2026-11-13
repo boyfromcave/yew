@@ -53,10 +53,10 @@ use yew_core::params::Network;
 use yew_core::tx::Transaction as YTx;
 use yewd_proto::{PublicBundle, PublicRequest};
 
-use crate::keys::{KeyBook, Owner, EXTERNAL, INTERNAL, LOOKAHEAD, PQ_LOOKAHEAD};
+use crate::keys::{KeyBook, Owner, EXTERNAL, INTERNAL, PQ_LOOKAHEAD, WINDOW};
 use crate::node::{Node, NodeError};
 use crate::sapling::{Received, Viewing};
-use crate::state::{BlockRef, State, Tip, WalletTx, RECENT};
+use crate::state::{BlockRef, ScanMark, State, Tip, WalletTx, RECENT};
 
 /// The yew-core version this daemon is built on (reported by `getwalletinfo`).
 pub const CORE_VERSION: &str = yew_core::VERSION;
@@ -223,6 +223,9 @@ pub struct ChainFacts {
     /// parameters ([`upgrades_spec`]).
     pub upgrades: Option<String>,
     pub falcon_active: Option<bool>,
+    /// The node has the chain (out of its initial download): [`node_synced`] of its
+    /// `getblockchaininfo`. A restore stays in progress until it is.
+    pub synced: bool,
 }
 
 /// The backend is on the wallet's network (`getblockchaininfo`): on testnet, the testnet-yb-fast
@@ -258,6 +261,28 @@ pub fn check_backend_network(network: Network, info: &serde_json::Value) -> Resu
         ));
     }
     Ok(())
+}
+
+/// Whether the node reports it has the chain, from `getblockchaininfo`: ycashd's
+/// `initial_block_download_complete`; koganyd, which has no such field, when its tip is at its
+/// header chain's (`blocks >= headers`) and at the height it estimates from the clock
+/// (`verificationprogress >= 1`, which koganyd sets on regtest, or `blocks >= estimatedheight`).
+/// A missing or unreadable field answers false: a restore stays open rather than closing early.
+pub fn node_synced(info: &serde_json::Value) -> bool {
+    if let Some(done) = info["initial_block_download_complete"].as_bool() {
+        return done;
+    }
+    let Some(blocks) = info["blocks"].as_u64() else {
+        return false;
+    };
+    let headers_ok = info["headers"].as_u64().is_some_and(|h| blocks >= h);
+    let estimate_ok = info["verificationprogress"]
+        .as_f64()
+        .is_some_and(|p| p >= 1.0)
+        || info["estimatedheight"]
+            .as_u64()
+            .is_some_and(|e| blocks >= e);
+    headers_ok && estimate_ok
 }
 
 /// The node's upgrade heights before the vault upgrade (`getblockchaininfo.upgrades`, keyed by
@@ -431,6 +456,18 @@ fn parse_tx(
     bytes: &[u8],
     zcash: Option<&zcash_primitives::transaction::Transaction>,
 ) -> Result<Parsed, String> {
+    parse_tx_with(view, book, bytes, zcash, true)
+}
+
+/// [`parse_tx`]; `decrypt = false` leaves the Sapling outputs untried (`received` empty): the
+/// re-pass, which looks for transparent transactions only.
+fn parse_tx_with(
+    view: &Viewing,
+    book: &KeyBook,
+    bytes: &[u8],
+    zcash: Option<&zcash_primitives::transaction::Transaction>,
+    decrypt: bool,
+) -> Result<Parsed, String> {
     let (tx, _) = YTx::parse(bytes).map_err(|e| e.to_string())?;
     let owned;
     let ztx = match zcash {
@@ -446,7 +483,7 @@ fn parse_tx(
     };
     let (received, nullifiers, sapling_outputs) = match ztx.sapling_bundle() {
         Some(b) => (
-            view.decrypt(b),
+            if decrypt { view.decrypt(b) } else { Vec::new() },
             sapling::nullifiers(b),
             b.shielded_outputs().len(),
         ),
@@ -454,15 +491,7 @@ fn parse_tx(
     };
     let coinbase =
         tx.vin.len() == 1 && tx.vin[0].prevout.txid == [0u8; 32] && tx.vin[0].prevout.n == u32::MAX;
-    let mut owned_templates = Vec::new();
-    for (i, o) in tx.vout.iter().enumerate() {
-        let owner = yew_core::vault::parse_vault(&o.script_pubkey)
-            .map(|v| v.owner)
-            .or_else(|| yew_core::vault::parse_intent(&o.script_pubkey).map(|p| p.owner));
-        if owner.is_some_and(|id| book.pq_by_id(&id).is_some()) {
-            owned_templates.push(i as u32);
-        }
-    }
+    let owned_templates = owned_templates(book, &tx);
     Ok(Parsed {
         tx,
         size: bytes.len(),
@@ -473,6 +502,32 @@ fn parse_tx(
         sapling_outputs,
     })
 }
+
+/// The PQ owner of a vault or intent template output.
+fn template_owner(script: &[u8]) -> Option<yew_core::pq::PqKeyId> {
+    yew_core::vault::parse_vault(script)
+        .map(|v| v.owner)
+        .or_else(|| yew_core::vault::parse_intent(script).map(|p| p.owner))
+}
+
+/// The outputs of `tx` that pay a vault or intent template a PQ key of `book` owns.
+fn owned_templates(book: &KeyBook, tx: &YTx) -> Vec<u32> {
+    tx.vout
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| {
+            template_owner(&o.script_pubkey).is_some_and(|id| book.pq_by_id(&id).is_some())
+        })
+        .map(|(i, _)| i as u32)
+        .collect()
+}
+
+/// How often a long scan writes its progress (`wallet.json`), so a restore stopped part-way
+/// resumes where it was (a block count, or a time, whichever comes first).
+const SCAN_SAVE_BLOCKS: u32 = 2_000;
+const SCAN_SAVE_SECS: u64 = 30;
+/// How often a long scan says where it is on stderr (ycashd's "Still rescanning").
+const SCAN_LOG_SECS: u64 = 60;
 
 impl Wallet {
     /// Open the wallet in `dir` (`<datadir>/<net>/yewd`), creating it from the signer's bundle
@@ -589,13 +644,13 @@ impl Wallet {
         self.st.save(&self.path)
     }
 
-    /// Derive keys up to `issued + LOOKAHEAD`, and ask the signer for PQ keys up to
+    /// Derive keys up to `issued + WINDOW`, and ask the signer for PQ keys up to
     /// `issued + PQ_LOOKAHEAD`.
     pub fn refresh_keys(&mut self) -> Result<(), String> {
         self.book
-            .extend(EXTERNAL, self.st.issued.external + LOOKAHEAD)?;
+            .extend(EXTERNAL, self.st.issued.external + WINDOW)?;
         self.book
-            .extend(INTERNAL, self.st.issued.internal + LOOKAHEAD)?;
+            .extend(INTERNAL, self.st.issued.internal + WINDOW)?;
         let mut req = PublicRequest::default();
         for scheme in [1u8, 2] {
             let have = self
@@ -678,6 +733,60 @@ impl Wallet {
         }
     }
 
+    /// How many keys the book holds (the lookaheads' growth is measured by it).
+    fn book_size(&self) -> usize {
+        self.book.tkeys.len() + self.book.pq.len()
+    }
+
+    /// Mark the keys the wallet's transactions pay (outputs, and the PQ owners of their vault
+    /// and intent templates), as `admit` does, for keys the book holds only now: a transaction
+    /// admitted earlier can pay a key the lookahead reached later (one transaction paying keys
+    /// 150 and 60 in that order; a transaction found for its Sapling note that also pays a key
+    /// held only after a later payment; ycash6's `NoteKeysUsed` in the re-pass, review M-3).
+    /// Returns whether a counter moved.
+    fn mark_known(&mut self) -> bool {
+        let mut used = Vec::new();
+        for p in self.parsed.values_mut() {
+            p.owned_templates = owned_templates(&self.book, &p.tx);
+            for o in &p.tx.vout {
+                if let Some(owner) = self.book.owns_script(&o.script_pubkey) {
+                    used.push(owner);
+                }
+            }
+            for &i in &p.owned_templates {
+                let id = template_owner(&p.tx.vout[i as usize].script_pubkey);
+                if let Some(k) = id.and_then(|id| self.book.pq_by_id(&id)) {
+                    used.push(Owner::Pq(k.scheme, k.index));
+                }
+            }
+        }
+        let mut moved = false;
+        for owner in used {
+            moved |= self.mark_used(owner);
+        }
+        moved
+    }
+
+    /// A key was marked used: top the lookaheads up, then mark what the wallet's transactions
+    /// pay among the keys that brought in, until nothing moves. Returns whether the book grew (a
+    /// scan in progress then has blocks to read again: the re-pass).
+    fn follow_keys(&mut self) -> Result<bool, String> {
+        let before = self.book_size();
+        loop {
+            self.refresh_keys()?;
+            if !self.mark_known() {
+                break;
+            }
+        }
+        let grew = self.book_size() > before;
+        if grew {
+            if let Some(m) = self.st.scan.as_mut() {
+                m.grew = true;
+            }
+        }
+        Ok(grew)
+    }
+
     /// Whether a parsed transaction concerns the wallet (pays or spends it, a note, a
     /// nullifier of a note, a template it owns).
     fn relevant(
@@ -732,10 +841,7 @@ impl Wallet {
         // a vault or intent this wallet's PQ key owns uses that key too (ycashd marks the owner key
         // seen on chain: a restored wallet never hands it out again, vault_pq_wallet_restore.py)
         for &i in &p.owned_templates {
-            let s = &p.tx.vout[i as usize].script_pubkey;
-            let id = yew_core::vault::parse_vault(s)
-                .map(|v| v.owner)
-                .or_else(|| yew_core::vault::parse_intent(s).map(|v| v.owner));
+            let id = template_owner(&p.tx.vout[i as usize].script_pubkey);
             if let Some(k) = id.and_then(|id| self.book.pq_by_id(&id)) {
                 let owner = Owner::Pq(k.scheme, k.index);
                 moved |= self.mark_used(owner);
@@ -851,6 +957,10 @@ impl Wallet {
             .recent
             .retain(|t| fork.is_some_and(|f| t.height <= f));
         self.st.tip = self.st.recent.last().cloned();
+        if fork.is_none() {
+            // a scan from the birthday reads everything again: no earlier pass is owed
+            self.st.scan = None;
+        }
         // the mempool view is re-read from scratch after a rewind
         self.mempool_seen.clear();
     }
@@ -881,6 +991,22 @@ impl Wallet {
         for _attempt in 0..4 {
             let best = node::best_hash(node).await?;
             if self.st.tip.as_ref().is_some_and(|t| t.hash == best) {
+                if self.st.scan.is_some() {
+                    // a scan stopped in its re-pass (an earlier run, a lost backend): finish it
+                    changed = true;
+                    match self.repass(node).await {
+                        Ok(()) => {}
+                        Err(ScanError::Moved) => continue,
+                        Err(e) => return Err(self.scan_failed(e)),
+                    }
+                    self.rebuild();
+                }
+                if self.st.restore_pending {
+                    // a restore closes once the node has the chain, which can happen with no new
+                    // block: ask again
+                    self.refresh_chain(node).await?;
+                }
+                changed |= self.restore_done();
                 changed |= self.sync_mempool(node).await?;
                 if changed {
                     self.save()
@@ -920,10 +1046,13 @@ impl Wallet {
             match self.scan_from(node, resume).await {
                 Ok(()) => {}
                 Err(ScanError::Moved) => continue,
-                Err(ScanError::Rpc(e)) => return Err(e),
+                Err(e) => return Err(self.scan_failed(e)),
             }
             self.sync_mempool(node).await?;
             self.rebuild();
+            if self.st.tip.as_ref().is_some_and(|t| t.hash == best) {
+                let _ = self.restore_done();
+            }
             self.save()
                 .map_err(|e| RpcError::new(code::WALLET_ERROR, e))?;
             if self.st.tip.as_ref().is_some_and(|t| t.hash == best) {
@@ -941,13 +1070,92 @@ impl Wallet {
             .as_u64()
             .map(|h| h as u32);
         self.chain.upgrades = Some(upgrades_spec(&info["upgrades"]));
+        self.chain.synced = node_synced(&info);
         Ok(())
     }
 
+    /// A scan that failed part-way keeps what it read: written now, so a restart resumes there
+    /// (the scan mark says which blocks a re-pass still owes).
+    fn scan_failed(&mut self, e: ScanError) -> RpcError {
+        let e = match e {
+            ScanError::Rpc(e) => e,
+            ScanError::Moved => RpcError::new(code::MISC_ERROR, "yewd: the chain moved"),
+        };
+        if let Some(m) = &self.st.scan {
+            eprintln!(
+                "yewd: the wallet scan stopped at height {} (pass {}): {}; it resumes there",
+                if m.pass == 1 {
+                    self.tip_height() + 1
+                } else {
+                    m.next
+                },
+                m.pass,
+                e.message
+            );
+        }
+        self.rebuild();
+        if let Err(s) = self.save() {
+            eprintln!("yewd: could not save the scan's progress: {s}");
+        }
+        e
+    }
+
+    /// A wallet restored from its recovery phrase has scanned the chain to the node's tip with
+    /// no re-pass owed, and the node has the chain (ycash6 clears its `restorescan` marker only
+    /// out of the initial download): `getwalletinfo.restore_in_progress` clears.
+    fn restore_done(&mut self) -> bool {
+        if self.st.restore_pending && self.st.scan.is_none() && self.chain.synced {
+            self.st.restore_pending = false;
+            eprintln!("yewd: the restore's scan is complete");
+            return true;
+        }
+        false
+    }
+
+    /// Write the scan's progress now and then (a long restore stopped part-way resumes there).
+    fn scan_checkpoint(&mut self, since: &mut (u32, std::time::Instant)) {
+        since.0 += 1;
+        if since.0 >= SCAN_SAVE_BLOCKS || since.1.elapsed().as_secs() >= SCAN_SAVE_SECS {
+            self.rebuild();
+            if let Err(e) = self.save() {
+                eprintln!("yewd: could not save the scan's progress: {e}");
+            }
+            *since = (0, std::time::Instant::now());
+        }
+    }
+
+    /// Read the blocks `from..=` the node's count (the main pass), then, if the key lookahead grew
+    /// meanwhile, the re-passes ([`Wallet::repass`]).
     async fn scan_from(&mut self, node: &dyn Node, from: u32) -> Result<(), ScanError> {
         let count = node::block_count(node).await?;
         let mut prev = self.st.tip.clone();
+        // the range a re-pass reads starts at the lowest block this scan (or the one it resumes)
+        // has read; while a restore is in progress, at the birthday: a node still in its initial
+        // download hands the restore its blocks over many syncs, and a key found in a later one
+        // may be paid in a block an earlier one read (review YEW-41 finding 1)
+        let range_from = if self.st.restore_pending {
+            from.min(self.st.birthday.max(1))
+        } else {
+            from
+        };
+        match self.st.scan.as_mut() {
+            Some(m) => m.from = m.from.min(range_from),
+            None => {
+                self.st.scan = Some(ScanMark {
+                    from: range_from,
+                    pass: 1,
+                    next: range_from,
+                    grew: false,
+                })
+            }
+        }
+        let mut since = (0u32, std::time::Instant::now());
+        let mut said = std::time::Instant::now();
         for h in from..=count {
+            if said.elapsed().as_secs() >= SCAN_LOG_SECS {
+                eprintln!("yewd: still scanning, at block {h} of {count}");
+                said = std::time::Instant::now();
+            }
             let hash = node::block_hash(node, h).await?;
             let raw = node::raw_block(node, &hash).await?;
             let (head, txs) = split_block(&raw).map_err(|e| {
@@ -973,7 +1181,200 @@ impl Wallet {
             }
             self.st.tip = Some(tip.clone());
             prev = Some(tip);
+            self.scan_checkpoint(&mut since);
         }
+        self.repass(node).await
+    }
+
+    /// The re-pass (ycash6 `ScanForWalletTransactions`, beta2 seed-only restore): a key the
+    /// lookahead derives while a scan runs may have been paid, or its coin spent, in a block the
+    /// scan has passed (a restored wallet's keys are used in the order the original issued them,
+    /// not in chain order). When the lookahead grew during a pass, the whole scanned range is read
+    /// again, from the scan's first block to the wallet's tip, for transactions the wallet does
+    /// not have that pay or spend its keys; passes go on while one grows the lookahead (each pass
+    /// reads in chain order, so it also finds every spend of a coin it finds). Termination: the
+    /// lookahead grows only when an output in the range pays a key at or past a counter, which
+    /// then moves past it for good. Transactions the wallet has are re-marked at each growth
+    /// ([`Wallet::mark_known`]), and a Sapling transaction of the wallet was found by the main
+    /// pass, so a re-pass tries no Sapling output. The pass and the next block to read are in the
+    /// scan mark (`wallet.json`): a re-pass stopped part-way resumes there.
+    async fn repass(&mut self, node: &dyn Node) -> Result<(), ScanError> {
+        loop {
+            let Some(mut m) = self.st.scan.clone() else {
+                return Ok(());
+            };
+            let tip = self.tip_height();
+            if m.pass == 1 || m.next > tip {
+                if !m.grew {
+                    self.st.scan = None;
+                    return Ok(());
+                }
+                m = ScanMark {
+                    from: m.from,
+                    pass: m.pass + 1,
+                    next: m.from,
+                    grew: false,
+                };
+                eprintln!(
+                    "yewd: the key lookahead moved during the scan; re-checking the scanned heights up to {tip} (pass {})",
+                    m.pass
+                );
+            } else {
+                eprintln!(
+                    "yewd: resuming the scan's re-check up to height {tip} (pass {})",
+                    m.pass
+                );
+            }
+            self.st.scan = Some(m.clone());
+            let mut added = 0usize;
+            let mut since = (0u32, std::time::Instant::now());
+            let mut said = std::time::Instant::now();
+            for h in m.next..=tip {
+                if said.elapsed().as_secs() >= SCAN_LOG_SECS {
+                    eprintln!(
+                        "yewd: still scanning (pass {}), at block {h} of {tip}",
+                        m.pass
+                    );
+                    said = std::time::Instant::now();
+                }
+                let hash = node::block_hash(node, h).await?;
+                let raw = node::raw_block(node, &hash).await?;
+                let (head, txs) = split_block(&raw).map_err(|e| {
+                    ScanError::Rpc(RpcError::new(
+                        code::MISC_ERROR,
+                        format!("yewd: block {hash}: {e}"),
+                    ))
+                })?;
+                added += self.repass_block(node, h, &hash, head.time, txs).await?;
+                if let Some(s) = self.st.scan.as_mut() {
+                    s.next = h + 1;
+                }
+                self.scan_checkpoint(&mut since);
+            }
+            // a reorg while the pass read: blocks it read by height may not be the wallet's. The
+            // pass is read again from its start once the main pass has followed the reorg
+            // (review YEW-41 finding 2)
+            if let Some(t) = self.st.tip.clone() {
+                let moved = match node::block_hash(node, t.height).await {
+                    Ok(h) => h != t.hash,
+                    // the height is gone: the chain is shorter now
+                    Err(NodeError::Rpc { .. }) => true,
+                    Err(e) => return Err(e.into()),
+                };
+                if moved {
+                    if let Some(s) = self.st.scan.as_mut() {
+                        s.next = s.from;
+                    }
+                    eprintln!("yewd: the chain moved during the re-check; it is read again");
+                    return Err(ScanError::Moved);
+                }
+            }
+            let grew = self.st.scan.as_ref().is_some_and(|s| s.grew);
+            eprintln!(
+                "yewd: the re-check found {added} more transaction(s){}",
+                if grew {
+                    "; the lookahead grew again"
+                } else {
+                    ""
+                }
+            );
+            if added > 0 {
+                self.rebuild();
+            }
+            if let Some(s) = self.st.scan.as_mut() {
+                s.next = tip + 1;
+            }
+        }
+    }
+
+    /// One block of a re-pass: admit the transactions the wallet does not have that pay or spend
+    /// its keys (transparent outputs, PQ outputs and templates, spends of its coins). Returns how
+    /// many it admitted.
+    async fn repass_block(
+        &mut self,
+        node: &dyn Node,
+        height: u32,
+        hash: &str,
+        time: i64,
+        txs: Vec<BlockTx>,
+    ) -> Result<usize, ScanError> {
+        let mut added = 0usize;
+        let mut notes: Vec<(String, u64)> = Vec::new();
+        let mut outputs_before = 0u64;
+        let (mut outs, mut nfs) = self.own_sets();
+        for (index, (bytes, ztx)) in txs.into_iter().enumerate() {
+            let txid = ztx.txid().to_string();
+            let n_out = ztx
+                .sapling_bundle()
+                .map(|b| b.shielded_outputs().len() as u64)
+                .unwrap_or(0);
+            if self.st.wtx.contains_key(&txid) {
+                outputs_before += n_out;
+                continue;
+            }
+            let wrap = |e: String| {
+                ScanError::Rpc(RpcError::new(
+                    code::MISC_ERROR,
+                    format!("yewd: {txid}: {e}"),
+                ))
+            };
+            let quick =
+                parse_tx_with(&self.view, &self.book, &bytes, Some(&ztx), false).map_err(wrap)?;
+            if self.relevant(&quick, &outs, &nfs) {
+                let p = parse_tx(&self.view, &self.book, &bytes, Some(&ztx)).map_err(wrap)?;
+                let block = BlockRef {
+                    height,
+                    hash: hash.to_string(),
+                    index: index as u32,
+                    time,
+                    sapling_pos: None,
+                };
+                if !p.received.is_empty() {
+                    notes.push((txid.clone(), outputs_before));
+                }
+                let moved = self
+                    .admit(txid, hex::encode(&bytes), Some(block), p)
+                    .map_err(|e| ScanError::Rpc(RpcError::new(code::WALLET_ERROR, e)))?;
+                self.rebuild();
+                if moved {
+                    self.follow_keys()
+                        .map_err(|e| ScanError::Rpc(RpcError::new(code::WALLET_ERROR, e)))?;
+                    self.rebuild();
+                }
+                (outs, nfs) = self.own_sets();
+                added += 1;
+            }
+            outputs_before += n_out;
+        }
+        if !notes.is_empty() {
+            self.place_notes(node, hash, outputs_before, notes).await?;
+        }
+        Ok(added)
+    }
+
+    /// The commitment-tree positions of the Sapling outputs of the admitted transactions of
+    /// block `hash`: the tree size after the block, less the block's outputs.
+    async fn place_notes(
+        &mut self,
+        node: &dyn Node,
+        hash: &str,
+        outputs_before: u64,
+        admitted: Vec<(String, u64)>,
+    ) -> Result<(), ScanError> {
+        let info = node::block_info(node, hash).await?;
+        let size_after = info["trees"]["sapling"]["size"].as_u64().ok_or_else(|| {
+            ScanError::Rpc(RpcError::new(
+                code::MISC_ERROR,
+                format!("yewd: getblock {hash}: no trees.sapling.size"),
+            ))
+        })?;
+        let start = size_after.saturating_sub(outputs_before);
+        for (txid, before) in admitted {
+            if let Some(b) = self.st.wtx.get_mut(&txid).and_then(|w| w.block.as_mut()) {
+                b.sapling_pos = Some(start + before);
+            }
+        }
+        self.rebuild();
         Ok(())
     }
 
@@ -1019,27 +1420,18 @@ impl Wallet {
             }
             outputs_before += n_out;
             if moved {
-                self.refresh_keys()
-                    .map_err(|e| ScanError::Rpc(RpcError::new(code::WALLET_ERROR, e)))?;
+                if self
+                    .follow_keys()
+                    .map_err(|e| ScanError::Rpc(RpcError::new(code::WALLET_ERROR, e)))?
+                {
+                    self.rebuild();
+                }
                 moved = false;
             }
         }
         if !admitted.is_empty() {
-            // positions: the tree size after the block, less the block's outputs
-            let info = node::block_info(node, hash).await?;
-            let size_after = info["trees"]["sapling"]["size"].as_u64().ok_or_else(|| {
-                ScanError::Rpc(RpcError::new(
-                    code::MISC_ERROR,
-                    format!("yewd: getblock {hash}: no trees.sapling.size"),
-                ))
-            })?;
-            let start = size_after.saturating_sub(outputs_before);
-            for (txid, before) in admitted {
-                if let Some(b) = self.st.wtx.get_mut(&txid).and_then(|w| w.block.as_mut()) {
-                    b.sapling_pos = Some(start + before);
-                }
-            }
-            self.rebuild();
+            self.place_notes(node, hash, outputs_before, admitted)
+                .await?;
         }
         if !joined.is_empty() {
             // ycash6 VaultCheckJoins: a pending imported key that joined a set brings no
@@ -1133,7 +1525,7 @@ impl Wallet {
                         .admit(txid, hex::encode(&bytes), None, p)
                         .map_err(|e| RpcError::new(code::WALLET_ERROR, e))?;
                     if moved {
-                        self.refresh_keys()
+                        self.follow_keys()
                             .map_err(|e| RpcError::new(code::WALLET_ERROR, e))?;
                     }
                     self.rebuild();
@@ -1244,6 +1636,31 @@ mod tests {
         }
         assert!(check_backend_network(Network::Mainnet, &info("main", None, None)).is_ok());
         assert!(check_backend_network(Network::Regtest, &info("regtest", None, Some(5))).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod node_synced_tests {
+    use super::node_synced;
+    use serde_json::json;
+
+    /// ycashd's flag decides; koganyd (no flag) is synced at its header tip and its estimate
+    /// (or with `verificationprogress` 1, which it reports on regtest); anything missing is not.
+    #[test]
+    fn node_synced_reads_ycashd_and_koganyd() {
+        assert!(node_synced(
+            &json!({"initial_block_download_complete": true, "blocks": 5})
+        ));
+        assert!(!node_synced(
+            &json!({"initial_block_download_complete": false, "blocks": 5, "headers": 5})
+        ));
+        let k = |b: u64, h: u64, p: f64, e: u64| json!({"blocks": b, "headers": h, "verificationprogress": p, "estimatedheight": e});
+        assert!(node_synced(&k(10, 10, 1.0, 900))); // regtest: progress forced to 1
+        assert!(node_synced(&k(201, 201, 0.995, 201)));
+        assert!(!node_synced(&k(100, 200, 1.0, 100))); // headers ahead
+        assert!(!node_synced(&k(200, 200, 0.99, 202))); // behind the clock's estimate
+        assert!(!node_synced(&json!({"blocks": 10})));
+        assert!(!node_synced(&json!({})));
     }
 }
 

@@ -163,6 +163,16 @@ that show their scheme. No consensus change.
   address is refused with `… (its YED would burn; lock it again with yed_lockcoins)`. yew carries a
   pinned copy of the vault RPC contract, and a test checks every `"from"` error row against it.
 
+- **`yewd -mnemonicfile` finds every coin of its own phrase, as ycashd's seed-only restore.** It
+  holds 101 transparent keys per chain past the last one used (ycashd's `-keypool` + 1; it was
+  100) and 20 post-quantum keys per scheme, and when that window grew during the scan it reads the
+  scanned blocks again until nothing more is found, so keys paid out of chain order are found.
+  Before, a restore missed coins paid after a gap of 100 unused addresses and keys paid out of
+  order (10 of 311 outputs in ycash6's `wallet_seed_restore_ecc.py`). A restore stopped part-way
+  resumes where it was, and `getwalletinfo` reports `restore_in_progress` and
+  `lookahead_incomplete` (always false in yewd). A restore reads its blocks about twice; an
+  ordinary start reads them once, as before.
+
 ### Testnet is the fast profile
 
 - **The testnet YEW and yewd sign for is testnet-yb-fast**, the profile the project's testnet seeds
@@ -224,6 +234,11 @@ No YED was ever spent as plain YEC. Not run in a real browser: sweeping back a l
 - **The has-held-YED mark is not derived from the seed.** A wallet restored from its seed against a
   server without Yellowback has never seen its YED and is not marked. Restore only against a server
   with Yellowback.
+- **A ycashd recovery phrase and a yewd one derive different transparent keys.** yewd and YEW use
+  `m/44'/347'/0'`, ycashd its seed's legacy account. Moving a wallet between them by phrase does not
+  bring its transparent coins; send them instead. A restore misses a coin paid after more than 100
+  unused transparent addresses or 20 unused post-quantum keys of a scheme (as ycashd): issue
+  addresses past the gap and restart with `-rescan`.
 - **YED cannot be minted on the fast testnet** with the current node builds: no attestor set is
   compiled in.
 - **No private (Sapling) transactions on testnet.** librustzcash6 still has the old Ycash testnet's
