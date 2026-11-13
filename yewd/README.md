@@ -180,7 +180,7 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
   ycashd) or **20 unused post-quantum keys per scheme**. Keys are used in the order the original
   wallet issued them, not in chain order, so when the window grew during a scan, the scanned blocks
   are read again (the **re-pass**, logged as `the key lookahead moved during the scan; re-checking
-  heights <from> to <tip> (pass <n>)`), until a pass grows nothing. A restore reads its blocks
+  the scanned heights up to <tip> (pass <n>)`), until a pass grows nothing. A restore reads its blocks
   about twice; an ordinary sync, in which no unissued key is paid, reads each block once. The
   scan's progress (`scan` in `wallet.json`: the first block, the pass, the next block of a re-pass)
   is written every 2,000 blocks or 30 s and when the backend is lost, so a restore stopped part-way

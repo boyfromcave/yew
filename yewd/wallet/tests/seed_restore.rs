@@ -59,6 +59,12 @@ fn unspent(w: &Wallet) -> Vec<(String, u32, i64)> {
     v
 }
 
+/// Append a block holding `txs` (the mock's sibling salt is its height: one chain, no siblings).
+fn mine(node: &MockNode, txs: Vec<Vec<u8>>) {
+    let height = node.0.lock().unwrap().blocks.len() as u8;
+    node.mine(txs, height);
+}
+
 fn reads(node: &MockNode) -> Vec<usize> {
     std::mem::take(&mut node.0.lock().unwrap().block_reads)
 }
@@ -77,7 +83,10 @@ async fn restore_finds_coins_past_gaps_up_to_the_keypool() {
     let p161 = payment(foreign(2), ext(161), 3_000);
     let p263 = payment(foreign(3), ext(263), 4_000);
     for (h, p) in [&p5, &p60, &p161, &p263].into_iter().enumerate() {
-        node.mine(vec![coinbase(h as u32 + 1, vec![0x51], 1), p.clone()], 0);
+        mine(
+            &node,
+            vec![coinbase(h as u32 + 1, vec![0x51], 1), p.clone()],
+        );
     }
     let d = dir("restore-gaps");
     let mut w = Wallet::open(&d, Network::Regtest, signer(), 0).unwrap();
@@ -105,7 +114,7 @@ async fn restore_finds_coins_past_gaps_up_to_the_keypool() {
     assert_eq!(info["lookahead_incomplete"], json!(false));
 
     // an ordinary block afterwards, and an ordinary sync with nothing new: no block read twice
-    node.mine(vec![coinbase(5, vec![0x51], 1)], 0);
+    mine(&node, vec![coinbase(5, vec![0x51], 1)]);
     w.sync(&node).await.unwrap();
     assert!(!w.sync(&node).await.unwrap());
     assert_eq!(reads(&node), vec![5]);
@@ -152,9 +161,9 @@ fn out_of_order_chain(node: &MockNode) -> OutOfOrder {
     });
     let pair = t.serialize().unwrap();
     for (h, p) in [&p150, &p60, &spend150, &pair].into_iter().enumerate() {
-        node.mine(vec![coinbase(h as u32 + 1, vec![0x51], 1), p.clone()], 0);
+        mine(node, vec![coinbase(h as u32 + 1, vec![0x51], 1), p.clone()]);
     }
-    node.mine(vec![coinbase(5, vec![0x51], 1)], 0);
+    mine(node, vec![coinbase(5, vec![0x51], 1)]);
     OutOfOrder {
         p150,
         p60,
@@ -213,8 +222,8 @@ async fn restore_finds_a_post_quantum_key_paid_out_of_order() {
     genesis(&node);
     let p30 = payment(foreign(0), falcon(30), 30_000);
     let p10 = payment(foreign(1), falcon(10), 10_000);
-    node.mine(vec![coinbase(1, vec![0x51], 1), p30.clone()], 0);
-    node.mine(vec![coinbase(2, vec![0x51], 1), p10.clone()], 0);
+    mine(&node, vec![coinbase(1, vec![0x51], 1), p30.clone()]);
+    mine(&node, vec![coinbase(2, vec![0x51], 1), p10.clone()]);
     let d = dir("restore-pq");
     let mut w = Wallet::open(&d, Network::Regtest, signer(), 0).unwrap();
     assert!(w.book.pq_key(2, 30).is_none());

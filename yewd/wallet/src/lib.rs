@@ -1176,13 +1176,13 @@ impl Wallet {
                     grew: false,
                 };
                 eprintln!(
-                    "yewd: the key lookahead moved during the scan; re-checking heights {} to {} (pass {})",
-                    m.from, tip, m.pass
+                    "yewd: the key lookahead moved during the scan; re-checking the scanned heights up to {tip} (pass {})",
+                    m.pass
                 );
             } else {
                 eprintln!(
-                    "yewd: resuming the scan's re-check at height {} of {} to {} (pass {})",
-                    m.next, m.from, tip, m.pass
+                    "yewd: resuming the scan's re-check up to height {tip} (pass {})",
+                    m.pass
                 );
             }
             self.st.scan = Some(m.clone());
