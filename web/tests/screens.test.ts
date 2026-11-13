@@ -70,6 +70,12 @@ describe("home", () => {
     expect(vm.state.balances?.yedCents).toBe("12500"); expect(vm.state.network).toBe("regtest");
     const b = vm.state.balances!; expect(BigInt(b.pqSlhZat) + BigInt(b.pqFalconZat)).toBe(BigInt(b.pqZat)); expect(b.stagedForMintZat).toBe("0");
     await vm.sync(); expect(vm.state.progress?.pct).toBe(100); expect(vm.state.syncing).toBe(false);
+    expect(vm.state.pqNote).toBe("");
+  });
+  it("a server that cannot look up post-quantum addresses is said, never a silent 0 (yew#38 review)", async () => {
+    const core = await openWallet(new MockCore({ pqUnindexed: true }));
+    const vm = new HomeVm(core); await vm.attach(); await vm.sync();
+    expect(vm.state.pqNote).toBe("post-quantum addresses not looked up");
   });
 });
 

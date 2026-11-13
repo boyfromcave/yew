@@ -680,6 +680,11 @@ struct SyncResult {
     /// Why the private sync failed, empty when it succeeded (the transparent sync still
     /// counts: YED and public YEC are synced either way, as `api::sync_now`).
     shielded_message: String,
+    /// The server refused the post-quantum addresses (it cannot index them): their balance is
+    /// unknown, not 0 (`api::SyncEvent::pq_unindexed`, yew#38 review).
+    pq_unindexed: bool,
+    /// [`yew_core::sync::PQ_UNINDEXED_NOTE`] while `pq_unindexed`, else empty.
+    pq_note: String,
 }
 
 /// One sync to the server's tip (`api::sync_now`): the transparent side (addresses, YED,
@@ -739,6 +744,12 @@ pub async fn sync() -> Result<JsValue, JsValue> {
                 tokens: r.tokens as u64,
                 yellowback: r.yellowback,
                 shielded_message: message,
+                pq_unindexed: r.pq_unindexed,
+                pq_note: if r.pq_unindexed {
+                    yew_core::sync::PQ_UNINDEXED_NOTE.to_string()
+                } else {
+                    String::new()
+                },
             })
         })
     })

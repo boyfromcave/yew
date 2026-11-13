@@ -16,7 +16,7 @@ const PQ_SLH = "rqs1MockSlhAddress000000000000000000000000000000000000";
 const NO_HYBRID = "Not available in the browser: this send needs the wallet's combined private and post-quantum builder, which only the app has. Use the app.";
 const FEE = "10000";
 
-export interface MockOptions { delayMs?: number; tip?: number; failNetwork?: boolean }
+export interface MockOptions { delayMs?: number; tip?: number; failNetwork?: boolean; pqUnindexed?: boolean }
 
 export class MockCore implements Core {
   private isOpen = false;
@@ -26,6 +26,7 @@ export class MockCore implements Core {
   private tip: number;
   private delayMs: number;
   private failNetwork: boolean;
+  private pqUnindexed: boolean;
   private params: ParamsStatus = { present: false, bytes: 0, needed: 52_000_000, loaded: false };
   private busy = false;
   readonly broadcasts: string[] = [];
@@ -71,7 +72,7 @@ export class MockCore implements Core {
     }
   }
 
-  constructor(o: MockOptions = {}) { this.tip = o.tip ?? 1200; this.delayMs = o.delayMs ?? 0; this.failNetwork = !!o.failNetwork; }
+  constructor(o: MockOptions = {}) { this.tip = o.tip ?? 1200; this.delayMs = o.delayMs ?? 0; this.failNetwork = !!o.failNetwork; this.pqUnindexed = !!o.pqUnindexed; }
 
   private async step<T>(f: () => T): Promise<T> {
     if (this.busy) throw new Error("busy: a call is in progress");
@@ -103,7 +104,7 @@ export class MockCore implements Core {
     return this.step(() => {
       this.need(); this.net();
       for (let i = 1; i <= 4; i++) this.onProgress?.({ phase: "scan", pct: i * 25, height: this.tip - 4 + i, tip: this.tip });
-      return { tip: this.tip, scanned_height: this.tip, blocks: 4, received_notes: 0, millis: 12 } as SyncResult;
+      return { tip: this.tip, scanned_height: this.tip, blocks: 4, received_notes: 0, millis: 12, pq_unindexed: this.pqUnindexed, pq_note: this.pqUnindexed ? "post-quantum addresses not looked up" : "" } as SyncResult;
     });
   }
   progress() { return this.step(() => ({ scanned_height: this.tip, tip_height: this.tip, percent: 100, enhancing: false } as Progress)); }

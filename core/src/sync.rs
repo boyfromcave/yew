@@ -49,6 +49,11 @@ use crate::wallet::{dollars, Wallet, WalletError};
 /// inside them corrects its row (the private side's light library rewinds the same ten).
 pub const REORG_WINDOW: u64 = 10;
 
+/// What the shells show while [`SyncReport::pq_unindexed`] is set: the post-quantum balance is
+/// unknown, not 0 (yew#38 review; the W-P1 symptom was a silent 0).
+pub const PQ_UNINDEXED_NOTE: &str = "This server cannot look up post-quantum addresses: their \
+YEC is not shown here (it may not be 0). Use a server that indexes them to see it.";
+
 /// What one sync did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SyncReport {
@@ -86,7 +91,8 @@ pub struct SyncReport {
     /// Own post-quantum plain-YEC addresses (`sq…`/`tq…`/`rq…`) asked about this run.
     pub pq_addresses: usize,
     /// The server refused a post-quantum address in the taddr methods (`INVALID_ARGUMENT`: a
-    /// lightwalletd before q/pqaddr): its `TX_PQPKH` outputs were not looked up this run.
+    /// lightwalletd before q/pqaddr): its `TX_PQPKH` outputs were not looked up this run. The
+    /// shells show [`PQ_UNINDEXED_NOTE`] (yew#38 review: never a silent 0).
     pub pq_unindexed: bool,
     /// Own plain coins held because layer 3 did not prove them plain YEC (a creating
     /// transaction that assigns them YED, or one that could not be fetched and verified).

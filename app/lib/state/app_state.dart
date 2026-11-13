@@ -46,6 +46,10 @@ class AppState extends ChangeNotifier {
 
   /// Why the last sync did not bring the private balance up to date (empty when it did).
   String shieldedNote = '';
+
+  /// The last sync's server could not look up post-quantum addresses (yew#38 review): the
+  /// post-quantum balance is unknown, not 0, and Home says so.
+  bool pqUnindexed = false;
   String? lastError;
   WalletSettings settings = const WalletSettings();
   Balances balances = const Balances(
@@ -259,7 +263,10 @@ class AppState extends ChangeNotifier {
       (e) {
         syncMessage = e.message;
         syncPercent = e.percent;
-        if (e.stage == SyncStage.done) shieldedNote = e.shieldedMessage;
+        if (e.stage == SyncStage.done) {
+          shieldedNote = e.shieldedMessage;
+          pqUnindexed = e.pqUnindexed;
+        }
         if (e.stage == SyncStage.probing || e.stage == SyncStage.done) {
           yellowbackUsable = e.yellowbackUsable;
         }

@@ -5,13 +5,15 @@ import type { Balances, Core, ProgressEvent } from "../core";
 import { messageOf } from "../core";
 import { Vm } from "./base";
 
-export interface HomeState { balances: Balances | null; progress: ProgressEvent | null; syncing: boolean; error: string; network: string }
+export interface HomeState { balances: Balances | null; progress: ProgressEvent | null; syncing: boolean; error: string; network: string;
+  /** The last sync's note that post-quantum addresses were not looked up (empty when they were). */
+  pqNote: string }
 
 export class HomeVm extends Vm<HomeState> {
   /** Called after every completed sync (manual or automatic): screens that show chain state refresh. */
   private synced: Array<() => void> = [];
   private timer: ReturnType<typeof setInterval> | null = null;
-  constructor(private core: Core) { super({ balances: null, progress: null, syncing: false, error: "", network: "" }); }
+  constructor(private core: Core) { super({ balances: null, progress: null, syncing: false, error: "", network: "", pqNote: "" }); }
   onSynced(f: () => void) { this.synced.push(f); return () => { this.synced = this.synced.filter((g) => g !== f); }; }
   /** The wallet syncs by itself: every `everyMs` while the page is visible, and when it becomes visible
    *  again (regtest mines a block every few seconds; a two-step mint only advances on a sync). */
@@ -32,6 +34,6 @@ export class HomeVm extends Vm<HomeState> {
   async sync() {
     if (this.state.syncing) return;
     this.set({ syncing: true, error: "" });
-    try { await this.core.sync(); await this.load(); for (const f of this.synced) f(); } catch (e) { this.set({ error: messageOf(e) }); } finally { this.set({ syncing: false }); }
+    try { const r = await this.core.sync(); this.set({ pqNote: r.pq_unindexed ? (r.pq_note ?? "") : "" }); await this.load(); for (const f of this.synced) f(); } catch (e) { this.set({ error: messageOf(e) }); } finally { this.set({ syncing: false }); }
   }
 }

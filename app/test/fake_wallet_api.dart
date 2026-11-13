@@ -573,6 +573,9 @@ class FakeWalletApi implements WalletApi {
   // ---- beta2 D-8: sends from an own post-quantum address.
   /// The server offers Yellowback (the capability post-quantum coins are listed under).
   bool yellowbackPresent = true;
+
+  /// The fake sync's `Done` reports a server that cannot index post-quantum addresses.
+  bool pqUnindexed = false;
   List<PqSource> pqSourcesAnswer = const [];
   Object? pqPreviewError;
   Object? pqConfirmError;
@@ -680,9 +683,9 @@ class FakeWalletApi implements WalletApi {
     calls.add('sync');
     if (syncController != null) return syncController!.stream;
     return Stream.fromIterable([
-      const SyncEvent(stage: SyncStage.connecting, message: 'Connecting', tip: 0, syncHeight: 0, yellowbackUsable: false, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
-      SyncEvent(stage: SyncStage.probing, message: 'Yellowback service present', tip: 484, syncHeight: 0, yellowbackUsable: yellowbackPresent, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
-      SyncEvent(stage: SyncStage.done, message: 'Synced to 484', tip: 484, syncHeight: 484, yellowbackUsable: yellowbackPresent, percent: 100, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
+      const SyncEvent(stage: SyncStage.connecting, message: 'Connecting', tip: 0, syncHeight: 0, yellowbackUsable: false, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: '', pqUnindexed: false),
+      SyncEvent(stage: SyncStage.probing, message: 'Yellowback service present', tip: 484, syncHeight: 0, yellowbackUsable: yellowbackPresent, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: '', pqUnindexed: false),
+      SyncEvent(stage: SyncStage.done, message: 'Synced to 484', tip: 484, syncHeight: 484, yellowbackUsable: yellowbackPresent, percent: 100, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: '', pqUnindexed: pqUnindexed),
     ]);
   }
 
@@ -713,6 +716,9 @@ class FakeWalletApi implements WalletApi {
 
   @override
   String coreVersion() => '0.1.0-test';
+
+  @override
+  String pqUnindexedNote() => 'post-quantum addresses not looked up';
 }
 
 /// The app over the fake, with an in-memory keystore and no biometric prompt.
