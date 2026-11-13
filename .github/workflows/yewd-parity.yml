@@ -86,11 +86,19 @@ jobs:
             doc
             contrib/yellowback
             zcutil
+            src/test/data
           sparse-checkout-cone-mode: true
       - name: ycash6 checkout is YCASH6_REF
         run: '[ "$(git -C ycash6 rev-parse HEAD)" = "$YCASH6_REF" ] || { echo "::error::ycash6 checkout is not $YCASH6_REF"; exit 1; }'
-      - name: fetch zcash params
-        run: ycash6/zcutil/fetch-params.sh
+      # The Sapling parameters (yewd-signer and YEW prove with them; ycash6's zcutil/fetch-params.sh
+      # is a no-op since 6.x bundles them in ycashd), checked against the sums it pins. Restore only.
+      - name: restore zcash params
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.zcash-params
+          key: zcash-params-8e48ffd2-2f0ebbcb-b685d700
+      - name: fetch and verify zcash params
+        run: scripts/fetch-zcash-params.sh
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
