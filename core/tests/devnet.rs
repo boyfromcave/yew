@@ -2840,7 +2840,7 @@ async fn s2_shielded_receive_send_memo_and_regressions() {
     let Funding::Shielded(p) = &plan.funding else {
         panic!("a ys1 recipient is paid from notes: {plan:?}")
     };
-    assert_eq!((p.fee_zat, p.notes, p.change_zat), (10_000, 1, 149_990_000));
+    assert_eq!((p.fee_zat, p.notes, p.change_zat), (1_000, 1, 149_999_000));
     let t = Instant::now();
     let sent = confirm_yec_send(&mut w, &mut c, &mut v, &plan, &params)
         .await
@@ -2919,11 +2919,11 @@ async fn s2_shielded_receive_send_memo_and_regressions() {
     )
     .unwrap();
     assert!(plan.reveals_shielded, "{plan:?}");
-    // ZIP-317: one spend, two Sapling outputs (change + padding) and one transparent output are
-    // three logical actions.
+    // ZIP-317 at Ycash's 500 zat: one spend, two Sapling outputs (change + padding) and one
+    // transparent output are three logical actions.
     let zt_fee = plan.fee_zat();
     assert!(matches!(plan.funding, Funding::Shielded(_)));
-    assert_eq!(zt_fee, 15_000);
+    assert_eq!(zt_fee, 1_500);
     let t = Instant::now();
     let sent = confirm_yec_send(&mut w, &mut c, &mut v, &plan, &params)
         .await
@@ -3127,7 +3127,7 @@ async fn s4_move_to_private_and_public_then_mint() {
         panic!("{plan:?}")
     };
     assert_eq!(s.to, own_z);
-    assert_eq!((s.inputs.len(), s.fee), (2, 20_000), "{s:?}");
+    assert_eq!((s.inputs.len(), s.fee), (2, 2_000), "{s:?}");
     assert!(s.inputs.iter().all(|u| u.class == UtxoClass::Yec));
     let shield_fee = s.fee;
     let sent = confirm_yec_send(&mut w, &mut c, &mut v, &plan, &params)
@@ -3163,7 +3163,7 @@ async fn s4_move_to_private_and_public_then_mint() {
     };
     assert!(p.transparent_recipient && w.row_for_address(&p.to).unwrap().is_some());
     let unshield_fee = p.fee_zat as i64;
-    assert_eq!(unshield_fee, 15_000);
+    assert_eq!(unshield_fee, 1_500);
     let sent = confirm_yec_send(&mut w, &mut c, &mut v, &plan, &params)
         .await
         .expect("unshield accepted");

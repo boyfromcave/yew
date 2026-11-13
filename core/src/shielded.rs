@@ -14,7 +14,7 @@
 //!   opened lazily at the first sync (it connects on open) and registers the account once.
 //! - This module reads and writes the same store through its own `WalletDb` handle: balances
 //!   (offline), the spend path (privacy-first funding is decided in `api.rs`; here: proposal
-//!   with the ZIP-317 fee for the preview, then prove and sign at confirm, transparent recipients
+//!   with the ZIP-317 fee at Ycash's 500 zat per action for the preview, then prove and sign at confirm, transparent recipients
 //!   included), memo enhancement (`GetTransaction` + `decrypt_and_store_transaction`, which the
 //!   light library does not do: compact outputs carry no memo), transaction status, history.
 //! - Network calls other than the light library's sync go through YEW's own channel
@@ -42,16 +42,17 @@ use rand::rngs::OsRng;
 use thiserror::Error;
 use x402_ycash_light::wallet::{clock, elapsed_ms, now_ms};
 use x402_ycash_light::{Options as LightOptions, Wallet as LightWallet, YcashNetwork};
+use zcash_client_backend::data_api::wallet::input_selection::GreedyInputSelector;
 use zcash_client_backend::data_api::wallet::{
-    create_proposed_transactions, decrypt_and_store_transaction,
-    propose_standard_transfer_to_address, ConfirmationsPolicy, SpendingKeys,
+    create_proposed_transactions, decrypt_and_store_transaction, propose_transfer,
+    ConfirmationsPolicy, SpendingKeys,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use zcash_client_backend::data_api::WalletSummary;
 use zcash_client_backend::data_api::{
     Account as _, TransactionDataRequest, TransactionStatus, WalletRead, WalletWrite,
 };
-use zcash_client_backend::fees::StandardFeeRule;
+use zcash_client_backend::fees::DustOutputPolicy;
 use zcash_client_backend::proposal::Proposal;
 use zcash_client_backend::wallet::OvkPolicy;
 use zcash_client_sqlite::wallet::init::init_wallet_db;
@@ -381,7 +382,7 @@ pub struct SpendPlan {
     pub amount_zat: u64,
     /// The amount was bumped from exactly `TOKEN_VALUE`.
     pub amount_bumped: bool,
-    /// The ZIP-317 fee, zat.
+    /// The fee, zat: ZIP-317 at Ycash's marginal fee ([`ycash_fee_rule`]).
     pub fee_zat: u64,
     /// Shielded change back to the wallet, zat.
     pub change_zat: u64,
@@ -397,7 +398,7 @@ pub struct SpendPlan {
     /// every signature commits to.
     pub target_height: u32,
     /// Read by `build`.
-    proposal: Proposal<StandardFeeRule, ReceivedNoteId>,
+    proposal: Proposal<zip317::FeeRule, ReceivedNoteId>,
 }
 
 impl std::fmt::Debug for SpendPlan {
@@ -449,7 +450,7 @@ pub struct ShieldInput {
 /// Where a shielding transaction's Sapling output goes and what fee it pays.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum ShieldTo {
-    /// The wallet's own default address (a move, S4), empty memo, the ZIP-317 fee.
+    /// The wallet's own default address (a move, S4), empty memo, [`ycash_fee_rule`].
     #[default]
     Own,
     /// Another wallet's Sapling address (WEB-REAL MEDIUM-4: public YEC to someone else's
@@ -481,6 +482,28 @@ impl ShieldTo {
             ShieldTo::Recipient { fee, .. } => Some(*fee),
         }
     }
+}
+
+/// The fee rule of every Sapling transaction the core builds: ZIP-317's conventional fee at
+/// Ycash's marginal fee, 500 zat per logical action (ycash6 `src/zip317.h` `MARGINAL_FEE`, grace
+/// actions 2, P2PKH input 150 and output 34 bytes; [`crate::params::ZIP317_MARGINAL_FEE`]), not
+/// librustzcash's `zip317::FeeRule::standard()` (Zcash's 5,000 zat). It is what ycashd pays under
+/// `-feepolicy=zip317` and what yewd pays for the same shapes (one Sapling spend to a Sapling
+/// address: 1,000 zat; one public coin to the wallet's own Sapling address with public change,
+/// or one Sapling spend to a public address: 1,500 zat). Never below what the nodes relay and
+/// mine: at least 1,000 zat (two grace actions) = the per-Sapling-output floor (1,000 zat up to
+/// 50 Sapling outputs; these shapes have at most two) and above the 1,000-zat cap of the
+/// minimum relay fee, and fully paid under ZIP-317 when a ycash6 (`-txunpaidactionlimit=0`) or a
+/// koganyd (`mining.block_unpaid_action_limit = 0`) opts into the unpaid-action rule, whose
+/// count uses the same 500 zat.
+pub fn ycash_fee_rule() -> zip317::FeeRule {
+    zip317::FeeRule::non_standard(
+        Zatoshis::const_from_u64(crate::params::ZIP317_MARGINAL_FEE as u64),
+        crate::params::ZIP317_GRACE_ACTIONS,
+        crate::params::ZIP317_INPUT_SIZE,
+        crate::params::ZIP317_OUTPUT_SIZE,
+    )
+    .expect("non-zero standard sizes")
 }
 
 fn zat(v: u64) -> Result<Zatoshis, ShieldedError> {
@@ -1048,7 +1071,7 @@ impl Shielded {
 
     /// Plan a shielded spend of `amount_zat` to `to` (a Sapling address of this network, or a
     /// transparent `s…` / `t…` one) with an optional text memo (Sapling recipients only, at most
-    /// [`MAX_MEMO_BYTES`] bytes of UTF-8). ZIP-317 fee, change to the wallet's Sapling account,
+    /// [`MAX_MEMO_BYTES`] bytes of UTF-8). ZIP-317 fee at Ycash's 500 zat ([`ycash_fee_rule`]), change to the wallet's Sapling account,
     /// greedy note selection. Nothing is proved, stored or locked.
     pub fn plan(
         &mut self,
@@ -1101,17 +1124,37 @@ impl Shielded {
         let amount = Zatoshis::from_u64(amount_zat)
             .map_err(|_| ShieldedError::Propose(format!("bad amount {amount_zat}")))?;
         let params = self.params;
-        let proposal = propose_standard_transfer_to_address::<_, _, std::convert::Infallible>(
+        // librustzcash's `propose_standard_transfer_to_address`, with Ycash's fee rule in place
+        // of its `StandardFeeRule` (Zcash's 5,000-zat marginal fee)
+        #[allow(deprecated)]
+        let request = zcash_client_backend::zip321::TransactionRequest::new(vec![
+            zcash_client_backend::zip321::Payment::new(
+                addr.to_zcash_address(&params),
+                Some(amount),
+                memo_bytes,
+                None,
+                None,
+                vec![],
+            )
+            .map_err(|e| ShieldedError::Propose(format!("{e:?}")))?,
+        ])
+        .map_err(|e| ShieldedError::Propose(e.to_string()))?;
+        let input_selector = GreedyInputSelector::<Db>::new();
+        let change_strategy =
+            zcash_client_backend::fees::zip317::SingleOutputChangeStrategy::<_, Db>::new(
+                ycash_fee_rule(),
+                None,
+                ShieldedProtocol::Sapling,
+                DustOutputPolicy::default(),
+            );
+        let proposal = propose_transfer::<_, _, _, _, std::convert::Infallible>(
             self.store_mut()?,
             &params,
-            StandardFeeRule::Zip317,
             id,
+            &input_selector,
+            &change_strategy,
+            request,
             policy(),
-            &addr,
-            amount,
-            memo_bytes,
-            None,
-            ShieldedProtocol::Sapling,
             None,
         )
         .map_err(|e| {
@@ -1292,7 +1335,7 @@ impl Shielded {
         Ok(b)
     }
 
-    /// The ZIP-317 fee of the shielding transaction [`Shielded::build_shield`] would build with
+    /// The fee ([`ycash_fee_rule`]) of the shielding transaction [`Shielded::build_shield`] would build with
     /// these inputs and outputs (no proving; the value of the change does not matter).
     pub fn shield_fee(
         &self,
@@ -1312,7 +1355,7 @@ impl Shielded {
         if let Some(fee) = to.fixed_fee() {
             return Ok(fee);
         }
-        Ok(b.get_fee(&zip317::FeeRule::standard())
+        Ok(b.get_fee(&ycash_fee_rule())
             .map_err(|e| ShieldedError::Propose(format!("fee: {e:?}")))?
             .into_u64())
     }
@@ -1361,7 +1404,7 @@ impl Shielded {
         let fee_zat = match fixed {
             Some(f) => f,
             None => b
-                .get_fee(&zip317::FeeRule::standard())
+                .get_fee(&ycash_fee_rule())
                 .map_err(|e| ShieldedError::Propose(format!("fee: {e:?}")))?
                 .into_u64(),
         };
@@ -1385,15 +1428,7 @@ impl Shielded {
                 )
                 .map_err(|e| ShieldedError::Create(e.to_string())),
             None => b
-                .build(
-                    &keys,
-                    &[],
-                    &[],
-                    OsRng,
-                    prover,
-                    prover,
-                    &zip317::FeeRule::standard(),
-                )
+                .build(&keys, &[], &[], OsRng, prover, prover, &ycash_fee_rule())
                 .map_err(|e| ShieldedError::Create(e.to_string())),
         }?;
         drop(keys);

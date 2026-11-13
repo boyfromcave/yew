@@ -201,7 +201,8 @@ fn plan_shield(
         Some(a) => {
             // The fee depends on how many coins are spent: select for amount + fee, recompute
             // the fee for that selection, repeat until it holds (it only grows with inputs).
-            let mut fee = 10_000i64;
+            // (start at the least a Sapling shape pays, ZIP-317's two grace actions at 500 zat)
+            let mut fee = crate::params::zip317_conventional_fee(0, 0, 0);
             loop {
                 let sel = coins::select_yec_linking(&spendable, a + fee, false, allow_linking)?;
                 let si = shield_inputs(wallet, &sel)?;
@@ -551,18 +552,18 @@ mod tests {
         );
         let own_z = w.shielded().unwrap().default_address().1;
         // 1 YEC: the smallest coin that covers it, one input + change + two padded Sapling
-        // outputs = three logical actions = 15,000 zat; change back to a change address.
+        // outputs = three logical actions = 1,500 zat (Ycash's 500 per action); change back to a change address.
         let p = plan_move(&mut w, Direction::ToPrivate, Some(40_000_000), false, 100).unwrap();
         assert!(!p.reveals_shielded);
         let s = shield(&p);
         assert_eq!(s.to, own_z);
-        assert_eq!((s.amount, s.fee, s.inputs.len()), (40_000_000, 15_000, 1));
+        assert_eq!((s.amount, s.fee, s.inputs.len()), (40_000_000, 1_500, 1));
         assert_eq!(s.inputs[0].value, 50_000_000);
-        assert_eq!(s.change, 50_000_000 - 40_000_000 - 15_000);
+        assert_eq!(s.change, 50_000_000 - 40_000_000 - 1_500);
         assert!(s.change_address.is_some());
         assert_eq!((s.target, s.expiry_height), (101, 141));
         assert_eq!(p.amount_zat(), 40_000_000);
-        assert_eq!(p.fee_zat(), 15_000);
+        assert_eq!(p.fee_zat(), 1_500);
         // Two inputs, from two public addresses: only with the go-ahead (beta2 D-5), which the
         // refusal asks for; then four logical actions.
         let e = plan_move(&mut w, Direction::ToPrivate, Some(120_000_000), false, 100).unwrap_err();
@@ -577,7 +578,7 @@ mod tests {
             "{e}"
         );
         let p = plan_move(&mut w, Direction::ToPrivate, Some(120_000_000), true, 100).unwrap();
-        assert_eq!((shield(&p).inputs.len(), shield(&p).fee), (2, 20_000));
+        assert_eq!((shield(&p).inputs.len(), shield(&p).fee), (2, 2_000));
         // All: every YEC coin, never the reserve or anything YED, no change; two addresses, so
         // only with the go-ahead.
         let e = plan_move(&mut w, Direction::ToPrivate, None, false, 100).unwrap_err();
@@ -595,10 +596,7 @@ mod tests {
         let s = shield(&p);
         assert!(s.inputs.iter().all(|u| u.class == UtxoClass::Yec));
         assert_eq!(s.inputs.len(), 2);
-        assert_eq!(
-            (s.amount, s.change, s.fee),
-            (150_000_000 - 20_000, 0, 20_000)
-        );
+        assert_eq!((s.amount, s.change, s.fee), (150_000_000 - 2_000, 0, 2_000));
         assert!(s.change_address.is_none());
         // More than the plain YEC: refused (the reserve is not an override here).
         let e = plan_move(&mut w, Direction::ToPrivate, Some(150_000_000), false, 100).unwrap_err();
@@ -610,7 +608,7 @@ mod tests {
     #[test]
     fn shield_change_never_looks_like_a_token_or_dust() {
         let (mut w, dir) = wallet_with("change", &[(1_000_000, UtxoClass::Yec)]);
-        let fee = 15_000;
+        let fee = 1_500;
         let p = plan_move(
             &mut w,
             Direction::ToPrivate,
@@ -856,6 +854,80 @@ mod tests {
         // the private balance still pays when it can (privacy first)
         let p = plan_yec_send(&mut w, &to, 20_000, false, false, None, 120, 1).unwrap();
         assert!(matches!(p.funding, Funding::Shielded(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every Sapling shape the core builds pays ZIP-317 at Ycash's 500 zat per logical action
+    /// (`shielded::ycash_fee_rule`, ycash6 `src/zip317.h`), not librustzcash's 5,000 (beta2
+    /// walkthrough: the web wallet paid 10,000 / 15,000 where yewd paid 1,000 / 1,500), and never
+    /// less than what the nodes relay and mine: the per-Sapling-output floor
+    /// (`any_to_any::peroutput_fee`, 1,000 zat), the 1,000-zat cap of the minimum relay fee, and
+    /// the shape's conventional fee at 500 (no unpaid action when a node opts into ZIP-317).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn sapling_shapes_pay_ycash_fees() {
+        use crate::build::any_to_any::{conventional_fee, padded, peroutput_fee};
+        use crate::build::yec_private::plan_yec_send;
+        let (mut w, dir) = wallet_with(
+            "fees",
+            &[(50_000_000, UtxoClass::Yec), (30_000_000, UtxoClass::Yec)],
+        );
+        w.shielded_mut().unwrap().receive_for_test(
+            100,
+            120,
+            &[1_000_000, 1_000_000, 1_000_000],
+            &params_dir(),
+        );
+        let other = crate::shielded_keys::SaplingAccount::from_mnemonic(
+            "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong",
+            "",
+            Network::Regtest,
+        )
+        .unwrap();
+        let (_, other_z) = other.default_address();
+        let own_t = w.receive_address(false).unwrap().address_s;
+        let floor = |fee: i64, z_outs: usize| {
+            assert!(fee >= peroutput_fee(padded(z_outs)), "{fee}");
+            assert!(fee >= 1_000, "the relay fee's cap: {fee}");
+        };
+        let sh = w.shielded_mut().unwrap();
+        // Sapling -> Sapling, one note, change: one spend, two outputs = two actions
+        let p = sh.plan(&other_z, 500_000, Some("hi")).unwrap();
+        assert_eq!((p.notes, p.fee_zat), (1, 1_000));
+        assert_eq!(p.fee_zat as i64, conventional_fee(0, 0, 1, 2));
+        floor(p.fee_zat as i64, 2);
+        // Sapling -> Sapling, three notes: three spends = three actions
+        let p = sh.plan(&other_z, 2_500_000, None).unwrap();
+        assert_eq!((p.notes, p.fee_zat), (3, 1_500));
+        assert_eq!(p.fee_zat as i64, conventional_fee(0, 0, 3, 2));
+        floor(p.fee_zat as i64, 2);
+        // Sapling -> transparent, change: one spend, two outputs (change + padding), one P2PKH
+        // output = three actions
+        let p = sh.plan(&own_t, 500_000, None).unwrap();
+        assert_eq!((p.notes, p.fee_zat), (1, 1_500));
+        assert_eq!(p.fee_zat as i64, conventional_fee(0, 1, 1, 1));
+        floor(p.fee_zat as i64, 1);
+        // built: the fee the store's builder charges is the planned one (no transparent input,
+        // so valueBalance less the transparent outputs is the fee)
+        let p = sh.plan(&other_z, 500_000, None).unwrap();
+        let built = sh.build(&p, &params_dir()).unwrap();
+        assert_eq!(built.fee_zat, 1_000);
+        let (tx, _) = crate::tx::Transaction::parse(&built.raw).unwrap();
+        assert_eq!((tx.shielded.spends, tx.shielded.outputs), (1, 2));
+        assert_eq!(tx.shielded.value_balance, 1_000);
+        // public -> own Sapling (a move), change: one P2PKH input and output, two padded Sapling
+        // outputs = three actions
+        let m = plan_move(&mut w, Direction::ToPrivate, Some(10_000_000), false, 120).unwrap();
+        let s = shield(&m);
+        assert!(s.change > 0);
+        assert_eq!(s.fee, 1_500);
+        assert_eq!(s.fee, conventional_fee(1, 1, 0, 1));
+        floor(s.fee, 1);
+        // public -> another wallet's Sapling address: ycash6 z_sendmany's fee for the shape
+        // (`-feepolicy=peroutput`), unchanged
+        let p = plan_yec_send(&mut w, &other_z, 20_000_000, false, false, None, 120, 1).unwrap();
+        assert_eq!(shield(&p).fee, 1_000);
+        floor(shield(&p).fee, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
