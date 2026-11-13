@@ -192,12 +192,18 @@ that show their scheme. No consensus change.
 - yewd checks that its node is on testnet-yb-fast (`chain`, `testnetprofile` and the Vault height
   in `getblockchaininfo`); otherwise wallet calls fail with `yewd: the backend is not on
   testnet-yb-fast: …`. The startup line names the network (`network test (testnet profile fast)`).
-- On testnet, private (Sapling) transactions are refused (see Known limitations): the refusal names
-  the first upgrade height on which librustzcash6 and the node disagree.
+- **Private (Sapling) transactions work on testnet-yb-fast.** librustzcash6's testnet now carries the
+  fast profile's heights (Blossom 510,250, Heartwood 510,252, Canopy 510,254, Vault 510,400), so the
+  YEW core builds Sapling transactions under the node's branch id and note format. yewd sent and
+  received Sapling on the live fast testnet in the beta2 walkthrough (Sapling to Sapling, ECC and both
+  post-quantum schemes, mixed sends, and to and from a ycashd wallet), all mined. The check that the
+  light library's heights equal the node's stays: if they ever differ, a Sapling build is refused and
+  the refusal names the first upgrade height on which librustzcash6 and the node disagree.
 
 ### Dependencies
 
-- yew builds against librustzcash6 6ff87bc9, rusqlite 0.41.1 (bundled SQLite 3.54.1) and, in the
+- yew builds against librustzcash6 a4935c51 (with x402-ycash-light b91140e, which pins the same
+  rev), rusqlite 0.41.1 (bundled SQLite 3.54.1) and, in the
   browser, sqlite-wasm-rs 0.6.3 with sqlite-wasm-vfs 0.3 (SQLite 3.54.1). This fixes
   RUSTSEC-2026-0459 (CVE-2026-119375) in both builds, and its exception is removed from every
   scanner configuration.
@@ -241,12 +247,6 @@ No YED was ever spent as plain YEC. Not run in a real browser: sweeping back a l
   addresses past the gap and restart with `-rescan`.
 - **YED cannot be minted on the fast testnet** with the current node builds: no attestor set is
   compiled in.
-- **No private (Sapling) transactions on testnet.** librustzcash6 still has the old Ycash testnet's
-  Blossom, Heartwood and Canopy heights (661,610 / 661,622 / 661,634) and no Vault height, so a
-  Sapling transaction built for testnet-yb-fast would carry the wrong branch id and note format.
-  The app, the web wallet and yewd refuse to build one, and the private balance cannot be synced
-  there. Public and post-quantum sends are not affected. The fix is a librustzcash6 change carrying
-  the fast heights, then a dependency bump in yew.
 - **The slow and legacy testnet profiles are refused.** Signing for them needs librustzcash6 to
   define their shadow-fork branch ids.
 - **The app and web wallet reuse an existing testnet wallet file silently.** The store keeps its
