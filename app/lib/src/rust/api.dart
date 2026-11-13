@@ -188,7 +188,7 @@ Future<SendResult> moveConfirm({required String previewId}) =>
     RustLib.instance.api.crateApiMoveConfirm(previewId: previewId);
 
 /// The wallet's post-quantum addresses that hold spendable plain YEC, largest first (the send
-/// screen's source chooser). Empty on a server without Yellowback: it lists no PQ coin.
+/// screen's source chooser). Empty on a server that indexes no post-quantum address.
 Future<List<PqSource>> pqSources() => RustLib.instance.api.crateApiPqSources();
 
 /// Plan and sign a send of `zat` from the own post-quantum address `from` to `to` (ECC `s…`,
@@ -221,7 +221,8 @@ Future<PqSendPreviewInfo> privatePqSendPreview({
 );
 
 /// Broadcast a [`pq_send_preview`] (or a [`private_pq_send_preview`]) through both gate layers (the node's dry run must say `ok,
-/// burned 0`; a server without Yellowback refuses it). A send whose outcome is unknown says
+/// burned 0`; on a server without Yellowback the local layer alone, as an ECC send: the verdict is
+/// then empty). A send whose outcome is unknown says
 /// `…; status unknown, txid <txid>: check before sending again`. A flagged fee
 /// ([`PqSendPreviewInfo::unusual_fee_ack`]) needs that acknowledgement as `accept_unusual_fee`;
 /// without it the call refuses and the preview stays.
@@ -2482,8 +2483,8 @@ class SendResult {
   /// The txid, display form.
   final String txid;
 
-  /// The node's verdict on the broadcast bytes (`ok`), empty on the YEC path against a
-  /// server without Yellowback.
+  /// The node's verdict on the broadcast bytes (`ok`), empty on the plain YEC paths (ECC,
+  /// Sapling, post-quantum) against a server without Yellowback.
   final String verdict;
 
   const SendResult({required this.txid, required this.verdict});

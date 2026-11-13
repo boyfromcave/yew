@@ -605,8 +605,8 @@ pub struct YedPreview {
 pub struct SendResult {
     /// The txid, display form.
     pub txid: String,
-    /// The node's verdict on the broadcast bytes (`ok`), empty on the YEC path against a
-    /// server without Yellowback.
+    /// The node's verdict on the broadcast bytes (`ok`), empty on the plain YEC paths (ECC,
+    /// Sapling, post-quantum) against a server without Yellowback.
     pub verdict: String,
 }
 
@@ -2368,7 +2368,7 @@ pub struct PqSource {
 }
 
 /// The wallet's post-quantum addresses that hold spendable plain YEC, largest first (the send
-/// screen's source chooser). Empty on a server without Yellowback: it lists no PQ coin.
+/// screen's source chooser). Empty on a server that indexes no post-quantum address.
 pub fn pq_sources() -> Result<Vec<PqSource>, YewError> {
     with_open(|o| {
         let mut by: HashMap<Vec<u8>, i64> = HashMap::new();
@@ -2589,7 +2589,8 @@ pub fn private_pq_send_preview(
 }
 
 /// Broadcast a [`pq_send_preview`] (or a [`private_pq_send_preview`]) through both gate layers (the node's dry run must say `ok,
-/// burned 0`; a server without Yellowback refuses it). A send whose outcome is unknown says
+/// burned 0`; on a server without Yellowback the local layer alone, as an ECC send: the verdict is
+/// then empty). A send whose outcome is unknown says
 /// `…; status unknown, txid <txid>: check before sending again`. A flagged fee
 /// ([`PqSendPreviewInfo::unusual_fee_ack`]) needs that acknowledgement as `accept_unusual_fee`;
 /// without it the call refuses and the preview stays.
@@ -2625,7 +2626,7 @@ pub fn pq_send_confirm(
                 .await?;
                 return Ok(SendResult {
                     txid,
-                    verdict: v.verdict,
+                    verdict: v.map(|v| v.verdict).unwrap_or_default(),
                 });
             }
             let p = match o.previews.remove(&preview_id) {
@@ -2650,7 +2651,7 @@ pub fn pq_send_confirm(
             .await?;
             Ok(SendResult {
                 txid,
-                verdict: v.verdict,
+                verdict: v.map(|v| v.verdict).unwrap_or_default(),
             })
         })
     })

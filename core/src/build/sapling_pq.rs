@@ -21,8 +21,9 @@
 //!   No server-quoted rate enters it.
 //! - **Gate**: [`gate::Path::SaplingToPq`] (no transparent input, at least one Sapling spend,
 //!   exactly one transparent output paying the named key, not `TOKEN_VALUE`) on the final bytes at
-//!   build and again at confirm, where the node's dry run is mandatory (a server without Yellowback
-//!   refuses the send).
+//!   build and again at confirm, where the node's dry run runs when the server offers Yellowback
+//!   (without the service, W-P1, the local layer decides: the send spends no transparent input,
+//!   so nothing YED can leave through it).
 //! - **Privacy (D-5)**: the amount and the recipient are visible on the chain; the preview says so
 //!   (`reveals_shielded`), in the words the private → public send uses.
 //!
@@ -448,7 +449,8 @@ pub fn build_sapling_to_pq(
 }
 
 /// Both gate layers on the preview ([`gate::Path::SaplingToPq`]: the node must say `ok, burned
-/// 0`; a server without Yellowback refuses it), then `SendTransaction`. The send has no
+/// 0` when the server offers Yellowback; without it the local layer alone, W-P1, and the
+/// validation is `None`), then `SendTransaction`. The send has no
 /// transparent input, so there is nothing for layer 3 (provenance) to fetch and nothing to lock
 /// in the transparent store; once the server has it (or its fate is unknown) the private store
 /// records it ([`crate::shielded::Shielded::record_sent`]), so its notes count as spent until it
@@ -460,17 +462,16 @@ pub async fn broadcast(
     validator: &mut Validator,
     p: &SaplingPqPreview,
     accept_unusual_fee: Option<&str>,
-) -> Result<(String, Validation), WalletError> {
+) -> Result<(String, Option<Validation>), WalletError> {
     terms::require_ack(&p.fee_guard, accept_unusual_fee)?;
     let (_, validation) = gate::confirm(validator, p.path, &p.raw, |op| {
         wallet.store.utxo_class(op).ok().flatten()
     })
     .await?;
-    let validation = validation.ok_or(gate::GateError::NoDryRunForPqSend)?;
-    if validation.fee_zat != 0 {
+    if let Some(v) = validation.as_ref().filter(|v| v.fee_zat != 0) {
         return Err(other(format!(
             "the node's dry run reports a Yellowback fee of {} zat on a plain YEC send; nothing was sent",
-            validation.fee_zat
+            v.fee_zat
         )));
     }
     let txid = txid_hex(&p.txid);

@@ -94,6 +94,22 @@ pub fn build_yec_send(
     let spendable = wallet.spendable_utxos()?;
     let inputs =
         coins::select_yec_linking(&spendable, amount + FEE_ZAT, send_everything, allow_linking)?;
+    // ycash6 EnsurePQRecipientPayable, checked here whatever the server offers (W-P1: without the
+    // Yellowback service there is no dry run to say it): a post-quantum key is paid only under
+    // the Vault branch, a Falcon key only once Falcon is active, at the next block. The signature
+    // commits to the branch, so a node on another branch refuses the transaction.
+    if let gate::Path::YecToPq(id) = path {
+        if branch_id != crate::params::VAULT_BRANCH_ID {
+            return Err(WalletError::Other(
+                "post-quantum addresses can be paid only once the vault upgrade is active at the next block".into(),
+            ));
+        }
+        if id.scheme == crate::pq::SCHEME_FN_DSA_512 && !wallet.pq_terms().falcon_at(tip + 1) {
+            return Err(WalletError::Other(
+                "an FN-DSA-512 (scheme 2) post-quantum address can be paid only once Falcon is active at the next block".into(),
+            ));
+        }
+    }
     let total: i64 = inputs.iter().map(|u| u.value).sum();
     let mut fee = FEE_ZAT;
     let mut change = total - amount - fee;
@@ -391,6 +407,15 @@ mod tests {
     fn pays_a_post_quantum_yec_address() {
         let w = wallet_with(&[(50_000, UtxoClass::Yec)]);
         let to = "rqf37MAujTiHQadywBQeNWk42bweehqf1UdcCrXg4oAqhqZQhCebM";
+        // W-P1: the node's payability rule is checked here, not left to the dry run: a Falcon
+        // key before Falcon, or any post-quantum key under another branch, is refused unsigned
+        let e = build_yec_send(&w, to, 20_000, false, false, 100, 0x6d5b_7a31).unwrap_err();
+        assert!(e.to_string().contains("only once Falcon is active"), "{e}");
+        let mut t = w.pq_terms();
+        t.falcon_active = true;
+        w.set_pq_terms_for_test(t);
+        let e = build_yec_send(&w, to, 20_000, false, false, 100, 1).unwrap_err();
+        assert!(e.to_string().contains("vault upgrade is active"), "{e}");
         let p = build_yec_send(&w, to, 20_000, false, false, 100, 0x6d5b_7a31).unwrap();
         let (tx, _) = Transaction::parse(&p.raw).unwrap();
         let id = keys::parse_pq_yec_address(Network::Regtest, to).unwrap();

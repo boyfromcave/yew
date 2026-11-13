@@ -1171,7 +1171,7 @@ pub async fn send_yec_preview(
 
 /// The wallet's post-quantum addresses that hold spendable plain YEC, largest first
 /// (`api::pq_sources`; the send screen's and the mint's source chooser). Empty on a server
-/// without Yellowback: it lists no post-quantum coin.
+/// that indexes no post-quantum address.
 #[wasm_bindgen]
 pub fn pq_sources() -> Result<JsValue, JsValue> {
     with_session_sync(|s| {
@@ -1823,7 +1823,7 @@ pub async fn confirm(
                     .map_err(wallet_err)?;
                     dto::SendResult {
                         txid,
-                        verdict: v.verdict,
+                        verdict: v.map(|v| v.verdict).unwrap_or_default(),
                         mint_id: None,
                     }
                 }
