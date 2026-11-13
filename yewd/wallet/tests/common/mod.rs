@@ -83,6 +83,12 @@ pub struct Chain {
     pub reject: Option<String>,
     /// The code of that refusal when not `-26` (a proxy's `-32603`, …).
     pub reject_code: Option<i64>,
+    /// `sendrawtransaction`'s `allowhighfees` of each call, in the order of `sent`.
+    pub allow_high_fees: Vec<bool>,
+    /// When set, the node's `-maxtxfee` (ycashd `main.cpp` `AcceptToMemoryPool`, koganyd
+    /// `send_raw_transaction_prechecks`): without `allowhighfees`, a transaction whose fee (its
+    /// inputs from the mock's blocks and mempool) exceeds it is refused `-26` `absurdly-high-fee`.
+    pub max_tx_fee: Option<i64>,
     /// When set, `yed_listtokens` fails with this (code, message).
     pub tokens_error: Option<(i64, String)>,
     /// When set, `yed_listtokens` answers this instead of the token list (a malformed answer).
@@ -112,6 +118,27 @@ pub fn rev_hex(b: &[u8]) -> String {
     let mut v = b.to_vec();
     v.reverse();
     hex::encode(v)
+}
+
+impl Chain {
+    /// The fee of a transparent-only transaction `raw` (its inputs from the blocks and the
+    /// mempool), `None` when an input is unknown.
+    pub fn fee_of(&self, raw: &[u8]) -> Option<i64> {
+        let (tx, _) = Transaction::parse(raw).ok()?;
+        let all = self
+            .txs
+            .iter()
+            .flatten()
+            .chain(self.mempool.iter().map(|(_, t)| t));
+        let known: Vec<(Transaction, [u8; 32])> =
+            all.filter_map(|t| Transaction::parse(t).ok()).collect();
+        let mut value_in = 0i64;
+        for i in &tx.vin {
+            let (prev, _) = known.iter().find(|(_, id)| *id == i.prevout.txid)?;
+            value_in += prev.vout.get(i.prevout.n as usize)?.value;
+        }
+        Some(value_in - tx.output_total())
+    }
 }
 
 impl MockNode {
@@ -249,6 +276,20 @@ impl Node for MockNode {
                     drop(c);
                     let mut c = self.0.lock().unwrap();
                     c.sent.push(hexs.clone());
+                    let allow_high_fees = p.get(1).and_then(Value::as_bool).unwrap_or(false);
+                    c.allow_high_fees.push(allow_high_fees);
+                    if let (Some(max), false) = (c.max_tx_fee, allow_high_fees) {
+                        if let Some(fee) = c.fee_of(&hex::decode(&hexs).unwrap()) {
+                            if fee > max {
+                                return Err(NodeError::Rpc {
+                                    code: -26,
+                                    message: format!(
+                                        "256: absurdly-high-fee, absurdly high fees {fee} > {max}"
+                                    ),
+                                });
+                            }
+                        }
+                    }
                     if let Some(m) = c.reject.clone() {
                         return Err(NodeError::Rpc {
                             code: c.reject_code.unwrap_or(-26),

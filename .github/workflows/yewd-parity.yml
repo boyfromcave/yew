@@ -13,8 +13,8 @@
 # coordinator then removes continue-on-error. Columns 1 and 2 are ycash6's own jobs
 # (yellowback-tests.yml `functional`, the sidecar nightly).
 #
-# Inputs, each pinned (ci-design §3): zakurad from kogany's zakurad-bin at KOGANY_REF (else built
-# there, which needs boyfromcave/zakura-common-ycash on GitHub, K-2); ycashd from ycash6's node-bin
+# Inputs, each pinned (ci-design §3): koganyd from kogany's koganyd-bin at KOGANY_REF (kogany-bin.yml;
+# else built there with that workflow's command, -p kogany --bin koganyd); ycashd from ycash6's node-bin
 # at YCASH6_REF; ycash6's qa/ at YCASH6_REF (the YEWD_KOGANY harness); yewd built here.
 name: yewd-parity
 
@@ -36,12 +36,14 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # kogany upgrade/vault head (the wave gate and its follow-ups merged)
-  KOGANY_REF: f12e130befa04a44699ec13b1edcda212526a3a5
+  # kogany upgrade/vault at its newest koganyd-bin (beta2: 2f247bd32, "Ycash's block time bounds",
+  # #27; the head after it, 2f8cb8740, changes only release notes and packaging)
+  KOGANY_REF: 2f247bd32a6eda5cad242813614a1e2b786c5618
   YCASH6_REPO: boyfromcave/ycash6
-  # ycash6 upgrade/vault head; moves with the kogany upgrade/vault head (the one ycash6 pin here:
-  # node-bin, qa/ and zcutil all come from this commit)
-  YCASH6_REF: ce10b3f884716294a46c4c4ce6e43f76a02ed068
+  # ycash6 upgrade/vault at its newest node-bin (a successful push run of yellowback-tests.yml:
+  # c8f25b0ba, #109; the head after it, fbc9f625c, changes only qa/ rc-qualify scripts); moves
+  # with KOGANY_REF (the one ycash6 pin here: node-bin, qa/ and zcutil all come from this commit)
+  YCASH6_REF: c8f25b0ba067ed9eb5f8907220028471d9a4106d
 
 jobs:
   parity:
@@ -84,11 +86,19 @@ jobs:
             doc
             contrib/yellowback
             zcutil
+            src/test/data
           sparse-checkout-cone-mode: true
       - name: ycash6 checkout is YCASH6_REF
         run: '[ "$(git -C ycash6 rev-parse HEAD)" = "$YCASH6_REF" ] || { echo "::error::ycash6 checkout is not $YCASH6_REF"; exit 1; }'
-      - name: fetch zcash params
-        run: ycash6/zcutil/fetch-params.sh
+      # The Sapling parameters (yewd-signer and YEW prove with them; ycash6's zcutil/fetch-params.sh
+      # is a no-op since 6.x bundles them in ycashd), checked against the sums it pins. Restore only.
+      - name: restore zcash params
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.zcash-params
+          key: zcash-params-8e48ffd2-2f0ebbcb-b685d700
+      - name: fetch and verify zcash params
+        run: scripts/fetch-zcash-params.sh
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
@@ -109,7 +119,7 @@ jobs:
           INSTALL_LIBCLANG: "false"
           INSTALL_PROTOC: "false"
         run: bash kogany/.github/actions/setup-zakura-build/install-ubuntu-packages.sh
-      - name: kogany's zakurad-bin at KOGANY_REF (else built here)
+      - name: kogany's koganyd-bin at KOGANY_REF (else built here)
         id: zakurad
         env:
           GH_TOKEN: ${{ github.token }}
@@ -118,16 +128,16 @@ jobs:
           runs=$(gh run list -R boyfromcave/kogany -c "$KOGANY_REF" -L 50 --json databaseId,event,headSha \
             -q ".[] | $trusted | .databaseId" 2>/dev/null || true)
           for r in $runs; do
-            if gh run download "$r" -R boyfromcave/kogany -n zakurad-bin -D "$RUNNER_TEMP/zk-dl" 2>/dev/null \
-               && [ -f "$RUNNER_TEMP/zk-dl/zakurad-bin.tgz" ]; then
-              mkdir -p "$RUNNER_TEMP/zk" && tar xzf "$RUNNER_TEMP/zk-dl/zakurad-bin.tgz" -C "$RUNNER_TEMP/zk"
-              echo "ZAKURAD=$RUNNER_TEMP/zk/zakurad" >> "$GITHUB_ENV"
+            if gh run download "$r" -R boyfromcave/kogany -n koganyd-bin -D "$RUNNER_TEMP/zk-dl" 2>/dev/null \
+               && [ -f "$RUNNER_TEMP/zk-dl/koganyd-bin.tgz" ]; then
+              mkdir -p "$RUNNER_TEMP/zk" && tar xzf "$RUNNER_TEMP/zk-dl/koganyd-bin.tgz" -C "$RUNNER_TEMP/zk"
+              echo "ZAKURAD=$RUNNER_TEMP/zk/koganyd" >> "$GITHUB_ENV"
               echo "got=true" >> "$GITHUB_OUTPUT"; exit 0
             fi
           done
           echo "got=false" >> "$GITHUB_OUTPUT"
-          (cd kogany && CARGO_INCREMENTAL=0 cargo build --locked -p zakura --features ycash --bin zakurad)
-          echo "ZAKURAD=$GITHUB_WORKSPACE/kogany/target/debug/zakurad" >> "$GITHUB_ENV"
+          (cd kogany && CARGO_INCREMENTAL=0 cargo build --locked -p kogany --bin koganyd --features ycash)
+          echo "ZAKURAD=$GITHUB_WORKSPACE/kogany/target/debug/koganyd" >> "$GITHUB_ENV"
       - name: ycashd from ycash6's node-bin
         env:
           GH_TOKEN: ${{ github.token }}
@@ -155,7 +165,7 @@ jobs:
           GROUP: ${{ matrix.group }}
           ROUNDS: ${{ inputs.rounds || '1' }}
         run: |
-          if ldd "$ZAKURAD" | grep 'not found'; then echo "::error::zakurad needs a library this runner lacks"; exit 1; fi
+          if ldd "$ZAKURAD" | grep 'not found'; then echo "::error::koganyd needs a library this runner lacks"; exit 1; fi
           YCASH6="$GITHUB_WORKSPACE/ycash6" python3 -u yewd/qa/s5_parity.py --columns "$COLUMN" --of "$GROUP" \
             --rounds "$ROUNDS" --jobs 2 --out "$RUNNER_TEMP/s5"
       - name: the table
