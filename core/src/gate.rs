@@ -25,9 +25,10 @@
 //!    !wouldBeRejected` — the planned burn is 0 on every path but redeem and claim, which burn
 //!    the debt (plus a sub-dollar remainder) by design. The refusal carries the node's verdict
 //!    text. When the server offers no Yellowback service
-//!    ([`Validator::Absent`], contract rule 1) the YED path is refused outright and the YEC path
-//!    proceeds on the local layer alone: without `GetAddressTokens` nothing is class `TOKEN`,
-//!    every `TOKEN_VALUE` output is `HELD`, and the local layer already refuses all of them.
+//!    ([`Validator::Absent`], contract rule 1) the YED paths are refused outright and the plain
+//!    YEC paths (ECC, Sapling and post-quantum alike, W-P1) proceed on the local layer and layer
+//!    3: without `GetAddressTokens` nothing is class `TOKEN`, every `TOKEN_VALUE` output is
+//!    `HELD`, and the local layer already refuses all of them.
 //!    [`Validator`] is built only by probing the server ([`Validator::detect`]); nothing else
 //!    constructs an `Absent`.
 //! 3. **Provenance** ([`confirm_provenance`], the plain-YEC paths [`Path::Yec`],
@@ -111,12 +112,6 @@ pub enum GateError {
     /// The server offers no Yellowback service, so nothing YED can be validated or sent.
     #[error("gate: the server offers no Yellowback service; YED cannot be sent through it")]
     YellowbackAbsent,
-    /// A YEC send to or from a post-quantum address ([`Path::YecToPq`], [`Path::SaplingToPq`],
-    /// [`Path::PqToSapling`]) on a server without Yellowback: its dry run is mandatory and the
-    /// server cannot run it (review YEW-REVIEW-6 L1: the generic
-    /// [`GateError::YellowbackAbsent`] text names YED, which this send is not).
-    #[error("gate: the server cannot check this transaction (it offers no Yellowback dry run), and a YEC send to or from a post-quantum address is only sent after that check. Nothing was sent; connect to a server that offers the Yellowback service and try again.")]
-    NoDryRunForPqSend,
     /// The Sapling -> post-quantum or post-quantum -> Sapling path's shape rule was broken.
     #[error("gate: a YEC send between Sapling and a post-quantum address {0}")]
     SaplingPqShape(&'static str),
@@ -184,8 +179,8 @@ pub enum Path {
     /// `build::yec_send` with a decoded plain-YEC post-quantum address of this network): the
     /// inputs [`Path::Yec`] admits and no other; outputs exactly one `TX_PQPKH` paying the named
     /// key and at most one other, a P2PKH (the change); no payload; no output of exactly
-    /// `TOKEN_VALUE`. The remote layer is mandatory (the node's dry run must see a transaction
-    /// that pays a post-quantum key), so a server without Yellowback refuses it.
+    /// `TOKEN_VALUE`. The node's dry run runs when the server offers Yellowback; without the
+    /// service the local layer and layer 3 decide, as on [`Path::Yec`] (W-P1: plain YEC).
     YecToPq(crate::pq::PqKeyId),
     /// A YED transfer (`build::yed_transfer`).
     YedTransfer,
@@ -225,21 +220,23 @@ pub enum Path {
     /// A plain YEC send from the wallet's own post-quantum coins (beta2 D-2, D-8;
     /// `build::pq_send`): `PQ_OWNED` inputs only (never a token, a held output, the fee reserve,
     /// a P2PKH coin or anything YED), transparent-only, no payload, no output of exactly
-    /// `TOKEN_VALUE`. The remote layer is mandatory: a server without Yellowback lists no
-    /// post-quantum coin and validates nothing, so the path is refused there.
+    /// `TOKEN_VALUE`. The node's dry run runs when the server offers Yellowback; without the
+    /// service the local layer and layer 3 decide (W-P1: plain YEC; the held-YED guard,
+    /// [`refuse_held_absent`], covers it).
     PqSpend,
     /// A plain YEC send from the wallet's Sapling notes to a post-quantum key (beta2 D-2, D-5,
     /// D-8; the builder decodes a D-9 plain-YEC address of this network to the key): no
     /// transparent input; at least one Sapling spend, no JoinSplit; exactly one transparent
     /// output, a `TX_PQPKH` paying the named key, not of exactly `TOKEN_VALUE`; the change is a
-    /// Sapling note; no payload. The remote layer is mandatory (the node's dry run must see a
-    /// transaction that pays a post-quantum key). [`Path::Shielded`] refuses a `TX_PQPKH` output.
+    /// Sapling note; no payload. The node's dry run runs when the server offers Yellowback, the
+    /// local layer alone without it (W-P1). [`Path::Shielded`] refuses a `TX_PQPKH` output.
     SaplingToPq(crate::pq::PqKeyId),
     /// A plain YEC send from one own post-quantum address (the named source key) to Sapling
     /// (beta2 D-2, D-4, D-5, D-8): `PQ_OWNED` inputs only (never a token, a held output, the fee
     /// reserve, a P2PKH coin or anything YED); no Sapling spend, at least one Sapling output, no
     /// JoinSplit; at most one transparent output, the change, a `TX_PQPKH` paying the source key
-    /// (D-4), not of exactly `TOKEN_VALUE`; no payload. The remote layer is mandatory.
+    /// (D-4), not of exactly `TOKEN_VALUE`; no payload. The node's dry run runs when the server
+    /// offers Yellowback; without it the local layer and layer 3 decide (W-P1).
     PqToSapling(crate::pq::PqKeyId),
     /// The carrier funding transaction of a mint funded from one own post-quantum address (the
     /// named source key; beta2 D-3 for the app, `build::mint::carrier_step` with
@@ -387,8 +384,21 @@ impl Path {
     }
 
     /// True when the path's YED side is the node's business (the remote layer is mandatory).
+    /// The plain YEC paths are not: a send to, from or between post-quantum addresses moves no
+    /// YED (W-P1: a network without the YED module has post-quantum YEC and no Yellowback
+    /// service), so against such a server it proceeds on the local layer and layer 3, as
+    /// [`Path::Yec`] does.
     fn needs_yellowback(self) -> bool {
-        !matches!(self, Path::Yec | Path::Shielded | Path::Shield)
+        !matches!(
+            self,
+            Path::Yec
+                | Path::Shielded
+                | Path::Shield
+                | Path::YecToPq(_)
+                | Path::PqSpend
+                | Path::SaplingToPq(_)
+                | Path::PqToSapling(_)
+        )
     }
 }
 
@@ -847,11 +857,13 @@ impl Validator {
 }
 
 /// The has-held-YED guard (beta2 item 32, as yewd's and the C++ lines'): a plain YEC spend of
-/// transparent coins ([`Path::Yec`], [`Path::Shield`]) by a wallet that has held YED is refused
+/// transparent coins ([`Path::Yec`], [`Path::YecToPq`], [`Path::Shield`], and of post-quantum
+/// coins, [`Path::PqSpend`], [`Path::PqToSapling`]) by a wallet that has held YED is refused
 /// when the server offers no Yellowback ([`Validator::Absent`]): without the token set an own
 /// output carrying YED at a value other than `TOKEN_VALUE` would classify as plain YEC, and the
-/// local layer alone could not stop its burn. Every other path is unaffected (the YED paths and
-/// [`Path::PqSpend`] already need the service; [`Path::Shielded`] spends no transparent input).
+/// local layer alone could not stop its burn. Every other path is unaffected (the YED paths
+/// already need the service; [`Path::Shielded`] and [`Path::SaplingToPq`] spend no transparent
+/// input).
 pub fn refuse_held_absent(
     validator: &Validator,
     path: Path,
@@ -859,7 +871,10 @@ pub fn refuse_held_absent(
 ) -> Result<(), GateError> {
     if has_held_yed
         && matches!(validator, Validator::Absent)
-        && matches!(path, Path::Yec | Path::YecToPq(_) | Path::Shield)
+        && matches!(
+            path,
+            Path::Yec | Path::YecToPq(_) | Path::Shield | Path::PqSpend | Path::PqToSapling(_)
+        )
     {
         return Err(GateError::HeldYedNotLive);
     }
@@ -911,9 +926,7 @@ async fn confirm_full(
     let client = match validator {
         Validator::Remote(c) => c,
         Validator::Absent => {
-            return if let Path::YecToPq(_) | Path::SaplingToPq(_) | Path::PqToSapling(_) = path {
-                Err(GateError::NoDryRunForPqSend)
-            } else if path.needs_yellowback() {
+            return if path.needs_yellowback() {
                 Err(GateError::YellowbackAbsent)
             } else {
                 Ok((tx, None))
@@ -1861,7 +1874,8 @@ mod tests {
             check(Path::PqSpend, &t.serialize().unwrap(), only_pq).unwrap_err(),
             GateError::TokenValuedOutput(0)
         );
-        assert!(Path::PqSpend.needs_yellowback());
+        // W-P1: plain YEC, no Yellowback service needed; the held-YED guard covers it
+        assert!(!Path::PqSpend.needs_yellowback());
         // the held-YED guard
         let absent = Validator::Absent;
         assert_eq!(
@@ -2035,7 +2049,8 @@ mod tests {
     ///   without the scripts, `check`, the path is refused);
     /// - `Path::Shielded` passes nothing that pays a post-quantum key (it was its rule minus
     ///   those outputs);
-    /// - neither new path admits any class but PQ_OWNED (`allows`), and both need the dry run.
+    /// - neither new path admits any class but PQ_OWNED (`allows`); neither needs the Yellowback
+    ///   service (W-P1: plain YEC, the node's dry run runs only where the server offers it).
     #[test]
     fn sapling_pq_paths_property_over_every_class_and_shape() {
         let id = pq_id(7);
@@ -2051,8 +2066,8 @@ mod tests {
                 "{c:?}"
             );
         }
-        assert!(Path::SaplingToPq(id).needs_yellowback());
-        assert!(Path::PqToSapling(src).needs_yellowback());
+        assert!(!Path::SaplingToPq(id).needs_yellowback());
+        assert!(!Path::PqToSapling(src).needs_yellowback());
         let to_pq = crate::pq::pqpkh_script(&id).unwrap();
         let to_src = crate::pq::pqpkh_script(&src).unwrap();
         let other_pq = crate::pq::pqpkh_script(&pq_id(8)).unwrap();
@@ -2590,11 +2605,13 @@ mod tests {
         assert!(passed > 20, "{passed}");
     }
 
-    /// Beta2 item 5: without the remote layer both new paths are refused with the path-specific
-    /// text (never "YED"); with a held-YED wallet the refusal is the same (the guard's paths are
-    /// unchanged: these paths need the service anyway); layer 3 checks every PQ_OWNED input.
+    /// Beta2 item 5, W-P1: without the remote layer (a server without the Yellowback service,
+    /// e.g. a network without the YED module) both new paths proceed on the local layer, which
+    /// still refuses every wrong shape; the held-YED guard covers the path that spends
+    /// transparent post-quantum coins and not the one that spends none; layer 3 checks every
+    /// PQ_OWNED input.
     #[tokio::test]
-    async fn sapling_pq_paths_need_the_dry_run() {
+    async fn sapling_pq_paths_without_the_service() {
         let id = pq_id(7);
         let mut v = Validator::Absent;
         let raw = raw_sapling(
@@ -2604,11 +2621,31 @@ mod tests {
             2,
         );
         assert!(check(Path::SaplingToPq(id), &raw, |_| None).is_ok());
-        assert_eq!(
-            confirm(&mut v, Path::SaplingToPq(id), &raw, |_| None)
+        assert!(matches!(
+            confirm(&mut v, Path::SaplingToPq(id), &raw, |_| None).await,
+            Ok((_, None))
+        ));
+        // the local layer still decides: another key, or an output of exactly TOKEN_VALUE
+        assert!(confirm(&mut v, Path::SaplingToPq(pq_id(8)), &raw, |_| None)
+            .await
+            .is_err());
+        let token_like = raw_sapling(
+            &[],
+            &[(
+                crate::params::TOKEN_VALUE,
+                crate::pq::pqpkh_script(&id).unwrap(),
+            )],
+            1,
+            2,
+        );
+        assert!(
+            confirm(&mut v, Path::SaplingToPq(id), &token_like, |_| None)
                 .await
-                .unwrap_err(),
-            GateError::NoDryRunForPqSend
+                .is_err()
+        );
+        assert_eq!(
+            refuse_held_absent(&Validator::Absent, Path::SaplingToPq(id), true),
+            Ok(())
         );
         let a = OutPoint {
             txid: [1; 32],
@@ -2623,11 +2660,22 @@ mod tests {
         let class = |_: &OutPoint| Some(UtxoClass::PqOwned);
         let scripts = |_: &OutPoint| crate::pq::pqpkh_script(&id);
         assert!(check_with_scripts(Path::PqToSapling(id), &raw, class, scripts).is_ok());
+        assert!(matches!(
+            confirm_with_scripts(&mut v, Path::PqToSapling(id), &raw, class, scripts).await,
+            Ok((_, None))
+        ));
+        // a held or token input is refused by the local layer, whatever the server
+        for c in [UtxoClass::Held, UtxoClass::Token, UtxoClass::Yec] {
+            assert!(
+                confirm_with_scripts(&mut v, Path::PqToSapling(id), &raw, |_| Some(c), scripts)
+                    .await
+                    .is_err(),
+                "{c:?}"
+            );
+        }
         assert_eq!(
-            confirm_with_scripts(&mut v, Path::PqToSapling(id), &raw, class, scripts)
-                .await
-                .unwrap_err(),
-            GateError::NoDryRunForPqSend
+            refuse_held_absent(&Validator::Absent, Path::PqToSapling(id), true),
+            Err(GateError::HeldYedNotLive)
         );
         let (tx, _) = Transaction::parse(&raw).unwrap();
         assert!(spent_as_yec(Path::PqToSapling(id), &tx, class).contains(&a));
@@ -2649,7 +2697,8 @@ mod tests {
     /// Beta2 item 3: every previously valid ECC -> ECC shape (P2PKH or P2SH recipient, with or
     /// without P2PKH change, from YEC or FEE_RESERVE coins) and ECC -> Sapling shape (`Path::Shield`)
     /// still passes; the same shapes paying a post-quantum key pass only on `Path::YecToPq`; the
-    /// new path's dry run is mandatory and the held-YED guard covers it.
+    /// new path runs the node's dry run when the server offers it and proceeds on the local layer
+    /// without it (W-P1), and the held-YED guard covers it.
     #[tokio::test]
     async fn yec_path_tightening_keeps_every_ecc_shape() {
         let a = OutPoint {
@@ -2728,21 +2777,23 @@ mod tests {
             class
         )
         .is_err());
-        // the dry run is mandatory; the held-YED guard covers the path
-        assert!(Path::YecToPq(id).needs_yellowback() && !Path::Yec.needs_yellowback());
+        // W-P1: plain YEC, so no Yellowback service is needed; the held-YED guard covers the path
+        assert!(!Path::YecToPq(id).needs_yellowback() && !Path::Yec.needs_yellowback());
         let raw = raw_paying(&[a], &[(50_000, to_pq.clone())]);
         let mut v = Validator::Absent;
-        assert_eq!(
-            confirm(&mut v, Path::YecToPq(id), &raw, class)
+        assert!(matches!(
+            confirm(&mut v, Path::YecToPq(id), &raw, class).await,
+            Ok((_, None))
+        ));
+        // the local layer still refuses a wrong shape or input class without the service
+        assert!(confirm(&mut v, Path::YecToPq(pq_id(10)), &raw, class)
+            .await
+            .is_err());
+        assert!(
+            confirm(&mut v, Path::YecToPq(id), &raw, |_| Some(UtxoClass::Held))
                 .await
-                .unwrap_err(),
-            GateError::NoDryRunForPqSend
+                .is_err()
         );
-        // review YEW-REVIEW-6 L1: the refusal names the check and the remedy, never YED
-        let m = GateError::NoDryRunForPqSend.to_string();
-        assert!(!m.contains("YED"), "{m}");
-        assert!(m.contains("cannot check this transaction") && m.contains("Nothing was sent"));
-        assert!(m.contains("connect to a server that offers the Yellowback service"));
         assert_eq!(
             refuse_held_absent(&Validator::Absent, Path::YecToPq(id), true),
             Err(GateError::HeldYedNotLive)
@@ -2752,11 +2803,13 @@ mod tests {
         assert!(spent_as_yec(Path::YecToPq(id), &tx, class).contains(&a));
     }
 
-    /// Without the remote layer (a server answering `UNIMPLEMENTED`), the post-quantum send is
-    /// refused even when its local layer passes; the plain YEC path proceeds on the local layer
-    /// alone (and the held-YED guard decides before it, [`refuse_held_absent`]).
+    /// W-P1: without the remote layer (a server answering `UNIMPLEMENTED`, e.g. a network without
+    /// the YED module), the post-quantum send is plain YEC and proceeds on the local layer alone,
+    /// as the plain YEC path does (the held-YED guard decides before it, [`refuse_held_absent`]);
+    /// the local layer still refuses every input that is not PQ_OWNED, and every YED path still
+    /// needs the service.
     #[tokio::test]
-    async fn pq_spend_needs_the_remote_layer() {
+    async fn pq_spend_without_the_remote_layer() {
         let pq = OutPoint {
             txid: [1; 32],
             n: 0,
@@ -2764,9 +2817,37 @@ mod tests {
         let raw = raw_spending(&[pq], false);
         let mut v = Validator::Absent;
         let r = confirm(&mut v, Path::PqSpend, &raw, |_| Some(UtxoClass::PqOwned)).await;
-        assert_eq!(r.unwrap_err(), GateError::YellowbackAbsent);
+        assert!(matches!(r, Ok((_, None))));
+        for c in [
+            UtxoClass::Held,
+            UtxoClass::Token,
+            UtxoClass::Yec,
+            UtxoClass::FeeReserve,
+        ] {
+            let r = confirm(&mut v, Path::PqSpend, &raw, |_| Some(c)).await;
+            assert!(r.is_err(), "{c:?}");
+        }
+        assert_eq!(
+            refuse_held_absent(&Validator::Absent, Path::PqSpend, true),
+            Err(GateError::HeldYedNotLive)
+        );
+        assert_eq!(
+            refuse_held_absent(&Validator::Absent, Path::PqSpend, false),
+            Ok(())
+        );
         let r = confirm(&mut v, Path::Yec, &raw, |_| Some(UtxoClass::Yec)).await;
         assert!(matches!(r, Ok((_, None))));
+        // the YED paths (and the PQ coin move of the vault flows) still need the service
+        for p in [
+            Path::YedTransfer,
+            Path::Mint,
+            Path::Redeem,
+            Path::Release,
+            Path::Sweep,
+            Path::PqSweep(pq),
+        ] {
+            assert!(p.needs_yellowback(), "{p:?}");
+        }
     }
 
     // ---- layer 3: provenance against a lying server (review YEW-REVIEW-3, structural)

@@ -14,8 +14,10 @@
 //! a token (the sync's `GetAddressTokens` answers mark every listed PQ outpoint `HELD`, and so is
 //! every output of exactly `TOKEN_VALUE`), never a P2PKH coin, never the fee reserve; the local
 //! layer refuses any other input class, any payload and any output of exactly `TOKEN_VALUE`; the
-//! remote layer (the node's `ValidateRawTransaction`, `ok, burned 0`) is mandatory, so a server
-//! without Yellowback refuses the send outright.
+//! remote layer (the node's `ValidateRawTransaction`, `ok, burned 0`) runs when the server offers
+//! Yellowback. Without the service (W-P1: a network without the YED module) the send is plain YEC
+//! on the local layer and layer 3, as an ECC send is, and a wallet that has held YED is refused
+//! (`gate::refuse_held_absent`).
 //!
 //! A Sapling recipient (beta2 item 5, native only, [`build_pq_to_sapling`]): the same plan with
 //! the recipient in the Sapling part, the hybrid builder (`build::hybrid`: the Sapling output
@@ -546,8 +548,9 @@ fn check_signed_locally(
     Ok(())
 }
 
-/// Both gate layers on the preview ([`gate::Path::PqSpend`]: the node must say `ok, burned 0`;
-/// no server without Yellowback), then record (inputs locked until it confirms or expires, the
+/// Both gate layers on the preview ([`gate::Path::PqSpend`]: the node must say `ok, burned 0`
+/// when the server offers Yellowback; without it the local layer, the held-YED guard and layer 3,
+/// W-P1; the validation is then `None`), then record (inputs locked until it confirms or expires, the
 /// pending transaction, the history row) and `SendTransaction`. A send the server certainly
 /// refused is undone and its error returned; any other failure leaves the record for the sync
 /// to settle and says so: `…; status unknown, txid <txid>: check before sending again` (yewd's
@@ -558,9 +561,12 @@ pub async fn broadcast(
     validator: &mut Validator,
     p: &PqSendPreview,
     accept_unusual_fee: Option<&str>,
-) -> Result<(String, Validation), WalletError> {
+) -> Result<(String, Option<Validation>), WalletError> {
     // YEW-PORT-6 item 2: a flagged fee is never confirmed by the normal button
     terms::require_ack(&p.fee_guard, accept_unusual_fee)?;
+    // the has-held-YED guard (beta2 item 32): without the service a post-quantum coin carrying
+    // YED at another value than TOKEN_VALUE could not be told apart from plain YEC
+    gate::refuse_held_absent(validator, p.path, wallet.has_held_yed()?)?;
     let (_, validation) = gate::confirm_with_scripts(
         validator,
         p.path,
@@ -569,7 +575,6 @@ pub async fn broadcast(
         |op| script_of(wallet, op),
     )
     .await?;
-    let validation = validation.ok_or(gate::GateError::YellowbackAbsent)?;
     // layer 3: no input carries YED by its creating transaction (review YEW-REVIEW-3)
     gate::confirm_provenance(
         client,
@@ -581,10 +586,10 @@ pub async fn broadcast(
     .await?;
     // review YEW-REVIEW-3 L6: the dry run's `feeZat` is the Yellowback enforcement fee, which a
     // plain YEC send never pays (its network fee is not in the answer: the local check covers it)
-    if validation.fee_zat != 0 {
+    if let Some(v) = validation.as_ref().filter(|v| v.fee_zat != 0) {
         return Err(other(format!(
             "the node's dry run reports a Yellowback fee of {} zat on a plain YEC send; nothing was sent",
-            validation.fee_zat
+            v.fee_zat
         )));
     }
     let txid = txid_hex(&p.txid);

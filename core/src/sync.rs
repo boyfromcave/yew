@@ -198,21 +198,13 @@ pub async fn sync_with_progress(
             }
         }
     }
-    // TOK-PQ: once the server announces a Falcon height (mainnet and testnet: the vault
-    // upgrade's first block), every HD key also has a Falcon YED holder; their tokens are found
-    // through `GetAddressTokens` on the 53-character addresses (the only source of YED), their
-    // plain YEC and history through the taddr methods on the `sq…` form (below).
-    let falcon_on = yellowback.is_some() && {
-        let t = wallet.pq_terms();
-        t.falcon_active || t.falcon_height.is_some()
-    };
+    // TOK-PQ: once Falcon is announced ([`falcon_announced`]), every HD key also has a Falcon
+    // key; with the Yellowback service its YED holder tokens are found through
+    // `GetAddressTokens` on the 53-character addresses (the only source of YED), and whatever the
+    // service, its plain YEC and history through the taddr methods on the `sq…` form (below,
+    // [`plain_pq_keys`]).
+    let falcon_on = falcon_announced(wallet);
     let mut falcon_tokens: HashMap<OutPoint, crate::net::Token> = HashMap::new();
-    // The wallet's own post-quantum keys as plain-YEC addresses (D-Q-20; lightwalletd-dd
-    // q/pqaddr serves `TX_PQPKH` in the taddr methods): the Falcon holders once TOK-PQ is
-    // announced, and the vault owners whenever the server offers Yellowback (a claim residual
-    // released by another party pays `PQPKH(owner)`). Payments to them are found here like any
-    // own address's; YED at them only ever through `GetAddressTokens` (4a).
-    let vaults_on = yellowback.is_some();
     let mut pq_indexed = true;
 
     // 1-3. Addresses and history, extending the gap until no address in the last GAP_LIMIT
@@ -231,14 +223,9 @@ pub async fn sync_with_progress(
     let mut seen_txids: HashSet<[u8; 32]> = HashSet::new();
     while !pending.is_empty() {
         let own = wallet.own_hashes()?;
-        let own_falcon = if falcon_on {
-            wallet.own_falcon_holders()?
-        } else {
-            HashMap::new()
-        };
-        let own_pq = own_pq_keys(wallet, &own_falcon, vaults_on)?;
+        let (own_falcon, own_pq) = plain_pq_keys(wallet)?;
         let mut any_new_use = false;
-        if falcon_on {
+        if falcon_on && yellowback.is_some() {
             // The Falcon holders paired with this pass's addresses: a listed token marks the
             // pair used (the gap rule), and its transaction goes into history.
             let batch: HashSet<&str> = pending.iter().map(|(a, _)| a.as_str()).collect();
@@ -359,12 +346,7 @@ pub async fn sync_with_progress(
         .map(|a| a.address_s)
         .collect();
     let mut tokens: HashMap<OutPoint, u64> = HashMap::new();
-    let own_falcon = if falcon_on {
-        wallet.own_falcon_holders()?
-    } else {
-        HashMap::new()
-    };
-    let own_pq = own_pq_keys(wallet, &own_falcon, vaults_on)?;
+    let (own_falcon, own_pq) = plain_pq_keys(wallet)?;
     // Every token at an own post-quantum key, Falcon holder or not (a vault owner holds none
     // by design, C-10, but its outputs must still never pass for YEC): the PQ classifier's
     // token marker, beside the Falcon rows below.
@@ -887,10 +869,47 @@ fn own_pq_keys(
     Ok(m)
 }
 
+/// Falcon (TOK-PQ) is announced as far as this wallet knows: mainnet and testnet compile it in
+/// (from the first block), regtest takes the server's terms.
+fn falcon_announced(wallet: &Wallet) -> bool {
+    let t = wallet.pq_terms();
+    t.falcon_active || t.falcon_height.is_some()
+}
+
+/// W-P1: the own post-quantum keys whose plain YEC the sync looks up through the stock taddr
+/// methods (`GetTaddressTxids`, `GetAddressUtxos` on the `sq…`/`tq…`/`rq…` form; lightwalletd-dd
+/// q/pqaddr serves `TX_PQPKH` there, in CompactTxStreamer), **with or without the Yellowback
+/// service**: a network without the YED module still has post-quantum YEC. The Falcon keys once
+/// Falcon is announced ([`falcon_announced`]; returned first, the YED steps use them too) and the
+/// SLH-DSA keys (the vault owners, `sqs…`/`tqs…`/`rqs…`) always. YED at them is only ever
+/// learnt through `GetAddressTokens` (4a); without the service nothing there is a token, an
+/// output of exactly `TOKEN_VALUE` is HELD (`coins::classify_pq_listed`) and layer 3 (2c) holds
+/// any other a YED payload names.
+#[allow(clippy::type_complexity)]
+fn plain_pq_keys(
+    wallet: &Wallet,
+) -> Result<
+    (
+        HashMap<crate::pq::PqKeyId, crate::store::AddressRow>,
+        HashMap<crate::pq::PqKeyId, [u8; 20]>,
+    ),
+    WalletError,
+> {
+    let own_falcon = if falcon_announced(wallet) {
+        wallet.own_falcon_holders()?
+    } else {
+        HashMap::new()
+    };
+    let own_pq = own_pq_keys(wallet, &own_falcon, true)?;
+    Ok((own_falcon, own_pq))
+}
+
 /// The server refused a post-quantum address in a taddr method: a lightwalletd before q/pqaddr
-/// answers `INVALID_ARGUMENT` ("invalid address"). The sync goes on without the PQ lookups.
+/// answers `INVALID_ARGUMENT`, or, as the yodl baseline does (`checkTaddress`: a plain Go error),
+/// `UNKNOWN` "Invalid address". The sync goes on without the PQ lookups.
 fn pq_refused(e: &NetError) -> bool {
-    matches!(e, NetError::Status(s) if s.code() == tonic::Code::InvalidArgument)
+    matches!(e, NetError::Status(s) if s.code() == tonic::Code::InvalidArgument
+        || (s.code() == tonic::Code::Unknown && s.message().trim() == "Invalid address"))
 }
 
 /// The height a transaction was seen confirmed at, if the history scan saw it.
@@ -2243,5 +2262,81 @@ mod tests {
             within(std::time::Duration::from_secs(5), async { 7 }).await,
             Some(7)
         );
+    }
+
+    /// W-P1 (the beta2 walkthrough, testnet-yb-fast: Vault active, no YED module, so lightwalletd
+    /// registers no Yellowback service): the post-quantum addresses the sync looks up through the
+    /// stock taddr methods do not depend on the service. On testnet (and mainnet) a fresh wallet
+    /// that no server has answered yet looks up both of Receive's post-quantum addresses (the
+    /// `tqf…` Falcon key and the `tqs…` SLH-DSA key of every derived external key); on regtest the
+    /// Falcon keys follow the server's terms, the SLH-DSA keys are looked up always.
+    #[test]
+    fn plain_pq_lookups_do_not_need_the_yellowback_service() {
+        use crate::params::Network;
+        const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let seed = keys::seed_from_mnemonic(PHRASE, "").unwrap();
+        for network in [Network::Testnet, Network::Mainnet, Network::Regtest] {
+            let w = Wallet::from_parts(
+                crate::store::Store::open_in_memory().unwrap(),
+                network,
+                &seed,
+                None,
+            )
+            .unwrap();
+            assert!(w.terms_refused().is_none());
+            let (falcon, pq) = plain_pq_keys(&w).unwrap();
+            let external: Vec<_> = w
+                .addresses()
+                .unwrap()
+                .into_iter()
+                .filter(|r| r.hd_chain() == Some(crate::keys::Chain::External))
+                .collect();
+            assert!(!external.is_empty());
+            for row in &external {
+                // what Receive hands out for this key (`api::receive_address` PqSlh / PqFalcon)
+                let slh = w.pq_owner_id(row.index);
+                let fal = w
+                    .falcon_holder_id(row)
+                    .expect("an HD key has a Falcon pair");
+                assert_eq!(pq.get(&slh), Some(&row.hash160), "{network:?} SLH-DSA");
+                let addr = keys::encode_pq_yec(network, &slh).unwrap();
+                assert_eq!(keys::parse_pq_yec_address(network, &addr).unwrap(), slh);
+                if network == Network::Regtest {
+                    assert!(!falcon_announced(&w));
+                    assert!(!pq.contains_key(&fal), "regtest: Falcon follows the server");
+                } else {
+                    assert!(falcon_announced(&w), "{network:?}: Falcon is compiled in");
+                    assert_eq!(pq.get(&fal), Some(&row.hash160), "{network:?} Falcon");
+                    assert!(falcon.contains_key(&fal));
+                }
+            }
+            if network == Network::Testnet {
+                let a = keys::encode_pq_yec(network, &w.pq_owner_id(external[0].index)).unwrap();
+                assert!(a.starts_with("tqs"), "{a}");
+                let f = keys::encode_pq_yec(network, &w.falcon_holder_id(&external[0]).unwrap())
+                    .unwrap();
+                assert!(f.starts_with("tqf"), "{f}");
+            }
+        }
+    }
+
+    /// A server that does not index post-quantum addresses refuses them: lightwalletd-dd before
+    /// q/pqaddr with `INVALID_ARGUMENT`, the yodl baseline with `UNKNOWN` "Invalid address" (a
+    /// plain Go error). Either switches the PQ lookups off for the run instead of failing the
+    /// sync (now that they run without the Yellowback service too, W-P1); any other error stays
+    /// an error.
+    #[test]
+    fn a_server_without_pq_addresses_does_not_fail_the_sync() {
+        let st = |code, m: &str| NetError::Status(tonic::Status::new(code, m));
+        assert!(pq_refused(&st(
+            tonic::Code::InvalidArgument,
+            "invalid address"
+        )));
+        assert!(pq_refused(&st(tonic::Code::Unknown, "Invalid address")));
+        assert!(!pq_refused(&st(tonic::Code::Unknown, "Cache is empty")));
+        assert!(!pq_refused(&st(
+            tonic::Code::Unavailable,
+            "Invalid address"
+        )));
     }
 }
