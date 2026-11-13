@@ -783,7 +783,7 @@ impl Wallet {
             let hexs = self
                 .sign_hybrid(next, &inputs, spends, anchor, outputs, total + fee_zat)
                 .await?;
-            return self.commit_z(node, &hexs).await;
+            return self.commit_z(node, &hexs, false).await;
         }
         let req = SaplingBuildRequest {
             target_height: next.height,
@@ -818,14 +818,30 @@ impl Wallet {
             }
             other => return Err(signer_error(other)),
         };
-        self.commit_z(node, &hexs).await
+        self.commit_z(node, &hexs, false).await
     }
 
     /// `SendTransaction`: the node's `sendrawtransaction`, then the barrier. A refused transaction
     /// is never recorded: the wallet learns its transactions from the node's mempool and chain
     /// only, so nothing it was told failed is broadcast again later (audit H1's class).
-    async fn commit_z(&mut self, node: &dyn Node, hexs: &str) -> Result<String, RpcError> {
-        self.submit(node, hexs, serde_json::json!([hexs]), |code, message| {
+    ///
+    /// `pq_within_cap`: the transaction spends a post-quantum input and its fee is within the
+    /// post-quantum cap (`PQMaxTxFee`, checked by the planner). ycashd's wallet then commits it
+    /// without the `-maxtxfee` absurd-fee check (D-Q-26: `CWallet::CommitTransaction`,
+    /// `AcceptToMemoryPool(.., !PQFeeWithinCap(tx))`), so it is submitted with `allowhighfees`;
+    /// every other transaction keeps the node's `-maxtxfee`.
+    async fn commit_z(
+        &mut self,
+        node: &dyn Node,
+        hexs: &str,
+        pq_within_cap: bool,
+    ) -> Result<String, RpcError> {
+        let params = if pq_within_cap {
+            serde_json::json!([hexs, true])
+        } else {
+            serde_json::json!([hexs])
+        };
+        self.submit(node, hexs, params, |code, message| {
             RpcError::new(
                 code::WALLET_ERROR,
                 format!("SendTransaction: Transaction commit failed:: {message} ({code})"),
@@ -1143,7 +1159,8 @@ impl Wallet {
             .map_err(|e| RpcError::new(code::INTERNAL_ERROR, e.to_string()))?;
         // ycash6 PQBuilderFee(fee, signedTx): the base is the fee the estimate settled on
         plan::check_signed_fee(cur_fee, raw.len(), conventional, rate, cap).map_err(plan_err)?;
-        self.commit_z(node, &hexs).await
+        // the planner settled cur_fee within the cap (FeeAboveCap otherwise)
+        self.commit_z(node, &hexs, cur_fee <= cap).await
     }
 
     /// A `z_sendmany` transaction with a post-quantum party, signed by the signer's `Sign` with the
