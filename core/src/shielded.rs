@@ -237,9 +237,10 @@ pub fn ycash_network_with_upgrades(
 /// Sapling may be built then, since the node would reject it (a wrong ZIP-243 branch id, or a
 /// pre-Canopy note plaintext). Regtest is always `Ok` (its heights come from the server).
 ///
-/// Today testnet fails it: librustzcash6 6ff87bc9 still has the old Ycash testnet's Blossom
-/// 661,610 / Heartwood 661,622 / Canopy 661,634 and no Vault, testnet-yb-fast has 510,250 /
-/// 510,252 / 510,254 / 510,400 (`wt/handoff/YEW-TESTNET.md`).
+/// Since librustzcash6's `TEST_NETWORK` is testnet-yb-fast (Blossom 510,250, Heartwood 510,252,
+/// Canopy 510,254, Vault 510,400; before it, the old Ycash testnet's 661,610 / 661,622 / 661,634
+/// and no Vault) every network passes. It stays as the tripwire for a later move on one side
+/// only: fast's Vault height is a placeholder until the testnet's launch ceremony.
 pub fn check_light_params(n: Network) -> Result<(), String> {
     let Some(table) = n.upgrades() else {
         return Ok(());
@@ -2319,7 +2320,8 @@ mod tests {
 
     /// Finding 58: the vault upgrade (branch 6d5b7a31) at the server's regtest height. The
     /// block before the activation is Canopy, the activation block and after are Vault; mainnet
-    /// and testnet ignore a server height (no activation compiled in until a release sets one).
+    /// and testnet ignore a server height (their heights are compiled in: none on mainnet until a
+    /// release sets one, 510,400 on testnet-yb-fast).
     #[test]
     fn vault_activation_moves_the_branch_at_the_boundary() {
         const CANOPY: u32 = 0x19bd_2d2f;
@@ -2344,11 +2346,18 @@ mod tests {
             ycash_network(Network::Regtest)
         );
         assert_eq!(at(ycash_network(Network::Regtest), 10_000), CANOPY);
-        for n in [Network::Mainnet, Network::Testnet] {
+        for (n, vault_height, last) in [
+            (Network::Mainnet, None, CANOPY),
+            (
+                Network::Testnet,
+                Some(BlockHeight::from_u32(510_400)),
+                vault,
+            ),
+        ] {
             let p = ycash_network_with_vault(n, Some(200));
             assert_eq!(p, ycash_network(n));
-            assert_eq!(p.activation_height(NetworkUpgrade::Vault), None);
-            assert_eq!(at(p, 5_000_000), CANOPY);
+            assert_eq!(p.activation_height(NetworkUpgrade::Vault), vault_height);
+            assert_eq!(at(p, 5_000_000), last);
         }
     }
 

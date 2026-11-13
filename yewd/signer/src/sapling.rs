@@ -605,4 +605,76 @@ mod tests {
             assert_eq!(e.0, refuse::KEY_MISMATCH, "{e:?}");
         }
     }
+    /// testnet-yb-fast (Blossom 510,250, Heartwood 510,252, Canopy 510,254, Vault 510,400, from
+    /// librustzcash6's `TEST_NETWORK`): a Sapling spend built for 510,300 (Canopy), 510,400 (the
+    /// Vault block) and 510,421 is an overwintered v4 transaction in the Sapling version group
+    /// whose spend authorization verifies over the digest under the height's branch, never under
+    /// the Ycash epoch's (`0x374d694f`, what the old testnet heights gave), and whose change is a
+    /// ZIP-212 note (lead byte 0x02).
+    #[test]
+    fn a_sapling_spend_for_fast_signs_under_the_heights_branch() {
+        use sapling_crypto::note_encryption::{
+            try_sapling_note_decryption, PreparedIncomingViewingKey, Zip212Enforcement,
+        };
+        use zcash_primitives::transaction::sighash::SignableInput;
+        use zcash_primitives::transaction::sighash_v4::v4_signature_hash;
+        use zcash_primitives::transaction::{Transaction, TxVersion};
+        use zcash_protocol::consensus::BranchId;
+        let extsk = sapling_extsk(PHRASE, Network::Testnet).unwrap();
+        let dfvk = extsk.to_diversifiable_full_viewing_key();
+        let ivk = PreparedIncomingViewingKey::new(&dfvk.to_ivk(Scope::Internal));
+        let (_, change) = dfvk.change_address();
+        for (target, want, id) in [
+            (510_300u32, BranchId::Canopy, 0x19bd_2d2fu32),
+            (510_400, BranchId::Vault, 0x6d5b_7a31),
+            (510_421, BranchId::Vault, 0x6d5b_7a31),
+        ] {
+            assert_eq!(u32::from(want), id);
+            let (spend, anchor) = lone_spend(&change, 500_000, Rseed::AfterZip212([5; 32]), true);
+            let r = SaplingBuildRequest {
+                target_height: target,
+                expiry_height: target + 40,
+                // testnet's heights are compiled in: a server's vault height is ignored there
+                vault_height: None,
+                upgrades: None,
+                inputs: Vec::new(),
+                outputs: vec![SaplingOut::Change { value: 499_000 }],
+                spends: vec![spend],
+                fee_zat: 1_000,
+                anchor,
+                outflow_cap_zat: 1_000,
+                params_dir: params_dir(),
+            };
+            let raw = hex::decode(
+                sapling_build(extsk.clone(), Network::Testnet, &r, |_, _| {
+                    no(refuse::KEY_MISMATCH, "none")
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            // the header: fOverwintered | 4, then the Sapling version group
+            assert_eq!(&raw[0..4], &0x8000_0004u32.to_le_bytes(), "{target}");
+            assert_eq!(&raw[4..8], &0x892f_2085u32.to_le_bytes(), "{target}");
+            for (branch, signs) in [(want, true), (BranchId::Ycash, false)] {
+                let tx = Transaction::read(&raw[..], branch).unwrap();
+                assert_eq!(tx.version(), TxVersion::V4);
+                assert_eq!(tx.expiry_height(), BlockHeight::from_u32(target + 40));
+                let digest = v4_signature_hash(&*tx, &SignableInput::Shielded);
+                let bundle = tx.sapling_bundle().unwrap();
+                let s = &bundle.shielded_spends()[0];
+                assert_eq!(
+                    s.rk().verify(digest.as_ref(), s.spend_auth_sig()).is_ok(),
+                    signs,
+                    "{target} under {branch:?}"
+                );
+                let outs = bundle.shielded_outputs();
+                assert!(outs.iter().any(|o| try_sapling_note_decryption(
+                    &ivk,
+                    o,
+                    Zip212Enforcement::On
+                )
+                .is_some()));
+            }
+        }
+    }
 }

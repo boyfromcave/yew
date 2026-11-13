@@ -53,7 +53,7 @@ overflow-checks = false
 
 # As in the root Cargo.toml (patches do not propagate through dependencies).
 [patch.crates-io]
-schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "6ff87bc9f564fcb7891e1f32698c7ad91ba85ca2" }
+schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "a4935c512d01fb81969445e934b6fc00a615d733" }
 # tonic-web-wasm-client 0.9.2 answers "malformed response" to a Trailers-Only gRPC-web reply
 # (grpc-status in the HTTP headers, empty body) — what Envoy Gateway sends for an empty server
 # stream (the kind cluster's yindex `GetTaddressTxids` for an address with no history) — so the
