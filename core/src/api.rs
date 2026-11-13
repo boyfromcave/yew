@@ -590,7 +590,8 @@ pub struct YedPreview {
     pub dry_run: DryRun,
     /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
     /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
-    /// the server). `None`: the normal confirmation.
+    /// the server; or, when only the server's low YEC price flags it, that price against the
+    /// wallet's reference, `terms::PRICE_ONLY_NOTE_PREFIX`). `None`: the normal confirmation.
     pub fee_note: Option<String>,
     /// Set exactly when [`YedPreview::fee_note`] is: pass it as `accept_unusual_fee` to the confirm call
     /// after the user confirmed the fee separately; without it the confirm refuses.
@@ -767,7 +768,8 @@ pub struct MintEstimate {
     pub bundle_seqs: Vec<u32>,
     /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
     /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
-    /// the server). `None`: the normal confirmation.
+    /// the server; or, when only the server's low YEC price flags it, that price against the
+    /// wallet's reference, `terms::PRICE_ONLY_NOTE_PREFIX`). `None`: the normal confirmation.
     pub fee_note: Option<String>,
     /// Set exactly when [`MintEstimate::fee_note`] is: pass it back in `accept_unusual_fee` of
     /// [`MintTerms`] to [`mint_start`] after the separate confirmation; without it the start refuses.
@@ -1063,7 +1065,8 @@ pub struct ReleasePreview {
     pub txid: String,
     /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
     /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
-    /// the server). `None`: the normal confirmation.
+    /// the server; or, when only the server's low YEC price flags it, that price against the
+    /// wallet's reference, `terms::PRICE_ONLY_NOTE_PREFIX`). `None`: the normal confirmation.
     pub fee_note: Option<String>,
     /// Set exactly when [`ReleasePreview::fee_note`] is: pass it as `accept_unusual_fee` to the confirm call
     /// after the user confirmed the fee separately; without it the confirm refuses.
@@ -1171,7 +1174,8 @@ pub struct ClaimableItem {
     pub cancel_quiet_until: i64,
     /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
     /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
-    /// the server). `None`: the normal confirmation.
+    /// the server; or, when only the server's low YEC price flags it, that price against the
+    /// wallet's reference, `terms::PRICE_ONLY_NOTE_PREFIX`). `None`: the normal confirmation.
     pub fee_note: Option<String>,
     /// Set exactly when [`ClaimableItem::fee_note`] is: pass it back in `accept_unusual_fee` of
     /// [`ClaimTerms`] to [`claim`] after the separate confirmation; without it the start refuses.
@@ -2441,7 +2445,8 @@ pub struct PqSendPreviewInfo {
     pub sign_millis: Option<u64>,
     /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
     /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
-    /// the server). Show it next to the fee.
+    /// the server; or, when only the server's low YEC price flags it, that price against the
+    /// wallet's reference, `terms::PRICE_ONLY_NOTE_PREFIX`). Show it next to the fee.
     pub fee_note: Option<String>,
     /// Set exactly when [`PqSendPreviewInfo::fee_note`] is: pass it as `accept_unusual_fee` to
     /// [`pq_send_confirm`] after the separate confirmation; without it the confirm refuses.

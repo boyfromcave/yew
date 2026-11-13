@@ -12,6 +12,7 @@ import { YellowbackVm } from "../src/vm/yellowback";
 import type { Unlock, WalletMeta } from "../src/keystore";
 import { localize, setNetwork } from "../src/prefixes";
 import { termsRefusedText } from "../src/screens/home";
+import { unusualFeeTitle } from "../src/widgets";
 
 class FakeKeystore {
   saved: { seed: string; unlock: Unlock; meta: WalletMeta } | null = null; forgotten = false;
@@ -133,6 +134,15 @@ describe("send", () => {
     await vm.loadSources(); vm.setFrom(vm.state.sources[0].address);
     await vm.setTo("s1PublicRecipient0000000000000000000"); vm.state.amount = "0.1"; await vm.preview();
     expect(vm.feeNote).toContain("Unusual fee"); await vm.confirm(); expect(vm.state.error).toContain("Pay this fee"); expect(core.broadcasts).toHaveLength(0);
+    vm.acceptFee(); await vm.confirm(); expect(vm.state.error).toBe(""); expect(core.broadcasts).toHaveLength(1);
+  });
+  it("a fee flagged only for a low server price is a price check, and still needs its own step (yew#37 review)", async () => {
+    const note = "Low YEC price: the server reports $10.0000 per YEC, below half this wallet's reference YEC price ($50.0000 per YEC, the median of the last 30 days' reports). The fee, 0.00575000 YEC (about $0.06), is a usual fee in dollars at the server's price.";
+    expect(unusualFeeTitle(note)).toBe("YEC price check"); expect(unusualFeeTitle("Unusual fee: 0.84 YEC, 4.0× the usual.")).toBe("Unusual fee");
+    const core = await openWallet(); core.unusualPqFee = note; const vm = new SendVm(core, "yec");
+    await vm.loadSources(); vm.setFrom(vm.state.sources[0].address);
+    await vm.setTo("s1PublicRecipient0000000000000000000"); vm.state.amount = "0.1"; await vm.preview();
+    expect(vm.feeNote).not.toContain("×"); await vm.confirm(); expect(vm.state.error).toContain("Pay this fee"); expect(core.broadcasts).toHaveLength(0);
     vm.acceptFee(); await vm.confirm(); expect(vm.state.error).toBe(""); expect(core.broadcasts).toHaveLength(1);
   });
   it("post-quantum forms are asset-bound (D-Q-20/D-Q-21)", async () => {

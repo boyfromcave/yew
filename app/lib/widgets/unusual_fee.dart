@@ -10,6 +10,12 @@
 // the server) and returns the acknowledgement only when the user accepts it.
 import 'package:flutter/material.dart';
 
+/// The title of the confirmation: a note the core flagged only because the server's YEC price is
+/// below half this wallet's reference (the fee in dollars is normal; yew-core
+/// `terms::PRICE_ONLY_NOTE_PREFIX`) is a price check, not an unusual fee (yew#37 review).
+String unusualFeeTitle(String? note) =>
+    (note ?? '').startsWith('Low YEC price:') ? 'YEC price check' : 'Unusual fee';
+
 /// The user declined an unusual fee: nothing is sent.
 class UnusualFeeDeclined implements Exception {
   const UnusualFeeDeclined();
@@ -24,7 +30,7 @@ Future<String?> acceptUnusualFee(BuildContext context, {required String? note, r
     barrierDismissible: false,
     builder: (ctx) => AlertDialog(
       key: const Key('unusual-fee-dialog'),
-      title: const Text('Unusual fee'),
+      title: Text(unusualFeeTitle(note), key: const Key('unusual-fee-title')),
       content: Text(note ?? 'This fee is unusually high.', key: const Key('unusual-fee-note')),
       actions: [
         TextButton(key: const Key('unusual-fee-cancel'), onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),

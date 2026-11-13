@@ -22,9 +22,14 @@ export function previewCard(title: string, rows: [string, string][], warning?: s
 /** Review YEW-REVIEW-4 M2 / YEW-REVIEW-5 L4: an unusual fee's note and its own confirmation step. The
  *  slider stays disabled until the user presses "Pay this fee"; only then does the view-model pass the
  *  core's acknowledgement back with confirm. */
+/** The card's title: a note the core flagged only because the server's YEC price is below half this
+ *  wallet's reference (the fee in dollars is normal; yew-core `terms::PRICE_ONLY_NOTE_PREFIX`) is a
+ *  price check, not an unusual fee (yew#37 review). */
+export function unusualFeeTitle(note: string): string { return note.startsWith("Low YEC price:") ? "YEC price check" : "Unusual fee"; }
+
 export function unusualFeeCard(note: string | null | undefined, accepted: boolean, onAccept: () => void): HTMLElement | null {
   if (!note) return null;
-  return h("div", { class: "card error", role: "alert" }, h("h3", null, "Unusual fee"), h("p", null, note),
+  return h("div", { class: "card error", role: "alert" }, h("h3", null, unusualFeeTitle(note)), h("p", null, note),
     accepted ? h("p", { class: "small" }, "You accepted this fee. Slide to confirm.")
       : h("div", { class: "actions" }, h("button", { on: { click: onAccept } }, "Pay this fee")));
 }
