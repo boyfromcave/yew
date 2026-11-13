@@ -109,6 +109,12 @@ pub struct Chain {
     /// When set, the raw block read that would be the `n`-th (counting from 0 in `block_reads`)
     /// fails once (the node unreachable: a scan stopped part-way).
     pub fail_read_at: Option<usize>,
+    /// The node is in its initial block download (`getblockchaininfo`
+    /// `initial_block_download_complete: false`).
+    pub syncing: bool,
+    /// When set, right after the `n`-th raw block read the chain becomes `.1` (its blocks,
+    /// Sapling output counts and transactions): a reorg while the wallet reads.
+    pub reorg_after_read: Option<(usize, Box<Chain>)>,
 }
 
 #[derive(Clone, Default)]
@@ -253,6 +259,12 @@ impl Node for MockNode {
                             return Err(NodeError::Unreachable("mock: connection refused".into()));
                         }
                         c.block_reads.push(at);
+                        if c.reorg_after_read.as_ref().map(|r| r.0) == Some(c.block_reads.len()) {
+                            let (_, alt) = c.reorg_after_read.take().unwrap();
+                            c.blocks = alt.blocks;
+                            c.sapling = alt.sapling;
+                            c.txs = alt.txs;
+                        }
                         json!(hex::encode(raw))
                     } else {
                         // the Sapling tree's size after this block: every Sapling output so far
@@ -261,16 +273,20 @@ impl Node for MockNode {
                         json!({"trees": {"sapling": {"size": size}}})
                     }
                 }
-                "getblockchaininfo" => match c.vault_height {
-                    Some(h) => json!({
-                        "blocks": tip,
-                        "upgrades": {"6d5b7a31": {"activationheight": h}},
-                        "consensus": {"nextblock": if tip as u64 + 1 >= h { "6d5b7a31" } else { "76b809bb" }},
-                    }),
-                    None => {
-                        json!({"blocks": tip, "upgrades": {}, "consensus": {"nextblock": "76b809bb"}})
-                    }
-                },
+                "getblockchaininfo" => {
+                    let mut v = match c.vault_height {
+                        Some(h) => json!({
+                            "blocks": tip,
+                            "upgrades": {"6d5b7a31": {"activationheight": h}},
+                            "consensus": {"nextblock": if tip as u64 + 1 >= h { "6d5b7a31" } else { "76b809bb" }},
+                        }),
+                        None => {
+                            json!({"blocks": tip, "upgrades": {}, "consensus": {"nextblock": "76b809bb"}})
+                        }
+                    };
+                    v["initial_block_download_complete"] = json!(!c.syncing);
+                    v
+                }
                 "sendrawtransaction" => {
                     let hexs = p[0].as_str().unwrap().to_string();
                     drop(c);

@@ -223,6 +223,9 @@ pub struct ChainFacts {
     /// parameters ([`upgrades_spec`]).
     pub upgrades: Option<String>,
     pub falcon_active: Option<bool>,
+    /// The node has the chain (out of its initial download): [`node_synced`] of its
+    /// `getblockchaininfo`. A restore stays in progress until it is.
+    pub synced: bool,
 }
 
 /// The backend is on the wallet's network (`getblockchaininfo`): on testnet, the testnet-yb-fast
@@ -258,6 +261,28 @@ pub fn check_backend_network(network: Network, info: &serde_json::Value) -> Resu
         ));
     }
     Ok(())
+}
+
+/// Whether the node reports it has the chain, from `getblockchaininfo`: ycashd's
+/// `initial_block_download_complete`; koganyd, which has no such field, when its tip is at its
+/// header chain's (`blocks >= headers`) and at the height it estimates from the clock
+/// (`verificationprogress >= 1`, which koganyd sets on regtest, or `blocks >= estimatedheight`).
+/// A missing or unreadable field answers false: a restore stays open rather than closing early.
+pub fn node_synced(info: &serde_json::Value) -> bool {
+    if let Some(done) = info["initial_block_download_complete"].as_bool() {
+        return done;
+    }
+    let Some(blocks) = info["blocks"].as_u64() else {
+        return false;
+    };
+    let headers_ok = info["headers"].as_u64().is_some_and(|h| blocks >= h);
+    let estimate_ok = info["verificationprogress"]
+        .as_f64()
+        .is_some_and(|p| p >= 1.0)
+        || info["estimatedheight"]
+            .as_u64()
+            .is_some_and(|e| blocks >= e);
+    headers_ok && estimate_ok
 }
 
 /// The node's upgrade heights before the vault upgrade (`getblockchaininfo.upgrades`, keyed by
@@ -971,9 +996,15 @@ impl Wallet {
                     changed = true;
                     match self.repass(node).await {
                         Ok(()) => {}
+                        Err(ScanError::Moved) => continue,
                         Err(e) => return Err(self.scan_failed(e)),
                     }
                     self.rebuild();
+                }
+                if self.st.restore_pending {
+                    // a restore closes once the node has the chain, which can happen with no new
+                    // block: ask again
+                    self.refresh_chain(node).await?;
                 }
                 changed |= self.restore_done();
                 changed |= self.sync_mempool(node).await?;
@@ -1039,6 +1070,7 @@ impl Wallet {
             .as_u64()
             .map(|h| h as u32);
         self.chain.upgrades = Some(upgrades_spec(&info["upgrades"]));
+        self.chain.synced = node_synced(&info);
         Ok(())
     }
 
@@ -1069,9 +1101,10 @@ impl Wallet {
     }
 
     /// A wallet restored from its recovery phrase has scanned the chain to the node's tip with
-    /// no re-pass owed: `getwalletinfo.restore_in_progress` clears.
+    /// no re-pass owed, and the node has the chain (ycash6 clears its `restorescan` marker only
+    /// out of the initial download): `getwalletinfo.restore_in_progress` clears.
     fn restore_done(&mut self) -> bool {
-        if self.st.restore_pending && self.st.scan.is_none() {
+        if self.st.restore_pending && self.st.scan.is_none() && self.chain.synced {
             self.st.restore_pending = false;
             eprintln!("yewd: the restore's scan is complete");
             return true;
@@ -1097,14 +1130,21 @@ impl Wallet {
         let count = node::block_count(node).await?;
         let mut prev = self.st.tip.clone();
         // the range a re-pass reads starts at the lowest block this scan (or the one it resumes)
-        // has read
+        // has read; while a restore is in progress, at the birthday: a node still in its initial
+        // download hands the restore its blocks over many syncs, and a key found in a later one
+        // may be paid in a block an earlier one read (review YEW-41 finding 1)
+        let range_from = if self.st.restore_pending {
+            from.min(self.st.birthday.max(1))
+        } else {
+            from
+        };
         match self.st.scan.as_mut() {
-            Some(m) => m.from = m.from.min(from),
+            Some(m) => m.from = m.from.min(range_from),
             None => {
                 self.st.scan = Some(ScanMark {
-                    from,
+                    from: range_from,
                     pass: 1,
-                    next: from,
+                    next: range_from,
                     grew: false,
                 })
             }
@@ -1210,6 +1250,24 @@ impl Wallet {
                     s.next = h + 1;
                 }
                 self.scan_checkpoint(&mut since);
+            }
+            // a reorg while the pass read: blocks it read by height may not be the wallet's. The
+            // pass is read again from its start once the main pass has followed the reorg
+            // (review YEW-41 finding 2)
+            if let Some(t) = self.st.tip.clone() {
+                let moved = match node::block_hash(node, t.height).await {
+                    Ok(h) => h != t.hash,
+                    // the height is gone: the chain is shorter now
+                    Err(NodeError::Rpc { .. }) => true,
+                    Err(e) => return Err(e.into()),
+                };
+                if moved {
+                    if let Some(s) = self.st.scan.as_mut() {
+                        s.next = s.from;
+                    }
+                    eprintln!("yewd: the chain moved during the re-check; it is read again");
+                    return Err(ScanError::Moved);
+                }
             }
             let grew = self.st.scan.as_ref().is_some_and(|s| s.grew);
             eprintln!(
@@ -1578,6 +1636,31 @@ mod tests {
         }
         assert!(check_backend_network(Network::Mainnet, &info("main", None, None)).is_ok());
         assert!(check_backend_network(Network::Regtest, &info("regtest", None, Some(5))).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod node_synced_tests {
+    use super::node_synced;
+    use serde_json::json;
+
+    /// ycashd's flag decides; koganyd (no flag) is synced at its header tip and its estimate
+    /// (or with `verificationprogress` 1, which it reports on regtest); anything missing is not.
+    #[test]
+    fn node_synced_reads_ycashd_and_koganyd() {
+        assert!(node_synced(
+            &json!({"initial_block_download_complete": true, "blocks": 5})
+        ));
+        assert!(!node_synced(
+            &json!({"initial_block_download_complete": false, "blocks": 5, "headers": 5})
+        ));
+        let k = |b: u64, h: u64, p: f64, e: u64| json!({"blocks": b, "headers": h, "verificationprogress": p, "estimatedheight": e});
+        assert!(node_synced(&k(10, 10, 1.0, 900))); // regtest: progress forced to 1
+        assert!(node_synced(&k(201, 201, 0.995, 201)));
+        assert!(!node_synced(&k(100, 200, 1.0, 100))); // headers ahead
+        assert!(!node_synced(&k(200, 200, 0.99, 202))); // behind the clock's estimate
+        assert!(!node_synced(&json!({"blocks": 10})));
+        assert!(!node_synced(&json!({})));
     }
 }
 

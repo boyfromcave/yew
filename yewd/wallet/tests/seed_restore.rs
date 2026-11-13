@@ -286,3 +286,108 @@ async fn an_interrupted_restore_resumes() {
     );
     check_out_of_order(&w, &c);
 }
+
+/// Review YEW-41 finding 1: a restore against a node still in its initial download reads the chain
+/// over many syncs. A key found in a later sync (60) may be paid in a block an earlier sync read
+/// (150): while the restore is in progress the re-pass starts at the birthday. The restore stays in
+/// progress until the node reports it has the chain, even with no new block.
+#[tokio::test]
+async fn a_restore_against_a_syncing_node_finds_keys_paid_in_earlier_syncs() {
+    let node = MockNode::default();
+    genesis(&node);
+    node.0.lock().unwrap().syncing = true;
+    let p150 = payment(foreign(0), ext(150), 15_000);
+    let p60 = payment(foreign(1), ext(60), 6_000);
+    mine(&node, vec![coinbase(1, vec![0x51], 1), p150.clone()]);
+    let d = dir("restore-ibd");
+    let mut w = Wallet::open(&d, Network::Regtest, signer(), 0).unwrap();
+    w.restore_first_sapling().unwrap();
+    w.sync(&node).await.unwrap();
+    assert_eq!(unspent(&w), vec![]);
+    let info = call_json(&mut w, &node, "getwalletinfo", &[]).await;
+    assert_eq!(info["restore_in_progress"], json!(true));
+    // the node's next block pays key 60: the window moves past 150, whose block 1 the earlier
+    // sync read
+    mine(&node, vec![coinbase(2, vec![0x51], 1), p60.clone()]);
+    w.sync(&node).await.unwrap();
+    let mut want = vec![(txid_of(&p150), 0, 15_000), (txid_of(&p60), 0, 6_000)];
+    want.sort();
+    assert_eq!(unspent(&w), want);
+    assert_eq!(w.st.issued.external, 151);
+    assert!(w.st.restore_pending);
+    // synced, no new block: the restore completes
+    node.0.lock().unwrap().syncing = false;
+    w.sync(&node).await.unwrap();
+    assert!(!w.st.restore_pending);
+    let info = call_json(&mut w, &node, "getwalletinfo", &[]).await;
+    assert_eq!(info["restore_in_progress"], json!(false));
+}
+
+/// Review YEW-41 finding 2: a reorg while a re-pass reads (blocks 5 and 6 of another chain replace
+/// block 5 in the middle of pass 2). The pass sees the tip it recorded is gone, the main pass
+/// follows the reorg, and the pass is read again from its start: the same coins, on the new chain.
+#[tokio::test]
+async fn a_reorg_during_a_re_pass_redoes_the_pass() {
+    let node = MockNode::default();
+    let c = out_of_order_chain(&node);
+    let alt = MockNode::default();
+    out_of_order_chain(&alt);
+    alt.disconnect_to(4);
+    alt.mine(vec![coinbase(5, vec![0x52], 1)], 0xa5);
+    alt.mine(vec![coinbase(6, vec![0x52], 1)], 0xa6);
+    let alt_tip = alt.0.lock().unwrap().blocks[6].0.clone();
+    let alt_chain = std::mem::take(&mut *alt.0.lock().unwrap());
+    assert_eq!(
+        alt_chain.blocks[4].0,
+        node.0.lock().unwrap().blocks[4].0,
+        "the chains share blocks 0-4"
+    );
+    // the 7th read is block 2 of pass 2
+    node.0.lock().unwrap().reorg_after_read = Some((7, Box::new(alt_chain)));
+    let d = dir("restore-reorg");
+    let mut w = Wallet::open(&d, Network::Regtest, signer(), 0).unwrap();
+    w.restore_first_sapling().unwrap();
+    w.sync(&node).await.unwrap();
+    assert_eq!(w.st.tip.as_ref().unwrap().hash, alt_tip);
+    assert_eq!(w.tip_height(), 6);
+    check_out_of_order(&w, &c);
+    let r = reads(&node);
+    // pass 2 read 1, 2, then 3, 4 and the new 5; the main pass read 5' and 6'; pass 2 again from
+    // block 1, then pass 3
+    assert_eq!(
+        r,
+        vec![1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 5, 6, 1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6]
+    );
+}
+
+/// A `wallet.json` written before the restore fields (no `scan`, no `restore_pending`) opens as a
+/// wallet with no scan owed and no restore in progress; a wallet with neither writes neither.
+#[tokio::test]
+async fn an_older_wallet_file_without_the_scan_fields_opens() {
+    let node = MockNode::default();
+    let c = out_of_order_chain(&node);
+    let d = dir("restore-old-file");
+    let mut w = Wallet::open(&d, Network::Regtest, signer(), 0).unwrap();
+    w.restore_first_sapling().unwrap();
+    // an interrupted restore: both fields written
+    node.0.lock().unwrap().fail_read_at = Some(7);
+    assert!(w.sync(&node).await.is_err());
+    drop(w);
+    let path = d.join("wallet.json");
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(v.get("scan").is_some() && v.get("restore_pending").is_some());
+    // as an older yewd wrote it
+    v.as_object_mut().unwrap().remove("scan");
+    v.as_object_mut().unwrap().remove("restore_pending");
+    std::fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
+    let mut w = Wallet::open(&d, Network::Regtest, signer(), 0).unwrap();
+    assert!(w.st.scan.is_none());
+    assert!(!w.st.restore_pending);
+    // an older wallet's barrier syncs as before; a -rescan finds every coin
+    w.rescan_all();
+    w.sync(&node).await.unwrap();
+    check_out_of_order(&w, &c);
+    let text = std::fs::read_to_string(&path).unwrap();
+    let v: Value = serde_json::from_str(&text).unwrap();
+    assert!(v.get("scan").is_none() && v.get("restore_pending").is_none());
+}
