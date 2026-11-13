@@ -65,6 +65,12 @@ fn mine(node: &MockNode, txs: Vec<Vec<u8>>) {
     node.mine(txs, height);
 }
 
+/// Append a block that differs from the one [`mine`] would make at that height (another branch).
+fn mine_sibling(node: &MockNode, txs: Vec<Vec<u8>>) {
+    let height = node.0.lock().unwrap().blocks.len() as u8;
+    node.mine(txs, !height);
+}
+
 fn reads(node: &MockNode) -> Vec<usize> {
     std::mem::take(&mut node.0.lock().unwrap().block_reads)
 }
@@ -333,8 +339,8 @@ async fn a_reorg_during_a_re_pass_redoes_the_pass() {
     let alt = MockNode::default();
     out_of_order_chain(&alt);
     alt.disconnect_to(4);
-    alt.mine(vec![coinbase(5, vec![0x52], 1)], 0xa5);
-    alt.mine(vec![coinbase(6, vec![0x52], 1)], 0xa6);
+    mine_sibling(&alt, vec![coinbase(5, vec![0x52], 1)]);
+    mine_sibling(&alt, vec![coinbase(6, vec![0x52], 1)]);
     let alt_tip = alt.0.lock().unwrap().blocks[6].0.clone();
     let alt_chain = std::mem::take(&mut *alt.0.lock().unwrap());
     assert_eq!(
