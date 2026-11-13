@@ -1538,13 +1538,42 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     // H-9.3: bounds tighter than the server's numbers are refused before the carrier is funded
     // (no row, nothing signed); the bounds the screen showed pass.
     let rows_before = a.mints().unwrap().len();
+    // The claim follows the price drop that put the vault under θ: the server now reports a YEC
+    // price below half this wallet's reference, so the fee guard (YEW-REVIEW-4 M2) flags the CLAIM
+    // fee and the start asks for its own acknowledgement before anything else.
+    let unusual = a
+        .claim(
+            &mut c,
+            &mut v,
+            &target_id,
+            Some(&yew_core::build::terms::ClaimBounds {
+                max_burn_cents: entry.minted_cents,
+                min_out_zat: entry.claimant_zat,
+                accept_unusual_fee: None,
+            }),
+            r.tip,
+            r.branch_id,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(unusual.starts_with("unusual-fee:"), "{unusual}");
+    assert_eq!(a.mints().unwrap().len(), rows_before);
+    // The acknowledgement the confirmation screen shows (the guard the start ran).
+    let accept = yew_core::build::mint::main_fee_guard(&a, "claim")
+        .unwrap()
+        .ack;
+    assert!(
+        accept.is_some(),
+        "the CLAIM fee is flagged after the price drop"
+    );
     for (what, bounds) in [
         (
             "claim-burn-above-max",
             yew_core::build::terms::ClaimBounds {
                 max_burn_cents: entry.minted_cents - 1,
                 min_out_zat: entry.claimant_zat,
-                accept_unusual_fee: None,
+                accept_unusual_fee: accept.clone(),
             },
         ),
         (
@@ -1552,7 +1581,7 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
             yew_core::build::terms::ClaimBounds {
                 max_burn_cents: entry.minted_cents,
                 min_out_zat: entry.claimant_zat + 1,
-                accept_unusual_fee: None,
+                accept_unusual_fee: accept.clone(),
             },
         ),
     ] {
@@ -1573,7 +1602,7 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     let bounds = yew_core::build::terms::ClaimBounds {
         max_burn_cents: entry.minted_cents,
         min_out_zat: entry.claimant_zat,
-        accept_unusual_fee: None,
+        accept_unusual_fee: accept,
     };
     let idc = a
         .claim(
@@ -1924,10 +1953,15 @@ async fn w4_claim_cancelled_by_the_attestor_set() {
         "{entry:?}"
     );
     let target_id = txid_from_hex(&target).unwrap();
+    // After the price shock the server reports a YEC price below half this wallet's reference: the
+    // fee guard flags the CLAIM fee; pass the acknowledgement the confirmation screen shows.
+    let accept = yew_core::build::mint::main_fee_guard(&b, "claim")
+        .unwrap()
+        .ack;
     let bounds = yew_core::build::terms::ClaimBounds {
         max_burn_cents: entry.minted_cents,
         min_out_zat: entry.claimant_zat,
-        accept_unusual_fee: None,
+        accept_unusual_fee: accept,
     };
     let id = b
         .claim(
