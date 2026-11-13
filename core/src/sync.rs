@@ -759,6 +759,8 @@ async fn hold_unproven(
     let now = crate::wallet::unix_secs();
     let mut backoff = wallet.provenance_backoff();
     let mut verdicts: HashMap<OutPoint, bool> = HashMap::new();
+    // a coin held because its creating transaction assigns it YED (yew#38 review)
+    let mut carries_yed = false;
     // the creating transactions to ask for (distinct, in row order), the rest decided already
     let mut want: Vec<[u8; 32]> = Vec::new();
     for u in rows.iter() {
@@ -769,6 +771,7 @@ async fn hold_unproven(
             .store
             .provenance(&u.outpoint, gate::PROVENANCE_CLASSIFIER)?
         {
+            carries_yed |= stored_verdict_carries_yed(&v);
             verdicts.insert(u.outpoint, v.is_empty());
             continue;
         }
@@ -810,6 +813,7 @@ async fn hold_unproven(
         // not due (backing off): held for this sync, not fetched
         let raw = fetched.get(&id).and_then(|r| r.as_deref());
         let verdict = gate::output_provenance(&u.outpoint, raw, None);
+        carries_yed |= matches!(verdict, Err(gate::GateError::InputCarriesYed { .. }));
         let is_final = raw
             .and_then(|r| Transaction::parse(r).ok())
             .is_some_and(|(_, txid)| txid == id);
@@ -834,9 +838,21 @@ async fn hold_unproven(
             verdict.and_then(|()| gate::output_provenance(&u.outpoint, raw, Some(&listed)));
         verdicts.insert(u.outpoint, verdict.is_ok());
     }
+    // yew#38 review: a coin that layer 3 holds because it carries YED is YED this wallet holds,
+    // so it sets the has-held-YED marker as a listed token does (beta2 item 32)
+    if carries_yed {
+        wallet.mark_held_yed()?;
+    }
     Ok(hold_by_provenance(rows, |op| {
         verdicts.get(op).copied().unwrap_or(false)
     }))
+}
+
+/// A verdict [`hold_unproven`] stored (`gate::GateError` text, empty for plain YEC) is
+/// `InputCarriesYed`: the coin's creating transaction assigns it YED. The stored text is the
+/// error's display, so a verdict from an earlier build marks the wallet too.
+pub(crate) fn stored_verdict_carries_yed(why: &str) -> bool {
+    why.starts_with("gate: input ") && why.contains(" carries YED (the ")
 }
 
 /// The pure half of step 2c: every `YEC` / `PQ_OWNED` row that `proven` does not prove plain YEC
@@ -1918,6 +1934,106 @@ mod tests {
                 .filter(|u| u.class == UtxoClass::PqOwned)
                 .all(|u| !poisoned.contains(&u.outpoint)));
         }
+    }
+
+    /// yew#38 review: the stored layer-3 verdict that sets the has-held-YED marker is exactly
+    /// `InputCarriesYed` (the text the sync stores), never another provenance refusal, nor the
+    /// plain-YEC verdict (empty).
+    #[test]
+    fn stored_carries_yed_verdict_marks_the_wallet() {
+        let carries = gate::GateError::InputCarriesYed {
+            outpoint: format!("{}:0", crate::tx::txid_hex(&[7; 32])),
+            payload: "transfer",
+        };
+        assert!(stored_verdict_carries_yed(&carries.to_string()));
+        for why in [
+            "the server did not return the transaction that created it",
+            "its creating transaction carries a Yellowback payload of a type or version this app does not know",
+        ] {
+            let e = gate::GateError::InputProvenance {
+                outpoint: "ab:0".into(),
+                why: why.into(),
+            };
+            assert!(!stored_verdict_carries_yed(&e.to_string()), "{why}");
+        }
+        assert!(!stored_verdict_carries_yed(""));
+    }
+
+    /// yew#38 review: step 2c over a coin whose stored verdict is `InputCarriesYed` (a
+    /// post-quantum coin a TRANSFER assigns YED, found on a server without the service) holds
+    /// it and sets the has-held-YED marker; a held coin of another cause does not.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn layer3_yed_coin_sets_the_held_yed_marker() {
+        let dir = std::env::temp_dir().join(format!("yew-sync-heldyed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.sqlite");
+        let w = Wallet::open(
+            path.to_str().unwrap(),
+            crate::params::Network::Regtest,
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "",
+            Some(5),
+        )
+        .unwrap();
+        let mut client = CompactClient::from_channel(
+            tonic::transport::Endpoint::from_static("http://127.0.0.1:9").connect_lazy(),
+        );
+        let row = |b: u8| Utxo {
+            outpoint: OutPoint {
+                txid: [b; 32],
+                n: 0,
+            },
+            address: String::new(),
+            script: Vec::new(),
+            value: 2_000_000,
+            height: 5,
+            class: UtxoClass::PqOwned,
+            cents: 0,
+        };
+        // another cause first: held, no marker
+        let lost = gate::GateError::InputProvenance {
+            outpoint: "x".into(),
+            why: "its creating transaction has no such output".into(),
+        };
+        w.store
+            .set_provenance(
+                &row(1).outpoint,
+                &lost.to_string(),
+                gate::PROVENANCE_CLASSIFIER,
+            )
+            .unwrap();
+        let mut rows = vec![row(1)];
+        assert_eq!(
+            hold_unproven(&w, &mut client, &mut rows, None)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(!w.has_held_yed().unwrap());
+        // a coin its creating TRANSFER assigns YED: held, and the wallet is marked
+        let carries = gate::GateError::InputCarriesYed {
+            outpoint: format!("{}:0", crate::tx::txid_hex(&[2; 32])),
+            payload: "transfer",
+        };
+        w.store
+            .set_provenance(
+                &row(2).outpoint,
+                &carries.to_string(),
+                gate::PROVENANCE_CLASSIFIER,
+            )
+            .unwrap();
+        let mut rows = vec![row(1), row(2)];
+        assert_eq!(
+            hold_unproven(&w, &mut client, &mut rows, None)
+                .await
+                .unwrap(),
+            2
+        );
+        assert!(rows.iter().all(|u| u.class == UtxoClass::Held));
+        assert!(w.has_held_yed().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Step 2c touches no class but YEC and PQ_OWNED (tokens, vaults, carriers, held, the fee

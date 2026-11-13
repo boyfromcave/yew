@@ -1827,9 +1827,10 @@ mod tests {
 
     /// beta2 D-8: the post-quantum send path. Every class but `PQ_OWNED` is refused as an input
     /// (Token, PendingToken, Vault, Carrier, Held, FeeReserve, Yec, UnknownP2sh, Foreign), as are
-    /// an unknown input, a payload, a shielded part and an output of exactly `TOKEN_VALUE`; a
-    /// server without Yellowback refuses the path outright, and the held-YED guard refuses the
-    /// transparent YEC paths there for a wallet that has held YED.
+    /// an unknown input, a payload, a shielded part and an output of exactly `TOKEN_VALUE`. The
+    /// path needs no Yellowback service (W-P1: plain YEC; layer 3 checks its inputs at sync and
+    /// at broadcast, with or without the service), and without the service the held-YED guard
+    /// refuses the transparent YEC paths for a wallet that has held YED.
     #[test]
     fn pq_spend_path_and_held_yed_guard() {
         let pq = OutPoint {
@@ -2847,6 +2848,80 @@ mod tests {
             Path::PqSweep(pq),
         ] {
             assert!(p.needs_yellowback(), "{p:?}");
+        }
+    }
+
+    /// yew#38 review: on a server without the Yellowback service (`Validator::Absent`), a
+    /// post-quantum coin at a Falcon key that its creating TRANSFER assigns YED (2,000,000 zat, so
+    /// not TOKEN_VALUE: the local layer sees PQ_OWNED) passes the local layer on PqSpend and
+    /// PqToSapling, and layer 3 at broadcast refuses it with `InputCarriesYed`, as
+    /// `confirm_provenance` runs it (`spent_as_yec`, then `check_provenance` over the served parent
+    /// and the stored coin).
+    #[tokio::test]
+    async fn pq_coin_a_transfer_assigns_is_refused_without_the_service() {
+        let id = pq_id(7);
+        let pq_script = crate::pq::pqpkh_script(&id).unwrap();
+        let mut t = Transaction::new_v4();
+        t.vin.push(TxIn::new(OutPoint {
+            txid: [0xee; 32],
+            n: 0,
+        }));
+        t.vout.push(TxOut {
+            value: 2_000_000,
+            script_pubkey: pq_script.clone(),
+        });
+        t.vout.push(TxOut {
+            value: 0,
+            script_pubkey: payload::payload_script(
+                &encode(&Payload::Transfer {
+                    assignments: vec![Assignment {
+                        vout: 0,
+                        cents: 500,
+                    }],
+                })
+                .unwrap(),
+            ),
+        });
+        let parent_raw = t.serialize().unwrap();
+        let (_, parent_id) = Transaction::parse(&parent_raw).unwrap();
+        let coin = OutPoint {
+            txid: parent_id,
+            n: 0,
+        };
+        let srv = served(&[&(parent_raw, parent_id)]);
+        let class = |_: &OutPoint| Some(UtxoClass::PqOwned);
+        let scripts = |_: &OutPoint| Some(pq_script.clone());
+        let want = Err(GateError::InputCarriesYed {
+            outpoint: format!("{}:0", crate::tx::txid_hex(&parent_id)),
+            payload: "transfer",
+        });
+        let pq_spend = raw_spending(&[coin], false);
+        let pq_to_sapling = raw_sapling(&[coin], &[(50_000, pq_script.clone())], 0, 1);
+        for (path, raw) in [
+            (Path::PqSpend, pq_spend),
+            (Path::PqToSapling(id), pq_to_sapling),
+        ] {
+            let mut v = Validator::Absent;
+            assert!(
+                matches!(
+                    confirm_with_scripts(&mut v, path, &raw, class, scripts).await,
+                    Ok((_, None))
+                ),
+                "{path:?}: the local layer alone passes it"
+            );
+            let (tx, _) = Transaction::parse(&raw).unwrap();
+            let yec_inputs = spent_as_yec(path, &tx, class);
+            assert!(yec_inputs.contains(&coin), "{path:?}");
+            assert_eq!(
+                check_provenance(
+                    &tx,
+                    &srv,
+                    |op| yec_inputs.contains(op),
+                    |op| honest(&srv, op)
+                ),
+                want,
+                "{path:?}"
+            );
         }
     }
 
