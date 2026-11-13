@@ -98,6 +98,11 @@ pub struct Chain {
     pub fail_syncs_after_send: u32,
     /// Fixed answers for methods the mock does not model (an `Err` is the node's `(code, message)`).
     pub answers: std::collections::HashMap<String, Result<Value, (i64, String)>>,
+    /// Every raw block read (`getblock <hash> 0`), by height, in order.
+    pub block_reads: Vec<usize>,
+    /// When set, the raw block read that would be the `n`-th (counting from 0 in `block_reads`)
+    /// fails once (the node unreachable: a scan stopped part-way).
+    pub fail_read_at: Option<usize>,
 }
 
 #[derive(Clone, Default)]
@@ -214,6 +219,13 @@ impl Node for MockNode {
                                 message: "Block not found".into(),
                             })?;
                     if p[1].as_u64() == Some(0) {
+                        let raw = raw.clone();
+                        let at = c.blocks.iter().position(|(h, _)| h == want).unwrap();
+                        if c.fail_read_at == Some(c.block_reads.len()) {
+                            c.fail_read_at = None;
+                            return Err(NodeError::Unreachable("mock: connection refused".into()));
+                        }
+                        c.block_reads.push(at);
                         json!(hex::encode(raw))
                     } else {
                         // the Sapling tree's size after this block: every Sapling output so far
