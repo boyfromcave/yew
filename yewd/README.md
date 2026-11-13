@@ -185,8 +185,11 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
   scan's progress (`scan` in `wallet.json`: the first block, the pass, the next block of a re-pass)
   is written every 2,000 blocks or 30 s and when the backend is lost, so a restore stopped part-way
   resumes there. `getwalletinfo.restore_in_progress` is true until the restore's scan reached the
-  node's tip with no re-pass owed (wallet calls wait for the scan: the barrier); progress is logged
-  every 60 s. `lookahead_incomplete` is always false: the transparent window is derived from the
+  node's tip with no re-pass owed **and** the node reports it has the chain (ycashd's
+  `initial_block_download_complete`; on koganyd, its tip at its header chain's and at its estimated
+  height); until then every re-pass starts at the birthday, so a restore against a node still
+  syncing finds keys whose payments an earlier sync read. Wallet calls wait for the scan (the
+  barrier); progress is logged every 60 s. A reorg during a re-pass makes it read again. `lookahead_incomplete` is always false: the transparent window is derived from the
   account's public key, so even an encrypted, locked wallet holds it. Past the gap: issue addresses
   with `getnewaddress` (`getnewaddress pq` / `pqslh` for post-quantum keys) beyond it, then restart
   with `-rescan`.
