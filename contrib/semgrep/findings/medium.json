@@ -1,0 +1,390 @@
+{
+ "bucket": "medium",
+ "sla_days": 90,
+ "findings": [
+  {
+   "fingerprint": "7dd119f0fc74909c",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/facade/src/wallet.rs",
+   "line": 599,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "7dd119f0fc74909c-1",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/facade/src/wallet.rs",
+   "line": 678,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "7dd119f0fc74909c-2",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/facade/src/wallet.rs",
+   "line": 687,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "7dd119f0fc74909c-3",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/facade/src/wallet.rs",
+   "line": 719,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "9648f45b98256b19",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/proto/src/act.rs",
+   "line": 469,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "49bb4a4241d20941",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/proto/src/client.rs",
+   "line": 77,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "a96a01bb30cff4dd",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/signer/src/lib.rs",
+   "line": 210,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "aba793adef169c68",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/signer/src/lib.rs",
+   "line": 448,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "5119b355b1a56dec",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/signer/src/sign.rs",
+   "line": 407,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "5fc0a8d341ccbe81",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/signer/src/sign.rs",
+   "line": 475,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "6ceee7347ae778e7",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/signer/src/walletio.rs",
+   "line": 84,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "aaead3fe043b68f3",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/attest.rs",
+   "line": 678,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "e78a2e7c5677b126",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/attest.rs",
+   "line": 1417,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "e7161bdf18dabc44",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/build.rs",
+   "line": 329,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "7b00aae1ad81334e",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/build.rs",
+   "line": 343,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "22cc83fe40b355e2",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/keys.rs",
+   "line": 60,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "5442a654f796900d",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/keys.rs",
+   "line": 64,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "c41bb7b0d82ca700",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/lib.rs",
+   "line": 380,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "1f9809817d79d0ba",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/lib.rs",
+   "line": 421,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "5acc73f997f37779",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/lib.rs",
+   "line": 430,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "40dcef753cd441d2",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/lib.rs",
+   "line": 439,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "6d826bc943a4d305",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/rpc.rs",
+   "line": 1023,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "b5d09888da778c72",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/rpc.rs",
+   "line": 1072,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "0f41ed94c3c81987",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/rpc.rs",
+   "line": 1386,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "c0471a8df3bf090d",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/rpc.rs",
+   "line": 1401,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "bfafa9de15e961cb",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/rpc.rs",
+   "line": 1600,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "8ffcbaf216400a9b",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/rpc.rs",
+   "line": 1772,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "f22134bf3d6378f6",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/rpc.rs",
+   "line": 2205,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "d182e8a040aa2a26",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/vaultrpc.rs",
+   "line": 133,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "e01bba085d28c511",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/vaultrpc.rs",
+   "line": 695,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "34beb926cf75b9af",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/vaultrpc.rs",
+   "line": 1395,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "34beb926cf75b9af-1",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/vaultrpc.rs",
+   "line": 1395,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "6839c0b3b5f5982c",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/vaultrpc.rs",
+   "line": 1851,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "7276201a52e84d4f",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/vaultrpc.rs",
+   "line": 1865,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "d1f13774e7c33183",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "yewd/wallet/src/vaultrpc.rs",
+   "line": 2391,
+   "first_seen": "2026-11-03",
+   "due": "2027-02-01"
+  },
+  {
+   "fingerprint": "7e320c7ad845ba19-13",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "core/src/api.rs",
+   "line": 3895,
+   "first_seen": "2026-11-12",
+   "due": "2027-02-10"
+  },
+  {
+   "fingerprint": "7e320c7ad845ba19-14",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "core/src/api.rs",
+   "line": 3919,
+   "first_seen": "2026-11-12",
+   "due": "2027-02-10"
+  },
+  {
+   "fingerprint": "7e320c7ad845ba19-15",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "core/src/api.rs",
+   "line": 3979,
+   "first_seen": "2026-11-12",
+   "due": "2027-02-10"
+  },
+  {
+   "fingerprint": "ff32dfbad7d7a495",
+   "rule": "yew.net.unwrap-on-server-response",
+   "path": "core/src/shielded.rs",
+   "line": 1956,
+   "first_seen": "2026-11-12",
+   "due": "2027-02-10"
+  },
+  {
+   "fingerprint": "03be9cb271130124-1",
+   "rule": "yew.net.unwrap-on-server-response",
+   "path": "core/src/shielded.rs",
+   "line": 1958,
+   "first_seen": "2026-11-12",
+   "due": "2027-02-10"
+  },
+  {
+   "fingerprint": "8991b82248c75668",
+   "rule": "yew.net.unwrap-on-server-response",
+   "path": "core/src/shielded.rs",
+   "line": 1981,
+   "first_seen": "2026-11-12",
+   "due": "2027-02-10"
+  },
+  {
+   "fingerprint": "544e9512fae7ca36-1",
+   "rule": "yew.net.unwrap-on-server-response",
+   "path": "core/src/shielded.rs",
+   "line": 2049,
+   "first_seen": "2026-11-12",
+   "due": "2027-02-10"
+  },
+  {
+   "fingerprint": "b207364b8202e57f-1",
+   "rule": "yew.net.unwrap-on-server-response",
+   "path": "core/src/shielded.rs",
+   "line": 2050,
+   "first_seen": "2026-11-12",
+   "due": "2027-02-10"
+  },
+  {
+   "fingerprint": "bf594906f9138c60",
+   "rule": "yew.net.unwrap-on-server-response",
+   "path": "core/src/shielded.rs",
+   "line": 2052,
+   "first_seen": "2026-11-12",
+   "due": "2027-02-10"
+  },
+  {
+   "fingerprint": "4d20631aeaf65ac7",
+   "rule": "python.lang.security.audit.dangerous-subprocess-use-tainted-env-args",
+   "path": "scripts/real-run/web/web_real_stack.py",
+   "line": 84,
+   "first_seen": "2026-11-12",
+   "due": "2027-02-10"
+  },
+  {
+   "fingerprint": "17dbac08a3723a1f",
+   "rule": "python.lang.security.audit.dangerous-subprocess-use-tainted-env-args",
+   "path": "scripts/real-run/yew_real_light.py",
+   "line": 75,
+   "first_seen": "2026-11-12",
+   "due": "2027-02-10"
+  },
+  {
+   "fingerprint": "04dce1e4f909013a",
+   "rule": "python.lang.security.audit.dangerous-subprocess-use-tainted-env-args",
+   "path": "scripts/real-run/yew_real_precanopy.py",
+   "line": 177,
+   "first_seen": "2026-11-12",
+   "due": "2027-02-10"
+  },
+  {
+   "fingerprint": "eb383301ca6697e5-13",
+   "rule": "trailofbits.rs.panic-in-function-returning-result",
+   "path": "web/core-wasm/src/lib.rs",
+   "line": 1956,
+   "first_seen": "2026-11-12",
+   "due": "2027-02-10"
+  }
+ ]
+}
