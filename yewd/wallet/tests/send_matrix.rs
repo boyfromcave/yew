@@ -832,6 +832,40 @@ async fn vault_lock_default_funding_leaves_no_coin_lock() {
     assert_eq!(locked(&mut f).await, before);
 }
 
+/// The funding change of a default-funded vault_lock (ycash6 vault.cpp `Fund`: a fresh external
+/// key, `NewWalletKey`) is not change by `IsChange` (wallet.cpp:5808, the external key path), so
+/// gettransaction lists it sent and received, and it stays out of the address book (ycash6 qa
+/// vault_pq_wallet.py, "the funding change"). Before: an internal change key, left out of details.
+#[tokio::test]
+async fn vault_funding_change_is_listed_sent_and_received() {
+    let mut f = fixture("lockchange").await;
+    let r = f.lock(None).await.unwrap();
+    f.mine_sync().await;
+    let txid = r["txid"].as_str().unwrap().to_string();
+    let gt = call_json(&mut f.w, &f.node, "gettransaction", &[json!(txid)]).await;
+    let (tx, _) = f.last_sent();
+    assert_eq!(tx.vout.len(), 2, "the V and the funding change");
+    let change = yew_core::keys::encode_p2pkh(
+        Network::Regtest,
+        &yew_core::script::p2pkh_hash(&tx.vout[1].script_pubkey).unwrap(),
+    );
+    let mut cats: Vec<String> = gt["details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["address"].as_str() == Some(change.as_str()))
+        .map(|d| d["category"].as_str().unwrap().to_string())
+        .collect();
+    cats.sort();
+    assert_eq!(cats, ["receive", "send"], "{gt}");
+    let listed = call_json(&mut f.w, &f.node, "getaddressesbyaccount", &[json!("")]).await;
+    assert!(!listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a.as_str() == Some(change.as_str())));
+}
+
 /// vault_lock "from" refusals (ycash-dd 97338f107 / ycash6 554f07fc1 strings), and a PQ from
 /// never spends an output YED holds.
 #[tokio::test]

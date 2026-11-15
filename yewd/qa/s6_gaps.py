@@ -20,6 +20,9 @@ Checks (--checks, default all), in the order of the gaps' user impact:
   lock_lifetime   a vault_lock funded by default, from a transparent or a post-quantum address
                   holds no coin lock once accepted (ycash6 src/rpc/vault.cpp FundScope, Broadcast;
                   audit L-1); a coin locked with lockunspent stays locked.
+  funding_change  the funding change of a default-funded vault_lock is a fresh external key
+                  (vault.cpp NewWalletKey), listed sent and received by gettransaction
+                  (wallet.cpp IsChange) and kept out of the address book.
 """
 
 import os
@@ -49,7 +52,7 @@ UNDER_TEST = 0
 ACTIVATION = 210
 FALCON = 215
 DELAY = 5
-CHECKS = ('lock_lifetime',)
+CHECKS = ('lock_lifetime', 'funding_change')
 YEWD = bool(os.environ.get('YEWD_BIN'))
 
 _start_node = util.start_node
@@ -178,6 +181,24 @@ class GapParity(BitcoinTestFramework):
         assert_equal(outpoints(n0.listlockunspent()), locked_before)
         n0.lockunspent(True, [{'txid': kept_op[0][0], 'vout': kept_op[0][1]}])
         assert_equal(n0.listlockunspent(), [])
+
+    def funding_change(self):
+        """ycash6 vault.cpp Fund (NewWalletKey change), wallet.cpp IsChange; qa vault_pq_wallet.py."""
+        print('funding_change: the default funding change is listed sent and received')
+        n0 = self.nodes[0]
+        lk = n0.vault_lock(self.params(Decimal('2')))
+        self.mine(1)
+        listed = set(n0.getaddressesbyaccount(''))
+        book = {a for e in n0.listaddresses() for a in e.get('transparent', {}).get('addresses', [])}
+        gt = n0.gettransaction(lk['txid'])
+        changes = 0
+        for out in n0.decoderawtransaction(gt['hex'])['vout']:
+            for a in out['scriptPubKey'].get('addresses', []):
+                changes += 1
+                assert a not in listed and a not in book, a
+                assert_equal(sorted(d['category'] for d in gt['details'] if d.get('address') == a),
+                             ['receive', 'send'])
+        assert_equal(changes, 1)
 
 
 if __name__ == '__main__':

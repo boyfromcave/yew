@@ -595,7 +595,10 @@ impl Wallet {
         }
         let change = got - needed;
         if change >= VAULT_RPC_MIN_CHANGE {
-            let script = self.new_change()?;
+            // a fresh external key, as ycashd's Fund (vault.cpp `NewWalletKey`): not change by
+            // `IsChange`, so the funding change is listed sent and received
+            let k = self.new_wallet_key()?;
+            let script = yew_core::script::p2pkh_script(&yew_core::keys::hash160(&k));
             tx.vout.push(TxOut {
                 value: change,
                 script_pubkey: script,

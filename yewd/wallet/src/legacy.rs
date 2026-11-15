@@ -230,9 +230,8 @@ impl Wallet {
         let mut rows = Vec::new();
         if debit > 0 {
             for (n, out) in px.tx.vout.iter().enumerate() {
-                let mine = self.book.owns_script(&out.script_pubkey).is_some();
-                if mine && !self.in_book(&out.script_pubkey) {
-                    continue; // change
+                if self.is_change(&out.script_pubkey) {
+                    continue;
                 }
                 let mut e = J::obj();
                 if let Some(a) = script_address(self.network, &out.script_pubkey) {

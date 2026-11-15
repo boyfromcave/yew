@@ -391,10 +391,24 @@ impl Wallet {
             .collect()
     }
 
-    /// Whether `addr` (an `s…`/`t…`/`sq…` address) is in the address book: ycashd's `IsChange`
-    /// is "mine and not in the book".
+    /// Whether `addr` (an `s…`/`t…`/`sq…` address) is in the address book (the first test of
+    /// ycashd's `IsChange`, [`Wallet::is_change`]).
     pub(crate) fn in_book(&self, script: &[u8]) -> bool {
         script_address(self.network, script).is_some_and(|a| self.st.book.contains_key(&a))
+    }
+
+    /// `CWallet::IsChange` (ycash6 src/wallet/wallet.cpp:5808): an own output that is not in the
+    /// address book and whose key is not on the seed's external chain. An external key outside
+    /// the book (the vault RPCs' `NewWalletKey`: a funding change, a split) is a payment to the
+    /// wallet, listed sent and received, as ycashd lists it; an internal (change-chain) key, an
+    /// imported key outside the book and a post-quantum key outside the book are change.
+    pub(crate) fn is_change(&self, script: &[u8]) -> bool {
+        match self.book.owns_script(script) {
+            None => false,
+            Some(_) if self.in_book(script) => false,
+            Some(crate::keys::Owner::T(chain, _)) => chain != crate::keys::EXTERNAL,
+            Some(_) => true,
+        }
     }
 
     fn address_book_label(&self, script: &[u8]) -> Option<String> {
@@ -626,8 +640,8 @@ impl Wallet {
             let mine = self.book.owns_script(&out.script_pubkey).is_some();
             let address = script_address(self.network, &out.script_pubkey);
             if debit > 0 {
-                if mine && !self.in_book(&out.script_pubkey) {
-                    continue; // change
+                if self.is_change(&out.script_pubkey) {
+                    continue;
                 }
                 let mut d = J::obj();
                 if let Some(a) = &address {
