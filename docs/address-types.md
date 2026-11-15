@@ -172,7 +172,9 @@ that server and a burn. They are listed in the order a coin meets them.
      fee above 0.1 YEC is flagged.
    - **The absolute floor (beta3).** A fee of 0.01 YEC or less is never flagged, whatever the
      prices: a claim after a price drop pays a few cents more YEC, and a question about every such
-     fee teaches people to ignore it.
+     fee teaches people to ignore it. The floor applies per guarded transaction: a mint guards its
+     carrier funding and its main transaction separately, so up to 0.02 YEC per mint can pass
+     without the question.
    - **The second confirmation.** A flagged fee needs the user's separate confirmation, and the
      core refuses it without that confirmation. A mint's finish whose fee rose above what the start
      accepted is refused, with a new acknowledgement in the message.

@@ -668,7 +668,8 @@ pub fn staged_value(wallet: &Wallet, collateral: i64, protocol_fee: i64, attest_
 ///
 /// Not [`super::any_to_any::node_fee`] (beta3 item 10): this is a Yellowback transaction, and
 /// ycashd's own Yellowback builder prices the same funding with `NetworkFee` =
-/// `max(g_yellowbackFee, ZIP-317 conventional fee at 500 zat)` (ycash6 `upgrade/vault`
+/// `max(g_yellowbackFee, ZIP-317 conventional fee at 500 zat)`, applied here to yew's two-output
+/// shape (ycash6 `upgrade/vault`
 /// `src/yellowback/txbuilder.cpp:369-375`; its Sapling-funded `BuildCarrier` reprices to it,
 /// lines 1583-1595), not with `z_sendmany`'s per-output rule. The relay would accept 1,000 zat
 /// (no fee rule of its own for the shape), so this is the node wallet's figure, not a relay limit.
@@ -2619,15 +2620,17 @@ pub async fn sweep(
 mod tests {
     use super::*;
 
-    /// Beta3 item 10: the carrier funding from Sapling notes keeps ycashd's Yellowback fee, not
-    /// `z_sendmany`'s: ycash6 `upgrade/vault` `src/yellowback/txbuilder.cpp:369-375` `NetworkFee`
-    /// = max(g_yellowbackFee 1,000, 500 × max(2, ⌈vout bytes / 34⌉ + max(spends, 2))). Two
-    /// standard transparent outputs (carrier, staged funding) are two actions, the Sapling part
-    /// two at least, so one or two notes cost 2,000 zat, each note above two 500 more.
+    /// Beta3 item 10: the carrier funding from Sapling notes keeps the node's Yellowback fee rule,
+    /// not `z_sendmany`'s: ycash6 `upgrade/vault` `src/yellowback/txbuilder.cpp:369-375`
+    /// `NetworkFee` = max(g_yellowbackFee 1,000, 500 × max(2, ⌈vout bytes / 34⌉ + max(spends, 2))),
+    /// applied to yew's shape. yew's funding has two standard transparent outputs (carrier, staged
+    /// funding: two actions) where ycashd's own carrier has one (1,500 zat for one note by the same
+    /// rule); with the Sapling part's two at least, one or two notes cost 2,000 zat, each note
+    /// above two 500 more.
     #[test]
     fn sapling_carrier_fee_is_the_yellowback_builders() {
-        for (notes, ycashd) in [(1, 2_000), (2, 2_000), (3, 2_500), (20, 11_000)] {
-            assert_eq!(sapling_carrier_fee(1_000, notes), ycashd, "{notes} notes");
+        for (notes, rule) in [(1, 2_000), (2, 2_000), (3, 2_500), (20, 11_000)] {
+            assert_eq!(sapling_carrier_fee(1_000, notes), rule, "{notes} notes");
         }
         // the server's flat fee is the floor (g_yellowbackFee), capped at MAX_FLAT_ZAT
         assert_eq!(sapling_carrier_fee(5_000, 1), 5_000);

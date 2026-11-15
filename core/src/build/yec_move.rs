@@ -102,9 +102,9 @@ pub fn plan_move(
             let plan = match amount {
                 Some(a) => sh.plan(&to, a as u64, None)?,
                 None => {
-                    // Everything spendable less the fee, which depends on the notes spent: ask
-                    // for the balance less a first guess and correct by what the proposal says
-                    // it needs (at most a few rounds; the fee only grows with note count).
+                    // Everything spendable less the fee: ask for the balance less the node's fee
+                    // and correct by what the proposal says it needs; only a plan that leaves
+                    // no private change is everything (yew#44 review).
                     let b = sh.balance()?;
                     if !b.sendable {
                         return Err(ShieldedError::NotSynced {
@@ -113,7 +113,7 @@ pub fn plan_move(
                         }
                         .into());
                     }
-                    let mut fee = 15_000u64;
+                    let mut fee = crate::build::any_to_any::NODE_FEE_ZAT as u64;
                     let mut out = None;
                     for _ in 0..8 {
                         let want = b.spendable_zat.checked_sub(fee).filter(|w| *w > 0).ok_or(
@@ -123,7 +123,10 @@ pub fn plan_move(
                             },
                         )?;
                         match sh.plan(&to, want, None) {
-                            Ok(p) if p.amount_zat + p.fee_zat + p.change_zat == b.spendable_zat => {
+                            Ok(p)
+                                if p.change_zat == 0
+                                    && p.amount_zat + p.fee_zat == b.spendable_zat =>
+                            {
                                 out = Some(p);
                                 break;
                             }
@@ -921,6 +924,15 @@ mod tests {
         // public -> own Sapling, everything, no change
         let m = plan_move(&mut w, Direction::ToPrivate, None, true, 120).unwrap();
         assert_eq!((shield(&m).change, shield(&m).fee), (0, YCASHD));
+        // private -> public, everything (yew#44 review): every note, the node's fee, no private
+        // change left behind (the old 15,000-zat seed left 14,000 zat of Sapling change)
+        let m = plan_move(&mut w, Direction::ToPublic, None, false, 120).unwrap();
+        let Funding::Shielded(p) = &m.funding else {
+            panic!("{m:?}")
+        };
+        // (the note the build above spent is no longer spendable)
+        assert_eq!((p.fee_zat as i64, p.change_zat), (YCASHD, 0));
+        assert_eq!(p.amount_zat, p.notes as u64 * 1_000_000 - YCASHD as u64);
         // public -> another wallet's Sapling address, transparent change
         let p = plan_yec_send(&mut w, &other_z, 20_000_000, false, false, None, 120, 1).unwrap();
         assert_eq!(shield(&p).fee, YCASHD);

@@ -536,7 +536,7 @@ class FakeWalletApi implements WalletApi {
     if (linkingText != null && !allowLinking) throw YewError(kind: ErrorKind.addressLinkingNeeded, message: linkingText!);
     if (yecPreviewError != null) throw yecPreviewError!;
     final private = yecFunding == YecFunding.shielded;
-    return YecPreview(previewId: 'p1', to: to, amountZat: zat, amountBumped: zat == 10000, feeZat: private ? 10000 : 1000, changeZat: 150000000 - zat - 1000, inputs: 1, usesReserve: sendEverything, keepsReservedZat: 105000, expiryHeight: 524, txid: private ? '' : 'aa' * 32, funding: yecFunding, revealsShielded: revealsShielded, memo: memo, paramsNeeded: private && paramsNeeded);
+    return YecPreview(previewId: 'p1', to: to, amountZat: zat, amountBumped: zat == 10000, feeZat: 1000, changeZat: 150000000 - zat - 1000, inputs: 1, usesReserve: sendEverything, keepsReservedZat: 105000, expiryHeight: 524, txid: private ? '' : 'aa' * 32, funding: yecFunding, revealsShielded: revealsShielded, memo: memo, paramsNeeded: private && paramsNeeded);
   }
 
   @override
@@ -559,7 +559,7 @@ class FakeWalletApi implements WalletApi {
     if (linkingText != null && !allowLinking) throw YewError(kind: ErrorKind.addressLinkingNeeded, message: linkingText!);
     if (movePreviewError != null) throw movePreviewError!;
     final toPrivate = direction == MoveDirection.toPrivate;
-    const fee = 15000;
+    const fee = 1000; // the node's fee (yew-core any_to_any::node_fee)
     final zat = amountZat ?? (toPrivate ? balancesAnswer.yecZat : balancesAnswer.yecShieldedSpendableZat) - fee;
     return YecPreview(previewId: 'm1', to: toPrivate ? fakeZ : fakeS, amountZat: zat, amountBumped: false, feeZat: fee, changeZat: 0, inputs: 1, usesReserve: false, keepsReservedZat: balancesAnswer.yecReservedZat, expiryHeight: 525, txid: '', funding: toPrivate ? YecFunding.transparent : YecFunding.shielded, revealsShielded: !toPrivate, memo: null, paramsNeeded: paramsNeeded);
   }
