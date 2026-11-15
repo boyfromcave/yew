@@ -93,7 +93,7 @@ use yew_core::build::any_to_any::{
     self as plan, checked_total as plan_total, PlanError, CHANGE_DUST_THRESHOLD, PRIVACY_POLICIES,
 };
 pub use yew_core::build::any_to_any::{
-    conventional_fee, conventional_fee_bytes, MAX_PQ_INPUTS_PER_TX,
+    conventional_fee, conventional_fee_bytes, node_fee, MAX_PQ_INPUTS_PER_TX,
 };
 
 /// A planner refusal as the RPC error ycashd answers with (the node's code and text).
@@ -588,9 +588,11 @@ impl Wallet {
         let suggest_linking = matches!(source, Source::AnyTaddr)
             && !plan::policy_allows(policy, "AllowLinkingAccountAddresses");
         // the first pass already asks for the fee of the outputs alone (ycashd's target in its
-        // "Insufficient funds: have …, need …" is amount + fee: vault_pq_wallet.py)
-        let mut need_fee =
-            fee.unwrap_or_else(|| conventional_fee_bytes(0, n_t_out, pq_extra, 0, n_z_out));
+        // "Insufficient funds: have …, need …" is amount + fee: vault_pq_wallet.py). The default
+        // fee is the node's for the shape (beta3 items 10 and 14: the YEW core's `node_fee`, ycash6
+        // `CalcZIP317Fee` under the default -feepolicy=peroutput, 1,000 zat up to 50 Sapling
+        // outputs), so yewd charges what ycashd charges; it used to be ZIP-317's conventional fee
+        let mut need_fee = fee.unwrap_or_else(|| node_fee(n_z_out));
         let mut sel_t: Vec<_> = Vec::new();
         let mut sel_z: Vec<crate::NoteRow> = Vec::new();
         let mut change = 0i64;
@@ -651,7 +653,8 @@ impl Wallet {
             if coinbase && change > 0 {
                 return Err(op_error(code::WALLET_ERROR, format!("When shielding coinbase funds, the wallet does not allow any change. The proposed transaction would result in {} in change.", money(change))));
             }
-            // the conventional fee of this shape (Sapling change for a Sapling source)
+            // the conventional fee of this shape (Sapling change for a Sapling source): the
+            // ceiling of an explicit fee; the default is the node's fee of its Sapling outputs
             let t_change = change > 0 && !z_source;
             let z_change = change > 0 && z_source;
             let conventional = conventional_fee_bytes(
@@ -669,10 +672,11 @@ impl Wallet {
                     break;
                 }
                 None => {
-                    if conventional == need_fee {
+                    let want = node_fee(n_z_out + usize::from(z_change));
+                    if want == need_fee {
                         break;
                     }
-                    need_fee = conventional;
+                    need_fee = want;
                 }
             }
         }

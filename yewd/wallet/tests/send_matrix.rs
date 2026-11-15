@@ -1095,12 +1095,13 @@ async fn exact_fees_any_taddr_and_mixed_recipients() {
     f.send(&ecc, &[(&r_ecc, COIN)], None, Some("AllowFullyTransparent"))
         .await
         .unwrap();
-    // yewd prices a send with no PQ party at the ZIP-317 conventional fee (500 zat a logical
-    // action, two at least), where ycash6's default -feepolicy=peroutput charges a flat 1,000 zat:
-    // a pre-existing difference, recorded in the stage-5 notes
+    // a send with no post-quantum input pays the node's fee for the shape (yew_core node_fee:
+    // ycash6's default -feepolicy=peroutput, 1,000 zat up to 50 Sapling outputs), as ycashd does;
+    // it used to be ZIP-317's conventional fee
     let (tx, _) = f.last_sent();
     assert_eq!((tx.vin.len(), tx.vout.len()), (1, 2));
-    assert_eq!(fee_of(&f, &tx), 1_000, "2 logical actions");
+    assert_eq!(fee_of(&f, &tx), yew_core::build::any_to_any::node_fee(0));
+    assert_eq!(fee_of(&f, &tx), 1_000);
     f.mine_sync().await;
     // ANY_TADDR -> ECC + SLH-DSA + Sapling in one send
     let zaddr = f.zaddr.clone();
@@ -1114,13 +1115,13 @@ async fn exact_fees_any_taddr_and_mixed_recipients() {
         .await;
     r.unwrap();
     let (tx, _) = f.last_sent();
-    // one 5 YEC input; the ECC and PQ payments and the ECC change (34 + 44 + 34 bytes: 4 transparent
-    // actions) and two Sapling outputs: 6 actions
+    // one 5 YEC input; the ECC and PQ payments and the ECC change and two Sapling outputs: the
+    // node's 1,000 zat (ZIP-317's conventional fee would be 3,000, 6 actions)
     assert_eq!(
         (tx.vin.len(), tx.vout.len(), tx.shielded.outputs),
         (1, 3, 2)
     );
-    assert_eq!(fee_of(&f, &tx) - 2 * COIN, 3_000);
+    assert_eq!(fee_of(&f, &tx) - 2 * COIN, 1_000);
     for (a, v) in [(&r_ecc, COIN / 10), (&r_slh, COIN / 10)] {
         let s = addr_script(a);
         assert!(
@@ -1145,8 +1146,9 @@ async fn exact_fees_any_taddr_and_mixed_recipients() {
     .await
     .unwrap();
     f.mine_sync().await;
-    // one spend, two (padded) outputs, one transparent output: 3 actions
-    assert_eq!(before - f.zbalance(&zaddr).await - COIN / 10, 1_500);
+    // one spend, two (padded) outputs, one transparent output: the node's 1,000 zat (ZIP-317's
+    // conventional fee would be 1,500, 3 actions)
+    assert_eq!(before - f.zbalance(&zaddr).await - COIN / 10, 1_000);
 }
 
 /// Review L3: the fee a post-quantum send pays, its folded dust change included, stays within the
@@ -1188,7 +1190,7 @@ async fn folded_fee_cap_and_change_dust() {
     let e = f
         .send(
             &ecc,
-            &[(&to, have - 500 * n.max(2) as i64 - 30)],
+            &[(&to, have - yew_core::build::any_to_any::node_fee(0) - 30)],
             None,
             None,
         )

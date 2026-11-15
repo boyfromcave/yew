@@ -394,8 +394,8 @@ impl Wallet {
                     return Err(invalid(format!("Fee {} is greater than {WEIGHT_RATIO_CAP} times the conventional fee for this tx (which is {}). There is no prioritisation benefit to a fee this large (see https://zips.z.cash/zip-0317#recommended-algorithm-for-block-template-construction), and it likely indicates a mistake in setting the fee.", plan::format_money(f), plan::format_money(conventional))));
                 }
                 Some(f) => f,
-                // ycashd's default -feepolicy=peroutput for a merge's one output
-                None => plan::peroutput_fee(plan::padded(usize::from(dest.is_err()))),
+                // the node's fee for a merge's one output (the YEW core's one rule, beta3 item 10)
+                None => plan::node_fee(usize::from(dest.is_err())),
             }
         };
         let net = merged - fee_zat;
