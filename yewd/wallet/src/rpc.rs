@@ -851,6 +851,11 @@ impl Wallet {
         o.push("mnemonic_seedfp", J::Str(self.st.public.seed_fp.clone()));
         // beta2: the C++ lines' "has held YED" marker
         o.push("yed_held", J::Bool(self.st.yed_held));
+        // beta2 seed-only restore (ycash6): yewd derives its transparent lookahead from the
+        // account's public key, so a locked wallet never misses a transparent coin for want of a
+        // key; a restore is in progress until its scan (with every re-pass) reached the tip
+        o.push("lookahead_incomplete", J::Bool(false));
+        o.push("restore_in_progress", J::Bool(self.st.restore_pending));
         // ycash6 #97: "yed_unlocked" is true exactly when the wallet has held YED and the operator
         // runs it Yellowback-off (-yellowback=0, which on ycashd is what makes Yellowback not live):
         // its YED outputs are then not locked against a plain-YEC spend
@@ -947,8 +952,14 @@ impl Wallet {
 
     /// A seed restored from `-mnemonicfile`: issue the first Sapling address before the rescan,
     /// as ycashd's review B-1 does (`GenerateNewLegacySaplingZKey`, `wallet.cpp`), so a wallet
-    /// with one z-address restores it and its notes. A no-op when one is issued already.
+    /// with one z-address restores it and its notes. A no-op when one is issued already. The
+    /// restore is in progress (`getwalletinfo.restore_in_progress`) until the wallet has scanned
+    /// to the node's tip with every re-pass done.
     pub fn restore_first_sapling(&mut self) -> Result<(), String> {
+        if !self.st.restore_pending && self.st.tip.is_none() {
+            self.st.restore_pending = true;
+            self.persist().map_err(|e| e.message)?;
+        }
         if !self.st.issued.sapling.is_empty() {
             return Ok(());
         }

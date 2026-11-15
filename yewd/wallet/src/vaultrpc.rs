@@ -1184,6 +1184,7 @@ impl Wallet {
         let mut keys = vec![KeyRef::None; tx.vin.len()];
         let mut signed_in = 0i64;
         let mut refuse: Option<String> = None;
+        let mut named: Vec<OutPoint> = Vec::new();
         for (i, p) in prevouts.iter().enumerate() {
             let Some(p) = p else { continue };
             if yv::parse_vault(&p.script).is_some() || yv::parse_intent(&p.script).is_some() {
@@ -1212,7 +1213,17 @@ impl Wallet {
                 sign.push(row);
                 signed_in += p.value;
                 keys[i] = k;
+                if !chosen {
+                    named.push(op);
+                }
             }
+        }
+        // beta2 audit L-3 (ycash6 `HandoffSend`, `YellowbackInputRefusal(named, true)`): a coin
+        // `allowinputs` names is the caller's choice, but never an output YED holds (a token, or
+        // an output an unjudged transaction's payload may give YED: mempool ones included); its
+        // YED would burn. A deliberate burn goes through sendrawtransaction ... allowyedburn.
+        if refuse.is_none() && !named.is_empty() {
+            refuse = self.named_input_refusal(node, &named).await;
         }
         let mut own: BTreeSet<u32> = BTreeSet::new();
         let mut extra_own: Vec<OwnOutput> = Vec::new();
@@ -1317,6 +1328,35 @@ impl Wallet {
             )
             .await?;
         Ok(J::Str(self.broadcast(node, &signed, Some(cap)).await?))
+    }
+
+    /// The refusal of `named` wallet coins that YED holds ([`Wallet::yed_reserved`]), in the
+    /// node's order (by txid, then index); `None` when none is. An index that cannot be read
+    /// refuses too (strict, as the C++ lines').
+    async fn named_input_refusal(&self, node: &dyn Node, named: &[OutPoint]) -> Option<String> {
+        let reserved = match self.yed_reserved(node).await {
+            Ok(r) => r,
+            Err(e) => return Some(e.message),
+        };
+        let mut refused: Vec<([u8; 32], u32)> = named
+            .iter()
+            .filter(|o| reserved.contains(&(txid_hex(&o.txid), o.n)))
+            .map(|o| (o.txid, o.n))
+            .collect();
+        if refused.is_empty() {
+            return None;
+        }
+        refused.sort(); // the node's wallet map order (uint256, then the index)
+        let list = refused
+            .iter()
+            .map(|(t, n)| format!("{}:{n}", txid_hex(t)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let live = !matches!(
+            node::call(node, "yed_getinfo", serde_json::json!([])).await,
+            Err(NodeError::Rpc { code: c, .. }) if c == code::METHOD_NOT_FOUND
+        );
+        Some(crate::send::yed_input_refusal(live, &list))
     }
 
     // ------------------------------------------------------------------ vault RPCs

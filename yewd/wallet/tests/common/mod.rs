@@ -83,6 +83,12 @@ pub struct Chain {
     pub reject: Option<String>,
     /// The code of that refusal when not `-26` (a proxy's `-32603`, …).
     pub reject_code: Option<i64>,
+    /// `sendrawtransaction`'s `allowhighfees` of each call, in the order of `sent`.
+    pub allow_high_fees: Vec<bool>,
+    /// When set, the node's `-maxtxfee` (ycashd `main.cpp` `AcceptToMemoryPool`, koganyd
+    /// `send_raw_transaction_prechecks`): without `allowhighfees`, a transaction whose fee (its
+    /// inputs from the mock's blocks and mempool) exceeds it is refused `-26` `absurdly-high-fee`.
+    pub max_tx_fee: Option<i64>,
     /// When set, `yed_listtokens` fails with this (code, message).
     pub tokens_error: Option<(i64, String)>,
     /// When set, `yed_listtokens` answers this instead of the token list (a malformed answer).
@@ -98,6 +104,17 @@ pub struct Chain {
     pub fail_syncs_after_send: u32,
     /// Fixed answers for methods the mock does not model (an `Err` is the node's `(code, message)`).
     pub answers: std::collections::HashMap<String, Result<Value, (i64, String)>>,
+    /// Every raw block read (`getblock <hash> 0`), by height, in order.
+    pub block_reads: Vec<usize>,
+    /// When set, the raw block read that would be the `n`-th (counting from 0 in `block_reads`)
+    /// fails once (the node unreachable: a scan stopped part-way).
+    pub fail_read_at: Option<usize>,
+    /// The node is in its initial block download (`getblockchaininfo`
+    /// `initial_block_download_complete: false`).
+    pub syncing: bool,
+    /// When set, right after the `n`-th raw block read the chain becomes `.1` (its blocks,
+    /// Sapling output counts and transactions): a reorg while the wallet reads.
+    pub reorg_after_read: Option<(usize, Box<Chain>)>,
 }
 
 #[derive(Clone, Default)]
@@ -107,6 +124,27 @@ pub fn rev_hex(b: &[u8]) -> String {
     let mut v = b.to_vec();
     v.reverse();
     hex::encode(v)
+}
+
+impl Chain {
+    /// The fee of a transparent-only transaction `raw` (its inputs from the blocks and the
+    /// mempool), `None` when an input is unknown.
+    pub fn fee_of(&self, raw: &[u8]) -> Option<i64> {
+        let (tx, _) = Transaction::parse(raw).ok()?;
+        let all = self
+            .txs
+            .iter()
+            .flatten()
+            .chain(self.mempool.iter().map(|(_, t)| t));
+        let known: Vec<(Transaction, [u8; 32])> =
+            all.filter_map(|t| Transaction::parse(t).ok()).collect();
+        let mut value_in = 0i64;
+        for i in &tx.vin {
+            let (prev, _) = known.iter().find(|(_, id)| *id == i.prevout.txid)?;
+            value_in += prev.vout.get(i.prevout.n as usize)?.value;
+        }
+        Some(value_in - tx.output_total())
+    }
 }
 
 impl MockNode {
@@ -214,6 +252,19 @@ impl Node for MockNode {
                                 message: "Block not found".into(),
                             })?;
                     if p[1].as_u64() == Some(0) {
+                        let raw = raw.clone();
+                        let at = c.blocks.iter().position(|(h, _)| h == want).unwrap();
+                        if c.fail_read_at == Some(c.block_reads.len()) {
+                            c.fail_read_at = None;
+                            return Err(NodeError::Unreachable("mock: connection refused".into()));
+                        }
+                        c.block_reads.push(at);
+                        if c.reorg_after_read.as_ref().map(|r| r.0) == Some(c.block_reads.len()) {
+                            let (_, alt) = c.reorg_after_read.take().unwrap();
+                            c.blocks = alt.blocks;
+                            c.sapling = alt.sapling;
+                            c.txs = alt.txs;
+                        }
                         json!(hex::encode(raw))
                     } else {
                         // the Sapling tree's size after this block: every Sapling output so far
@@ -222,21 +273,39 @@ impl Node for MockNode {
                         json!({"trees": {"sapling": {"size": size}}})
                     }
                 }
-                "getblockchaininfo" => match c.vault_height {
-                    Some(h) => json!({
-                        "blocks": tip,
-                        "upgrades": {"6d5b7a31": {"activationheight": h}},
-                        "consensus": {"nextblock": if tip as u64 + 1 >= h { "6d5b7a31" } else { "76b809bb" }},
-                    }),
-                    None => {
-                        json!({"blocks": tip, "upgrades": {}, "consensus": {"nextblock": "76b809bb"}})
-                    }
-                },
+                "getblockchaininfo" => {
+                    let mut v = match c.vault_height {
+                        Some(h) => json!({
+                            "blocks": tip,
+                            "upgrades": {"6d5b7a31": {"activationheight": h}},
+                            "consensus": {"nextblock": if tip as u64 + 1 >= h { "6d5b7a31" } else { "76b809bb" }},
+                        }),
+                        None => {
+                            json!({"blocks": tip, "upgrades": {}, "consensus": {"nextblock": "76b809bb"}})
+                        }
+                    };
+                    v["initial_block_download_complete"] = json!(!c.syncing);
+                    v
+                }
                 "sendrawtransaction" => {
                     let hexs = p[0].as_str().unwrap().to_string();
                     drop(c);
                     let mut c = self.0.lock().unwrap();
                     c.sent.push(hexs.clone());
+                    let allow_high_fees = p.get(1).and_then(Value::as_bool).unwrap_or(false);
+                    c.allow_high_fees.push(allow_high_fees);
+                    if let (Some(max), false) = (c.max_tx_fee, allow_high_fees) {
+                        if let Some(fee) = c.fee_of(&hex::decode(&hexs).unwrap()) {
+                            if fee > max {
+                                return Err(NodeError::Rpc {
+                                    code: -26,
+                                    message: format!(
+                                        "256: absurdly-high-fee, absurdly high fees {fee} > {max}"
+                                    ),
+                                });
+                            }
+                        }
+                    }
                     if let Some(m) = c.reject.clone() {
                         return Err(NodeError::Rpc {
                             code: c.reject_code.unwrap_or(-26),

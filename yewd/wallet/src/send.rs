@@ -1059,10 +1059,94 @@ impl Wallet {
     }
 }
 
+/// `PayloadYedOutputs` (ycash6 `src/yellowback/wallet.cpp`): the outputs to which `tx`'s own
+/// Yellowback payload may give YED, read from the transaction alone (no index):
+/// - MINT: vout 0, the vault, and vout 1, the token;
+/// - TRANSFER and REDEEM: the payload's assignments;
+/// - CANCEL_COSIGN, a claim cancel (CAN-1): vout 0, the re-created vault, and every output at
+///   index >= 1 that is not the `OP_RETURN`, pays a non-zero value and is the first to pay its
+///   script (the refund's holder is an index record, not in the transaction);
+/// - a coinbase: none (TX-0).
+///
+/// `None` (fail closed) when the transaction carries a Yellowback payload this build cannot read
+/// ([`yew_core::payload::unknown_yellowback`]): any of its outputs may hold YED.
+pub(crate) fn payload_yed_outputs(tx: &Transaction, coinbase: bool) -> Option<BTreeSet<u32>> {
+    use yew_core::payload::Payload;
+    let mut out = BTreeSet::new();
+    if coinbase {
+        return Some(out);
+    }
+    if yew_core::payload::unknown_yellowback(tx) {
+        return None;
+    }
+    let Some(f) = yew_core::payload::find_payload(tx) else {
+        return Some(out);
+    };
+    let op_return = f.op_return_index as u32;
+    match &f.payload {
+        Payload::Mint { .. } => {
+            for n in [0u32, 1] {
+                if (n as usize) < tx.vout.len() && n != op_return {
+                    out.insert(n);
+                }
+            }
+        }
+        Payload::Transfer { .. } | Payload::Redeem { .. } => {
+            out.extend(f.payload.assignments().iter().map(|a| a.vout as u32));
+        }
+        Payload::CancelCosign => {
+            if !tx.vout.is_empty() && op_return != 0 {
+                out.insert(0);
+            }
+            let mut paid: BTreeSet<&[u8]> = BTreeSet::new();
+            for (n, o) in tx.vout.iter().enumerate().skip(1) {
+                if n as u32 == op_return || o.value <= 0 {
+                    continue;
+                }
+                if paid.insert(o.script_pubkey.as_slice()) {
+                    out.insert(n as u32);
+                }
+            }
+        }
+        _ => {}
+    }
+    Some(out)
+}
+
+/// The cents `tx`'s payload states for its output `n` (ycash6 `YedBurnedByRawTransaction`): a
+/// MINT's token (vout 1), or a TRANSFER's or REDEEM's assignment to `n`. `None` where the payload
+/// states none: a claim cancel's refund, whose amount is known only once its block is judged.
+fn stated_cents(tx: &Transaction, n: u32) -> Option<i64> {
+    use yew_core::payload::Payload;
+    let f = yew_core::payload::find_payload(tx)?;
+    match &f.payload {
+        Payload::Mint { cents, .. } if n == 1 => Some(*cents as i64),
+        Payload::Transfer { .. } | Payload::Redeem { .. } => f
+            .payload
+            .assignments()
+            .iter()
+            .find(|a| a.vout as u32 == n)
+            .map(|a| a.cents as i64),
+        _ => None,
+    }
+}
+
 impl Wallet {
     /// `YedBurnedByRawTransaction` (H7, ycash6 `src/yellowback/wallet.cpp`): a raw transaction that
-    /// spends this wallet's YED tokens and whose payload reassigns fewer cents than they hold is
-    /// refused (`-4 yed-burn-refused`); a REDEEM spending a vault is MP-1's, never this guard's.
+    /// destroys YED of this wallet is refused (`-4 yed-burn-refused`) unless the caller passes
+    /// `allowyedburn`. It spends YED of this wallet when an input is
+    /// - a token the node's index lists at one of this wallet's scripts (`yed_listtokens`), or
+    /// - an output of this wallet whose transaction the index has not judged (`IndexJudged`: in the
+    ///   mempool, including one this wallet just broadcast, or mined above the index's height; every
+    ///   transaction while the index is unhealthy or cannot be read) and to which that
+    ///   transaction's payload may give YED ([`payload_yed_outputs`]; review 3 MEDIUM-2), counted
+    ///   at the payload's figure, or as unknown where the payload states none (a claim cancel's
+    ///   refund) or this build cannot read it.
+    ///
+    /// An unknown amount refuses outright; otherwise the transaction is refused when its own
+    /// payload reassigns fewer cents than it spends. A REDEEM spending a vault is MP-1's, never
+    /// this guard's. Where Yellowback is not live (`yed_getinfo` answers `-32601`) there is no
+    /// index and no guard, as ycashd without one: the raw transaction is the explicit path.
     pub async fn yed_burn_guard(&self, node: &dyn Node, p: &[Value]) -> Result<(), RpcError> {
         let Some(raw) = p
             .first()
@@ -1080,27 +1164,116 @@ impl Wallet {
             Some(p @ yew_core::payload::Payload::Redeem { .. }) => (true, p.assigned_cents()),
             _ => (false, 0),
         };
-        let tokens = match self.tokens(node).await {
-            Ok(t) => t,
-            Err(_) => return Ok(()), // no Yellowback index: no guard (ycashd without -yellowback)
-        };
-        let mut cents = 0i64;
-        let mut outpoints = Vec::new();
-        for i in &tx.vin {
-            let (t, n) = (txid_hex(&i.prevout.txid), i.prevout.n);
-            if is_redeem {
-                if let Ok(v) = node::call(node, "yed_getvault", serde_json::json!([t])).await {
-                    if n == 0 && v["status"].is_string() {
-                        return Ok(());
-                    }
+        // IndexJudged's facts: whether the index is healthy, and the height it has judged to
+        let (mut healthy, index_height) =
+            match node::call(node, "yed_getinfo", serde_json::json!([])).await {
+                // no Yellowback index: no guard (ycashd's without one)
+                Err(NodeError::Rpc { code: c, .. }) if c == code::METHOD_NOT_FOUND => return Ok(()),
+                // fail closed: every input of this wallet is read by its transaction's payload
+                Err(_) => (false, -1),
+                Ok(v) => (
+                    v["healthy"].as_bool() == Some(true),
+                    v["height"].as_i64().unwrap_or(-1),
+                ),
+            };
+        let tokens = if healthy {
+            match self.tokens(node).await {
+                Ok(t) => t,
+                Err(_) => {
+                    healthy = false; // the tokens cannot be read: judge by payloads (fail closed)
+                    Vec::new()
                 }
             }
-            if let Some(tok) = tokens.iter().find(|x| {
-                x["txid"].as_str() == Some(t.as_str()) && x["vout"].as_u64() == Some(n as u64)
-            }) {
-                cents += tok["cents"].as_i64().unwrap_or(0);
-                outpoints.push(format!("{t}:{n}"));
+        } else {
+            Vec::new()
+        };
+        let judged =
+            |height: Option<u32>| healthy && height.is_some_and(|h| h as i64 <= index_height);
+        let mut cents = 0i64;
+        let mut outpoints = Vec::new();
+        let mut unknown = Vec::new();
+        for i in &tx.vin {
+            let (t, n) = (txid_hex(&i.prevout.txid), i.prevout.n);
+            let op = format!("{t}:{n}");
+            if healthy {
+                if is_redeem {
+                    if let Ok(v) = node::call(node, "yed_getvault", serde_json::json!([t])).await {
+                        if n == 0 && v["status"].is_string() {
+                            return Ok(());
+                        }
+                    }
+                }
+                if let Some(tok) = tokens.iter().find(|x| {
+                    x["txid"].as_str() == Some(t.as_str()) && x["vout"].as_u64() == Some(n as u64)
+                }) {
+                    cents += tok["cents"].as_i64().unwrap_or(0);
+                    outpoints.push(op);
+                    continue;
+                }
             }
+            // review 3 MEDIUM-2: an output of this wallet the index has not judged is read by its
+            // transaction's payload. The wallet has synced to the node's mempool, so its own
+            // transactions (just broadcast ones included) are here; an input it does not know is
+            // read from the node, and one the node cannot show either refuses (fail closed).
+            let (prev, height, coinbase) = match self.parsed(&t) {
+                Some(pp) => (
+                    pp.tx.clone(),
+                    self.st
+                        .wtx
+                        .get(&t)
+                        .and_then(|w| w.block.as_ref().map(|b| b.height)),
+                    pp.coinbase,
+                ),
+                None => {
+                    let Some(c) = node_coin(node, &i.prevout).await? else {
+                        continue; // spent or unknown: the node refuses the transaction
+                    };
+                    if self.book.owns_script(&c.script).is_none() || judged(c.height) {
+                        continue;
+                    }
+                    match node::raw_tx(node, &t)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|b| Transaction::parse(&b).ok())
+                    {
+                        Some((x, _)) => (x, c.height, c.coinbase),
+                        None => {
+                            unknown.push(op);
+                            continue;
+                        }
+                    }
+                }
+            };
+            if judged(height) {
+                continue;
+            }
+            let Some(out) = prev.vout.get(n as usize) else {
+                continue;
+            };
+            if self.book.owns_script(&out.script_pubkey).is_none() {
+                continue;
+            }
+            match payload_yed_outputs(&prev, coinbase) {
+                Some(s) if !s.contains(&n) => {}
+                Some(_) => match stated_cents(&prev, n) {
+                    Some(c) => {
+                        cents += c;
+                        outpoints.push(format!("{op} (not judged yet)"));
+                    }
+                    None => unknown.push(op),
+                },
+                None => unknown.push(op),
+            }
+        }
+        if !unknown.is_empty() {
+            return Err(RpcError::new(
+                code::WALLET_ERROR,
+                format!(
+                    "yed-burn-refused: this transaction spends output(s) of this wallet whose transaction the Yellowback index has not judged yet and whose payload may give them YED ({}); whatever YED they carry would be destroyed. Pass allowyedburn = true to send it anyway.",
+                    unknown.join(", ")
+                ),
+            ));
         }
         if cents <= 0 || assigned >= cents {
             return Ok(());

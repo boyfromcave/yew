@@ -118,6 +118,27 @@ pub struct State {
     /// pqowner). Absent in older wallet files: false.
     #[serde(default)]
     pub yed_held: bool,
+    /// A scan whose re-pass is not done (see [`ScanMark`]); absent when none is owed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan: Option<ScanMark>,
+    /// A wallet created from a recovery phrase (`-mnemonicfile`) has not yet scanned the chain to
+    /// the node's tip with every re-pass done (`getwalletinfo.restore_in_progress`, ycash6's
+    /// `restorescan` marker). Absent in older wallet files: false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restore_pending: bool,
+}
+
+/// The progress of a wallet scan (the seed-only restore's re-pass, ycash6 beta2): the scan read
+/// the blocks from `from` on; pass 1 is the main pass, 2 and on the re-passes, which read
+/// `from..=tip` again because the key lookahead grew (`grew`: during the current pass). `next` is
+/// the next block the current re-pass reads. Written with the wallet, so a scan stopped part-way
+/// (a restart, a lost backend) resumes where it was instead of leaving coins unfound.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanMark {
+    pub from: u32,
+    pub pass: u32,
+    pub next: u32,
+    pub grew: bool,
 }
 
 /// A transaction handed to `sendrawtransaction` whose answer never came (a transport error or a
@@ -175,6 +196,8 @@ impl State {
             scripts: BTreeMap::new(),
             unknown: None,
             yed_held: false,
+            scan: None,
+            restore_pending: false,
         }
     }
 

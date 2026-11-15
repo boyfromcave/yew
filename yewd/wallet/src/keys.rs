@@ -18,8 +18,12 @@ use yewd_proto::{AccountXpub, PqPublic};
 
 type HmacSha512 = Hmac<sha2::Sha512>;
 
-/// How many keys past the last issued one each chain watches (ycashd's default `-keypool`).
+/// ycashd's default `-keypool` (what `getwalletinfo.keypoolsize` reports).
 pub const LOOKAHEAD: u32 = 100;
+/// How many transparent keys each chain holds from its issue counter on: `-keypool` + 1, as
+/// ycashd's seed lookahead (`TopUpLegacyTKeys`), so a restore finds a coin paid after a gap of up
+/// to `LOOKAHEAD` unused addresses.
+pub const WINDOW: u32 = LOOKAHEAD + 1;
 /// How many post-quantum keys past the last issued one each scheme watches (ycashd's
 /// `PQ_KEY_LOOKAHEAD`).
 pub const PQ_LOOKAHEAD: u32 = 20;
@@ -87,7 +91,7 @@ pub struct PqOwn {
     pub id: PqKeyId,
 }
 
-/// The wallet's keys: transparent keys up to `issued + LOOKAHEAD` on both chains, every PQ key of
+/// The wallet's keys: transparent keys up to `issued + WINDOW` on both chains, every PQ key of
 /// the bundle.
 #[derive(Clone, Debug, Default)]
 pub struct KeyBook {

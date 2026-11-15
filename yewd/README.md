@@ -144,7 +144,7 @@ ycashd's wallet arguments (`-keypool`, `-exportdir`, …) and a ycashd-format `y
 | `-wallet=<file>` | `wallet.dat` | a `backupwallet` file in `<datadir>/<net>/` (or absolute) restored once at the first wallet call |
 | `-rescan` | off | read the chain again from the wallet's birthday at open |
 | `-salvagewallet` | off | a restored backup carries the sign-once restore marker (07/NEW-1) |
-| `-mnemonicfile=<file>` | — | ycashd's seed-only restore: a **new** wallet takes its seed from the recovery phrase in `<file>` (the phrase on one line, or a `z_exportwallet` file's `recovery_phrase=` line), read by the signer itself; birthday 0 (a scan from genesis) and the sign-once restore marker set; ignored for a wallet with this seed, refused for one with another (F-S5-17) |
+| `-mnemonicfile=<file>` | — | ycashd's seed-only restore: a **new** wallet takes its seed from the recovery phrase in `<file>` (the phrase on one line, or a `z_exportwallet` file's `recovery_phrase=` line), read by the signer itself; birthday 0 (a scan from genesis, with the re-pass below) and the sign-once restore marker set; ignored for a wallet with this seed, refused for one with another (F-S5-17). The phrase must be a **yewd (or YEW) phrase**: a ycashd phrase derives other transparent keys ("Restore from the recovery phrase", below) |
 | `-paramsdir=<dir>` | ycashd's (`~/Library/Application Support/ZcashParams`, `~/.zcash-params`) | the Sapling parameters the signer proves with |
 | `-yellowback=0` | off | ycashd's acknowledgement: a wallet that has held YED (`getwalletinfo.yed_held`) may spend as plain YEC while the node reports Yellowback not live; logged at start and on each such send (below) |
 | `-backendexitgrace=<s>` | 20 | with `-stopbackend`: exit once the backend has been gone this long after it was up (H6: the node stopped itself); 0 = never |
@@ -169,10 +169,34 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
   note yewd writes): removing it means what it means to ycashd, the next start opens a **new** wallet
   (the old `yewd/` and `signer/` are moved aside as `*.wiped-<time>`, never deleted).
 - **Keys (K-24).** The façade holds the signer's public bundle: the BIP32 account node
-  `m/44'/347'/0'` (CKDpub for `/{0,1}/i`, 100 keys of lookahead per chain), the Sapling DFVK of
+  `m/44'/347'/0'` (CKDpub for `/{0,1}/i`, 101 keys held from the next unissued one per chain:
+  ycashd's `-keypool` + 1), the Sapling DFVK of
   `m/32'/347'/0'` (diversified addresses, trial decryption, nullifiers) and a pool of PQ public
   keys (20 of lookahead per scheme, topped up by asking the signer, as ycashd's `TopUpPQKeys`).
   The same seed in the YEW app sees the same transparent and Sapling coins.
+- **Restore from the recovery phrase** (`-mnemonicfile`, as ycash6 beta2's seed-only restore).
+  The wallet scans from genesis. A payment to a held key marks it used, and the windows follow: a
+  coin is found after a gap of up to **100 unused transparent addresses** (101 is missed, as on
+  ycashd) or **20 unused post-quantum keys per scheme**. Keys are used in the order the original
+  wallet issued them, not in chain order, so when the window grew during a scan, the scanned blocks
+  are read again (the **re-pass**, logged as `the key lookahead moved during the scan; re-checking
+  the scanned heights up to <tip> (pass <n>)`), until a pass grows nothing. A restore reads its blocks
+  about twice; an ordinary sync, in which no unissued key is paid, reads each block once. The
+  scan's progress (`scan` in `wallet.json`: the first block, the pass, the next block of a re-pass)
+  is written every 2,000 blocks or 30 s and when the backend is lost, so a restore stopped part-way
+  resumes there. `getwalletinfo.restore_in_progress` is true until the restore's scan reached the
+  node's tip with no re-pass owed **and** the node reports it has the chain (ycashd's
+  `initial_block_download_complete`; on koganyd, its tip at its header chain's and at its estimated
+  height); until then every re-pass starts at the birthday, so a restore against a node still
+  syncing finds keys whose payments an earlier sync read. Wallet calls wait for the scan (the
+  barrier); progress is logged every 60 s. A reorg during a re-pass makes it read again. `lookahead_incomplete` is always false: the transparent window is derived from the
+  account's public key, so even an encrypted, locked wallet holds it. Past the gap: issue addresses
+  with `getnewaddress` (`getnewaddress pq` / `pqslh` for post-quantum keys) beyond it, then restart
+  with `-rescan`.
+  **A ycashd phrase and a yewd phrase are not interchangeable for transparent coins.** yewd (and
+  YEW) derive ECC keys at `m/44'/347'/0'/{0,1}/i`; ycashd 6.x derives its seed's transparent keys at
+  `m/44'/<coin>'/0x7FFFFFFF'/{0,1}/i`. Restoring a ycashd phrase in yewd (or the reverse) does not
+  bring its transparent (`s…`) coins; move them with a send instead.
 - **Sync.** The node's RPC is the truth: every wallet RPC first brings the wallet to the node's
   best block (`getbestblockhash`; the fork point found in the recent-hash window, every wallet
   transaction above it rewound; new blocks read whole with `getblock <hash> 0`; the mempool with

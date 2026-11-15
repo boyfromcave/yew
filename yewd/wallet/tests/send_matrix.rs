@@ -993,6 +993,66 @@ async fn folded_fee_cap_and_change_dust() {
     assert_eq!(e, (-8, "Insufficient funds: have 3.00, need 0.00000024 more to avoid creating invalid change output 0.0000003 (dust threshold is 0.00000054); note that coinbase outputs will not be selected if you specify ANY_TADDR, any transparent recipients are included, or if the `privacyPolicy` parameter is not set to `AllowRevealedSenders` or weaker.".into()));
 }
 
+/// D-Q-26 (KG-YEWD-PQ-FEE): a post-quantum send whose size-priced fee is above the node's
+/// `-maxtxfee` (0.1 YEC) but within the post-quantum cap (`PQMaxTxFee`) is committed with
+/// `allowhighfees`, as ycashd's own wallet commits it (`CommitTransaction`,
+/// `!PQFeeWithinCap(tx)`): the node behind yewd (ycashd or koganyd) keeps `-maxtxfee` for a
+/// `sendrawtransaction` without it and refused every SLH-DSA send at a low attested price. A send
+/// without a post-quantum input keeps the node's check, and a fee above the cap is still refused
+/// before anything is sent.
+#[tokio::test]
+async fn pq_send_above_maxtxfee_within_the_cap_is_committed() {
+    let mut f = fixture("pq-maxtxfee").await;
+    // 0.06 YEC/kB: an SLH-DSA spend (~8.9 kB) pays ~0.53 YEC, an FN-DSA spend (~2 kB) ~0.12 YEC
+    let rate = 6_000_000i64;
+    let cap = 2 * COIN;
+    let max_tx_fee = 10_000_000i64;
+    {
+        let mut c = f.node.0.lock().unwrap();
+        c.max_tx_fee = Some(max_tx_fee);
+        c.yed_info = Some(json!({"healthy": true, "unhealthyReason": "",
+            "params": {"fees": {"network": {"plain": {"zatPerKB": rate},
+                                            "yellowback": {"maxTxFeeZat": cap}}}}}));
+    }
+    let to = yew_core::keys::encode_p2pkh(Network::Regtest, &[0x72; 20]);
+    let zaddr = f.zaddr.clone();
+    for (src, dst) in [(f.slh.clone(), to.clone()), (f.fn_.clone(), zaddr)] {
+        let txid = f
+            .send(&src, &[(&dst, COIN)], None, None)
+            .await
+            .unwrap_or_else(|e| panic!("{src} -> {dst}: {e:?}"));
+        let (_, raw) = f.last_sent();
+        let fee = f.node.0.lock().unwrap().fee_of(&raw).unwrap();
+        assert!(fee > max_tx_fee && fee <= cap, "{src}: fee {fee}");
+        assert_eq!(f.node.0.lock().unwrap().allow_high_fees.last(), Some(&true));
+        assert!(f
+            .node
+            .0
+            .lock()
+            .unwrap()
+            .mempool
+            .iter()
+            .any(|(id, _)| *id == txid));
+        f.mine_sync().await;
+    }
+    // no post-quantum input: the node's -maxtxfee stays on
+    let ecc = f.ecc.clone();
+    f.send(&ecc, &[(&to, COIN)], None, None).await.unwrap();
+    assert_eq!(
+        f.node.0.lock().unwrap().allow_high_fees.last(),
+        Some(&false)
+    );
+    // a fee above the post-quantum cap is refused by yewd, nothing is sent
+    let sent = f.node.0.lock().unwrap().sent.len();
+    let slh = f.slh.clone();
+    let e = f
+        .send(&slh, &[(&to, COIN)], Some(cap + 1), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e, (-8, "Fee 2.00000001 is above the 2.00 cap on a post-quantum spend (-maxtxfee, or $2 at the attested price, at most -yellowbackmaxtxfee)".into()));
+    assert_eq!(f.node.0.lock().unwrap().sent.len(), sent);
+}
+
 /// A call's answer: its text, or its (code, message).
 type Answer = Result<String, (i64, String)>;
 

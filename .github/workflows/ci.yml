@@ -22,10 +22,10 @@
 #                yewd-node (ycashd from a trusted ycash6 run at the commit yewd/PIN records) and
 #                yewd-gates (the S0 round trip and the S1-S3 stage gates, one job each, report-only
 #                until each stage's gate is seen green).
-#   kogany       (report-only; a push to or a dispatch on vaults/kogany-compat) scripts/kogany-leg.sh:
+#   kogany       (report-only; a push to or a dispatch on upgrade/vault) scripts/kogany-leg.sh:
 #                the W1 devnet acceptance (core/tests/devnet.rs) through lightwalletd-dd in front of
 #                a regtest kogany node (the third node line, workspace kogany plan W9-c), its ycash6
-#                test rig standing in for the devnet tool. zakurad is kogany's zakurad-bin artifact
+#                test rig standing in for the devnet tool. koganyd is kogany's koganyd-bin artifact
 #                at KOGANY_REF, else built at that commit; ycashd is ycash6's node-bin at
 #                YCASH6_REF; lightwalletd-dd is built at proto/PIN.
 # Not in this workflow: the devnet acceptance suites (scripts/devnet-*.sh). They need a workspace
@@ -572,7 +572,7 @@ jobs:
           path: web/dist/BUNDLE-SHA256SUMS
 
   # The kogany leg (report-only until the lead architect flips it: report-only.sh's `false` to `true`). YEW's
-  # own build restores rust-cache and saves nothing (zakurad, ycashd, lightwalletd-dd and
+  # own build restores rust-cache and saves nothing (koganyd, ycashd, lightwalletd-dd and
   # fetch-params.sh are other repositories' code).
   kogany:
     if: github.ref_name == 'upgrade/vault' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
@@ -583,33 +583,36 @@ jobs:
       contents: read
       actions: read  # gh run list/download on kogany's and ycash6's runs
     env:
-      # kogany upgrade/vault head (the wave gate and its follow-ups merged)
-      KOGANY_REF: f12e130befa04a44699ec13b1edcda212526a3a5
+      # kogany upgrade/vault at its newest koganyd-bin (beta2: 2f247bd32, "Ycash's block time bounds",
+      # #27; the head after it, 2f8cb8740, changes only release notes and packaging)
+      KOGANY_REF: 2f247bd32a6eda5cad242813614a1e2b786c5618
       YCASH6_REPO: boyfromcave/ycash6
-      # ycash6 upgrade/vault head; moves with the kogany upgrade/vault head (the one ycash6 pin here:
-      # node-bin, qa/ and zcutil all come from this commit)
-      YCASH6_REF: ce10b3f884716294a46c4c4ce6e43f76a02ed068
+      # ycash6 upgrade/vault at its newest node-bin (a successful push run of yellowback-tests.yml:
+      # c8f25b0ba, #109; the head after it, fbc9f625c, changes only qa/ rc-qualify scripts); moves
+      # with KOGANY_REF (the one ycash6 pin here: node-bin, qa/ and zcutil all come from this commit)
+      YCASH6_REF: c8f25b0ba067ed9eb5f8907220028471d9a4106d
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      # zakurad-bin.tgz: zakurad (dev profile, --features ycash, ubuntu-24.04, the runner's librocksdb)
-      # and zakurad-bin.json, from a push, schedule or dispatch run of kogany at KOGANY_REF only (the
-      # contract of the workspace's docs/plans/kogany/ci-design.md), never a pull_request run.
+      # koganyd-bin.tgz: koganyd (package `kogany`, dev profile, --features ycash, ubuntu-24.04, the
+      # runner's librocksdb) and koganyd-bin.json, from kogany's kogany-bin.yml in a push, schedule or
+      # dispatch run at KOGANY_REF only (kogany's .github/README-kogany.md "Cross-line contract"),
+      # never a pull_request run. KOGANY_REF must be a commit with such a run (or the job builds it).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: boyfromcave/kogany
           ref: ${{ env.KOGANY_REF }}
           path: kogany
           persist-credentials: false
-      # kogany's setup-zakura-build as its script (librocksdb for zakurad). The fallback build fails at
-      # dependency resolution until boyfromcave/zakura-common-ycash exists on GitHub (kogany plan K-2).
+      # kogany's setup-zakura-build as its script (librocksdb for koganyd), and the fallback build is
+      # kogany-bin.yml's own command.
       - name: kogany build packages
         env:
           INSTALL_LIBCLANG: "false"
           INSTALL_PROTOC: "false"
         run: bash kogany/.github/actions/setup-zakura-build/install-ubuntu-packages.sh
-      - name: kogany's zakurad-bin at KOGANY_REF (else built here)
+      - name: kogany's koganyd-bin at KOGANY_REF (else built here)
         id: zakurad
         env:
           GH_TOKEN: ${{ github.token }}
@@ -619,22 +622,22 @@ jobs:
           runs=$(gh run list -R boyfromcave/kogany -c "$KOGANY_REF" -L 50 --json databaseId,event,headSha \
             -q ".[] | select(.headSha == \"$KOGANY_REF\") | $trusted | .databaseId" 2>/dev/null || true)
           for r in $runs; do
-            if gh run download "$r" -R boyfromcave/kogany -n zakurad-bin -D "$RUNNER_TEMP/zk-dl" 2>/dev/null \
-               && [ -f "$RUNNER_TEMP/zk-dl/zakurad-bin.tgz" ]; then
-              mkdir -p "$RUNNER_TEMP/zk" && tar xzf "$RUNNER_TEMP/zk-dl/zakurad-bin.tgz" -C "$RUNNER_TEMP/zk"
-              cat "$RUNNER_TEMP/zk/zakurad-bin.json"
-              echo "ZAKURAD=$RUNNER_TEMP/zk/zakurad" >> "$GITHUB_ENV"
+            if gh run download "$r" -R boyfromcave/kogany -n koganyd-bin -D "$RUNNER_TEMP/zk-dl" 2>/dev/null \
+               && [ -f "$RUNNER_TEMP/zk-dl/koganyd-bin.tgz" ]; then
+              mkdir -p "$RUNNER_TEMP/zk" && tar xzf "$RUNNER_TEMP/zk-dl/koganyd-bin.tgz" -C "$RUNNER_TEMP/zk"
+              cat "$RUNNER_TEMP/zk/koganyd-bin.json"
+              echo "ZAKURAD=$RUNNER_TEMP/zk/koganyd" >> "$GITHUB_ENV"
               echo "got=true" >> "$GITHUB_OUTPUT"
-              echo "zakurad from boyfromcave/kogany run $r"; exit 0
+              echo "koganyd from boyfromcave/kogany run $r"; exit 0
             fi
           done
           echo "got=false" >> "$GITHUB_OUTPUT"
-          (cd kogany && CARGO_INCREMENTAL=0 cargo build --locked -p zakura --features ycash --bin zakurad)
-          echo "ZAKURAD=$GITHUB_WORKSPACE/kogany/target/debug/zakurad" >> "$GITHUB_ENV"
-          echo "no zakurad-bin of boyfromcave/kogany at $KOGANY_REF: building it here"
-      - name: zakurad runs here
+          (cd kogany && CARGO_INCREMENTAL=0 cargo build --locked -p kogany --bin koganyd --features ycash)
+          echo "ZAKURAD=$GITHUB_WORKSPACE/kogany/target/debug/koganyd" >> "$GITHUB_ENV"
+          echo "no koganyd-bin of boyfromcave/kogany at $KOGANY_REF: built it here"
+      - name: koganyd runs here
         run: |
-          if ldd "$ZAKURAD" | grep 'not found'; then echo "::error::zakurad needs a library this runner lacks"; exit 1; fi
+          if ldd "$ZAKURAD" | grep 'not found'; then echo "::error::koganyd needs a library this runner lacks"; exit 1; fi
           "$ZAKURAD" --version
       - name: ycashd from ycash6's node-bin at YCASH6_REF
         env:
@@ -667,8 +670,15 @@ jobs:
           sparse-checkout: zcutil
       - name: ycash6 checkout is YCASH6_REF
         run: '[ "$(git -C ycash6 rev-parse HEAD)" = "$YCASH6_REF" ] || { echo "::error::ycash6 checkout is not $YCASH6_REF"; exit 1; }'
-      - name: fetch zcash params
-        run: ycash6/zcutil/fetch-params.sh
+      # The Sapling parameters (yewd-signer and YEW prove with them; ycash6's zcutil/fetch-params.sh
+      # is a no-op since 6.x bundles them in ycashd), checked against the sums it pins. Restore only.
+      - name: restore zcash params
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.zcash-params
+          key: zcash-params-8e48ffd2-2f0ebbcb-b685d700
+      - name: fetch and verify zcash params
+        run: scripts/fetch-zcash-params.sh
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.26.10'
