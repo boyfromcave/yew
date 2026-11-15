@@ -787,12 +787,10 @@ impl Wallet {
         }
     }
 
-    /// `getwalletinfo`.
-    fn getwalletinfo(&self, p: &[Value]) -> Result<J, RpcError> {
-        arity("getwalletinfo", p, 1)?;
-        // One pass (ycashd's GetWalletBalanceSplit, beta2 item 15): balance = the available
-        // credit of every trusted transaction, unconfirmed = that of every untrusted one in the
-        // mempool, each with its post-quantum part by scheme.
+    /// One pass (ycashd's GetWalletBalanceSplit, beta2 item 15): balance = the available credit
+    /// of every trusted transaction, unconfirmed = that of every untrusted one in the mempool,
+    /// each with its post-quantum part by scheme.
+    pub(crate) fn balance_split(&self) -> (i64, i64, [i64; 3], [i64; 3]) {
         let (mut balance, mut unconfirmed) = (0i64, 0i64);
         let (mut pq_bal, mut pq_unc) = ([0i64; 3], [0i64; 3]);
         for t in self.st.wtx.keys() {
@@ -809,6 +807,13 @@ impl Wallet {
                 *a += b;
             }
         }
+        (balance, unconfirmed, pq_bal, pq_unc)
+    }
+
+    /// `getwalletinfo`.
+    fn getwalletinfo(&self, p: &[Value]) -> Result<J, RpcError> {
+        arity("getwalletinfo", p, 1)?;
+        let (balance, unconfirmed, pq_bal, pq_unc) = self.balance_split();
         let pq_total = |v: &[i64; 3]| v[1] + v[2];
         let by_scheme = J::Arr(
             PQ_BALANCE_SCHEMES

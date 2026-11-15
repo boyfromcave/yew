@@ -190,13 +190,23 @@ pub const GATE_WALLET: &[(&str, Stage)] = &[
 /// wallet RPCs, the balance by address type and the address listing, as ycash6 answers them.
 pub const BETA2_WALLET: &[(&str, Stage)] = &[("listaddresses", S5), ("z_gettotalbalance", S5)];
 
+/// K-25, amended for beta3 (item 14, the gaps of the parity suite): ycashd's
+/// `getunconfirmedbalance`, and the four unified-address account RPCs, which ycashd refuses while
+/// NU5 is not active (it has no activation height on Ycash): the façade gives the same refusal.
+pub const BETA3_WALLET: &[(&str, Stage)] = &[
+    ("getunconfirmedbalance", S5),
+    ("z_getnewaccount", S5),
+    ("z_getaddressforaccount", S5),
+    ("z_listaccounts", S5),
+    ("z_getbalanceforaccount", S5),
+];
+
 /// The rest of ycashd's wallet table (`src/wallet/rpcwallet.cpp`, `rpcdump.cpp`, the
 /// disclosure pair): outside K-25, answered `-32601` and never forwarded.
 pub const OUT_OF_SCOPE: &[&str] = &[
     "resendwallettransactions",
     "dumpwallet",
     "z_converttex",
-    "getunconfirmedbalance",
     "importaddress",
     "importpubkey",
     "keypoolrefill",
@@ -207,14 +217,10 @@ pub const OUT_OF_SCOPE: &[&str] = &[
     "zcbenchmark",
     "zcsamplejoinsplit",
     "z_getbalanceforviewingkey",
-    "z_getbalanceforaccount",
     "z_setmigration",
     "z_getmigrationstatus",
     "z_shieldcoinbase",
-    "z_getnewaccount",
-    "z_listaccounts",
     "z_listunifiedreceivers",
-    "z_getaddressforaccount",
     "z_exportkey",
     "z_importkey",
     "z_exportviewingkey",
@@ -255,7 +261,7 @@ pub const CLEAR_UNKNOWN: &str = "clearunknownsubmission";
 
 /// Every wallet RPC the façade serves, with its group and stage, in table order:
 /// R5 (22), R6 (25), R7 (1), the K-25 stock set (30 + 4), S5's gate reads (5) and the beta2
-/// amendment (2).
+/// amendment (2), the beta3 amendment (5).
 pub fn wallet_methods() -> impl Iterator<Item = (&'static str, Group, Stage)> {
     let g = |t: &'static [(&'static str, Stage)], g: Group| t.iter().map(move |&(m, s)| (m, g, s));
     g(VAULT_WALLET, Vault)
@@ -265,6 +271,7 @@ pub fn wallet_methods() -> impl Iterator<Item = (&'static str, Group, Stage)> {
         .chain(g(ROLE_WALLET, Role))
         .chain(g(GATE_WALLET, Stock))
         .chain(g(BETA2_WALLET, Stock))
+        .chain(g(BETA3_WALLET, Stock))
 }
 
 /// The class of `method`; `None` = a node RPC, forwarded unchanged.
@@ -322,7 +329,8 @@ mod tests {
         assert_eq!(ROLE_WALLET.len(), 4, "K-25 roles");
         assert_eq!(GATE_WALLET.len(), 5, "S5's findings F-S5-1, F-S5-10");
         assert_eq!(BETA2_WALLET.len(), 2, "K-25 amended for beta2, 2026-11-11");
-        assert_eq!(OUT_OF_SCOPE.len(), 33, "the rest of ycashd's wallet table");
+        assert_eq!(BETA3_WALLET.len(), 5, "K-25 amended for beta3, item 14");
+        assert_eq!(OUT_OF_SCOPE.len(), 28, "the rest of ycashd's wallet table");
     }
 
     #[test]

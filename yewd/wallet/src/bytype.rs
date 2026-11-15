@@ -22,7 +22,20 @@ use crate::rpc::{
 };
 use crate::{code, RpcError, Wallet};
 
-pub const SERVED: &[&str] = &["z_gettotalbalance", "listaddresses"];
+pub const SERVED: &[&str] = &[
+    "z_gettotalbalance",
+    "listaddresses",
+    "getunconfirmedbalance",
+    "z_getnewaccount",
+    "z_getaddressforaccount",
+    "z_listaccounts",
+    "z_getbalanceforaccount",
+];
+
+/// ycash6 `src/wallet/rpcwallet.cpp` `EnsureUnifiedAccountsEnabled`: the four unified-address
+/// account RPCs are refused while NU5 is not active, and NU5 has no activation height on Ycash.
+const NU5_ACCOUNTS: &str =
+    "Unified-address accounts require the NU5 network upgrade, which is not active on Ycash.";
 
 /// ycashd's `listaddresses` sources, in the order it lists them (no `imported_watchonly` and no
 /// `legacy_hdseed`: yewd watches no script without its key and derives Sapling from the
@@ -49,6 +62,17 @@ impl Wallet {
         match method {
             "z_gettotalbalance" => self.z_gettotalbalance(node, p).await,
             "listaddresses" => self.listaddresses(node, p).await,
+            // beta3 item 14: `getunconfirmedbalance` (rpcwallet.cpp, GetUnconfirmedTransparentBalance:
+            // getwalletinfo's unconfirmed_balance) and the four account RPCs' NU5 refusal; the
+            // façade has checked the argument count against ycashd's table
+            "getunconfirmedbalance" => {
+                arity("getunconfirmedbalance", p, 0)?;
+                Ok(J::Amount(self.balance_split().1))
+            }
+            "z_getnewaccount"
+            | "z_getaddressforaccount"
+            | "z_listaccounts"
+            | "z_getbalanceforaccount" => Err(RpcError::new(code::INVALID_PARAMETER, NU5_ACCOUNTS)),
             _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
         }
     }

@@ -17,7 +17,10 @@ the wallet; S0: the shell). Every wallet RPC of the façade's table is served �
 amended for beta2, 2026-11-11: `z_gettotalbalance`, `listaddresses`) — and the three raw helpers
 (`createrawtransaction`, `decoderawtransaction`, `decodescript`) are answered by the façade itself.
 Arity is ycashd's (`-32602` "Not enough|Too many parameters for method …" with the help text,
-`facade/src/ycashd_rpc.json`, generated from a plain ycash6 wallet node by `qa/gen_ycashd_rpc_table.py`),
+`facade/src/ycashd_rpc.json`, generated from a plain ycash6 wallet node by `qa/gen_ycashd_rpc_table.py`:
+regenerated from the release's ycashd, never edited by hand, by a full run and then a `--forwarded`
+run, since the full run rewrites the file without the forwarded section; `qa/s6_gaps.py --checks
+help_text` compares yewd's answers with ycashd's),
 `help <method>` is ycashd's text and the `help` listing holds ycashd's lines for these methods in
 ycashd's categories. S4 added the wallet encryption (the seed and the imported keys sealed in the
 signer), the dumps and their imports (written and read by the signer), `backupwallet` and its restore
@@ -91,7 +94,8 @@ the node's decimal text).
 | Wallet, R7 | `z_importpqkey` | served (`wallet/src/admin.rs`; the key in the signer) |
 | Wallet, K-25 stock | the 30 the Yellowback scripts call, and the 4 only the roles call | served: the reads (S1), the sends and `signrawtransaction` (S2), `signmessage`/`importprivkey`/`dumpprivkey` (S3); S4's `addmultisigaddress`, `backupwallet`, `encryptwallet`, `walletpassphrase`, `walletlock`, `settxfee`, `importwallet`, `z_exportwallet`, `z_importwallet`, `z_getnewdiversifiedaddress`, `z_listreceivedbyaddress` (`wallet/src/admin.rs`), `z_sendmany`, `z_getoperationstatus`, `z_getoperationresult`, `z_listoperationids` (`wallet/src/zsend.rs`); the forwarded node RPC `sendrawtransaction` keeps ycashd's H7 wallet guard first (`allowyedburn`) |
 | Wallet, K-25 amended for beta2 (2026-11-11) | `z_gettotalbalance`, `listaddresses`: the balance and the addresses by type (ECC, post-quantum by scheme, Sapling), read-only | served (`wallet/src/bytype.rs`); ycash-dd v4.5.0 has no `listaddresses`, ycash6's is the reference |
-| Out of scope | the rest of ycashd's wallet table (33: `z_shieldcoinbase`, …) | `-32601` "yewd: not served" |
+| Wallet, K-25 amended for beta3 (item 14) | `getunconfirmedbalance` (`getwalletinfo`'s `unconfirmed_balance`); `z_getnewaccount`, `z_getaddressforaccount`, `z_listaccounts`, `z_getbalanceforaccount`, refused `-8` as ycashd refuses them while NU5 is not active (it has no activation height on Ycash) | served (`wallet/src/bytype.rs`) |
+| Out of scope | the rest of ycashd's wallet table (28: `z_shieldcoinbase`, …) | `-32601` "yewd: not served" |
 | Local | `createrawtransaction`, `decoderawtransaction`, `decodescript` | answered by the façade (`wallet/src/raw.rs`: ycashd's `TxToJSON`, `ScriptToAsmStr`, `Solver`); a refusal takes the backend's words when it has the helper (the C++ deserializer's texts), ours when it lacks it (kogany) |
 | Augmented | `getinfo`, `validateaddress`, `z_validateaddress`, `set_getinfo`, `vault_list`, `yed_gettxinfo`, `yed_getinfo` | forwarded, then the wallet adds its fields (`balance`, `paytxfee`, `unlocked_until`…, `ismine`…, a known redeem script's `script`/`hex`/`addresses`/`sigsrequired`, `memberlist[].wallet`, the `wallet` column and the `mine` filter of `vault_list`, `yed_getinfo`'s `lockedOutputs`/`protectedByIndex`). `z_validateaddress` is answered by yewd itself: a ycash6 `-disablewallet` backend before `eac62c942` stops on it; a post-quantum address (`sqf…`/`sqs…`, `tqf…`/`tqs…`, `rqf…`/`rqs…`) answers `address_type` "pq", `ismine`, `pqscheme`, `pqschemename`, `pqkeyhash`, as ycashd since beta2 audit L-4 (ycash6 6f770db7f, ycash-dd 7d6451251) |
 | Own | `help` (the backend's listing with ycashd's lines for the façade's methods merged in), `stop`, and yewd's own `clearunknownsubmission "txid"` (not a ycashd method; see "A submission's answer lost") | served |
