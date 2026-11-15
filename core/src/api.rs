@@ -1685,8 +1685,8 @@ pub fn validate_address(network: NetworkId, address: String) -> AddressCheck {
     }
 }
 
-/// A default endpoint for a network (`docs/release.md` "Default endpoints"; the mainnet and
-/// testnet lists are empty until the owner supplies them, plan §8 Q4).
+/// A default endpoint for a network (`docs/release.md` "Default endpoints"; the mainnet list is
+/// empty until the Yellowback lead architect supplies it, plan §8 Q4; testnet has the fast testnet's server).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DefaultEndpoint {
     /// `host:port`.
@@ -4091,9 +4091,13 @@ mod tests {
             ErrorKind::Locked
         );
 
-        // Default endpoints: none for mainnet or testnet, the devnet for regtest (W5).
+        // Default endpoints: none for mainnet, the fast testnet's server (TLS) for testnet (beta3
+        // item 17), the devnet for regtest (W5).
         assert!(default_servers(NetworkId::Mainnet).is_empty());
-        assert!(default_servers(NetworkId::Testnet).is_empty());
+        let t = default_servers(NetworkId::Testnet);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].address, "fastnet-lightwallet.ycash.team:443");
+        assert!(!t[0].plain);
         assert!(default_servers(NetworkId::Regtest)[0].plain);
         // A plain connection is refused on testnet too, before anything is opened.
         assert_eq!(

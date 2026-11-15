@@ -26,12 +26,16 @@ pub struct DefaultServer {
 /// The default endpoints per network. **Mainnet is empty on purpose**: the owner supplies the
 /// public `lightwalletd-dd` endpoints (plan §8 Q4, `docs/release.md` §4) and nothing ships
 /// until then — the app then asks for a server instead of trusting one nobody has vetted.
-/// Testnet is empty for the same reason until the ≥ 4-week testnet run has a host. Regtest
+/// Testnet: the fast testnet's lightwalletd (beta3 item 17, `fastnet-lightwallet.ycash.team`,
+/// deployed by ycash-infra like the pool and the explorer), TLS with a public certificate. Regtest
 /// is the local devnet.
 pub fn default_servers(network: Network) -> &'static [DefaultServer] {
     match network {
         Network::Mainnet => &[],
-        Network::Testnet => &[],
+        Network::Testnet => &[DefaultServer {
+            address: "fastnet-lightwallet.ycash.team:443",
+            plain: false,
+        }],
         Network::Regtest => &[DefaultServer {
             address: "127.0.0.1:9067",
             plain: true,
@@ -224,7 +228,20 @@ mod tests {
         #[cfg(not(target_arch = "wasm32"))]
         assert!(!webpki_roots::TLS_SERVER_ROOTS.is_empty());
         assert!(default_servers(Network::Mainnet).is_empty());
-        assert!(default_servers(Network::Testnet).is_empty());
+        assert_eq!(
+            default_servers(Network::Testnet),
+            &[DefaultServer {
+                address: "fastnet-lightwallet.ycash.team:443",
+                plain: false
+            }]
+        );
+        // it parses as a testnet TLS endpoint (a plain one would be refused)
+        let s = Server::parse_for(
+            Network::Testnet,
+            default_servers(Network::Testnet)[0].address,
+            false,
+        );
+        assert!(s.is_ok(), "{s:?}");
         assert_eq!(
             default_servers(Network::Regtest)[0].address,
             "127.0.0.1:9067"

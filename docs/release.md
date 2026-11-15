@@ -96,7 +96,7 @@ The list lives in the core: `net/tls.rs` `default_servers(network)` (bridged as
 | Network | Entries | Why |
 |---|---|---|
 | mainnet | **none** | plan §8 Q4: the Yellowback lead architect supplies the public `lightwalletd-dd` endpoints (host, port, certificate) once they exist; nothing ships that trusts a server nobody vetted. Onboarding asks for one. |
-| testnet | none | the same, until the testnet run (§9) is ready; the project's fast-testnet server `fastnet-lightwallet.ycash.team:443` (TLS, YEC only: no YED there) is typed by hand until then |
+| testnet | `fastnet-lightwallet.ycash.team:443` TLS (the web wallet: `https://fastnet-lightwallet.ycash.team`, gRPC-web) | the fast testnet's lightwalletd (beta3 item 17), deployed by ycash-infra beside the pool and the explorer, with a public certificate; YEC only (no Yellowback service there, so no YED) |
 | regtest | `127.0.0.1:9067` plain | the local devnet (the Android emulator reaches it as `10.0.2.2:9267`, typed) |
 
 To ship an endpoint: add a `DefaultServer { address: "lwd.example:443", plain: false }` to the
@@ -176,7 +176,8 @@ The ≥ 4-week run needs, in order:
    public host name with a Let's Encrypt certificate (system roots, no pinning) or a self-signed
    certificate published with the endpoint (pin it, §5). Ports: lightwalletd's 9067 or 443 behind
    a TLS terminator that speaks HTTP/2 end to end (gRPC needs `h2`, not HTTP/1.1 upgrade). Record
-   the host in `default_servers(Testnet)` (§4) so the testers do not type it.
+   the host in `default_servers(Testnet)` (§4) so the testers do not type it (done for the fast
+   testnet's).
 3. **Two phones** (one iOS, one Android) with the signed test builds (§8), the M1 and M2
    integration tests run once by hand against the public endpoint
    (`app/integration_test/m1_flow_test.dart`, `m2_flow_test.dart`), then the 4 weeks of

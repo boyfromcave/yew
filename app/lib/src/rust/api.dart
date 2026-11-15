@@ -1021,8 +1021,8 @@ class Created {
           addressYe == other.addressYe;
 }
 
-/// A default endpoint for a network (`docs/release.md` "Default endpoints"; the mainnet and
-/// testnet lists are empty until the owner supplies them, plan §8 Q4).
+/// A default endpoint for a network (`docs/release.md` "Default endpoints"; the mainnet list is
+/// empty until the Yellowback lead architect supplies it, plan §8 Q4; testnet has the fast testnet's server).
 class DefaultEndpoint {
   /// `host:port`.
   final String address;
