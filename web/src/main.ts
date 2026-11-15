@@ -22,15 +22,16 @@ import { SendVm } from "./vm/send";
 import { HistoryVm } from "./vm/history";
 import { SettingsVm } from "./vm/settings";
 import { YellowbackVm } from "./vm/yellowback";
+import { defaultServerFor } from "./servers";
 
 const app = document.getElementById("app")!;
 const query = new URLSearchParams(location.search);
 const useMock = query.get("mock") === "1" || import.meta.env.VITE_MOCK === "1";
 /** The network the wallet is for (W2: regtest on the kind cluster; `VITE_NETWORK` for a build). */
 const network = import.meta.env.VITE_NETWORK || "regtest";
-/** Served by the gateway (https), the API is on this origin: the server field defaults to it.
- *  The dev loop (vite over http) keeps an explicit URL (the plain :9067 listener). */
-const defaultServer = useMock ? "http://localhost:8080" : location.protocol === "https:" ? `https://${location.hostname}:${location.port || "443"}` : "";
+/** The server field's default (`servers.ts`): the fast testnet's server for a testnet build, the
+ *  gateway's own origin over https, none in the dev loop. */
+const defaultServer = defaultServerFor(network, location, useMock);
 /** `?params=<base URL>`: a mirror for the proving files (the test helper); the Settings field. */
 const paramsSource = query.get("params") ?? "";
 

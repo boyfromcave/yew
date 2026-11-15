@@ -204,7 +204,8 @@ class WalletSettings {
   });
 
   /// No built-in endpoint: the list is the core's `default_servers(network)` (empty for
-  /// mainnet and testnet until the owner supplies it, docs/release.md "Default endpoints");
+  /// mainnet until the Yellowback lead architect supplies it, the fast testnet's server for
+  /// testnet, docs/release.md "Default endpoints");
   /// Onboarding prefills from it and otherwise asks.
   static const String defaultServer = '';
 

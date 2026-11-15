@@ -51,8 +51,8 @@ export '../src/rust/api.dart'
         YewError;
 
 abstract class WalletApi {
-  /// The default endpoints for a network, in order (none for mainnet and testnet until the
-  /// owner supplies them: docs/release.md "Default endpoints").
+  /// The default endpoints for a network, in order (none for mainnet until the Yellowback lead
+  /// architect supplies them; the fast testnet's server for testnet: docs/release.md "Default endpoints").
   List<DefaultEndpoint> defaultServers({required NetworkId network});
 
   /// [caPem] pins one certificate (PEM) as the only trust anchor for the server (audit G-4);

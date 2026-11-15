@@ -96,7 +96,7 @@ The list lives in the core: `net/tls.rs` `default_servers(network)` (bridged as
 | Network | Entries | Why |
 |---|---|---|
 | mainnet | **none** | plan §8 Q4: the owner supplies the public `lightwalletd-dd` endpoints (host, port, certificate) once they exist; nothing ships that trusts a server nobody vetted. Onboarding asks for one. |
-| testnet | none | the same, until the testnet run (§8) has a host |
+| testnet | `fastnet-lightwallet.ycash.team:443` TLS (the web wallet: `https://fastnet-lightwallet.ycash.team`, gRPC-web) | the fast testnet's lightwalletd (beta3 item 17), deployed by ycash-infra beside the pool and the explorer, with a public certificate |
 | regtest | `127.0.0.1:9067` plain | the local devnet (the Android emulator reaches it as `10.0.2.2:9267`, typed) |
 
 To ship an endpoint: add a `DefaultServer { address: "lwd.example:443", plain: false }` to the
