@@ -7,7 +7,8 @@
 // this wallet's reference YEC price (the median of 30 days of reports), and refuses the confirm call unless the preview's
 // acknowledgement comes back with it. The slider alone never sends such a fee: this dialog shows
 // the core's text (the fee in YEC, how many times the usual fee it is, that the terms came from
-// the server) and returns the acknowledgement only when the user accepts it.
+// the server) and returns the acknowledgement only when the user accepts it. A fee of 0.01 YEC or
+// less is never flagged (yew-core `terms::UNUSUAL_FEE_FLOOR_ZAT`, beta3 item 16).
 import 'package:flutter/material.dart';
 
 /// The title of the confirmation: a note the core flagged only because the server's YEC price is
