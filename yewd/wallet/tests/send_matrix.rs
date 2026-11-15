@@ -750,6 +750,88 @@ async fn vault_lock_from_every_address_type() {
     }
 }
 
+/// The locked outpoints (`listlockunspent`) as `txid:n`.
+async fn locked(f: &mut Fix) -> std::collections::BTreeSet<String> {
+    call_json(&mut f.w, &f.node, "listlockunspent", &[])
+        .await
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| format!("{}:{}", o["txid"].as_str().unwrap(), o["vout"]))
+        .collect()
+}
+
+/// Audit L-1 (ycash6 src/rpc/vault.cpp `FundScope`, `Broadcast`; qa wallet_beta2_followups2.py
+/// `lock_lifetime`): a vault_lock funded by default leaves no coin lock, whether the node accepts
+/// it (its inputs are spent by a mempool transaction, then mined) or refuses it (its inputs are
+/// free again); a coin locked with lockunspent stays locked throughout. Before: the inputs `Fund`
+/// chose stayed locked until an unlock or a restart.
+#[tokio::test]
+async fn vault_lock_default_funding_leaves_no_coin_lock() {
+    let mut f = fixture("locklife").await;
+    let ecc = f.ecc.clone();
+    let unspent = call_json(
+        &mut f.w,
+        &f.node,
+        "listunspent",
+        &[json!(1), json!(9999999), json!([ecc])],
+    )
+    .await;
+    let kept = unspent.as_array().unwrap()[0].clone();
+    f.w.call(
+        &f.node,
+        "lockunspent",
+        &[
+            json!(false),
+            json!([{"txid": kept["txid"], "vout": kept["vout"]}]),
+        ],
+    )
+    .await
+    .unwrap();
+    let before = locked(&mut f).await;
+    assert_eq!(before.len(), 1);
+    // refused by the node: nothing stays locked
+    f.node.0.lock().unwrap().reject = Some("bad-txns-test".into());
+    let e = f.lock(None).await.unwrap_err();
+    assert!(e.1.contains("bad-txns-test"), "{e:?}");
+    f.node.0.lock().unwrap().reject = None;
+    assert_eq!(
+        locked(&mut f).await,
+        before,
+        "a refused lock leaves its coins free"
+    );
+    // accepted: no lock, the inputs spent by the unconfirmed lock
+    let r = f.lock(None).await.unwrap();
+    let (tx, _) = f.last_sent();
+    assert_eq!(
+        r["txid"].as_str().unwrap(),
+        yew_core::tx::txid_hex(&tx.txid().unwrap())
+    );
+    assert_eq!(
+        locked(&mut f).await,
+        before,
+        "an accepted lock holds no coin lock"
+    );
+    let free: std::collections::BTreeSet<String> =
+        call_json(&mut f.w, &f.node, "listunspent", &[json!(0)])
+            .await
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| format!("{}:{}", o["txid"].as_str().unwrap(), o["vout"]))
+            .collect();
+    for vin in &tx.vin {
+        let op = format!(
+            "{}:{}",
+            yew_core::tx::txid_hex(&vin.prevout.txid),
+            vin.prevout.n
+        );
+        assert!(!free.contains(&op), "{op}: spent by the unconfirmed lock");
+    }
+    f.mine_sync().await;
+    assert_eq!(locked(&mut f).await, before);
+}
+
 /// vault_lock "from" refusals (ycash-dd 97338f107 / ycash6 554f07fc1 strings), and a PQ from
 /// never spends an output YED holds.
 #[tokio::test]

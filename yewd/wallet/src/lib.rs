@@ -213,6 +213,10 @@ pub struct Wallet {
     pub opts: admin::Opts,
     /// The asynchronous operations (`z_sendmany`'s operation ids), in memory as ycashd's.
     pub ops: zsend::Operations,
+    /// The coins [`Wallet::fund`] locked during the vault RPC call in progress (ycashd's
+    /// `FundScope`, beta2 item 21b and audit L-1): released when the call ends unless a
+    /// remembered build holds them; `None` outside a vault RPC call.
+    pub(crate) fund_scope: Option<BTreeSet<String>>,
 }
 
 /// What the wallet knows about the chain beyond blocks (from `getblockchaininfo`).
@@ -622,6 +626,7 @@ impl Wallet {
             parked: BTreeMap::new(),
             opts: admin::Opts::default(),
             ops: zsend::Operations::default(),
+            fund_scope: None,
         };
         w.refresh_keys()?;
         let txids: Vec<String> = w.st.wtx.keys().cloned().collect();

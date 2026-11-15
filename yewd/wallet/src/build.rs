@@ -550,7 +550,8 @@ impl Wallet {
     }
 
     /// `Fund`: add wallet P2PKH inputs (and a change output) so inputs = outputs + `fee`, given
-    /// `input_value` already provided by the transaction's inputs. The chosen coins are locked.
+    /// `input_value` already provided by the transaction's inputs. The chosen coins are locked;
+    /// inside a vault RPC call only until it ends ([`Wallet::end_fund_scope`]).
     pub async fn fund(
         &mut self,
         node: &dyn Node,
@@ -602,6 +603,9 @@ impl Wallet {
         }
         for c in &chosen {
             self.lock_coin(&c.outpoint);
+            if let Some(scope) = self.fund_scope.as_mut() {
+                scope.insert(op_str(&c.outpoint));
+            }
         }
         self.persist_state()?;
         Ok(chosen)
@@ -1137,6 +1141,50 @@ impl Wallet {
             self.persist_state()?;
         }
         Ok(())
+    }
+
+    /// The end of a vault RPC call (ycashd's `~FundScope`, vault.cpp; audit L-1): every coin
+    /// [`Wallet::fund`] locked in it is unlocked, by any outcome, unless a remembered build holds
+    /// it (`RememberBuild`, the build's own lifetime) or it is an input of a submission whose
+    /// status is unknown (kept locked, and released with that record's locks). An accepted
+    /// transaction's inputs stay out of every selection as spent by a mempool transaction (the
+    /// barrier after `sendrawtransaction`), and come back if it leaves the mempool unmined; a
+    /// refused one leaves them free. Coins locked with `lockunspent` are never in the scope.
+    pub(crate) fn end_fund_scope(&mut self, scope: BTreeSet<String>) {
+        if scope.is_empty() {
+            return;
+        }
+        let held: BTreeSet<String> = self
+            .st
+            .builds
+            .values()
+            .filter_map(|h| parse_hex_tx(h))
+            .flat_map(|t| t.vin.into_iter().map(|i| op_str(&i.prevout)))
+            .collect();
+        let mut changed = false;
+        for op in scope {
+            if held.contains(&op) {
+                continue;
+            }
+            if let Some(u) = self.st.unknown.as_mut() {
+                if u.inputs.contains(&op) {
+                    if !u.locked.contains(&op) {
+                        u.locked.push(op);
+                        changed = true;
+                    }
+                    continue;
+                }
+            }
+            changed |= self.st.locks.remove(&op);
+        }
+        if changed {
+            if let Err(e) = self.persist_state() {
+                eprintln!(
+                    "yewd: could not save the released coin locks ({}); they are released in memory",
+                    e.message
+                );
+            }
+        }
     }
 
     pub fn unlock_build_inputs(&mut self, templ: &OutPoint, t: &Transaction) {
