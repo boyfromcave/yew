@@ -2882,6 +2882,27 @@ mod tests {
         assert_eq!(g.usual_zat, Some(at(50_000_000)));
         assert!(g.note.is_none() && g.ack.is_none(), "{g:?}");
         assert!(require_ack(&g, None).is_ok());
+        // the floor never reaches the hard cap: above this build's limit a fee is refused outright
+        // (no acknowledgement can pass it), at every price and with or without a reference
+        for (kind, sz) in [
+            (FeeKind::Yed, size),
+            (FeeKind::Plain, 1_800),
+            (FeeKind::Plain, 8_100),
+        ] {
+            let limit = match kind {
+                FeeKind::Plain => params::pq_send_fee_limit(sz, 0),
+                FeeKind::Yed => params::yed_fee_limit(sz, 0),
+            };
+            assert!(limit > UNUSUAL_FEE_FLOOR_ZAT, "{limit}");
+            for (p, r) in [
+                (10_000_000i64, est(50_000_000)),
+                (100_000, FeeReference::default()),
+            ] {
+                let e = guard_fee(&terms_at(p), r, kind, limit + 1, sz, 0, "x").unwrap_err();
+                assert!(e.to_string().contains("above this app's limit"), "{e}");
+                assert!(guard_fee(&terms_at(p), r, kind, limit, sz, 0, "x").is_ok());
+            }
+        }
         // even ten times the usual is not asked about while it stays under the floor
         let g = guard_fee(
             &terms_at(50_000_000),
