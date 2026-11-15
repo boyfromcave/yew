@@ -137,7 +137,7 @@ describe("send", () => {
     vm.acceptFee(); await vm.confirm(); expect(vm.state.error).toBe(""); expect(core.broadcasts).toHaveLength(1);
   });
   it("a fee flagged only for a low server price is a price check, and still needs its own step (yew#37 review)", async () => {
-    const note = "Low YEC price: the server reports $10.0000 per YEC, below half this wallet's reference YEC price ($50.0000 per YEC, the median of the last 30 days' reports). The fee, 0.00575000 YEC (about $0.06), is a usual fee in dollars at the server's price.";
+    const note = "Low YEC price: your server reports a YEC price of $0.1000 per YEC, less than half the $0.5000 per YEC this wallet has seen over the last 30 days. Fees are set in dollars, so at that price this one is 0.575 YEC (about $0.06) instead of about 0.115 YEC.";
     expect(unusualFeeTitle(note)).toBe("YEC price check"); expect(unusualFeeTitle("Unusual fee: 0.84 YEC, 4.0× the usual.")).toBe("Unusual fee");
     const core = await openWallet(); core.unusualPqFee = note; const vm = new SendVm(core, "yec");
     await vm.loadSources(); vm.setFrom(vm.state.sources[0].address);
@@ -154,7 +154,7 @@ describe("send", () => {
   it("move: shield needs the params", async () => {
     const core = await openWallet(); const vm = new SendVm(core, "yec");
     await vm.movePreview("to_private", "1"); expect(vm.state.errorKind).toBe("params");
-    await core.fetch_params(() => {}); await vm.movePreview("to_private", "1"); expect(vm.state.move?.fee).toBe("10000");
+    await core.fetch_params(() => {}); await vm.movePreview("to_private", "1"); expect(vm.state.move?.fee).toBe("1000");
   });
 });
 

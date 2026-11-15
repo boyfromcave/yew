@@ -14,7 +14,8 @@ const YED = "ye1MockYedAddress0000000000000000000";
 const PQ_FALCON = "rqf1MockFalconAddress000000000000000000000000000000000";
 const PQ_SLH = "rqs1MockSlhAddress000000000000000000000000000000000000";
 const NO_HYBRID = "Not available in the browser: this send needs the wallet's combined private and post-quantum builder, which only the app has. Use the app.";
-const FEE = "10000";
+/** The node's fee for a plain send (yew-core `any_to_any::node_fee`, beta3 item 10): 1,000 zat. */
+const FEE = "1000";
 
 export interface MockOptions { delayMs?: number; tip?: number; failNetwork?: boolean; pqUnindexed?: boolean }
 

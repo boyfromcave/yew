@@ -14,7 +14,7 @@
 //!   opened lazily at the first sync (it connects on open) and registers the account once.
 //! - This module reads and writes the same store through its own `WalletDb` handle: balances
 //!   (offline), the spend path (privacy-first funding is decided in `api.rs`; here: proposal
-//!   with the ZIP-317 fee at Ycash's 500 zat per action for the preview, then prove and sign at confirm, transparent recipients
+//!   with the node's fee for the shape for the preview, then prove and sign at confirm, transparent recipients
 //!   included), memo enhancement (`GetTransaction` + `decrypt_and_store_transaction`, which the
 //!   light library does not do: compact outputs carry no memo), transaction status, history.
 //! - Network calls other than the light library's sync go through YEW's own channel
@@ -59,7 +59,7 @@ use zcash_client_sqlite::wallet::init::init_wallet_db;
 use zcash_client_sqlite::{AccountUuid, ReceivedNoteId, WalletDb};
 use zcash_keys::address::Address;
 use zcash_primitives::transaction::builder::{BuildConfig, Builder};
-use zcash_primitives::transaction::fees::zip317;
+use zcash_primitives::transaction::fees::fixed;
 use zcash_primitives::transaction::Transaction as ZTransaction;
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::consensus::{BlockHeight, BranchId, NetworkUpgrade, Parameters};
@@ -382,7 +382,7 @@ pub struct SpendPlan {
     pub amount_zat: u64,
     /// The amount was bumped from exactly `TOKEN_VALUE`.
     pub amount_bumped: bool,
-    /// The fee, zat: ZIP-317 at Ycash's marginal fee ([`ycash_fee_rule`]).
+    /// The fee, zat: the node's fee for the shape ([`ycash_fee_rule`]).
     pub fee_zat: u64,
     /// Shielded change back to the wallet, zat.
     pub change_zat: u64,
@@ -398,7 +398,7 @@ pub struct SpendPlan {
     /// every signature commits to.
     pub target_height: u32,
     /// Read by `build`.
-    proposal: Proposal<zip317::FeeRule, ReceivedNoteId>,
+    proposal: Proposal<fixed::FeeRule, ReceivedNoteId>,
 }
 
 impl std::fmt::Debug for SpendPlan {
@@ -471,11 +471,11 @@ impl ShieldTo {
     /// The fee ycash6's `z_sendmany` charges a transaction with one Sapling output (padded to
     /// two) under its default `-feepolicy=peroutput`: 1,000 zat.
     pub fn node_fee() -> u64 {
-        use crate::build::any_to_any::{padded, peroutput_fee};
-        peroutput_fee(padded(1)) as u64
+        crate::build::any_to_any::node_fee(1) as u64
     }
 
-    /// The fee a shield to this destination pays when it is fixed (not ZIP-317).
+    /// The fee a shield to this destination pays when it is set by the caller (a change too small
+    /// to keep folded in); `None`: [`ycash_fee_rule`].
     pub fn fixed_fee(&self) -> Option<u64> {
         match self {
             ShieldTo::Own => None,
@@ -484,26 +484,20 @@ impl ShieldTo {
     }
 }
 
-/// The fee rule of every Sapling transaction the core builds: ZIP-317's conventional fee at
-/// Ycash's marginal fee, 500 zat per logical action (ycash6 `src/zip317.h` `MARGINAL_FEE`, grace
-/// actions 2, P2PKH input 150 and output 34 bytes; [`crate::params::ZIP317_MARGINAL_FEE`]), not
-/// librustzcash's `zip317::FeeRule::standard()` (Zcash's 5,000 zat). It is what ycashd pays under
-/// `-feepolicy=zip317` and what yewd pays for the same shapes (one Sapling spend to a Sapling
-/// address: 1,000 zat; one public coin to the wallet's own Sapling address with public change,
-/// or one Sapling spend to a public address: 1,500 zat). Never below what the nodes relay and
-/// mine: at least 1,000 zat (two grace actions) = the per-Sapling-output floor (1,000 zat up to
-/// 50 Sapling outputs; these shapes have at most two) and above the 1,000-zat cap of the
-/// minimum relay fee, and fully paid under ZIP-317 when a ycash6 (`-txunpaidactionlimit=0`) or a
-/// koganyd (`mining.block_unpaid_action_limit = 0`) opts into the unpaid-action rule, whose
-/// count uses the same 500 zat.
-pub fn ycash_fee_rule() -> zip317::FeeRule {
-    zip317::FeeRule::non_standard(
-        Zatoshis::const_from_u64(crate::params::ZIP317_MARGINAL_FEE as u64),
-        crate::params::ZIP317_GRACE_ACTIONS,
-        crate::params::ZIP317_INPUT_SIZE,
-        crate::params::ZIP317_OUTPUT_SIZE,
-    )
-    .expect("non-zero standard sizes")
+/// The fee rule of every plain Sapling transaction the core builds (the app, the web wallet, and
+/// yewd through the same core): the fee ycashd's own wallet pays the shape when no fee is given,
+/// [`crate::build::any_to_any::node_fee`] (ycash6 `src/wallet/wallet_tx_builder.cpp`
+/// `CalcZIP317Fee` under the default `-feepolicy=peroutput`, `src/zip317.h`
+/// `DEFAULT_FEE_POLICY`): 1,000 zat for any transaction with at most 50 Sapling outputs. The
+/// shapes built here have at most two (the payment and the change, padded to two), so the rule
+/// is that fixed 1,000 zat. Not librustzcash's `zip317::FeeRule::standard()` (Zcash's 5,000 zat a
+/// logical action: 10,000 / 15,000 zat for these shapes before beta3). It equals the relay floor
+/// both node lines apply (`PerSaplingOutputFees`, 1,000 zat up to 50 Sapling outputs) and clears
+/// the minimum relay fee (100 zat/kB, capped at 1,000).
+pub fn ycash_fee_rule() -> fixed::FeeRule {
+    fixed::FeeRule::non_standard(Zatoshis::const_from_u64(
+        crate::build::any_to_any::NODE_FEE_ZAT as u64,
+    ))
 }
 
 fn zat(v: u64) -> Result<Zatoshis, ShieldedError> {
@@ -1071,7 +1065,7 @@ impl Shielded {
 
     /// Plan a shielded spend of `amount_zat` to `to` (a Sapling address of this network, or a
     /// transparent `s…` / `t…` one) with an optional text memo (Sapling recipients only, at most
-    /// [`MAX_MEMO_BYTES`] bytes of UTF-8). ZIP-317 fee at Ycash's 500 zat ([`ycash_fee_rule`]), change to the wallet's Sapling account,
+    /// [`MAX_MEMO_BYTES`] bytes of UTF-8). The node's fee ([`ycash_fee_rule`]), change to the wallet's Sapling account,
     /// greedy note selection. Nothing is proved, stored or locked.
     pub fn plan(
         &mut self,
@@ -1124,8 +1118,8 @@ impl Shielded {
         let amount = Zatoshis::from_u64(amount_zat)
             .map_err(|_| ShieldedError::Propose(format!("bad amount {amount_zat}")))?;
         let params = self.params;
-        // librustzcash's `propose_standard_transfer_to_address`, with Ycash's fee rule in place
-        // of its `StandardFeeRule` (Zcash's 5,000-zat marginal fee)
+        // librustzcash's `propose_standard_transfer_to_address`, with the node's fee rule in
+        // place of its `StandardFeeRule` (Zcash's 5,000-zat marginal fee)
         #[allow(deprecated)]
         let request = zcash_client_backend::zip321::TransactionRequest::new(vec![
             zcash_client_backend::zip321::Payment::new(
@@ -1141,7 +1135,7 @@ impl Shielded {
         .map_err(|e| ShieldedError::Propose(e.to_string()))?;
         let input_selector = GreedyInputSelector::<Db>::new();
         let change_strategy =
-            zcash_client_backend::fees::zip317::SingleOutputChangeStrategy::<_, Db>::new(
+            zcash_client_backend::fees::fixed::SingleOutputChangeStrategy::<Db>::new(
                 ycash_fee_rule(),
                 None,
                 ShieldedProtocol::Sapling,
@@ -1398,8 +1392,8 @@ impl Shielded {
         let params_millis = self.load_prover(params_dir)?;
         let t1 = now_ms();
         let b = self.shield_builder(target, inputs, to, amount_zat, change)?;
-        // The fee the builder charges (its own ZIP-317 computation, or the fixed fee of a shield
-        // to another wallet; `fee_paid` cannot see the transparent input values once built).
+        // The fee the builder charges ([`ycash_fee_rule`], or the fee set for a shield to another
+        // wallet; `fee_paid` cannot see the transparent input values once built).
         let fixed = to.fixed_fee();
         let fee_zat = match fixed {
             Some(f) => f,
