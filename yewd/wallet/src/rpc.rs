@@ -79,6 +79,7 @@ pub fn served(method: &str) -> bool {
         || crate::admin::SERVED.contains(&method)
         || crate::zsend::SERVED.contains(&method)
         || crate::legacy::SERVED.contains(&method)
+        || crate::merge::SERVED.contains(&method)
         || crate::bytype::SERVED.contains(&method)
 }
 
@@ -95,6 +96,7 @@ pub fn all_served() -> Vec<&'static str> {
         .chain(crate::admin::SERVED)
         .chain(crate::zsend::SERVED)
         .chain(crate::legacy::SERVED)
+        .chain(crate::merge::SERVED)
         .chain(crate::bytype::SERVED)
         .copied()
         .collect()
@@ -458,6 +460,7 @@ impl Wallet {
             m if crate::attest::SERVED.contains(&m) => self.attest_call(node, m, p).await,
             m if crate::admin::SERVED.contains(&m) => self.admin_call(node, m, p).await,
             m if crate::zsend::SERVED.contains(&m) => self.zsend_call(node, m, p).await,
+            m if crate::merge::SERVED.contains(&m) => self.merge_call(node, m, p).await,
             m if crate::legacy::SERVED.contains(&m) => self.legacy_call(node, m, p).await,
             m if crate::bytype::SERVED.contains(&m) => self.bytype_call(node, m, p).await,
             _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),

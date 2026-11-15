@@ -309,7 +309,7 @@ impl Facade {
                 &methods::not_implemented_message(&method, stage),
                 id,
             ),
-            // F-S5-10: the post-quantum refusals of two methods outside K-25, as ycashd answers them
+            // F-S5-10: the post-quantum refusal of a method outside K-25, as ycashd answers it
             Some(Class::OutOfScope) if method == "z_shieldcoinbase" => {
                 let params = params_of(env.params).unwrap_or_default();
                 let net = crate::wallet::core_network(self.wallet.network);

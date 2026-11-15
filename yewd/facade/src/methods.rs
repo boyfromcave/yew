@@ -180,8 +180,8 @@ pub const GATE_WALLET: &[(&str, Stage)] = &[
     ("listreceivedbyaddress", S5),
     ("listtransactions", S5),
     ("z_listaddresses", S5),
-    // F-S5-10: its post-quantum refusals and "Could not find any funds to merge."; merging itself
-    // stays outside K-25
+    // F-S5-10, served in full since beta3 item 14 (wallet/src/merge.rs: ycashd's merge, post-quantum
+    // sources included, beta2 D-6)
     ("z_mergetoaddress", S5),
 ];
 

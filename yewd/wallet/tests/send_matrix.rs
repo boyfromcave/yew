@@ -866,6 +866,95 @@ async fn vault_funding_change_is_listed_sent_and_received() {
         .any(|a| a.as_str() == Some(change.as_str())));
 }
 
+/// z_mergetoaddress from post-quantum and ECC sources (ycash6 rpcwallet.cpp z_mergetoaddress, beta2
+/// D-6; qa wallet_address_matrix.py): a post-quantum address merges its own coins into one output,
+/// priced on its size; ANY_TADDR takes ECC coins only; the refusals are ycashd's. Before: only the
+/// refusals were served ("use z_sendmany").
+#[tokio::test]
+async fn z_mergetoaddress_merges_post_quantum_and_ecc_coins() {
+    let mut f = fixture("merge").await;
+    let to = text_of(
+        f.w.call(&f.node, "getnewaddress", &[json!("pqslh")])
+            .await
+            .unwrap(),
+    );
+    let merge = |froms: Value, to: &str| {
+        vec![
+            froms,
+            json!(to),
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            json!("NoPrivacy"),
+        ]
+    };
+    for (froms, want) in [
+        (
+            json!([]),
+            "Invalid parameter, fromaddresses array is empty.",
+        ),
+        (
+            json!([f.ecc, f.ecc]),
+            "Invalid parameter, duplicated address: ",
+        ),
+        (
+            json!(["ANY_TADDR", f.ecc]),
+            "Cannot specify specific taddrs when using \"ANY_TADDR\"",
+        ),
+        (json!([to]), "Could not find any funds to merge."),
+    ] {
+        let e =
+            f.w.call(&f.node, "z_mergetoaddress", &merge(froms, &f.slh))
+                .await
+                .unwrap_err();
+        assert!(e.message.starts_with(want), "{}", e.message);
+    }
+    // the FN-DSA coin into the new SLH-DSA address
+    let fn_ = f.fn_.clone();
+    let r = call_json(
+        &mut f.w,
+        &f.node,
+        "z_mergetoaddress",
+        &merge(json!([fn_]), &to),
+    )
+    .await;
+    assert_eq!(
+        (r["mergingUTXOs"].as_i64(), r["remainingUTXOs"].as_i64()),
+        (Some(1), Some(0))
+    );
+    let opid = r["opid"].as_str().unwrap().to_string();
+    let res = call_json(&mut f.w, &f.node, "z_getoperationresult", &[json!([opid])]).await;
+    assert_eq!(res[0]["status"], "success", "{res}");
+    let (tx, _) = f.last_sent();
+    assert_eq!((tx.vin.len(), tx.vout.len()), (1, 1));
+    assert_eq!(tx.vout[0].script_pubkey, addr_script(&to));
+    let fee = 5 * COIN - tx.vout[0].value;
+    assert!(fee >= 5_500, "an FN-DSA input's size-priced fee: {fee}");
+    check_pq_signatures(&f, &tx);
+    f.mine_sync().await;
+    // ANY_TADDR: the five ECC coins, never a post-quantum one; the default fee
+    let ecc_to = text_of(f.w.call(&f.node, "getnewaddress", &[]).await.unwrap());
+    let r = call_json(
+        &mut f.w,
+        &f.node,
+        "z_mergetoaddress",
+        &merge(json!(["ANY_TADDR"]), &ecc_to),
+    )
+    .await;
+    assert_eq!(r["mergingUTXOs"].as_i64(), Some(5));
+    let (tx, _) = f.last_sent();
+    for vin in &tx.vin {
+        let (s, _) = f.prevout(&vin.prevout.txid, vin.prevout.n);
+        assert!(yew_core::script::p2pkh_hash(&s).is_some(), "ECC coins only");
+    }
+    assert_eq!(9 * COIN - tx.vout[0].value, 1_000, "-feepolicy=peroutput");
+}
+
+fn text_of(v: yewd_wallet::json::J) -> String {
+    v.text().trim_matches('"').to_string()
+}
+
 /// vault_lock "from" refusals (ycash-dd 97338f107 / ycash6 554f07fc1 strings), and a PQ from
 /// never spends an output YED holds.
 #[tokio::test]
