@@ -226,6 +226,7 @@ fn build(
             value: u.value,
             script: u.script.clone(),
             key: u.clone(),
+            coinbase: false,
         })
         .collect();
     let recipients = [PlanRecipient {
@@ -987,6 +988,7 @@ mod tests {
                 value: u.value,
                 script: u.script.clone(),
                 key: u.clone(),
+                coinbase: false,
             })
             .collect();
         check_signed_locally(&tx, &sel, p.fee, 0).unwrap();

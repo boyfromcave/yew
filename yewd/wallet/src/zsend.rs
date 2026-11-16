@@ -96,6 +96,38 @@ pub use yew_core::build::any_to_any::{
     conventional_fee, conventional_fee_bytes, node_fee, MAX_PQ_INPUTS_PER_TX,
 };
 
+/// ycash6 `PQInsufficientFunds` (beta3): the "Insufficient transparent funds" message of
+/// `z_sendmany` from a post-quantum address, followed by what the address holds in coinbase that
+/// this send could not use: `coinbase_excluded`, mature coinbase left out because a recipient is
+/// not shielded, and `immature_coinbase`. Unchanged when both are zero.
+pub(crate) fn pq_insufficient_funds(
+    message: &str,
+    coinbase_excluded: i64,
+    immature_coinbase: i64,
+) -> String {
+    let mut s = message.to_string();
+    if coinbase_excluded <= 0 && immature_coinbase <= 0 {
+        return s;
+    }
+    if !s.ends_with('.') {
+        s.push('.');
+    }
+    if coinbase_excluded > 0 {
+        s += &format!(
+            " The address holds {} of coinbase funds, which can only be sent to shielded recipients, with no change.",
+            money(coinbase_excluded)
+        );
+    }
+    if immature_coinbase > 0 {
+        s += &format!(
+            " The address holds {} of immature coinbase funds, which can be sent to shielded recipients only, with no change, after {} confirmations.",
+            money(immature_coinbase),
+            crate::COINBASE_MATURITY + 1
+        );
+    }
+    s
+}
+
 /// A planner refusal as the RPC error ycashd answers with (the node's code and text).
 fn plan_err(e: PlanError) -> RpcError {
     RpcError::new(e.rpc_code(), e.to_string())
@@ -980,6 +1012,24 @@ impl Wallet {
         self.ensure_unlocked()
     }
 
+    /// ycash6 `PQImmatureCoinbase`: the value of this wallet's immature coinbase outputs that pay
+    /// `script` (in the chain, not yet `COINBASE_MATURITY + 1` deep, unspent). `available_coins`
+    /// never lists them; `z_sendmany` names the sum when it refuses a send from the address.
+    pub(crate) fn pq_immature_coinbase(&self, script: &[u8]) -> i64 {
+        self.coins
+            .iter()
+            .filter(|c| {
+                let d = self.depth_at(c.height, None);
+                c.coinbase
+                    && c.script == script
+                    && d > 0
+                    && self.immature(true, d)
+                    && !self.spent_at(&c.txid, c.vout, None)
+            })
+            .map(|c| c.value)
+            .sum()
+    }
+
     /// ycash6 `WalletTxBuilder::PreparePQTransaction` (beta2 D-2, D-4, D-5): `z_sendmany` from a
     /// post-quantum address. Its own `TX_PQPKH` coins (never a YED output, never a locked coin),
     /// largest first; the fee priced on the transaction's size (`PQBuilderFee`) and settled with
@@ -1020,7 +1070,15 @@ impl Wallet {
             }
         }
         // the source's own coins: unspent, unlocked, mature, at depth >= minconf, not spent by a
-        // mempool transaction of this wallet, and never an output YED holds
+        // mempool transaction of this wallet, and never an output YED holds. Beta3: a pool may pay
+        // a block reward to a post-quantum address (getcoinbasetemplatefor). Its mature coinbase
+        // is kept apart: it is spent only when every recipient is shielded, only with no change
+        // (the rule a transparent coinbase is under where coinbase must be shielded, applied on
+        // every network as z_sendmany applies it to an ECC address), and only when the
+        // address's other coins do not cover the send (ycash-dd `select_pq_inputs`, ycash6
+        // `WalletTxBuilder::PreparePQTransaction`)
+        let shielded_only = recipients.iter().all(|r| matches!(r.0, Dest::Z(_)));
+        let immature_coinbase = self.pq_immature_coinbase(source);
         let reserved = self.yed_reserved(node).await?;
         let spent = self.mempool_spent();
         let key =
@@ -1031,9 +1089,9 @@ impl Wallet {
                 })?,
             };
         let mut coins: Vec<plan::PqCoin<KeyRef>> = Vec::new();
+        let mut coinbase_coins: Vec<plan::PqCoin<KeyRef>> = Vec::new();
         for (c, d) in self.available_coins(None) {
             if c.script != source
-                || c.coinbase
                 || d < min
                 || spent.contains(&(c.txid.clone(), c.vout))
                 || reserved.contains(&(c.txid.clone(), c.vout))
@@ -1045,15 +1103,41 @@ impl Wallet {
                     .map_err(|e| RpcError::new(code::MISC_ERROR, e))?,
                 n: c.vout,
             };
-            coins.push(plan::PqCoin {
+            let coin = plan::PqCoin {
                 outpoint: op,
                 value: c.value,
                 script: c.script.clone(),
                 key,
-            });
+                coinbase: c.coinbase,
+            };
+            if c.coinbase {
+                coinbase_coins.push(coin);
+            } else {
+                coins.push(coin);
+            }
         }
-        let p = plan::plan_pq_source(&coins, source, &planned, fee, policy, rate, cap)
-            .map_err(plan_err)?;
+        let coinbase_value: i64 = coinbase_coins.iter().map(|c| c.value).sum();
+        let short =
+            |e: &PlanError| matches!(e, PlanError::NoCoins | PlanError::Insufficient { .. });
+        let mut first = plan::plan_pq_source(&coins, source, &planned, fee, policy, rate, cap);
+        // the mature coinbase left out of this send (0 once it has joined the candidates)
+        let mut coinbase_excluded = coinbase_value;
+        if first.as_ref().is_err_and(short) && shielded_only && !coinbase_coins.is_empty() {
+            // the ordinary coins fall short and every recipient is shielded: the mature coinbase
+            // joins the candidates and the fee is settled anew
+            coins.append(&mut coinbase_coins);
+            coinbase_excluded = 0;
+            first = plan::plan_pq_source(&coins, source, &planned, fee, policy, rate, cap);
+        }
+        let p = first.map_err(|e| {
+            let tail = short(&e);
+            let mut err = plan_err(e);
+            if tail {
+                err.message =
+                    pq_insufficient_funds(&err.message, coinbase_excluded, immature_coinbase);
+            }
+            err
+        })?;
         let send = p.send;
         let cur_fee = p.fee;
         let change = p.change;
