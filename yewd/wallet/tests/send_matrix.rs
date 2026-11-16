@@ -1769,3 +1769,330 @@ async fn any_taddr_links_addresses_only_where_the_policy_allows() {
         .await
         .unwrap();
 }
+
+/// A zat amount from its decimal text ("9.9999" -> 999_990_000).
+fn zat_of(text: &str) -> i64 {
+    let (whole, frac) = text.split_once('.').unwrap_or((text, ""));
+    let frac = format!("{frac:0<8}");
+    whole.parse::<i64>().unwrap() * COIN + frac.parse::<i64>().unwrap()
+}
+
+/// The fee a "When shielding coinbase funds" refusal names, and the whole message expected for
+/// `change` left of `selected`.
+fn coinbase_change_fee(message: &str, selected: i64, send: i64) -> i64 {
+    let fee = zat_of(
+        message
+            .rsplit_once("less the fee ")
+            .and_then(|(_, t)| t.strip_suffix(")."))
+            .unwrap_or_else(|| panic!("{message}")),
+    );
+    let m = yew_core::build::any_to_any::format_money;
+    assert_eq!(
+        message,
+        format!(
+            "When shielding coinbase funds, the wallet does not allow any change. The proposed transaction would result in {} in change. To spend the selected coins, send exactly {} to shielded recipients (the {} selected less the fee {}).",
+            m(selected - send - fee),
+            m(selected - fee),
+            m(selected),
+            m(fee)
+        )
+    );
+    fee
+}
+
+/// Beta3: a pool pays a block reward straight to a post-quantum address
+/// (`getcoinbasetemplatefor`), and the miner shields it with `z_sendmany`. For both schemes: the
+/// coinbase is not spendable and not in the balance before 101 confirmations; once mature it is
+/// selected only when every recipient is shielded and the address's other coins fall short; it
+/// never enters a transaction with a transparent output (a transparent recipient, or change);
+/// the wallet refuses the wrong shapes itself, nothing is handed to the node; a wallet holding
+/// coinbase and ordinary coins at one address spends the ordinary ones as before.
+#[tokio::test]
+async fn a_post_quantum_coinbase_is_shielded_once_mature() {
+    let mut f = fixture("pqcoinbase").await;
+    let (slh, fn_, zaddr, ecc) = (f.slh.clone(), f.fn_.clone(), f.zaddr.clone(), f.ecc.clone());
+    // blocks 2 and 3 pay their 10 YEC reward to the SLH-DSA and the FN-DSA address; each address
+    // also holds the fixture's ordinary 5 YEC coin
+    let reward = 10 * COIN;
+    f.node.mine(vec![coinbase(2, addr_script(&slh), reward)], 0);
+    f.node.mine(vec![coinbase(3, addr_script(&fn_), reward)], 0);
+    for _ in 0..98 {
+        f.mine();
+    }
+    f.w.sync(&f.node).await.unwrap();
+    // tip 101: the two coinbases are 100 and 99 deep, immature
+    let sent0 = f.node.0.lock().unwrap().sent.len();
+    let info = call_json(&mut f.w, &f.node, "getwalletinfo", &[]).await;
+    assert_eq!(zat(&info["immature_balance"]), 2 * reward);
+    assert_eq!(zat(&info["balance"]), 19 * COIN, "the fixture's coins only");
+    let balance = f.w.call(&f.node, "getbalance", &[]).await.unwrap().text();
+    assert_eq!(balance, "19.00000000");
+    let total = call_json(&mut f.w, &f.node, "z_gettotalbalance", &[]).await;
+    assert_eq!(total["transparent"], "19.00");
+    let rows = call_json(&mut f.w, &f.node, "listunspent", &[]).await;
+    assert!(
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["generated"] == false),
+        "an immature coinbase is not listed"
+    );
+    let immature_tail =
+        " The address holds 10.00 of immature coinbase funds, which can be spent after 101 confirmations.";
+    for from in [&slh, &fn_] {
+        // more than the ordinary coin: refused, the immature coinbase named
+        let e = f
+            .send(
+                from,
+                &[(&zaddr, 7 * COIN)],
+                None,
+                Some("AllowRevealedSenders"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(e.0, -6, "{e:?}");
+        assert!(
+            e.1.starts_with("Insufficient transparent funds, have 5.00, need 7.0")
+                && e.1.ends_with(&format!(".{immature_tail}")),
+            "{e:?}"
+        );
+    }
+    assert_eq!(f.node.0.lock().unwrap().sent.len(), sent0);
+
+    // tip 102: the SLH-DSA coinbase is mature (101 deep), the FN-DSA one is not (100)
+    f.mine_sync().await;
+    let info = call_json(&mut f.w, &f.node, "getwalletinfo", &[]).await;
+    assert_eq!(zat(&info["immature_balance"]), reward);
+    assert_eq!(zat(&info["balance"]), 29 * COIN);
+    let rows = call_json(&mut f.w, &f.node, "listunspent", &[]).await;
+    let generated: Vec<&Value> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["generated"] == true)
+        .collect();
+    assert_eq!(generated.len(), 1);
+    assert_eq!(generated[0]["address"], slh.as_str());
+    assert_eq!(zat(&generated[0]["amount"]), reward);
+    let e = f
+        .send(
+            &fn_,
+            &[(&zaddr, 7 * COIN)],
+            None,
+            Some("AllowRevealedSenders"),
+        )
+        .await
+        .unwrap_err();
+    assert!(e.0 == -6 && e.1.ends_with(immature_tail), "{e:?}");
+    // tip 103: both mature
+    f.mine_sync().await;
+    let info = call_json(&mut f.w, &f.node, "getwalletinfo", &[]).await;
+    assert_eq!(zat(&info["immature_balance"]), 0);
+    assert_eq!(zat(&info["balance"]), 39 * COIN);
+
+    let mut shielded = 0i64;
+    for from in [&slh, &fn_] {
+        let sent0 = f.node.0.lock().unwrap().sent.len();
+        let cb_script = addr_script(from);
+        let is_coinbase = |f: &Fix, txid: &[u8; 32]| {
+            let id = yew_core::tx::txid_hex(txid);
+            f.w.coins.iter().any(|c| c.txid == id && c.coinbase)
+        };
+        // a transparent recipient: the coinbase stays out, and the refusal says what it is for
+        let e = f
+            .send(
+                from,
+                &[(&ecc, 7 * COIN)],
+                None,
+                Some("AllowFullyTransparent"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(e.0, -6, "{e:?}");
+        assert!(
+            e.1.starts_with("Insufficient transparent funds, have 5.00, need 7.0")
+                && e.1.ends_with(". The address holds 10.00 of coinbase funds, which can only be sent to shielded recipients, with no change."),
+            "{e:?}"
+        );
+        // a shielded and a transparent recipient together: the same
+        let e = f
+            .send(
+                from,
+                &[(&zaddr, 6 * COIN), (&ecc, COIN)],
+                None,
+                Some("AllowFullyTransparent"),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            e.0 == -6
+                && e.1
+                    .contains("which can only be sent to shielded recipients"),
+            "{e:?}"
+        );
+        // shielded, but change would be left: refused with the amount that works
+        let e = f
+            .send(
+                from,
+                &[(&zaddr, 7 * COIN)],
+                None,
+                Some("AllowRevealedSenders"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(e.0, -4, "{e:?}");
+        let fee = coinbase_change_fee(&e.1, reward, 7 * COIN);
+        assert!(fee >= 1000, "{fee}");
+        assert_eq!(
+            f.node.0.lock().unwrap().sent.len(),
+            sent0,
+            "nothing reached the node"
+        );
+        // an amount the ordinary coin covers never touches the coinbase: a transparent payment
+        // with change back to the address, as before
+        f.send(from, &[(&ecc, COIN)], None, Some("AllowFullyTransparent"))
+            .await
+            .unwrap();
+        let (tx, _) = f.last_sent();
+        assert_eq!(tx.vin.len(), 1);
+        assert!(!is_coinbase(&f, &tx.vin[0].prevout.txid));
+        let change = tx
+            .vout
+            .iter()
+            .find(|o| o.script_pubkey == cb_script)
+            .expect("the change returns to the source")
+            .value;
+        f.mine_sync().await;
+        // more than the ordinary change: the coinbase joins it, and the two are shielded whole
+        let both = reward + change;
+        let e = f
+            .send(
+                from,
+                &[(&zaddr, 12 * COIN)],
+                None,
+                Some("AllowRevealedSenders"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(e.0, -4, "{e:?}");
+        let fee = coinbase_change_fee(&e.1, both, 12 * COIN);
+        let before = f.node.0.lock().unwrap().sent.len();
+        f.send(
+            from,
+            &[(&zaddr, both - fee)],
+            None,
+            Some("AllowRevealedSenders"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(f.node.0.lock().unwrap().sent.len(), before + 1);
+        let (tx, raw) = f.last_sent();
+        assert_eq!(tx.vin.len(), 2);
+        assert_eq!(
+            tx.vin
+                .iter()
+                .filter(|i| is_coinbase(&f, &i.prevout.txid))
+                .count(),
+            1
+        );
+        assert!(
+            tx.vout.is_empty(),
+            "a coinbase spend has no transparent output"
+        );
+        check_pq_signature_with_sapling(&f, &raw, &tx);
+        f.mine_sync().await;
+        shielded += both - fee;
+        assert_eq!(f.zbalance(&zaddr).await, shielded);
+        // the address is empty
+        let e = f
+            .send(from, &[(&zaddr, COIN)], None, Some("AllowRevealedSenders"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            e,
+            (
+                -6,
+                "Insufficient transparent funds, no UTXOs found for taddr from address.".into()
+            )
+        );
+    }
+}
+
+/// Beta3: an address that holds nothing but its mature coinbase (a miner's payout address).
+/// The whole coin is shielded at the amount the refusal names; a transparent recipient finds no
+/// coin and is told why.
+#[tokio::test]
+async fn a_post_quantum_miner_shields_a_lone_coinbase() {
+    let mut f = fixture("pqcoinbase-lone").await;
+    let zaddr = f.zaddr.clone();
+    let text = |v: yewd_wallet::json::J| v.text().trim_matches('"').to_string();
+    let slh = text(
+        f.w.call(&f.node, "getnewaddress", &[json!("pqslh")])
+            .await
+            .unwrap(),
+    );
+    let fn_ = text(
+        f.w.call(&f.node, "getnewaddress", &[json!("pq")])
+            .await
+            .unwrap(),
+    );
+    let reward = 1_250_000_000;
+    f.node.mine(vec![coinbase(2, addr_script(&slh), reward)], 0);
+    f.node.mine(vec![coinbase(3, addr_script(&fn_), reward)], 0);
+    for _ in 0..100 {
+        f.mine();
+    }
+    f.w.sync(&f.node).await.unwrap();
+    let ecc = f.ecc.clone();
+    let mut shielded = 0;
+    for from in [&slh, &fn_] {
+        let sent0 = f.node.0.lock().unwrap().sent.len();
+        let e = f
+            .send(from, &[(&ecc, COIN)], None, Some("AllowFullyTransparent"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            e,
+            (
+                -6,
+                "Insufficient transparent funds, no UTXOs found for taddr from address. The address holds 12.50 of coinbase funds, which can only be sent to shielded recipients, with no change.".into()
+            )
+        );
+        let e = f
+            .send(
+                from,
+                &[(&zaddr, reward)],
+                None,
+                Some("AllowRevealedSenders"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(e.0, -6, "{e:?}");
+        assert!(
+            e.1.starts_with("Insufficient transparent funds, have 12.50, need 12.50"),
+            "{e:?}"
+        );
+        let e = f
+            .send(from, &[(&zaddr, COIN)], None, Some("AllowRevealedSenders"))
+            .await
+            .unwrap_err();
+        assert_eq!(e.0, -4, "{e:?}");
+        let fee = coinbase_change_fee(&e.1, reward, COIN);
+        assert_eq!(f.node.0.lock().unwrap().sent.len(), sent0);
+        f.send(
+            from,
+            &[(&zaddr, reward - fee)],
+            None,
+            Some("AllowRevealedSenders"),
+        )
+        .await
+        .unwrap();
+        let (tx, raw) = f.last_sent();
+        assert_eq!(tx.vin.len(), 1);
+        assert!(tx.vout.is_empty());
+        check_pq_signature_with_sapling(&f, &raw, &tx);
+        f.mine_sync().await;
+        shielded += reward - fee;
+        assert_eq!(f.zbalance(&zaddr).await, shielded);
+    }
+}

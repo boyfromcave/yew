@@ -305,6 +305,22 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
   which returns the change to it", and each call's code (`sendtoaddress` -4, `sendmany` -6,
   `fundrawtransaction` -32603); otherwise the insufficient-funds errors are unchanged.
   `z_shieldcoinbase` from a post-quantum address points to `z_sendmany`.
+- **A post-quantum coinbase is shielded with `z_sendmany` (beta3, as the C++ lines).** A pool can
+  pay a block reward straight to a post-quantum address (the node's `getcoinbasetemplatefor`).
+  Such a coin is immature for 100 confirmations: it is in `getwalletinfo`'s `immature_balance`,
+  not in any balance and not in `listunspent`. Once mature, `z_sendmany` from the address spends
+  it only when every recipient is shielded, only with no change, and only when the address's
+  other coins do not cover the send; it never enters a transaction with a transparent recipient
+  or transparent change (the network would refuse it: a coinbase is spent only into the shielded
+  pool). The wallet refuses the other shapes itself, on every network: change left over is
+  "When shielding coinbase funds, the wallet does not allow any change. … To spend the selected
+  coins, send exactly <amount> to shielded recipients (the <selected> selected less the fee
+  <fee>)." (`-4`), and an "Insufficient transparent funds…" refusal (`-6`) ends with what the
+  address holds in coinbase the send could not use: "The address holds <amount> of coinbase
+  funds, which can only be sent to shielded recipients, with no change." and "The address holds
+  <amount> of immature coinbase funds, which can be spent after 101 confirmations."
+  `sendtoaddress`, `sendmany`, `fundrawtransaction` and `z_mergetoaddress` still leave a
+  post-quantum coinbase out, and `z_shieldcoinbase` is not served.
 - **A submission's answer lost (review M1).** A transaction the node accepted always returns its
   txid (a failing sync after it is a warning). When `sendrawtransaction`'s answer is lost, the
   wallet asks the node for the txid of the bytes; not found, the call answers "…status unknown,

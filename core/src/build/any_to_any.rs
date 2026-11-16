@@ -326,6 +326,10 @@ pub struct PqCoin<K> {
     pub script: Vec<u8>,
     /// The caller's key reference.
     pub key: K,
+    /// A coinbase output (mature: the caller's filter). A send that selects one makes no change
+    /// output and is refused if change is left (beta3: a post-quantum miner shields its
+    /// coinbase); the caller offers such a coin only when every recipient is shielded.
+    pub coinbase: bool,
 }
 
 /// What [`plan_pq_source`] settled on.
@@ -380,6 +384,16 @@ pub enum PlanError {
         have: i64,
         /// The total and the fee.
         need: i64,
+    },
+    /// The selection spends coinbase and would leave change (a coinbase spend has no transparent
+    /// output, so no change returns to the source).
+    CoinbaseChange {
+        /// The change the send would leave.
+        change: i64,
+        /// The value of the selected coins.
+        selected: i64,
+        /// The fee.
+        fee: i64,
     },
     /// More post-quantum inputs than one transaction may carry.
     TooManyInputs(usize),
@@ -439,6 +453,14 @@ impl fmt::Display for PlanError {
                 m(*have),
                 m(*need)
             ),
+            PlanError::CoinbaseChange { change, selected, fee } => write!(
+                f,
+                "When shielding coinbase funds, the wallet does not allow any change. The proposed transaction would result in {} in change. To spend the selected coins, send exactly {} to shielded recipients (the {} selected less the fee {}).",
+                m(*change),
+                m(*selected - *fee),
+                m(*selected),
+                m(*fee)
+            ),
             PlanError::TooManyInputs(n) => write!(
                 f,
                 "This send needs {n} post-quantum inputs, more than the {MAX_PQ_INPUTS_PER_TX} one transaction may carry; combine the address's coins first with z_mergetoaddress"
@@ -477,7 +499,8 @@ impl PlanError {
             | PlanError::FeeAboveCap { .. }
             | PlanError::FeeBelowNeeded { .. } => -8,
             PlanError::NoCoins | PlanError::Insufficient { .. } => -6,
-            PlanError::TooManyInputs(_)
+            PlanError::CoinbaseChange { .. }
+            | PlanError::TooManyInputs(_)
             | PlanError::TooManySigops(_)
             | PlanError::Unsettled
             | PlanError::Policy { .. }
@@ -492,7 +515,9 @@ impl PlanError {
 /// priced on the transaction's size (`PQBuilderFee` at `rate` zat/kB, capped at `cap`) and settled
 /// with the selection, largest coins first; change below the source's dust threshold goes to the
 /// fee, any other back to `source`; `policy` is checked as a transparent sender's. `fee` is an
-/// explicit fee, `None` for the node's default.
+/// explicit fee, `None` for the node's default. A selection with a coinbase coin
+/// ([`PqCoin::coinbase`]) makes no change output: change above dust is refused
+/// ([`PlanError::CoinbaseChange`]).
 pub fn plan_pq_source<K: Clone>(
     coins: &[PqCoin<K>],
     source: &[u8],
@@ -579,8 +604,10 @@ pub fn plan_pq_source<K: Clone>(
             dust_to_fee = change;
             change = 0;
         }
+        // a send that spends coinbase makes no change output: what is left over is refused below
+        let spends_coinbase = selected.iter().any(|c| c.coinbase);
         let mut outs = t_outs.clone();
-        if change > 0 {
+        if change > 0 && !spends_coinbase {
             outs.push((source.to_vec(), change));
         }
         // EnsurePQShapeStandard
@@ -604,6 +631,13 @@ pub fn plan_pq_source<K: Clone>(
         bytes = b;
         let needed = pq_builder_fee(base, bytes, conventional, rate, cap);
         if needed <= cur_fee {
+            if spends_coinbase && change > 0 {
+                return Err(PlanError::CoinbaseChange {
+                    change,
+                    selected: sum,
+                    fee: cur_fee,
+                });
+            }
             cur_fee += dust_to_fee;
             // review L3: the fee paid, folded change included, within the cap
             if cur_fee > cap {
@@ -758,6 +792,7 @@ mod tests {
             value: v,
             script: script.to_vec(),
             key: (),
+            coinbase: false,
         }
     }
 
@@ -924,5 +959,92 @@ mod tests {
         assert_eq!(p2.change, 0);
         assert_eq!(p2.fee, p.fee + 100);
         assert_eq!(p2.transparent_outputs.len(), 1);
+    }
+
+    /// Beta3 (a post-quantum miner shields its coinbase): a selection with a coinbase coin makes
+    /// no change output; change above dust is refused with the one amount that spends the
+    /// selected coins, and that amount then plans with no transparent output at the same fee.
+    #[test]
+    fn pq_source_coinbase_makes_no_change() {
+        for scheme in [pq::SCHEME_SLH_DSA_SHA2_128S, pq::SCHEME_FN_DSA_512] {
+            let src = pq_script(scheme, 6);
+            let cb = PqCoin {
+                coinbase: true,
+                ..coin(1_250_000_000, 0, &src)
+            };
+            let z = |amount| {
+                [PlanRecipient {
+                    script: None,
+                    amount,
+                }]
+            };
+            let e = plan_pq_source(
+                std::slice::from_ref(&cb),
+                &src,
+                &z(1_000_000_000),
+                None,
+                "AllowRevealedSenders",
+                100,
+                10_000_000,
+            )
+            .unwrap_err();
+            let PlanError::CoinbaseChange {
+                change,
+                selected,
+                fee,
+            } = e
+            else {
+                panic!("{e:?}")
+            };
+            assert_eq!(selected, 1_250_000_000);
+            assert_eq!(change, 250_000_000 - fee);
+            assert_eq!(e.rpc_code(), -4);
+            assert_eq!(
+                e.to_string(),
+                format!(
+                    "When shielding coinbase funds, the wallet does not allow any change. The proposed transaction would result in {} in change. To spend the selected coins, send exactly {} to shielded recipients (the 12.50 selected less the fee {}).",
+                    format_money(change),
+                    format_money(selected - fee),
+                    format_money(fee)
+                )
+            );
+            // the amount the refusal names: no transparent output, the sender alone revealed
+            let p = plan_pq_source(
+                std::slice::from_ref(&cb),
+                &src,
+                &z(selected - fee),
+                None,
+                "AllowRevealedSenders",
+                100,
+                10_000_000,
+            )
+            .unwrap();
+            assert_eq!((p.change, p.fee), (0, fee));
+            assert!(p.transparent_outputs.is_empty());
+            // the same coin, not coinbase: the change returns to the source
+            let p = plan_pq_source(
+                &[coin(1_250_000_000, 0, &src)],
+                &src,
+                &z(1_000_000_000),
+                None,
+                "AllowFullyTransparent",
+                100,
+                10_000_000,
+            )
+            .unwrap();
+            assert!(p.change > 0);
+            // dust left by a coinbase selection goes to the fee, as any dust change does
+            let p = plan_pq_source(
+                std::slice::from_ref(&cb),
+                &src,
+                &z(selected - fee - 10),
+                None,
+                "AllowRevealedSenders",
+                100,
+                10_000_000,
+            )
+            .unwrap();
+            assert_eq!((p.change, p.fee), (0, fee + 10));
+        }
     }
 }

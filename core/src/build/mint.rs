@@ -788,6 +788,7 @@ pub fn plan_pq_funding(
             value: u.value,
             script: u.script.clone(),
             key: u.clone(),
+            coinbase: false,
         })
         .collect();
     let available = coins.iter().map(|c| c.value).sum();
