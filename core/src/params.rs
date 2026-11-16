@@ -1532,4 +1532,55 @@ mod tests {
         assert_eq!(Network::from_name("regtest"), Some(Network::Regtest));
         assert_eq!(Network::from_name("nope"), None);
     }
+
+    /// The browser shell's prefix table (`web/src/prefixes.ts`, `PREFIXES`) names each network's
+    /// address prefixes for its labels and placeholders. Each entry is derived here from this
+    /// file's parameters, so the web table cannot drift from the core (beta3, the hosted
+    /// fast-testnet acceptance run: a testnet page showed mainnet examples).
+    #[test]
+    fn web_prefix_table_matches_the_core() {
+        use crate::keys::base58check_encode;
+        use crate::pq::{SCHEME_FN_DSA_512 as F, SCHEME_SLH_DSA_SHA2_128S as S};
+        // The leading characters every address of a version shares (`n` of them): the lowest and
+        // the highest key hash give the same ones.
+        fn lead(version: &[u8], hash_len: usize, n: usize) -> String {
+            let enc = |b: u8| {
+                let mut v = version.to_vec();
+                v.extend(std::iter::repeat(b).take(hash_len));
+                base58check_encode(&v)[..n].to_string()
+            };
+            assert_eq!(enc(0), enc(0xff), "{version:02x?}");
+            enc(0)
+        }
+        let src = include_str!("../../web/src/prefixes.ts");
+        for (name, net) in [
+            ("mainnet", Network::Mainnet),
+            ("testnet", Network::Testnet),
+            ("regtest", Network::Regtest),
+        ] {
+            let line = src
+                .lines()
+                .find(|l| l.trim_start().starts_with(&format!("{name}: {{")))
+                .unwrap_or_else(|| panic!("web/src/prefixes.ts: no {name} row"));
+            let entry = |key: &str| -> String {
+                let at = line
+                    .find(&format!(" {key}: \""))
+                    .unwrap_or_else(|| panic!("{name}: no {key}"));
+                let rest = &line[at + key.len() + 4..];
+                rest[..rest.find('"').unwrap()].to_string()
+            };
+            let want = [
+                ("s1", lead(&net.p2pkh_prefix(), 20, 2)),
+                ("yb", lead(&net.yellowback_prefix(), 20, 2)),
+                ("sqf", lead(&net.pq_yec_version(F).unwrap(), 32, 3)),
+                ("sqs", lead(&net.pq_yec_version(S).unwrap(), 32, 3)),
+                ("ybf", lead(&net.pq_yellowback_version(F).unwrap(), 32, 3)),
+                ("ybs", lead(&net.pq_yellowback_version(S).unwrap(), 32, 3)),
+                ("ys1", format!("{}1", net.sapling_address_hrp())),
+            ];
+            for (key, prefix) in want {
+                assert_eq!(entry(key), prefix, "web/src/prefixes.ts {name}.{key}");
+            }
+        }
+    }
 }
