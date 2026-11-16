@@ -60,17 +60,43 @@ type PrfCredential = { credentialId: ArrayBuffer; prf: ArrayBuffer };
 export function prfAvailable(): boolean {
   return typeof PublicKeyCredential !== "undefined" && !!navigator.credentials;
 }
+/** What a passkey request that was cancelled, refused or timed out reads as (the screen then offers
+ *  the choice again). */
+export const PASSKEY_CANCELLED = "The passkey request was cancelled or timed out.";
+/** How long the page waits for the authenticator before it gives up on its own (a browser without
+ *  one may never answer: the headless acceptance run sat at "Working…"). */
+export const PASSKEY_TIMEOUT_MS = 120_000;
+let passkeyAbort: AbortController | null = null;
+/** Cancel the passkey request in progress, if any: it rejects with PASSKEY_CANCELLED. */
+export function cancelPasskey(): void { passkeyAbort?.abort(); }
+/** Runs one WebAuthn request so that it can always end: on cancelPasskey(), after PASSKEY_TIMEOUT_MS, or
+ *  when the browser cancels it (AbortError, NotAllowedError) or answers nothing. The wait does not
+ *  depend on the browser honouring the signal. Nothing about the key derivation changes. */
+export async function passkeyRequest<T>(f: (signal: AbortSignal) => Promise<T | null>, timeoutMs = PASSKEY_TIMEOUT_MS): Promise<T> {
+  const ctl = new AbortController(); passkeyAbort?.abort(); passkeyAbort = ctl;
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  const aborted = new Promise<never>((_, rej) => ctl.signal.addEventListener("abort", () => rej(new Error(PASSKEY_CANCELLED)), { once: true }));
+  try {
+    const r = await Promise.race([f(ctl.signal), aborted]);
+    if (r === null) throw new Error(PASSKEY_CANCELLED);
+    return r;
+  } catch (e) {
+    if (ctl.signal.aborted || (e instanceof Error && (e.name === "AbortError" || e.name === "NotAllowedError"))) throw new Error(PASSKEY_CANCELLED);
+    throw e;
+  } finally { clearTimeout(timer); if (passkeyAbort === ctl) passkeyAbort = null; }
+}
 async function prfCreate(salt: ArrayBuffer): Promise<PrfCredential> {
-  const cred = (await navigator.credentials.create({
+  const cred = (await passkeyRequest((signal) => navigator.credentials.create({
+    signal,
     publicKey: {
       challenge: rnd(32), rp: { name: "YEW" },
       user: { id: rnd(16), name: "yew-wallet", displayName: "YEW wallet" },
       pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
       authenticatorSelection: { residentKey: "required", userVerification: "required" },
       extensions: { prf: { eval: { first: salt } } } as AuthenticationExtensionsClientInputs,
+      timeout: PASSKEY_TIMEOUT_MS,
     },
-  })) as PublicKeyCredential | null;
-  if (!cred) throw new Error("passkey: cancelled");
+  }))) as PublicKeyCredential;
   const ext = cred.getClientExtensionResults() as { prf?: { enabled?: boolean; results?: { first?: ArrayBuffer } } };
   if (!ext.prf?.results?.first) {
     // Some authenticators enable PRF at create but only evaluate at get: evaluate once now.
@@ -79,13 +105,14 @@ async function prfCreate(salt: ArrayBuffer): Promise<PrfCredential> {
   return { credentialId: cred.rawId, prf: ext.prf.results.first };
 }
 async function prfGet(credentialId: ArrayBuffer, salt: ArrayBuffer): Promise<ArrayBuffer> {
-  const cred = (await navigator.credentials.get({
+  const cred = (await passkeyRequest((signal) => navigator.credentials.get({
+    signal,
     publicKey: {
       challenge: rnd(32), allowCredentials: [{ type: "public-key", id: credentialId }], userVerification: "required",
       extensions: { prf: { eval: { first: salt } } } as AuthenticationExtensionsClientInputs,
+      timeout: PASSKEY_TIMEOUT_MS,
     },
-  })) as PublicKeyCredential | null;
-  if (!cred) throw new Error("passkey: cancelled");
+  }))) as PublicKeyCredential;
   const ext = cred.getClientExtensionResults() as { prf?: { results?: { first?: ArrayBuffer } } };
   if (!ext.prf?.results?.first) throw new Error("passkey: this authenticator has no PRF; use a passphrase");
   return ext.prf.results.first;

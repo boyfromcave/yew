@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+<!-- Copyright (c) 2026 The Ycash developers. MIT licence (LICENSE). The YEW tab icon: a file of the
+     bundle (img-src 'self'), presentation attributes only (style-src 'self' allows no inline style). -->
+<rect width="64" height="64" rx="14" fill="#b8860b"/>
+<path d="M16 14h9l7 13 7-13h9L36 34v16h-8V34z" fill="#ffffff"/>
+</svg>

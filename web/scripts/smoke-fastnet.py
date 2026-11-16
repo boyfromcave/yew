@@ -96,7 +96,8 @@ def restore(seed_file, birthday, server):
     type_into("textarea", words); type_into("input[type=number]", birthday)
     click("//button[text()='Continue']")
     wait_text("Check server")
-    type_into("input[type=url]", server)
+    # a hosted build (VITE_DEFAULT_SERVER) shows its one server read-only: nothing to type
+    if not req("GET", S + f"/element/{find('input[type=url]')}/property/readOnly"): type_into("input[type=url]", server)
     click("//button[text()='Check server']")
     tip = wait_text("Server ok · tip", 60)
     print("  " + next(l for l in tip.splitlines() if "Server ok" in l), flush=True)

@@ -82,7 +82,7 @@ export class SendVm extends Vm<SendState> {
       const check = await this.core.validate_address(to);
       if (check.valid) { const wrong = destinationMismatch(s.asset, check.kind); if (wrong) throw new Error(`invalid: ${wrong}`); }
       if (s.asset === "yed") {
-        if (check.kind === "sapling") throw new Error("invalid: YED can only be sent to a public address (ye… or s…).");
+        if (check.kind === "sapling") throw new Error(localize("invalid: YED can only be sent to a public address (yb… or s…)."));
         const cents = parseYedCents(s.amount); if (cents === null || cents <= 0n) throw new Error("invalid: enter an amount in dollars, like 25.00");
         this.set({ yed: await this.core.send_yed_preview(to, cents.toString()), yec: null, feeAccepted: false });
       } else {

@@ -24,6 +24,7 @@ import { HistoryVm } from "./vm/history";
 import { SettingsVm } from "./vm/settings";
 import { YellowbackVm } from "./vm/yellowback";
 import { defaultServerFor } from "./servers";
+import { OPEN_ELSEWHERE, openElsewhere } from "./plain";
 
 const app = document.getElementById("app")!;
 const query = new URLSearchParams(location.search);
@@ -41,6 +42,9 @@ const hostedServer: string = import.meta.env.VITE_DEFAULT_SERVER || "";
  *  `servers.ts` (the fast testnet's server for a testnet build, the gateway's own origin over
  *  https, none in the dev loop). */
 const defaultServer = !useMock && hostedServer ? hostedServer : defaultServerFor(network, location, useMock);
+/** The hosted build's one server, or "": the server cannot be changed and the proving files come from
+ *  this site only (the page's policy allows nothing else). */
+const fixedServer = !useMock && hostedServer ? hostedServer : "";
 /** `?params=<base URL>`: a mirror for the proving files (the test helper); the Settings field. */
 const paramsSource = query.get("params") ?? "";
 
@@ -60,7 +64,7 @@ async function main() {
   let open = false;
 
   const home = new HomeVm(core), receive = new ReceiveVm(core), send = new SendVm(core), move = new SendVm(core, "yec");
-  const history = new HistoryVm(core), settings = new SettingsVm(core, keystore, paramsSource, network), yb = new YellowbackVm(core);
+  const history = new HistoryVm(core), settings = new SettingsVm(core, keystore, paramsSource, network, !!fixedServer), yb = new YellowbackVm(core);
   let unsub: (() => void) | undefined;
 
   const shell = (name: string, body: HTMLElement) => {
@@ -84,12 +88,12 @@ async function main() {
       const m = await keystore.walletMeta(); await keystore.forget();
       await core.forget(keystore.storeDirOf(m, network)).catch(() => {});
       location.reload();
-    });
+    }, keystore.cancelPasskey);
   };
   const onboard = () => {
     clear(app); const body = h("div"); app.append(body);
     setNetwork(network);
-    const vm = new OnboardingVm(core, keystore, defaultServer, network);
+    const vm = new OnboardingVm(core, keystore, defaultServer, network, !!fixedServer);
     renderOnboarding(body, vm);
     let done = false;
     vm.subscribe(() => { if (vm.state.step === "done" && !done) { done = true; opened(); } });
@@ -105,7 +109,7 @@ async function main() {
       case "move": unsub = renderMove(body, move); break;
       case "receive": unsub = renderReceive(body, receive); break;
       case "history": unsub = renderHistory(body, history); break;
-      case "settings": unsub = renderSettings(body, settings, meta, version, () => { open = false; home.stopAutoSync(); route(); }); break;
+      case "settings": unsub = renderSettings(body, settings, meta, version, () => { open = false; home.stopAutoSync(); route(); }, fixedServer); break;
       case "yellowback": unsub = renderYellowback(body, yb, home.state.balances?.termsRefused ? "" : home.state.balances?.yedCents ?? "0"); break;
       case "mint": unsub = renderMint(body, yb, () => home.state.balances); break;
       case "vault": unsub = renderVault(body, yb, r.arg); break;
@@ -116,4 +120,6 @@ async function main() {
   onRoute(() => route());
 }
 
-main().catch((e) => { app.textContent = `failed: ${messageOf(e)}`; });
+// A second tab or window on the same wallet: the first one holds the storage, and this one says so
+// plainly (never the storage's internal error); the first tab is not touched.
+main().catch((e) => { const m = messageOf(e); app.textContent = openElsewhere(m) ? OPEN_ELSEWHERE : `failed: ${m}`; });

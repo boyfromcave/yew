@@ -14,7 +14,7 @@ export function renderReceive(root: HTMLElement, vm: ReceiveVm) {
     // beta2 D-8, D-9: the post-quantum plain-YEC forms, the scheme in the label and in the prefix
     const about: Record<AddressKind, string> = {
       shielded: "Private YEC (ys1…): amounts and messages are hidden on the chain.",
-      transparent: "Public YEC (s…, ECC): visible on the chain.",
+      transparent: "Public YEC (s1…, ECC): visible on the chain.",
       pq_falcon: "Public YEC to a post-quantum key, scheme FN-DSA-512 (sqf…): plain YEC only, visible on the chain. Spending it carries a ~1.6 KB signature.",
       pq_slh: "Public YEC to a post-quantum key, scheme SLH-DSA-SHA2-128s (sqs…): plain YEC only, visible on the chain. Spending it carries a ~7.9 KB signature, so its fees are the largest.",
       yed: "YED and the public YEC that pays its fees (yb…).",
