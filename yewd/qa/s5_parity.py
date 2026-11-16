@@ -274,7 +274,9 @@ def main():
                 # index, and the harness gives an index up to MAX_NODES inclusive (the mixed
                 # column's ycash6 peer, kogany slot MAX_NODES), so the last index of seed n is the
                 # first of seed n + 1 and two scripts running side by side (--jobs) shared a port
-                # (koganyd AddrInUse, YEW-CI-KOGANY)
+                # (koganyd AddrInUse, YEW-CI-KOGANY). The bound: the offset wraps modulo
+                # PORT_RANGE - 1 - MAX_NODES (4991 / 8: about 623 seeds), so the scheme is sound
+                # below about 300 jobs per run (600 seeds; e.g. --portseed 7000)
                 seed += 2
                 jobs.append((c, s, flags, seed))
         with concurrent.futures.ThreadPoolExecutor(args.jobs) as ex:

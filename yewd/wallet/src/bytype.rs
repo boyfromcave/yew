@@ -34,6 +34,8 @@ pub const SERVED: &[&str] = &[
 
 /// ycash6 `src/wallet/rpcwallet.cpp` `EnsureUnifiedAccountsEnabled`: the four unified-address
 /// account RPCs are refused while NU5 is not active, and NU5 has no activation height on Ycash.
+/// yewd refuses them unconditionally (review L1): it does not read NU5's activation, since Ycash
+/// never schedules it; a release that did would have to serve them.
 const NU5_ACCOUNTS: &str =
     "Unified-address accounts require the NU5 network upgrade, which is not active on Ycash.";
 
