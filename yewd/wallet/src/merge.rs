@@ -18,7 +18,9 @@
 //! fee below it is refused); any other merge pays ycashd's `-feepolicy=peroutput` default.
 //!
 //! Not merged by yewd: P2SH coins (the signer holds no multisig signing path), which ycashd's
-//! `ANY_TADDR` and a named P2SH address also take.
+//! `ANY_TADDR` and a named P2SH address also take. A named P2SH source is refused (`-8`, saying
+//! why); `ANY_TADDR` leaves the wallet's P2SH coins out (review M3: a known difference, in the
+//! README).
 
 use std::collections::BTreeSet;
 
@@ -122,6 +124,14 @@ impl Wallet {
                     .ok_or_else(|| invalid(format!("Unknown address format: {a}")))?;
                 taddrs.insert(s);
             } else if let Some(s) = crate::rpc::parse_taddr_script(self.network, a) {
+                // review M3: ycashd merges a P2SH source whose redeem script it holds; yewd's
+                // signer has no multisig signing path, so it says so instead of answering that
+                // there is nothing to merge
+                if yew_core::script::p2sh_hash(&s).is_some() {
+                    return Err(invalid(format!(
+                        "yewd cannot merge from a P2SH address ({a}): its signer has no multisig signing path. Spend it with createrawtransaction and signrawtransaction."
+                    )));
+                }
                 taddrs.insert(s);
             } else if yew_core::shielded_keys::is_sapling_address(self.network, a) {
                 zaddrs.insert(a.to_string());
@@ -208,7 +218,9 @@ impl Wallet {
                 ))
             }
         };
-        if memo.is_some() && dest.is_ok() {
+        // a post-quantum destination with a memo is refused here, as ycashd refuses it up front;
+        // an ECC or P2SH one fails the operation, as ycashd's builder fails it (review L2)
+        if memo.is_some() && pq_dest {
             return Err(invalid("Memos cannot be sent to transparent addresses."));
         }
         let policy = match p.get(6) {
@@ -433,12 +445,22 @@ impl Wallet {
             (false, true) => "AllowRevealedRecipients",
             (false, false) => "FullPrivacy",
         };
-        if !plan::policy_allows(&policy, required) {
-            return Err(plan_error(PlanError::Policy {
-                policy: policy.clone(),
-                required,
-            }));
-        }
+        // ycashd answers the counts and the operation fails (`ApproveAndBuild`, then the builder's
+        // memo check; RPC_WALLET_ERROR, "Failed to build transaction: …"), review L2; the policy's
+        // text names no weaker policy when NoPrivacy is required (wallet_tx_builder.cpp:1228)
+        let build_refusal = if !plan::policy_allows(&policy, required) {
+            Some(format!(
+                "Failed to build transaction: The specified privacy policy, {policy}, does not permit the creation of the requested transaction. Select {required}{} to allow this transaction to be constructed.",
+                if required == "NoPrivacy" { "" } else { " or weaker" }
+            ))
+        } else if memo.is_some() && dest.is_ok() {
+            Some(
+                "Failed to build transaction: Memos cannot be sent to transparent addresses."
+                    .into(),
+            )
+        } else {
+            None
+        };
 
         let mut ctx = serde_json::Map::new();
         ctx.insert("fromaddresses".into(), p[0].clone());
@@ -452,21 +474,25 @@ impl Wallet {
         let id = opid();
         let started = std::time::Instant::now();
         let created = now();
-        let outcome = self
-            .run_merge(
-                node,
-                &next,
-                &sel,
-                &sel_z,
-                &dest,
-                memo,
-                net,
-                fee_zat,
-                n_pq > 0,
-                rate,
-                cap,
-            )
-            .await;
+        let outcome = match build_refusal {
+            Some(m) => Err(RpcError::new(code::WALLET_ERROR, m)),
+            None => {
+                self.run_merge(
+                    node,
+                    &next,
+                    &sel,
+                    &sel_z,
+                    &dest,
+                    memo,
+                    net,
+                    fee_zat,
+                    n_pq > 0,
+                    rate,
+                    cap,
+                )
+                .await
+            }
+        };
         let (status, error, txid) = match outcome {
             Ok(t) => ("success", None, Some(t)),
             Err(e) => ("failed", Some((e.code, e.message)), None),

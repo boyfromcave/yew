@@ -1037,7 +1037,9 @@ async fn z_mergetoaddress_merges_post_quantum_and_ecc_coins() {
     assert_eq!((tx.vin.len(), tx.vout.len()), (1, 1));
     assert_eq!(tx.vout[0].script_pubkey, addr_script(&to));
     let fee = 5 * COIN - tx.vout[0].value;
-    assert!(fee >= 5_500, "an FN-DSA input's size-priced fee: {fee}");
+    // PQBuilderFee at the default rate (Yellowback not live): the post-quantum spend's floor for one
+    // FN-DSA input into one ECC output, exactly (review L2)
+    assert_eq!(fee, 5_500, "an FN-DSA input's size-priced fee");
     check_pq_signatures(&f, &tx);
     f.mine_sync().await;
     // ANY_TADDR: the five ECC coins, never a post-quantum one; the default fee

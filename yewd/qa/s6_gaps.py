@@ -27,6 +27,10 @@ Checks (--checks, default all), in the order of the gaps' user impact:
                   Sapling destinations (ycash6 rpcwallet.cpp z_mergetoaddress, beta2 D-6): the
                   counts, the post-quantum fee on the real size, an explicit fee below it, and the
                   refusals; the rows of ycash6 qa/wallet_address_matrix.py.
+  merge_more      z_mergetoaddress's other rows (review L2): the default privacy policy merging two
+                  ECC addresses into an ECC one, a memo with an ECC destination, shielded_limit
+                  leaving notes as remaining, locked and unconfirmed coins skipped (not remaining),
+                  and a named P2SH source (yewd refuses it, review M3; ycashd merges it).
   send_fee        z_sendmany with no fee and no post-quantum input pays the node's fee for the
                   shape (-feepolicy=peroutput: 1,000 zat), ECC to ECC, ECC to Sapling and Sapling to
                   ECC (yew_core node_fee, beta3 items 10 and 14).
@@ -67,10 +71,15 @@ ACTIVATION = 210
 FALCON = 215
 DELAY = 5
 # ycashd 6.22.0-beta2's fees for the merges of the merge check, Yellowback not live (the plain
-# post-quantum rate at its default): PQBuilderFee on the estimated size (FN-DSA 2 inputs; SLH-DSA 3 + 1 ECC
-# input to Sapling). yewd must charge the same.
-MERGE_FEES = {'fn2': Decimal('0.000535'), 'slh3_ecc': Decimal('0.000815')}
-CHECKS = ('lock_lifetime', 'funding_change', 'merge', 'help_text', 'send_fee')
+# post-quantum rate at its default): PQBuilderFee on the estimated size (FN-DSA 2 inputs, Falcon active: the
+# shape's ZIP-317 conventional fee; SLH-DSA 3 + 1 ECC input to Sapling). yewd must charge the same.
+MERGE_FEES = {'fn2': Decimal('0.00011'), 'slh3_ecc': Decimal('0.000815')}
+# ycashd's outcomes of merge_more's rows (the operation's status and error)
+MERGE_MEMO_TO_ECC = ('failed', 'Failed to build transaction: Memos cannot be sent to transparent addresses.')
+MERGE_DEFAULT_LINKING = ('Failed to build transaction: The specified privacy policy, AllowFullyTransparent, does not '
+                         'permit the creation of the requested transaction. Select NoPrivacy to allow this '
+                         'transaction to be constructed.')
+CHECKS = ('lock_lifetime', 'funding_change', 'merge', 'merge_more', 'help_text', 'send_fee')
 YEWD = bool(os.environ.get('YEWD_BIN'))
 
 _start_node = util.start_node
@@ -219,6 +228,99 @@ class GapParity(BitcoinTestFramework):
         assert_equal(changes, 1)
 
 
+    def merge_more(self):
+        """z_mergetoaddress's further rows (ycash6 rpcwallet.cpp z_mergetoaddress; review L2, M3)."""
+        print('merge_more: the default policy, a memo, shielded_limit, locked and unconfirmed coins')
+        n0, n1 = self.nodes
+
+        def outcome(*args):
+            """(code, first message line) of a refusal, or the operation's (status, error message)."""
+            try:
+                r = n0.z_mergetoaddress(*args)
+            except JSONRPCException as e:
+                return (e.error['code'], e.error['message'].split('\n')[0])
+            status = None
+            for _ in range(240):
+                res = n0.z_getoperationresult([r['opid']])
+                if res:
+                    status = res[0]
+                    break
+                time.sleep(0.25)
+            return (status['status'], status.get('error', {}).get('message'), r)
+
+        print('  the default privacy policy: two ECC sources into an ECC address')
+        a1, a2, dst = n0.getnewaddress(), n0.getnewaddress(), n0.getnewaddress()
+        for a in (a1, a2):
+            n1.sendtoaddress(a, 1)
+        self.mine(1)
+        o = outcome([a1, a2], dst)
+        print('  ', o[:2])
+        # ycashd answers the counts, and the operation fails: linking two transparent sources
+        # needs NoPrivacy, which the default (LegacyCompat = AllowFullyTransparent) is not
+        assert_equal(o[:2], ('failed', MERGE_DEFAULT_LINKING))
+        assert_equal((o[2]['mergingUTXOs'], o[2]['remainingUTXOs']), (2, 0))
+        self.mine(1)
+        assert_equal(n0.z_getbalance(dst), Decimal('0'))
+        assert_equal(n0.z_getbalance(a1) + n0.z_getbalance(a2), Decimal('2'))
+
+        print('  a memo with an ECC destination')
+        b = n0.getnewaddress()
+        n1.sendtoaddress(b, 1)
+        self.mine(1)
+        o = outcome([b], n0.getnewaddress(), None, None, None, 'abcd')
+        print('  ', o[:2])
+        assert_equal(o[:2], MERGE_MEMO_TO_ECC)
+        self.mine(1)
+
+        print('  shielded_limit: one note merged, one remaining')
+        z = n0.z_getnewaddress('sapling')
+        for _ in range(2):
+            src = n0.getnewaddress()
+            n1.sendtoaddress(src, Decimal('1.5'))
+            self.mine(1)
+            op = n0.z_sendmany(src, [{'address': z, 'amount': 1}], 1, None, 'NoPrivacy')
+            wait_and_assert_operationid_status(n0, op)
+            self.mine(1)
+        self.mine(3)
+        o = outcome(['ANY_SAPLING'], n0.getnewaddress('', 'pqslh'), None, None, 1, None, 'NoPrivacy')
+        print('  ', o[:2])
+        assert_equal(o[0], 'success')
+        assert_equal((o[2]['mergingNotes'], o[2]['remainingNotes']), (1, 1))
+        assert_equal(Decimal(o[2]['remainingShieldedValue']), Decimal('1'))
+        self.mine(1)
+
+        print('  a locked coin and an unconfirmed coin are skipped, not remaining')
+        c = n0.getnewaddress()
+        t1 = n1.sendtoaddress(c, 1)
+        n1.sendtoaddress(c, 1)
+        self.mine(1)
+        n1.sendtoaddress(c, 1)
+        self.sync_all()
+        assert_equal(len([u for u in n0.listunspent(0) if u['address'] == c]), 3)
+        lk = [u for u in n0.listunspent() if u['txid'] == t1 and u['address'] == c][0]
+        n0.lockunspent(False, [{'txid': t1, 'vout': lk['vout']}])
+        o = outcome([c], n0.getnewaddress('', 'pqslh'), None, None, None, None, 'NoPrivacy')
+        print('  ', o[:2])
+        assert_equal(o[0], 'success')
+        assert_equal((o[2]['mergingUTXOs'], o[2]['remainingUTXOs'], o[2]['mergingTransparentValue']),
+                     (1, 0, Decimal('1')))
+        n0.lockunspent(True, [{'txid': t1, 'vout': lk['vout']}])
+        self.mine(1)
+
+        print('  a named P2SH source')
+        inner = n0.getnewaddress()
+        multi = n0.addmultisigaddress(1, [inner])
+        n1.sendtoaddress(multi, 1)
+        self.mine(1)
+        o = outcome([multi], n0.getnewaddress(), None, None, None, None, 'NoPrivacy')
+        print('  ', o[:2])
+        if YEWD:
+            assert_equal(o[0], -8)
+            assert 'yewd cannot merge from a P2SH address' in o[1], o
+        else:
+            assert_equal(o[0], 'success')
+        self.mine(1)
+
     def help_text(self):
         """ycashd's help, from the table yewd answers it from; getunconfirmedbalance; the NU5 refusals."""
         print('help_text: the wallet methods answer ycashd\'s help')
@@ -286,7 +388,13 @@ class GapParity(BitcoinTestFramework):
         def paid(txid):
             return -n0.gettransaction(txid)['fee']
 
+        # Falcon active at the next block, whichever checks ran before: getnewaddress "pq" is an
+        # FN-DSA key only then (before, the merge priced SLH-DSA coins: the fees depended on the
+        # checks selected)
+        if n1.getblockcount() < FALCON:
+            self.mine(FALCON - n1.getblockcount())
         fn = n0.getnewaddress('', 'pq')
+        assert fn.startswith('rqf'), fn
         slh = n0.getnewaddress('', 'pqslh')
         ecc = n0.getnewaddress()
         zaddr = n0.z_getnewaddress('sapling')
