@@ -473,8 +473,21 @@ fn sighash_set(
 }
 
 impl Wallet {
-    /// Dispatch an R5 build RPC (after the barrier).
+    /// Dispatch an R5 build RPC (after the barrier), inside a fund scope: the coins `Fund`
+    /// locks for the call are released when it ends ([`Wallet::end_fund_scope`], audit L-1), also
+    /// when the call's future is dropped part-way (a client that disconnects or times out) or the
+    /// call panics: the [`crate::build::FundScope`] guard ends it in its `Drop`.
     pub async fn vault_call(
+        &mut self,
+        node: &dyn Node,
+        method: &str,
+        p: &[Value],
+    ) -> Result<J, RpcError> {
+        let scope = crate::build::FundScope::open(self);
+        scope.w.vault_call_scoped(node, method, p).await
+    }
+
+    async fn vault_call_scoped(
         &mut self,
         node: &dyn Node,
         method: &str,

@@ -118,6 +118,11 @@ pub struct State {
     /// pqowner). Absent in older wallet files: false.
     #[serde(default)]
     pub yed_held: bool,
+    /// The coins a vault RPC call in progress locked through `Fund` (`txid:n`, its fund scope,
+    /// review M1): written with the locks, so a process stopped inside the call releases them at
+    /// the next open. Empty outside a call.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub fund_scope: BTreeSet<String>,
     /// A scan whose re-pass is not done (see [`ScanMark`]); absent when none is owed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scan: Option<ScanMark>,
@@ -196,6 +201,7 @@ impl State {
             scripts: BTreeMap::new(),
             unknown: None,
             yed_held: false,
+            fund_scope: BTreeSet::new(),
             scan: None,
             restore_pending: false,
         }

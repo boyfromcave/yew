@@ -38,11 +38,10 @@ use crate::node::{self, Node};
 use crate::rpc::invalid;
 use crate::{code, txid_hex, RpcError, Wallet};
 
-/// `RefusePQSource` (ycashd `wallet/rpcwallet.cpp`, quantum spec A-15), now only for the
-/// operations outside K-25 (`z_shieldcoinbase`, D-7; `z_mergetoaddress`, whose merging yewd does
-/// not serve): z_sendmany spends and pays `TX_PQPKH` (beta2 D-2).
+/// `RefusePQSource` (ycashd `wallet/rpcwallet.cpp`, quantum spec A-15), now only for
+/// `z_shieldcoinbase` (outside K-25, D-7): z_sendmany spends and pays `TX_PQPKH` (beta2 D-2),
+/// and z_mergetoaddress merges post-quantum coins (beta2 D-6, `merge.rs`).
 const PQ_SOURCE: &str = " cannot spend from a post-quantum address; use z_sendmany";
-const PQ_RECIPIENT: &str = " cannot pay a post-quantum address; use sendtoaddress or sendmany";
 
 pub(crate) fn refuse_pq(
     network: yew_core::params::Network,
@@ -59,31 +58,17 @@ pub(crate) fn refuse_pq(
     Ok(())
 }
 
-/// `z_shieldcoinbase` and `z_mergetoaddress` are outside K-25: the façade answers their
-/// post-quantum refusals as ycashd does (the scripts call them for nothing else, finding F-S5-10)
-/// and refuses the rest as not served.
+/// `z_shieldcoinbase` is outside K-25: the façade answers its post-quantum refusal as ycashd does
+/// (the scripts call it for nothing else, finding F-S5-10) and refuses the rest as not served.
 pub fn pq_refusal_only(
     network: yew_core::params::Network,
     method: &str,
     p: &[Value],
 ) -> Result<J, RpcError> {
-    match method {
-        "z_shieldcoinbase" => {
-            if let Some(from) = p.first().and_then(|v| v.as_str()) {
-                refuse_pq(network, from, method, PQ_SOURCE)?;
-            }
+    if method == "z_shieldcoinbase" {
+        if let Some(from) = p.first().and_then(|v| v.as_str()) {
+            refuse_pq(network, from, method, PQ_SOURCE)?;
         }
-        "z_mergetoaddress" => {
-            for a in p.first().and_then(|v| v.as_array()).into_iter().flatten() {
-                if let Some(a) = a.as_str() {
-                    refuse_pq(network, a, method, PQ_SOURCE)?;
-                }
-            }
-            if let Some(to) = p.get(1).and_then(|v| v.as_str()) {
-                refuse_pq(network, to, method, PQ_RECIPIENT)?;
-            }
-        }
-        _ => {}
     }
     Err(RpcError::new(
         code::METHOD_NOT_FOUND,
@@ -99,7 +84,7 @@ pub const SERVED: &[&str] = &[
 ];
 
 /// `WEIGHT_RATIO_CAP`: an explicit fee above this many conventional fees is refused.
-const WEIGHT_RATIO_CAP: i64 = 4;
+pub(crate) const WEIGHT_RATIO_CAP: i64 = 4;
 
 // The shape planning of a send between address types (policy lattice, PQ fee rule, sizes, dust,
 // the post-quantum source's selection) is the YEW core's, one implementation for yewd and the app
@@ -108,7 +93,7 @@ use yew_core::build::any_to_any::{
     self as plan, checked_total as plan_total, PlanError, CHANGE_DUST_THRESHOLD, PRIVACY_POLICIES,
 };
 pub use yew_core::build::any_to_any::{
-    conventional_fee, conventional_fee_bytes, MAX_PQ_INPUTS_PER_TX,
+    conventional_fee, conventional_fee_bytes, node_fee, MAX_PQ_INPUTS_PER_TX,
 };
 
 /// A planner refusal as the RPC error ycashd answers with (the node's code and text).
@@ -161,7 +146,7 @@ impl Op {
     }
 }
 
-fn opid() -> String {
+pub(crate) fn opid() -> String {
     let mut b = [0u8; 16];
     let _ = getrandom_bytes(&mut b);
     b[6] = (b[6] & 0x0f) | 0x40;
@@ -185,7 +170,7 @@ fn getrandom_bytes(b: &mut [u8]) -> Result<(), ()> {
         .map_err(|_| ())
 }
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     crate::now()
 }
 
@@ -213,7 +198,7 @@ enum Source {
 /// message's final full stop.
 const LINKING_HINT: &str = ". (This transaction may require selecting transparent coins that were sent to multiple addresses, which is not enabled by default because it would create a public link between those addresses. THIS MAY AFFECT YOUR PRIVACY. Resubmit with the `privacyPolicy` parameter set to `AllowLinkingAccountAddresses` or weaker if you wish to allow this transaction to proceed anyway.)";
 
-fn op_error(code: i64, m: impl Into<String>) -> RpcError {
+pub(crate) fn op_error(code: i64, m: impl Into<String>) -> RpcError {
     RpcError::new(code, m)
 }
 
@@ -603,9 +588,11 @@ impl Wallet {
         let suggest_linking = matches!(source, Source::AnyTaddr)
             && !plan::policy_allows(policy, "AllowLinkingAccountAddresses");
         // the first pass already asks for the fee of the outputs alone (ycashd's target in its
-        // "Insufficient funds: have …, need …" is amount + fee: vault_pq_wallet.py)
-        let mut need_fee =
-            fee.unwrap_or_else(|| conventional_fee_bytes(0, n_t_out, pq_extra, 0, n_z_out));
+        // "Insufficient funds: have …, need …" is amount + fee: vault_pq_wallet.py). The default
+        // fee is the node's for the shape (beta3 items 10 and 14: the YEW core's `node_fee`, ycash6
+        // `CalcZIP317Fee` under the default -feepolicy=peroutput, 1,000 zat up to 50 Sapling
+        // outputs), so yewd charges what ycashd charges; it used to be ZIP-317's conventional fee
+        let mut need_fee = fee.unwrap_or_else(|| node_fee(n_z_out));
         let mut sel_t: Vec<_> = Vec::new();
         let mut sel_z: Vec<crate::NoteRow> = Vec::new();
         let mut change = 0i64;
@@ -666,7 +653,8 @@ impl Wallet {
             if coinbase && change > 0 {
                 return Err(op_error(code::WALLET_ERROR, format!("When shielding coinbase funds, the wallet does not allow any change. The proposed transaction would result in {} in change.", money(change))));
             }
-            // the conventional fee of this shape (Sapling change for a Sapling source)
+            // the conventional fee of this shape (Sapling change for a Sapling source): the
+            // ceiling of an explicit fee; the default is the node's fee of its Sapling outputs
             let t_change = change > 0 && !z_source;
             let z_change = change > 0 && z_source;
             let conventional = conventional_fee_bytes(
@@ -684,10 +672,11 @@ impl Wallet {
                     break;
                 }
                 None => {
-                    if conventional == need_fee {
+                    let want = node_fee(n_z_out + usize::from(z_change));
+                    if want == need_fee {
                         break;
                     }
-                    need_fee = conventional;
+                    need_fee = want;
                 }
             }
         }
@@ -755,26 +744,7 @@ impl Wallet {
                 });
             }
         }
-        let spends: Vec<SaplingSpend> = sel_z
-            .iter()
-            .zip(paths)
-            .map(|(n, (pos, path))| {
-                let addr = n.note.recipient().to_bytes();
-                let (rseed, after) = match n.note.rseed() {
-                    sapling_crypto::Rseed::AfterZip212(r) => (hex::encode(r), true),
-                    sapling_crypto::Rseed::BeforeZip212(r) => (hex::encode(r.to_bytes()), false),
-                };
-                SaplingSpend {
-                    recipient: hex::encode(addr),
-                    value: n.value,
-                    rseed,
-                    after_zip212: after,
-                    internal: n.internal,
-                    position: pos,
-                    path,
-                }
-            })
-            .collect();
+        let spends = sapling_spends(&sel_z, paths);
         if n_pq_out > 0 {
             // a post-quantum recipient: librustzcash's builder pays P2PKH/P2SH only, so the
             // transparent part is built here and the signer adds the Sapling part (beta2 D-2)
@@ -830,7 +800,7 @@ impl Wallet {
     /// without the `-maxtxfee` absurd-fee check (D-Q-26: `CWallet::CommitTransaction`,
     /// `AcceptToMemoryPool(.., !PQFeeWithinCap(tx))`), so it is submitted with `allowhighfees`;
     /// every other transaction keeps the node's `-maxtxfee`.
-    async fn commit_z(
+    pub(crate) async fn commit_z(
         &mut self,
         node: &dyn Node,
         hexs: &str,
@@ -988,7 +958,7 @@ impl Wallet {
     /// ycash6 `EnsurePQSourceSpendable` (`wallet/rpcwallet.cpp`, beta2 D-2): a post-quantum from
     /// address spends only once the vault upgrade (and for FN-DSA-512 Falcon) is active at the
     /// next block, only with its key in this wallet, and only unlocked.
-    fn ensure_pq_spendable(&self, id: &yew_core::pq::PqKeyId) -> Result<(), RpcError> {
+    pub(crate) fn ensure_pq_spendable(&self, id: &yew_core::pq::PqKeyId) -> Result<(), RpcError> {
         if !self.vault_active_next() {
             return Err(RpcError::new(
                 code::INVALID_ADDRESS_OR_KEY,
@@ -1168,7 +1138,7 @@ impl Wallet {
     /// `TX_PQPKH` wallet coins, each with its key), `outputs` in order (the transparent ones into
     /// `vout`, the shielded ones into the Sapling part). The YEC gate path: no data output, no
     /// template, no owner key; the outflow at most `cap`.
-    async fn sign_hybrid(
+    pub(crate) async fn sign_hybrid(
         &self,
         next: &crate::build::Next,
         inputs: &[(yew_core::tx::OutPoint, i64, Vec<u8>, KeyRef)],
@@ -1227,8 +1197,35 @@ impl Wallet {
     }
 }
 
+/// The signer's spends of `notes`, with their Merkle `paths` ([`Wallet::sapling_paths`]).
+pub(crate) fn sapling_spends(
+    notes: &[crate::NoteRow],
+    paths: Vec<(u64, Vec<String>)>,
+) -> Vec<SaplingSpend> {
+    notes
+        .iter()
+        .zip(paths)
+        .map(|(n, (pos, path))| {
+            let addr = n.note.recipient().to_bytes();
+            let (rseed, after) = match n.note.rseed() {
+                sapling_crypto::Rseed::AfterZip212(r) => (hex::encode(r), true),
+                sapling_crypto::Rseed::BeforeZip212(r) => (hex::encode(r.to_bytes()), false),
+            };
+            SaplingSpend {
+                recipient: hex::encode(addr),
+                value: n.value,
+                rseed,
+                after_zip212: after,
+                internal: n.internal,
+                position: pos,
+                path,
+            }
+        })
+        .collect()
+}
+
 /// `{:.8}` text of an amount, for the operation's context.
-fn money8(z: i64) -> String {
+pub(crate) fn money8(z: i64) -> String {
     crate::json::amount_text(z)
 }
 

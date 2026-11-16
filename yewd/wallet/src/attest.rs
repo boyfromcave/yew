@@ -278,7 +278,13 @@ impl Wallet {
             "yed_reportequivocation" => self.yed_reportequivocation(node, p).await,
             "yed_signattestation" => self.yed_signattestation(node, p).await,
             "yed_signcancelcosign" => self.yed_signcancelcosign(node, p).await,
-            "yed_buildcancel" => self.yed_buildcancel(node, p).await,
+            // inside a fund scope, as ycashd's (vault.cpp FundScope around the cancel build;
+            // review M2): the fee coins Fund locks are released when the call ends, unless the
+            // remembered build holds them
+            "yed_buildcancel" => {
+                let scope = crate::build::FundScope::open(self);
+                scope.w.yed_buildcancel(node, p).await
+            }
             "signmessage" => self.signmessage(p),
             "importprivkey" => self.importprivkey(node, p).await,
             "dumpprivkey" => self.dumpprivkey(p),

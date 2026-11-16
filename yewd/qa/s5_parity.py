@@ -21,7 +21,8 @@ The script list is the manifest's (ycash6 qa/kogany-mixed-shards.txt, group `pai
 `sidecar`), or --scripts. Each script runs on its own (--srcdir, a distinct --portseed, its own
 --tmpdir); a passing script's chain data is removed, its log kept. The table (script x column: pass,
 or FAIL at the failure point, seconds; the state-hash points from the harness's KOGANY_STATS_FILE)
-is written as Markdown and JSON. The failure point is the script's own frame of the traceback
+is written as Markdown and JSON. Scripts get port seeds two apart (--portseed + 2, + 4, ...), so
+no two scripts running side by side share a port. The failure point is the script's own frame of the traceback
 (``<script>.py:<line> <function>``), the error (the first ``Assertion failed`` / ``JSONRPC error``
 / ``Unexpected exception`` line), the innermost helper frame and the step (the script's last
 narration line before the error); a timeout names the last step. Below the table, "Failure points"
@@ -269,7 +270,14 @@ def main():
         seed = args.portseed
         for c in columns:
             for s, flags in rows:
-                seed += 1
+                # two seeds apart: a seed's ports are its offset (MAX_NODES x seed) plus the node
+                # index, and the harness gives an index up to MAX_NODES inclusive (the mixed
+                # column's ycash6 peer, kogany slot MAX_NODES), so the last index of seed n is the
+                # first of seed n + 1 and two scripts running side by side (--jobs) shared a port
+                # (koganyd AddrInUse, YEW-CI-KOGANY). The bound: the offset wraps modulo
+                # PORT_RANGE - 1 - MAX_NODES (4991 / 8: about 623 seeds), so the scheme is sound
+                # below about 300 jobs per run (600 seeds; e.g. --portseed 7000)
+                seed += 2
                 jobs.append((c, s, flags, seed))
         with concurrent.futures.ThreadPoolExecutor(args.jobs) as ex:
             results = list(ex.map(lambda j: run_one(*j, out, args), jobs))

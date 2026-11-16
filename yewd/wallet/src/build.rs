@@ -550,7 +550,8 @@ impl Wallet {
     }
 
     /// `Fund`: add wallet P2PKH inputs (and a change output) so inputs = outputs + `fee`, given
-    /// `input_value` already provided by the transaction's inputs. The chosen coins are locked.
+    /// `input_value` already provided by the transaction's inputs. The chosen coins are locked;
+    /// inside a vault RPC call only until it ends ([`Wallet::end_fund_scope`]).
     pub async fn fund(
         &mut self,
         node: &dyn Node,
@@ -594,7 +595,10 @@ impl Wallet {
         }
         let change = got - needed;
         if change >= VAULT_RPC_MIN_CHANGE {
-            let script = self.new_change()?;
+            // a fresh external key, as ycashd's Fund (vault.cpp `NewWalletKey`): not change by
+            // `IsChange`, so the funding change is listed sent and received
+            let k = self.new_wallet_key()?;
+            let script = yew_core::script::p2pkh_script(&yew_core::keys::hash160(&k));
             tx.vout.push(TxOut {
                 value: change,
                 script_pubkey: script,
@@ -602,6 +606,12 @@ impl Wallet {
         }
         for c in &chosen {
             self.lock_coin(&c.outpoint);
+            if let Some(scope) = self.fund_scope.as_mut() {
+                scope.insert(op_str(&c.outpoint));
+                // written with the locks: a process that stops inside the call releases them at
+                // the next open (review M1)
+                self.st.fund_scope.insert(op_str(&c.outpoint));
+            }
         }
         self.persist_state()?;
         Ok(chosen)
@@ -1139,6 +1149,52 @@ impl Wallet {
         Ok(())
     }
 
+    /// The end of a vault RPC call (ycashd's `~FundScope`, vault.cpp; audit L-1): every coin
+    /// [`Wallet::fund`] locked in it is unlocked, by any outcome, unless a remembered build holds
+    /// it (`RememberBuild`, the build's own lifetime) or it is an input of a submission whose
+    /// status is unknown (kept locked, and released with that record's locks). An accepted
+    /// transaction's inputs stay out of every selection as spent by a mempool transaction (the
+    /// barrier after `sendrawtransaction`), and come back if it leaves the mempool unmined; a
+    /// refused one leaves them free. Coins locked with `lockunspent` are never in the scope.
+    pub(crate) fn end_fund_scope(&mut self, scope: BTreeSet<String>) {
+        let recorded = !self.st.fund_scope.is_empty();
+        self.st.fund_scope.clear();
+        if scope.is_empty() && !recorded {
+            return;
+        }
+        let held: BTreeSet<String> = self
+            .st
+            .builds
+            .values()
+            .filter_map(|h| parse_hex_tx(h))
+            .flat_map(|t| t.vin.into_iter().map(|i| op_str(&i.prevout)))
+            .collect();
+        let mut changed = recorded;
+        for op in scope {
+            if held.contains(&op) {
+                continue;
+            }
+            if let Some(u) = self.st.unknown.as_mut() {
+                if u.inputs.contains(&op) {
+                    if !u.locked.contains(&op) {
+                        u.locked.push(op);
+                        changed = true;
+                    }
+                    continue;
+                }
+            }
+            changed |= self.st.locks.remove(&op);
+        }
+        if changed {
+            if let Err(e) = self.persist_state() {
+                eprintln!(
+                    "yewd: could not save the released coin locks ({}); they are released in memory",
+                    e.message
+                );
+            }
+        }
+    }
+
     pub fn unlock_build_inputs(&mut self, templ: &OutPoint, t: &Transaction) {
         for i in &t.vin {
             if i.prevout != *templ {
@@ -1194,4 +1250,40 @@ pub fn txid_of(t: &Transaction) -> Result<String, RpcError> {
     Ok(txid_hex(&t.txid().map_err(|e| {
         RpcError::new(code::INTERNAL_ERROR, e.to_string())
     })?))
+}
+
+/// A vault RPC call's fund scope (ycashd's `FundScope`, vault.cpp; audit L-1, review M1): opened
+/// around one call, it ends in `Drop`, so the coins [`Wallet::fund`] locked for the call are
+/// released whether the call returns, panics, or its future is dropped part-way (hyper drops the
+/// service future when the client disconnects or times out). A scope an earlier call left open
+/// (a process stopped inside it: the scope is written with the locks, `wallet.json`'s
+/// `fund_scope`) is ended first, at the next call and at the next open.
+pub(crate) struct FundScope<'a> {
+    pub w: &'a mut Wallet,
+}
+
+impl<'a> FundScope<'a> {
+    pub(crate) fn open(w: &'a mut Wallet) -> FundScope<'a> {
+        w.end_stale_fund_scope();
+        w.fund_scope = Some(BTreeSet::new());
+        FundScope { w }
+    }
+}
+
+impl Drop for FundScope<'_> {
+    fn drop(&mut self) {
+        let scope = self.w.fund_scope.take().unwrap_or_default();
+        self.w.end_fund_scope(scope);
+    }
+}
+
+impl Wallet {
+    /// End a fund scope an earlier call left open: the recorded coins are released as at its end.
+    pub(crate) fn end_stale_fund_scope(&mut self) {
+        let mut all = self.fund_scope.take().unwrap_or_default();
+        if !all.is_empty() || !self.st.fund_scope.is_empty() {
+            all.extend(self.st.fund_scope.iter().cloned());
+            self.end_fund_scope(all);
+        }
+    }
 }

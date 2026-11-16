@@ -12,6 +12,7 @@
 mod common;
 
 use common::*;
+use std::future::Future;
 use yew_core::pq::PqKeyId;
 
 const VAULT_BRANCH: u32 = 0x6d5b7a31;
@@ -750,6 +751,319 @@ async fn vault_lock_from_every_address_type() {
     }
 }
 
+/// The locked outpoints (`listlockunspent`) as `txid:n`.
+async fn locked(f: &mut Fix) -> std::collections::BTreeSet<String> {
+    call_json(&mut f.w, &f.node, "listlockunspent", &[])
+        .await
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| format!("{}:{}", o["txid"].as_str().unwrap(), o["vout"]))
+        .collect()
+}
+
+/// Audit L-1 (ycash6 src/rpc/vault.cpp `FundScope`, `Broadcast`; qa wallet_beta2_followups2.py
+/// `lock_lifetime`): a vault_lock funded by default leaves no coin lock, whether the node accepts
+/// it (its inputs are spent by a mempool transaction, then mined) or refuses it (its inputs are
+/// free again); a coin locked with lockunspent stays locked throughout. Before: the inputs `Fund`
+/// chose stayed locked until an unlock or a restart.
+#[tokio::test]
+async fn vault_lock_default_funding_leaves_no_coin_lock() {
+    let mut f = fixture("locklife").await;
+    let ecc = f.ecc.clone();
+    let unspent = call_json(
+        &mut f.w,
+        &f.node,
+        "listunspent",
+        &[json!(1), json!(9999999), json!([ecc])],
+    )
+    .await;
+    let kept = unspent.as_array().unwrap()[0].clone();
+    f.w.call(
+        &f.node,
+        "lockunspent",
+        &[
+            json!(false),
+            json!([{"txid": kept["txid"], "vout": kept["vout"]}]),
+        ],
+    )
+    .await
+    .unwrap();
+    let before = locked(&mut f).await;
+    assert_eq!(before.len(), 1);
+    // refused by the node: nothing stays locked
+    f.node.0.lock().unwrap().reject = Some("bad-txns-test".into());
+    let e = f.lock(None).await.unwrap_err();
+    assert!(e.1.contains("bad-txns-test"), "{e:?}");
+    f.node.0.lock().unwrap().reject = None;
+    assert_eq!(
+        locked(&mut f).await,
+        before,
+        "a refused lock leaves its coins free"
+    );
+    // accepted: no lock, the inputs spent by the unconfirmed lock
+    let r = f.lock(None).await.unwrap();
+    let (tx, _) = f.last_sent();
+    assert_eq!(
+        r["txid"].as_str().unwrap(),
+        yew_core::tx::txid_hex(&tx.txid().unwrap())
+    );
+    assert_eq!(
+        locked(&mut f).await,
+        before,
+        "an accepted lock holds no coin lock"
+    );
+    let free: std::collections::BTreeSet<String> =
+        call_json(&mut f.w, &f.node, "listunspent", &[json!(0)])
+            .await
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| format!("{}:{}", o["txid"].as_str().unwrap(), o["vout"]))
+            .collect();
+    for vin in &tx.vin {
+        let op = format!(
+            "{}:{}",
+            yew_core::tx::txid_hex(&vin.prevout.txid),
+            vin.prevout.n
+        );
+        assert!(!free.contains(&op), "{op}: spent by the unconfirmed lock");
+    }
+    f.mine_sync().await;
+    assert_eq!(locked(&mut f).await, before);
+}
+
+/// A node whose `sendrawtransaction` never answers (a hung backend): a vault RPC waiting on it is
+/// cancelled by the client (hyper drops the service future).
+struct HangSend(MockNode);
+
+impl yewd_wallet::node::Node for HangSend {
+    fn call<'a>(&'a self, method: &'a str, params: Value) -> yewd_wallet::node::NodeFuture<'a> {
+        if method == "sendrawtransaction" {
+            return Box::pin(std::future::pending());
+        }
+        self.0.call(method, params)
+    }
+}
+
+fn lock_params() -> Value {
+    json!({"tag": "TEST", "setid": "11".repeat(32), "delay": 1, "ownerheight": 1000, "amount": 1.0})
+}
+
+/// Review M1: a vault RPC whose future is dropped part-way (the client disconnected or timed out
+/// while the node was being asked to accept the lock) leaves no coin lock: the fund scope ends in
+/// its guard's `Drop`. Before: the scope ended only when the call returned, so the coins `Fund`
+/// chose stayed locked, also across a restart (the locks are written to `wallet.json`).
+#[tokio::test]
+async fn a_cancelled_vault_call_leaves_no_coin_lock() {
+    let mut f = fixture("lockcancel").await;
+    let hang = HangSend(f.node.clone());
+    let r = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        f.w.call(&hang, "vault_lock", &[lock_params()]),
+    )
+    .await;
+    assert!(r.is_err(), "the call waits on the hung node");
+    assert_eq!(f.node.0.lock().unwrap().sent.len(), 0);
+    assert!(
+        locked(&mut f).await.is_empty(),
+        "the dropped call's coins are free"
+    );
+    // the next call funds from them again and is accepted
+    f.lock(None).await.unwrap();
+    assert!(locked(&mut f).await.is_empty());
+}
+
+/// Review M1: a fund scope left open (the process stopped inside the call: here the call's future
+/// is forgotten, so no guard runs) is written with its locks, and is ended by the next vault RPC
+/// call, and at the next open of the wallet.
+#[tokio::test]
+async fn a_stale_fund_scope_is_ended_by_the_next_call_and_at_open() {
+    let name = "lockstale";
+    let mut f = fixture(name).await;
+    let hang = HangSend(f.node.clone());
+    let params = [lock_params()];
+    let leave_open = |f: &mut Fix| {
+        let mut fut = Box::pin(f.w.call(&hang, "vault_lock", &params));
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        assert!(fut.as_mut().poll(&mut cx).is_pending());
+        std::mem::forget(fut);
+    };
+    leave_open(&mut f);
+    let stuck = locked(&mut f).await;
+    assert!(
+        !stuck.is_empty(),
+        "Fund locked the coins and the call never ended"
+    );
+    // the next vault RPC call ends the stale scope first
+    f.lock(None).await.unwrap();
+    assert!(
+        locked(&mut f).await.is_empty(),
+        "{stuck:?} released by the next call"
+    );
+    // and a restart: the stale scope is on disk with its locks, released at open
+    leave_open(&mut f);
+    assert!(!locked(&mut f).await.is_empty());
+    let node = f.node.clone();
+    drop(f);
+    let d = std::env::temp_dir().join(format!("yewd-wallet-{}-{name}", std::process::id()));
+    let mut w = Wallet::open(&d, Network::Regtest, core_signer(&d.join("signer")), 0).unwrap();
+    w.sync(&node).await.unwrap();
+    let after = call_json(&mut w, &node, "listlockunspent", &[]).await;
+    assert_eq!(after, json!([]), "the stale scope is ended at open");
+}
+
+/// Review M2: `yed_buildcancel` runs inside a fund scope, as ycashd's (vault.cpp `FundScope`
+/// around the cancel's build): a call, whatever its outcome, first ends a scope an earlier call
+/// left open and ends its own.
+#[tokio::test]
+async fn yed_buildcancel_runs_inside_a_fund_scope() {
+    let mut f = fixture("cancelscope").await;
+    let hang = HangSend(f.node.clone());
+    let params = [lock_params()];
+    let mut fut = Box::pin(f.w.call(&hang, "vault_lock", &params));
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(waker);
+    assert!(fut.as_mut().poll(&mut cx).is_pending());
+    std::mem::forget(fut);
+    assert!(!locked(&mut f).await.is_empty());
+    let e =
+        f.w.call(
+            &f.node,
+            "yed_buildcancel",
+            &[json!(format!("{}:0", "22".repeat(32)))],
+        )
+        .await;
+    assert!(e.is_err(), "no such intent");
+    assert!(locked(&mut f).await.is_empty(), "the scope ended");
+}
+
+/// The funding change of a default-funded vault_lock (ycash6 vault.cpp `Fund`: a fresh external
+/// key, `NewWalletKey`) is not change by `IsChange` (wallet.cpp:5808, the external key path), so
+/// gettransaction lists it sent and received, and it stays out of the address book (ycash6 qa
+/// vault_pq_wallet.py, "the funding change"). Before: an internal change key, left out of details.
+#[tokio::test]
+async fn vault_funding_change_is_listed_sent_and_received() {
+    let mut f = fixture("lockchange").await;
+    let r = f.lock(None).await.unwrap();
+    f.mine_sync().await;
+    let txid = r["txid"].as_str().unwrap().to_string();
+    let gt = call_json(&mut f.w, &f.node, "gettransaction", &[json!(txid)]).await;
+    let (tx, _) = f.last_sent();
+    assert_eq!(tx.vout.len(), 2, "the V and the funding change");
+    let change = yew_core::keys::encode_p2pkh(
+        Network::Regtest,
+        &yew_core::script::p2pkh_hash(&tx.vout[1].script_pubkey).unwrap(),
+    );
+    let mut cats: Vec<String> = gt["details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["address"].as_str() == Some(change.as_str()))
+        .map(|d| d["category"].as_str().unwrap().to_string())
+        .collect();
+    cats.sort();
+    assert_eq!(cats, ["receive", "send"], "{gt}");
+    let listed = call_json(&mut f.w, &f.node, "getaddressesbyaccount", &[json!("")]).await;
+    assert!(!listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a.as_str() == Some(change.as_str())));
+}
+
+/// z_mergetoaddress from post-quantum and ECC sources (ycash6 rpcwallet.cpp z_mergetoaddress, beta2
+/// D-6; qa wallet_address_matrix.py): a post-quantum address merges its own coins into one output,
+/// priced on its size; ANY_TADDR takes ECC coins only; the refusals are ycashd's. Before: only the
+/// refusals were served ("use z_sendmany").
+#[tokio::test]
+async fn z_mergetoaddress_merges_post_quantum_and_ecc_coins() {
+    let mut f = fixture("merge").await;
+    let to = text_of(
+        f.w.call(&f.node, "getnewaddress", &[json!("pqslh")])
+            .await
+            .unwrap(),
+    );
+    let merge = |froms: Value, to: &str| {
+        vec![
+            froms,
+            json!(to),
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            json!("NoPrivacy"),
+        ]
+    };
+    for (froms, want) in [
+        (
+            json!([]),
+            "Invalid parameter, fromaddresses array is empty.",
+        ),
+        (
+            json!([f.ecc, f.ecc]),
+            "Invalid parameter, duplicated address: ",
+        ),
+        (
+            json!(["ANY_TADDR", f.ecc]),
+            "Cannot specify specific taddrs when using \"ANY_TADDR\"",
+        ),
+        (json!([to]), "Could not find any funds to merge."),
+    ] {
+        let e =
+            f.w.call(&f.node, "z_mergetoaddress", &merge(froms, &f.slh))
+                .await
+                .unwrap_err();
+        assert!(e.message.starts_with(want), "{}", e.message);
+    }
+    // the FN-DSA coin into the new SLH-DSA address
+    let fn_ = f.fn_.clone();
+    let r = call_json(
+        &mut f.w,
+        &f.node,
+        "z_mergetoaddress",
+        &merge(json!([fn_]), &to),
+    )
+    .await;
+    assert_eq!(
+        (r["mergingUTXOs"].as_i64(), r["remainingUTXOs"].as_i64()),
+        (Some(1), Some(0))
+    );
+    let opid = r["opid"].as_str().unwrap().to_string();
+    let res = call_json(&mut f.w, &f.node, "z_getoperationresult", &[json!([opid])]).await;
+    assert_eq!(res[0]["status"], "success", "{res}");
+    let (tx, _) = f.last_sent();
+    assert_eq!((tx.vin.len(), tx.vout.len()), (1, 1));
+    assert_eq!(tx.vout[0].script_pubkey, addr_script(&to));
+    let fee = 5 * COIN - tx.vout[0].value;
+    // PQBuilderFee at the default rate (Yellowback not live): the post-quantum spend's floor for one
+    // FN-DSA input into one ECC output, exactly (review L2)
+    assert_eq!(fee, 5_500, "an FN-DSA input's size-priced fee");
+    check_pq_signatures(&f, &tx);
+    f.mine_sync().await;
+    // ANY_TADDR: the five ECC coins, never a post-quantum one; the default fee
+    let ecc_to = text_of(f.w.call(&f.node, "getnewaddress", &[]).await.unwrap());
+    let r = call_json(
+        &mut f.w,
+        &f.node,
+        "z_mergetoaddress",
+        &merge(json!(["ANY_TADDR"]), &ecc_to),
+    )
+    .await;
+    assert_eq!(r["mergingUTXOs"].as_i64(), Some(5));
+    let (tx, _) = f.last_sent();
+    for vin in &tx.vin {
+        let (s, _) = f.prevout(&vin.prevout.txid, vin.prevout.n);
+        assert!(yew_core::script::p2pkh_hash(&s).is_some(), "ECC coins only");
+    }
+    assert_eq!(9 * COIN - tx.vout[0].value, 1_000, "-feepolicy=peroutput");
+}
+
+fn text_of(v: yewd_wallet::json::J) -> String {
+    v.text().trim_matches('"').to_string()
+}
+
 /// vault_lock "from" refusals (ycash-dd 97338f107 / ycash6 554f07fc1 strings), and a PQ from
 /// never spends an output YED holds.
 #[tokio::test]
@@ -890,12 +1204,13 @@ async fn exact_fees_any_taddr_and_mixed_recipients() {
     f.send(&ecc, &[(&r_ecc, COIN)], None, Some("AllowFullyTransparent"))
         .await
         .unwrap();
-    // yewd prices a send with no PQ party at the ZIP-317 conventional fee (500 zat a logical
-    // action, two at least), where ycash6's default -feepolicy=peroutput charges a flat 1,000 zat:
-    // a pre-existing difference, recorded in the stage-5 notes
+    // a send with no post-quantum input pays the node's fee for the shape (yew_core node_fee:
+    // ycash6's default -feepolicy=peroutput, 1,000 zat up to 50 Sapling outputs), as ycashd does;
+    // it used to be ZIP-317's conventional fee
     let (tx, _) = f.last_sent();
     assert_eq!((tx.vin.len(), tx.vout.len()), (1, 2));
-    assert_eq!(fee_of(&f, &tx), 1_000, "2 logical actions");
+    assert_eq!(fee_of(&f, &tx), yew_core::build::any_to_any::node_fee(0));
+    assert_eq!(fee_of(&f, &tx), 1_000);
     f.mine_sync().await;
     // ANY_TADDR -> ECC + SLH-DSA + Sapling in one send
     let zaddr = f.zaddr.clone();
@@ -909,13 +1224,13 @@ async fn exact_fees_any_taddr_and_mixed_recipients() {
         .await;
     r.unwrap();
     let (tx, _) = f.last_sent();
-    // one 5 YEC input; the ECC and PQ payments and the ECC change (34 + 44 + 34 bytes: 4 transparent
-    // actions) and two Sapling outputs: 6 actions
+    // one 5 YEC input; the ECC and PQ payments and the ECC change and two Sapling outputs: the
+    // node's 1,000 zat (ZIP-317's conventional fee would be 3,000, 6 actions)
     assert_eq!(
         (tx.vin.len(), tx.vout.len(), tx.shielded.outputs),
         (1, 3, 2)
     );
-    assert_eq!(fee_of(&f, &tx) - 2 * COIN, 3_000);
+    assert_eq!(fee_of(&f, &tx) - 2 * COIN, 1_000);
     for (a, v) in [(&r_ecc, COIN / 10), (&r_slh, COIN / 10)] {
         let s = addr_script(a);
         assert!(
@@ -940,8 +1255,9 @@ async fn exact_fees_any_taddr_and_mixed_recipients() {
     .await
     .unwrap();
     f.mine_sync().await;
-    // one spend, two (padded) outputs, one transparent output: 3 actions
-    assert_eq!(before - f.zbalance(&zaddr).await - COIN / 10, 1_500);
+    // one spend, two (padded) outputs, one transparent output: the node's 1,000 zat (ZIP-317's
+    // conventional fee would be 1,500, 3 actions)
+    assert_eq!(before - f.zbalance(&zaddr).await - COIN / 10, 1_000);
 }
 
 /// Review L3: the fee a post-quantum send pays, its folded dust change included, stays within the
@@ -983,7 +1299,7 @@ async fn folded_fee_cap_and_change_dust() {
     let e = f
         .send(
             &ecc,
-            &[(&to, have - 500 * n.max(2) as i64 - 30)],
+            &[(&to, have - yew_core::build::any_to_any::node_fee(0) - 30)],
             None,
             None,
         )

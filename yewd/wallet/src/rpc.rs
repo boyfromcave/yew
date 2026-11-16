@@ -79,6 +79,7 @@ pub fn served(method: &str) -> bool {
         || crate::admin::SERVED.contains(&method)
         || crate::zsend::SERVED.contains(&method)
         || crate::legacy::SERVED.contains(&method)
+        || crate::merge::SERVED.contains(&method)
         || crate::bytype::SERVED.contains(&method)
 }
 
@@ -95,6 +96,7 @@ pub fn all_served() -> Vec<&'static str> {
         .chain(crate::admin::SERVED)
         .chain(crate::zsend::SERVED)
         .chain(crate::legacy::SERVED)
+        .chain(crate::merge::SERVED)
         .chain(crate::bytype::SERVED)
         .copied()
         .collect()
@@ -391,10 +393,24 @@ impl Wallet {
             .collect()
     }
 
-    /// Whether `addr` (an `s…`/`t…`/`sq…` address) is in the address book: ycashd's `IsChange`
-    /// is "mine and not in the book".
+    /// Whether `addr` (an `s…`/`t…`/`sq…` address) is in the address book (the first test of
+    /// ycashd's `IsChange`, [`Wallet::is_change`]).
     pub(crate) fn in_book(&self, script: &[u8]) -> bool {
         script_address(self.network, script).is_some_and(|a| self.st.book.contains_key(&a))
+    }
+
+    /// `CWallet::IsChange` (ycash6 src/wallet/wallet.cpp:5808): an own output that is not in the
+    /// address book and whose key is not on the seed's external chain. An external key outside
+    /// the book (the vault RPCs' `NewWalletKey`: a funding change, a split) is a payment to the
+    /// wallet, listed sent and received, as ycashd lists it; an internal (change-chain) key, an
+    /// imported key outside the book and a post-quantum key outside the book are change.
+    pub(crate) fn is_change(&self, script: &[u8]) -> bool {
+        match self.book.owns_script(script) {
+            None => false,
+            Some(_) if self.in_book(script) => false,
+            Some(crate::keys::Owner::T(chain, _)) => chain != crate::keys::EXTERNAL,
+            Some(_) => true,
+        }
     }
 
     fn address_book_label(&self, script: &[u8]) -> Option<String> {
@@ -444,6 +460,7 @@ impl Wallet {
             m if crate::attest::SERVED.contains(&m) => self.attest_call(node, m, p).await,
             m if crate::admin::SERVED.contains(&m) => self.admin_call(node, m, p).await,
             m if crate::zsend::SERVED.contains(&m) => self.zsend_call(node, m, p).await,
+            m if crate::merge::SERVED.contains(&m) => self.merge_call(node, m, p).await,
             m if crate::legacy::SERVED.contains(&m) => self.legacy_call(node, m, p).await,
             m if crate::bytype::SERVED.contains(&m) => self.bytype_call(node, m, p).await,
             _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
@@ -626,8 +643,8 @@ impl Wallet {
             let mine = self.book.owns_script(&out.script_pubkey).is_some();
             let address = script_address(self.network, &out.script_pubkey);
             if debit > 0 {
-                if mine && !self.in_book(&out.script_pubkey) {
-                    continue; // change
+                if self.is_change(&out.script_pubkey) {
+                    continue;
                 }
                 let mut d = J::obj();
                 if let Some(a) = &address {
@@ -773,12 +790,10 @@ impl Wallet {
         }
     }
 
-    /// `getwalletinfo`.
-    fn getwalletinfo(&self, p: &[Value]) -> Result<J, RpcError> {
-        arity("getwalletinfo", p, 1)?;
-        // One pass (ycashd's GetWalletBalanceSplit, beta2 item 15): balance = the available
-        // credit of every trusted transaction, unconfirmed = that of every untrusted one in the
-        // mempool, each with its post-quantum part by scheme.
+    /// One pass (ycashd's GetWalletBalanceSplit, beta2 item 15): balance = the available credit
+    /// of every trusted transaction, unconfirmed = that of every untrusted one in the mempool,
+    /// each with its post-quantum part by scheme.
+    pub(crate) fn balance_split(&self) -> (i64, i64, [i64; 3], [i64; 3]) {
         let (mut balance, mut unconfirmed) = (0i64, 0i64);
         let (mut pq_bal, mut pq_unc) = ([0i64; 3], [0i64; 3]);
         for t in self.st.wtx.keys() {
@@ -795,6 +810,13 @@ impl Wallet {
                 *a += b;
             }
         }
+        (balance, unconfirmed, pq_bal, pq_unc)
+    }
+
+    /// `getwalletinfo`.
+    fn getwalletinfo(&self, p: &[Value]) -> Result<J, RpcError> {
+        arity("getwalletinfo", p, 1)?;
+        let (balance, unconfirmed, pq_bal, pq_unc) = self.balance_split();
         let pq_total = |v: &[i64; 3]| v[1] + v[2];
         let by_scheme = J::Arr(
             PQ_BALANCE_SCHEMES
