@@ -1,13 +1,14 @@
 // YEW Web entry. The core (yew-web-core, WebAssembly) runs in a dedicated worker so proving and
 // scanning never block the UI thread; this file wires the screens to the view-models and the
 // view-models to the core, exactly as app/lib does for the Flutter shell. Nothing here
-// constructs bytes. `?mock=1` (or VITE_MOCK=1) swaps in MockCore for development and tests.
+// constructs bytes. MockCore, for development and tests, runs only on the dev server (`?mock=1`)
+// or in a build made with VITE_MOCK=1; every other build ignores `?mock` and does not contain it.
 import "./style.css";
 import type { Core } from "./core";
 import { CoreClient, messageOf, serialized } from "./core";
 import { clear, currentRoute, go, h, onRoute } from "./dom";
 import * as keystore from "./keystore";
-import { setNetwork } from "./prefixes";
+import { mockMode, networkBanner, setNetwork } from "./prefixes";
 import { renderOnboarding, renderUnlock } from "./screens/onboarding";
 import { renderHome } from "./screens/home";
 import { renderReceive } from "./screens/receive";
@@ -25,21 +26,30 @@ import { YellowbackVm } from "./vm/yellowback";
 
 const app = document.getElementById("app")!;
 const query = new URLSearchParams(location.search);
-const useMock = query.get("mock") === "1" || import.meta.env.VITE_MOCK === "1";
+/** A build that may run the mock at all (a constant after the build: false removes the mock chunk). */
+const mockBuild: boolean = import.meta.env.DEV || import.meta.env.VITE_MOCK === "1";
+const useMock = mockBuild && mockMode({ dev: import.meta.env.DEV, flag: import.meta.env.VITE_MOCK }, location.search);
+// The mock never touches the wallet's keystore: its (public) seed goes to a database of its own.
+if (useMock) keystore.useDatabase("yew-mock");
 /** The network the wallet is for (W2: regtest on the kind cluster; `VITE_NETWORK` for a build). */
 const network = import.meta.env.VITE_NETWORK || "regtest";
+/** A build served apart from its light-client server (the hosted fast-testnet wallet) names the
+ *  server: `VITE_DEFAULT_SERVER`; vite.config.ts puts the same origin in the page's connect-src. */
+const hostedServer: string = import.meta.env.VITE_DEFAULT_SERVER || "";
 /** Served by the gateway (https), the API is on this origin: the server field defaults to it.
  *  The dev loop (vite over http) keeps an explicit URL (the plain :9067 listener). */
-const defaultServer = useMock ? "http://localhost:8080" : location.protocol === "https:" ? `https://${location.hostname}:${location.port || "443"}` : "";
+const defaultServer = useMock ? "http://localhost:8080" : hostedServer || (location.protocol === "https:" ? `https://${location.hostname}:${location.port || "443"}` : "");
 /** `?params=<base URL>`: a mirror for the proving files (the test helper); the Settings field. */
 const paramsSource = query.get("params") ?? "";
 
 async function makeCore(): Promise<Core> {
-  if (useMock) { const { MockCore } = await import("./mock"); return new MockCore({ delayMs: 50 }); }
+  if (mockBuild && useMock) { const { MockCore } = await import("./mock"); return new MockCore({ delayMs: 50 }); }
   const c = new CoreClient(); await c.install_storage(); return c;
 }
 
 async function main() {
+  const note = networkBanner(network);
+  if (note) document.body.prepend(h("div", { class: "netbanner", role: "note" }, note));
   app.textContent = "YEW — loading…";
   const core = serialized(await makeCore());
   const version = (await core.status()).version;

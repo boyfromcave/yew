@@ -201,7 +201,7 @@ proto/                  the three lightwalletd-dd .proto files + PIN (the commit
 scripts/                build, run, devnet and CI check scripts (listed below)
 docs/                   trust.md, address-types.md, design-notes.md, security-review.md, release.md, licenses.md
 flutter_rust_bridge.yaml   codegen config
-.github/workflows/      ci.yml (build, tests, checks); semgrep.yml, codeql.yml, secops.yml, code-scanning.yml (SECURITY-CI.md); devnet-nightly.yml
+.github/workflows/      ci.yml (build, tests, checks); semgrep.yml, codeql.yml, secops.yml, code-scanning.yml (SECURITY-CI.md); devnet-nightly.yml; web-wallet-deploy.yml (the hosted fast-testnet web wallet, web/README.md)
 ```
 
 ## Toolchain

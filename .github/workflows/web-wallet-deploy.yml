@@ -1,0 +1,242 @@
+# web-wallet-deploy: build yew/web for the FAST TESTNET and publish it to
+# https://fastnet-wallet.ycash.team (the infrastructure is managed separately).
+# Copyright (c) 2026 The Ycash developers. MIT licence (LICENSE).
+#
+# In plain words: a click on "Run workflow" (on upgrade/vault) builds the wallet for the fast
+# testnet, with that network's light-wallet server as its default and a banner saying the coins
+# have no value; a second job, the only one with AWS access, uploads that build and the two Sapling
+# proving files to the wallet's bucket and tells CloudFront to drop its cached copy. Nothing waits:
+# the invalidation is requested and the job ends. It is a testnet wallet only (web/README.md, "The
+# hosted fast-testnet wallet", says why).
+#
+# A deploy is a deliberate act: there is no push trigger. A maintainer reads the merged commit and
+# then runs this by hand; a merge alone never changes what the name serves. (A required reviewer on
+# the environment can be added later.) And it is off until it is switched on: both jobs are skipped
+# unless the repository variable WEB_WALLET_DEPLOY is `true` (set once the bucket exists and the
+# environment holds its secrets).
+#
+# Two jobs, so the build (which runs the repository's code and its dependencies' build scripts)
+# never holds an OIDC token: `build` has contents: read only and hands dist/ and the proving files'
+# pins over as an artifact; `deploy` checks out nothing and runs no repository code, only curl,
+# sha256sum and the AWS CLI on that artifact. The build restores no cache (no rust-cache, no npm
+# cache): the bytes that will handle keys are compiled in this run from the lockfiles, and what
+# another workflow left in a cache cannot reach them. The price is one full compile per deploy.
+#
+# The build is scripts/build-release.sh, the reproducible release build ci.yml's `web` job proves
+# on every push (CLEAN=0 here: one compile, the bundle still built twice and compared). It writes
+# dist/BUNDLE-SHA256SUMS, which is published with the bundle, and the run's summary gives the bundle
+# hash: anyone can rebuild the commit with the two VITE_ values below and compare what the name
+# serves (web/scripts/verify-bundle.sh).
+#
+# AWS access is OIDC only, no stored keys. `deploy` runs in the GitHub environment
+# `web-wallet-deploy` (deployment branch upgrade/vault only). This repository emits GitHub's
+# immutable OIDC subject, and the deploy role trusts exactly
+# repo:boyfromcave@<owner_id>/yew@<repo_id>:environment:web-wallet-deploy (the operations
+# repository's README, "The fast-testnet web wallet"). The role may only write this bucket and
+# invalidate this distribution; it cannot delete an object's earlier versions, so a bad deploy can
+# be rolled back. The environment holds three values (from `terraform output -raw` of the
+# infrastructure): WEB_WALLET_ROLE_ARN, WEB_WALLET_BUCKET, WEB_WALLET_DISTRIBUTION_ID. They are
+# environment secrets, never committed: this repository is public and so are its logs, and secrets
+# are masked in them (the values are masked below as well).
+#
+# Third-party actions are pinned by commit, never by tag; the comment carries the tag (bump both).
+name: web-wallet-deploy
+on:
+  workflow_dispatch: {}
+permissions: {}
+concurrency:
+  group: web-wallet-deploy
+  cancel-in-progress: false
+env:
+  # The fast testnet (core/src/params.rs: `testnet` is the testnet-yb-fast profile) and its
+  # light-wallet server. The server's origin is also the one entry besides 'self' in the page's
+  # connect-src (web/hosted-csp.ts) and in the response header's (the infrastructure's).
+  VITE_NETWORK: testnet
+  VITE_DEFAULT_SERVER: https://fastnet-lightwallet.ycash.team
+jobs:
+  build:
+    if: github.ref == 'refs/heads/upgrade/vault' && vars.WEB_WALLET_DEPLOY == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      WASM_PACK_VERSION: 0.15.0
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          # Exact, as in ci.yml's web job (the bundle hash depends on the tools). No `cache:` input.
+          node-version: 22.23.4
+      - name: shell checks (imports, vitest)
+        working-directory: web
+        run: npm ci && scripts/check-web-imports.sh && npx vitest run
+      - name: Rust toolchain + wasm32 target
+        run: rustup show active-toolchain && rustup target add wasm32-unknown-unknown
+      # The same compiler and protoc as ci.yml's web job, which says why each is exact.
+      - name: "Install clang 18.1.3, llvm-ar (wasm32 C: secp256k1-sys, sqlite) and protoc"
+        env:
+          LLVM_DEB: 1:18.1.3-1ubuntu1
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --allow-downgrades "clang-18=$LLVM_DEB" "lld-18=$LLVM_DEB" "llvm-18=$LLVM_DEB" protobuf-compiler
+          clang-18 --version | tee /dev/stderr | grep -q '^Ubuntu clang version 18\.1\.3 (1ubuntu1)$'
+          llvm-ar-18 --version
+          protoc --version | tee /dev/stderr | grep -qx 'libprotoc 3\.21\.12'
+      - name: install wasm-pack
+        run: cargo install wasm-pack --version "$WASM_PACK_VERSION" --locked
+      - name: release build for the fast testnet
+        working-directory: web
+        env:
+          CC_wasm32_unknown_unknown: clang-18
+          AR_wasm32_unknown_unknown: llvm-ar-18
+          CLEAN: "0"
+        run: scripts/build-release.sh
+      # What makes this the hosted fast-testnet build, read back from the files that will be served:
+      # the <meta> policy names the one server and no other; the main chunk carries the network and
+      # the default server as its two build constants (main.ts declares them one after the other,
+      # and a build without VITE_NETWORK would carry "regtest" there); the mock core is not in the
+      # bundle (no chunk, and not its public seed in any file); and nothing in the bundle needs more
+      # than the response header's policy allows (no eval, no Function constructor, no blob: URL),
+      # so a dependency that starts to is caught here and not in a visitor's console.
+      - name: check the hosted build
+        working-directory: web
+        run: |
+          set -euo pipefail
+          grep -qF "connect-src 'self' $VITE_DEFAULT_SERVER;" dist/index.html
+          if grep -qE 'download\.z\.cash|frame-ancestors' dist/index.html; then
+            echo "dist/index.html: the <meta> policy is not the hosted one" >&2; exit 1
+          fi
+          constants="=\"$VITE_NETWORK\",[A-Za-z_\$][A-Za-z0-9_\$]*=\"$VITE_DEFAULT_SERVER\""
+          grep -lE "$constants" dist/assets/index-*.js || {
+            echo "the main chunk is not the $VITE_NETWORK build with $VITE_DEFAULT_SERVER as its server" >&2; exit 1; }
+          if ls dist/assets/mock-*.js 2>/dev/null || grep -lE 'abandon abandon|MockCore' dist/assets/*.js; then
+            echo "the mock core is in the bundle (the files above)" >&2; exit 1
+          fi
+          if grep -lE 'new Function|(^|[^A-Za-z0-9_.$])eval\(|blob:|createObjectURL' dist/assets/*.js; then
+            echo "the bundle uses something the content security policy refuses (the files above)" >&2; exit 1
+          fi
+          ls dist/assets/*.wasm dist/BUNDLE-SHA256SUMS
+      - name: stage the artifact (dist/ and the proving files' pins)
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp -R web/dist out/dist
+          web/scripts/sapling-params-pins.sh sums > out/sapling-params.SHA256SUMS
+          web/scripts/sapling-params-pins.sh sizes > out/sapling-params.sizes
+          hash=$(sha256sum out/dist/BUNDLE-SHA256SUMS | cut -d' ' -f1)
+          {
+            echo "### fast-testnet web wallet build"
+            echo "commit \`$GITHUB_SHA\`, network \`$VITE_NETWORK\`, server \`$VITE_DEFAULT_SERVER\`"
+            echo
+            echo "bundle hash (sha256 of BUNDLE-SHA256SUMS): \`$hash\`"
+            echo
+            echo "check what the name serves: \`RELEASE_BUNDLE_HASH=$hash web/scripts/verify-bundle.sh https://fastnet-wallet.ycash.team\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: web-wallet
+          path: out/
+          if-no-files-found: error
+          retention-days: 3
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: web-wallet-deploy
+    permissions:
+      id-token: write
+    env:
+      BUCKET: ${{ secrets.WEB_WALLET_BUCKET }}
+      DISTRIBUTION_ID: ${{ secrets.WEB_WALLET_DISTRIBUTION_ID }}
+      # The project's own copy of the Zcash parameter files (ycash-infra, bundles/zcash-params):
+      # unchanged copies, never download.z.cash. Where they come from does not decide whether they
+      # are used: each must match the wallet's own pins below.
+      ZCASH_PARAMS_URL: https://github.com/boyfromcave/ycash-infra/releases/download/zcash-params-v1
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: web-wallet
+          path: out
+      - name: check the deploy values and the artifact
+        run: |
+          set -euo pipefail
+          if [ -z "$BUCKET" ] || [ -z "$DISTRIBUTION_ID" ]; then
+            echo "set WEB_WALLET_BUCKET and WEB_WALLET_DISTRIBUTION_ID in the web-wallet-deploy environment" >&2
+            exit 1
+          fi
+          echo "::add-mask::$BUCKET"
+          echo "::add-mask::$DISTRIBUTION_ID"
+          test -f out/dist/index.html
+          # every file of the bundle is the one the build listed, and nothing else is in it
+          (cd out/dist && sha256sum -c --quiet BUNDLE-SHA256SUMS)
+          diff <(cd out/dist && find . -type f ! -name BUNDLE-SHA256SUMS | LC_ALL=C sort | sed 's#^\./##') \
+               <(sed 's/^[0-9a-f]*  //' out/dist/BUNDLE-SHA256SUMS | LC_ALL=C sort)
+          test "$(wc -l < out/sapling-params.SHA256SUMS)" -eq 2
+      # The two proving files (51.6 MB), kept only if length and SHA-256 equal the wallet's pins
+      # (core/src/sapling_params.rs, carried by the artifact). The browser checks them again.
+      - name: fetch the Sapling proving files and check them against the wallet's pins
+        run: |
+          set -euo pipefail
+          mkdir params
+          while read -r bytes name; do
+            case "$name" in sapling-spend.params | sapling-output.params) ;; *) echo "unexpected file $name" >&2; exit 1 ;; esac
+            curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --max-time 600 -o "params/$name" "$ZCASH_PARAMS_URL/$name"
+            test "$(stat -c %s "params/$name")" = "$bytes"
+          done < out/sapling-params.sizes
+          (cd params && sha256sum -c ../out/sapling-params.SHA256SUMS)
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.WEB_WALLET_ROLE_ARN }}
+          aws-region: us-east-1
+          role-session-name: web-wallet-deploy
+          role-duration-seconds: 900
+          mask-aws-account-id: true
+      # Order: what index.html points at first, index.html last, so the page never names a file that
+      # is not there yet. Caching:
+      #   assets/*           1 year, immutable (Vite names every file by its content hash)
+      #   sapling-params/*   1 year, immutable (pinned by SHA-256; they never change)
+      #   index.html, BUNDLE-SHA256SUMS   1 minute
+      # Every object is written on every deploy (cp, never a size or date comparison): whatever is
+      # in the bucket under one of these names, altered or not, is replaced by the bytes checked
+      # above, so deploying a commit again always restores exactly that commit. The proving files
+      # too (52 MB a deploy; deploys are by hand). The .wasm gets its type by name:
+      # instantiateStreaming needs application/wasm.
+      - name: upload
+        run: |
+          set -euo pipefail
+          s3="s3://$BUCKET"
+          forever='public, max-age=31536000, immutable'
+          aws s3 cp params/ "$s3/sapling-params/" --recursive --only-show-errors \
+            --content-type application/octet-stream --cache-control "$forever"
+          aws s3 cp out/dist/assets/ "$s3/assets/" --recursive --only-show-errors --exclude '*.wasm' \
+            --cache-control "$forever"
+          aws s3 cp out/dist/assets/ "$s3/assets/" --recursive --only-show-errors --exclude '*' --include '*.wasm' \
+            --content-type application/wasm --cache-control "$forever"
+          aws s3 cp out/dist/BUNDLE-SHA256SUMS "$s3/BUNDLE-SHA256SUMS" --only-show-errors \
+            --content-type 'text/plain; charset=utf-8' --cache-control 'public, max-age=60'
+          aws s3 cp out/dist/index.html "$s3/index.html" --only-show-errors \
+            --content-type 'text/html; charset=utf-8' --cache-control 'public, max-age=60'
+      # Every file of dist/ was written a moment ago, so this pass has nothing to upload and only
+      # removes what is no longer in dist/ (the previous build's hashed files, anything stray).
+      # --size-only is what keeps it from uploading: without it sync would copy files again by date
+      # and drop their headers; it cannot leave an altered object behind, since each was just
+      # replaced. The proving files are left out of it (and anything else under sapling-params/ is
+      # removed by the line after). A removed object keeps its earlier version for the bucket's
+      # retention.
+      - name: remove stale objects
+        run: |
+          set -euo pipefail
+          aws s3 sync out/dist/ "s3://$BUCKET" --delete --size-only --only-show-errors --exclude 'sapling-params/*'
+          aws s3 sync params/ "s3://$BUCKET/sapling-params/" --delete --size-only --only-show-errors
+      # One path, one invalidation (1,000 paths a month are free). Requested, not awaited.
+      - name: invalidate
+        run: |
+          set -euo pipefail
+          id=$(aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" --paths '/*' \
+            --query Invalidation.Id --output text)
+          echo "invalidation $id requested (aws cloudfront get-invalidation --id $id to check, from your machine)" >> "$GITHUB_STEP_SUMMARY"

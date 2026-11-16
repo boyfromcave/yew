@@ -26,7 +26,9 @@ for a in "$@"; do case "$a" in --kind) KIND=1 ;; --mint) MINT=1 ;; *) PAGE=$a ;;
 CHROME_VER=$("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/yew-web/chromedriver-$CHROME_VER
 [ -x "$CACHE/chromedriver" ] || { echo "no chromedriver for Chrome $CHROME_VER in $CACHE (run scripts/test-spike-sqlite.sh once)"; exit 1; }
-[ -n "$PAGE" ] || npm run build >/dev/null
+# The mock walk needs a build that contains MockCore: VITE_MOCK=1 (no other build runs it, whatever
+# the address says). That dist/ is a mock build: never publish it; `npm run build` makes a real one.
+if [ -z "$PAGE" ]; then if [ "$KIND" = 1 ]; then npm run build >/dev/null; else VITE_MOCK=1 npm run build >/dev/null; fi; fi
 PORT=${PORT:-4173}
 PIDS=()
 trap 'kill "${PIDS[@]}" 2>/dev/null' EXIT
