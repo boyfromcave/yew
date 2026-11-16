@@ -63,6 +63,10 @@ clearer, and closes yewd's remaining gaps against ycashd's wallet (ycashd 6.22.0
   passphrase) and is never sent. The page talks only to that lightwalletd and to its own origin,
   which serves the page and the Sapling proving files (the project's copy, checked against the
   pins in `core/src/sapling_params.rs`).
+- **An answer is shown only for the selection it was asked for.** On Receive, Send, Vault and
+  Settings a slow answer could arrive after you had changed the selection and be shown under the new
+  one (for example an address of the previous type). Such an answer is now dropped. A payment was
+  never affected: Send confirms the preview it was shown, by that preview's id.
 - **Deployed by hand.** A merge never changes what the name serves: a maintainer runs the
   `web-wallet-deploy` workflow. `/BUNDLE-SHA256SUMS` and `web/scripts/verify-bundle.sh` let you
   compare what the name serves with a build of the commit (`web/README.md`).
