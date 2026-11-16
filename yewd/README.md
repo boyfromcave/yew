@@ -318,9 +318,40 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
   <fee>)." (`-4`), and an "Insufficient transparent funds…" refusal (`-6`) ends with what the
   address holds in coinbase the send could not use: "The address holds <amount> of coinbase
   funds, which can only be sent to shielded recipients, with no change." and "The address holds
-  <amount> of immature coinbase funds, which can be spent after 101 confirmations."
+  <amount> of immature coinbase funds, which can be sent to shielded recipients only, with no change,
+  after 101 confirmations."
   `sendtoaddress`, `sendmany`, `fundrawtransaction` and `z_mergetoaddress` still leave a
   post-quantum coinbase out, and `z_shieldcoinbase` is not served.
+- **Paying a miner at a post-quantum address: what a miner or pool operator must know.**
+  - Pay a post-quantum block reward to an address held in a yewd or ycashd wallet. The YEW app and
+    the web wallet cannot tell that a coin is a coinbase (lightwalletd's `GetAddressUtxos`, the
+    light-client coin listing, carries no such flag): they show the reward as spendable, and the
+    node refuses their sends until the coin is 100 blocks deep and the send has only shielded
+    recipients and no change.
+  - Move it with `z_sendmany` from the address to a shielded address once it has 101
+    confirmations. Coins are taken largest first and a selection holding a coinbase allows no
+    change, so name an amount, read the exact amount in the refusal, and send that. An amount
+    within the largest reward selects that one coin, so a call moves one reward unless the amount
+    named is more than it; then the next coin joins and the refusal names the amount for all the
+    coins selected. Two rewards of 6.25 at an FN-DSA address (amounts made up; the fees are those
+    ycashd 6.22 charges on regtest for one and two FN-DSA inputs, the rule yewd's fee follows; an
+    SLH-DSA input costs more; the refusal always names the exact figure):
+
+    ```
+    z_sendmany "<sqf… address>" '[{"address":"<ys1… address>","amount":1}]'
+      -> -4 When shielding coinbase funds, the wallet does not allow any change. The proposed transaction
+            would result in 5.249935 in change. To spend the selected coins, send exactly 6.249935 to shielded
+            recipients (the 6.25 selected less the fee 0.000065).
+    z_sendmany "<sqf… address>" '[{"address":"<ys1… address>","amount":7}]'
+      -> -4 … would result in 5.49988 in change. To spend the selected coins, send exactly 12.49988 to
+            shielded recipients (the 12.50 selected less the fee 0.00012).
+    z_sendmany "<sqf… address>" '[{"address":"<ys1… address>","amount":12.49988}]'
+      -> both rewards in one transaction: no transparent output, Sapling outputs only
+    ```
+
+  - `z_shieldcoinbase` (not served by yewd) and `z_mergetoaddress` do not move it; there is no
+    one-call sweep.
+  - A transparent (ECC) reward and a Sapling reward are unchanged.
 - **A submission's answer lost (review M1).** A transaction the node accepted always returns its
   txid (a failing sync after it is a warning). When `sendrawtransaction`'s answer is lost, the
   wallet asks the node for the txid of the bytes; not found, the call answers "…status unknown,
