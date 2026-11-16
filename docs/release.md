@@ -1,6 +1,6 @@
 # YEW — release recipe
 
-_Plan §7 W5, §3.5, §6.4, §8 Q4. What is done in this repository and what stays `[owner]` (a
+_Plan §7 W5, §3.5, §6.4, §8 Q4. What is done in this repository and what stays `[lead architect]` (a
 device, a store account, a public server, a signing identity). The threat review is
 `docs/security-review.md`, the license listing `docs/licenses.md`._
 
@@ -16,7 +16,7 @@ device, a store account, a public server, a signing identity). The threat review
 | Android NDK | 28.2.13676358 | `app/android/app/build.gradle.kts` |
 | protoc | any 3.x (36.1 used) | `core/build.rs`; the `.proto` files are pinned, not the compiler |
 | `cargo-ndk` | latest | `scripts/build-core-android.sh` |
-| Xcode | the owner's; minimum iOS 15.0 | `IPHONEOS_DEPLOYMENT_TARGET` |
+| Xcode | the release machine's; minimum iOS 15.0 | `IPHONEOS_DEPLOYMENT_TARGET` |
 
 **Rust.** Every direct dependency is `=x.y.z` (`core/Cargo.toml`); `Cargo.lock` is committed;
 CI and the release builds use `--locked`, so a lock drift fails instead of resolving. The
@@ -24,7 +24,7 @@ release profile is `lto = true, codegen-units = 1, strip = true` (`Cargo.toml`).
 are reproducible for the same toolchain, lock, target and profile up to the absolute source
 path embedded in panic strings (`strip` removes symbols; pass
 `--config 'build.rustflags=["--remap-path-prefix", "<workspace>=/yew"]'` for a path-independent
-binary — a `[owner]` CI setting once the release machine is known).
+binary — a `[lead architect]` CI setting once the release machine is known).
 
 ```bash
 # core for the host (tests, yew-cli)
@@ -34,8 +34,8 @@ cargo test --workspace --locked
 scripts/build-core-ios.sh        # aarch64-apple-ios + -sim → app/ios/Frameworks/YewCore.xcframework
 scripts/build-core-android.sh    # aarch64/x86_64 linux-android → app/android/app/src/main/jniLibs
 # the app
-(cd app && flutter pub get && flutter build appbundle --release)   # [owner] with the signing config
-(cd app && flutter build ipa --release)                            # [owner] with the Xcode identity
+(cd app && flutter pub get && flutter build appbundle --release)   # [lead architect] with the signing config
+(cd app && flutter build ipa --release)                            # [lead architect] with the Xcode identity
 ```
 
 **The generated code is verified, not trusted.** `core/src/frb_generated.rs` and
@@ -86,7 +86,7 @@ edit.
 `docs/licenses.md` is the listing; `scripts/check-licenses.sh` regenerates it (`--print`) and,
 without a flag, fails CI when a crate's SPDX expression has no identifier in the allowed
 permissive set. The store builds must ship the Apache 2.0 text with the app (`ring` and other
-Apache-2.0 crates): `[owner]`, §7.
+Apache-2.0 crates): `[lead architect]`, §7.
 
 ## 4. Default endpoints
 
@@ -95,8 +95,8 @@ The list lives in the core: `net/tls.rs` `default_servers(network)` (bridged as
 
 | Network | Entries | Why |
 |---|---|---|
-| mainnet | **none** | plan §8 Q4: the owner supplies the public `lightwalletd-dd` endpoints (host, port, certificate) once they exist; nothing ships that trusts a server nobody vetted. Onboarding asks for one. |
-| testnet | none | the same, until the testnet run (§8) has a host |
+| mainnet | **none** | plan §8 Q4: the Yellowback lead architect supplies the public `lightwalletd-dd` endpoints (host, port, certificate) once they exist; nothing ships that trusts a server nobody vetted. Onboarding asks for one. |
+| testnet | none | the same, until the testnet run (§9) is ready; the project's fast-testnet server `fastnet-lightwallet.ycash.team:443` (TLS, YEC only: no YED there) is typed by hand until then |
 | regtest | `127.0.0.1:9067` plain | the local devnet (the Android emulator reaches it as `10.0.2.2:9267`, typed) |
 
 To ship an endpoint: add a `DefaultServer { address: "lwd.example:443", plain: false }` to the
@@ -110,9 +110,8 @@ server; a server is probed (`GetLightdInfo` chain name, `taddrSupport`, `GetYell
 private CA that issued it — as the **only** trust anchor; the system roots are not consulted
 when it is set. `yew-cli --ca-pem PATH`. A SHA-256 fingerprint pin needs `rustls` as a direct
 dependency (an allow-list decision) and is not implemented; `docs/security-review.md` S-3b.
-The app has no pinning field yet: it needs one bridge parameter on `probe_server`,
-`create_wallet`, `unlock`, `set_server` and a Settings field — deferred, listed in the README's
-owner list. When the mainnet endpoint is a Let's Encrypt host, pinning is unnecessary (system
+The app takes the PEM in Onboarding ("Pinned certificate (PEM, optional)"), and Settings marks a
+pinned server "(pinned)". When the mainnet endpoint is a Let's Encrypt host, pinning is unnecessary (system
 roots); when it is a self-signed `lightwalletd-dd`, pinning is how the app trusts it.
 
 ## 6. Crash reporting and telemetry: none
@@ -125,13 +124,13 @@ one server in Settings, and the `INTERNET` permission exists for it alone. The c
 init installs a panic backtrace hook only, not the bridge's default console logger (W5 review
 A-2). A future crash reporter would be **off by default** and a recorded decision.
 
-## 7. Store metadata checklist `[owner]`
+## 7. Store metadata checklist `[lead architect]`
 
 | Item | Value / draft |
 |---|---|
 | Name | **YEW** (Android `android:label`, iOS `CFBundleDisplayName`: set) |
 | Subtitle | Your Electronic Wallet — YEC and Yellowback (YED) |
-| Bundle id / application id | iOS `cash.ycash.yew.yewApp`, Android `cash.ycash.yew.yew_app` (Flutter's defaults for org `cash.ycash.yew`; change both before the first upload if the owner wants `cash.ycash.yew`) |
+| Bundle id / application id | iOS `cash.ycash.yew.yewApp`, Android `cash.ycash.yew.yew_app` (Flutter's defaults for org `cash.ycash.yew`; change both before the first upload if the lead architect wants `cash.ycash.yew`) |
 | Version | `app/pubspec.yaml` `version: 1.0.0+1` (`CFBundleShortVersionString` / `versionName` from the first part, build number from the second) |
 | Description (draft) | "YEW is a simple wallet for Ycash: private and public YEC, and Ycash Yellowback (YED), the decentralized dollar on Ycash. Your keys stay on your phone; the wallet talks to one light-client server you choose. Send and receive YEC privately with an optional message, move YEC between private and public, send and receive YED, mint Yellowbacks against locked YEC and redeem them. Private payments hide the amount, the addresses and the message on the chain; public YEC and all YED are visible to anyone." |
 | Category | Finance |
@@ -145,7 +144,7 @@ A-2). A future crash reporter would be **off by default** and a recorded decisio
 | iOS app-switcher blur | optional, `SceneDelegate` (security review A-3) |
 | Screenshots | the Home, Send, Receive, Yellowback, Mint and Vault screens on a device (none exists yet: the app has not run on one) |
 
-## 8. Signing `[owner]`
+## 8. Signing `[lead architect]`
 
 - **iOS**: an Apple Developer team; in Xcode set the Runner target's team and bundle id, add
   `YewCore.xcframework` (`scripts/build-core-ios.sh`) to the target with `-force_load` (or the
@@ -161,22 +160,23 @@ A-2). A future crash reporter would be **off by default** and a recorded decisio
   Play App Signing so the upload key can be rotated.
 - Never in CI (`ci.yml` states it); the signing material never enters this repository.
 
-## 9. The testnet plan `[owner]` (plan §7 W5, third item)
+## 9. The testnet plan `[lead architect]` (plan §7 W5, third item)
 
 The ≥ 4-week run needs, in order:
 
-1. **v3 A7** (`docs/plans/yellowback-v3-development-plan.md`): the testnet activation of the
-   Yellowback soft fork with attestors running — YEW's mint / redeem / claim paths need an
-   *armed* network (a price bundle per block); before A7 the app can do YEC and YED transfers
-   only where an index exists.
-2. **A public `lightwalletd-dd`** built from `feature/yellowback-price-attest` at or after
-   `proto/PIN`, started with `--yellowback` against a testnet `ycashd` (the fork) that runs
-   with `-yellowback` and **`-insightexplorer`** (the address index `GetAddressUtxos` /
-   `GetTaddressTxids` / `GetAddressTokens` need). TLS: a public host name with a Let's Encrypt
-   certificate (system roots, no pinning) or a self-signed certificate published with the
-   endpoint (pin it, §5). Ports: lightwalletd's 9067 or 443 behind a TLS terminator that
-   speaks HTTP/2 end to end (gRPC needs `h2`, not HTTP/1.1 upgrade). Record the host in
-   `default_servers(Testnet)` (§4) so the testers do not type it.
+1. **A testnet with YED live.** The project's fast testnet (testnet-yb-fast) runs the vault
+   upgrade from height 510,400, but no YED attestor set is compiled in for it, so YED cannot be
+   minted there: YEW's mint / redeem / claim paths need a testnet release that sets an attestor
+   set and attestors signing prices. Until then the fast testnet tests the YEC paths only (public,
+   private and post-quantum sends, moves, restore).
+2. **A public `lightwalletd-dd`** started with `--yellowback` against a testnet `ycashd` of the
+   vault upgrade that runs with **`-insightexplorer`** (the address index `GetAddressUtxos` /
+   `GetTaddressTxids` / `GetAddressTokens` need). The fast testnet's is
+   `fastnet-lightwallet.ycash.team` (TLS with a public certificate, port 443). TLS in general: a
+   public host name with a Let's Encrypt certificate (system roots, no pinning) or a self-signed
+   certificate published with the endpoint (pin it, §5). Ports: lightwalletd's 9067 or 443 behind
+   a TLS terminator that speaks HTTP/2 end to end (gRPC needs `h2`, not HTTP/1.1 upgrade). Record
+   the host in `default_servers(Testnet)` (§4) so the testers do not type it.
 3. **Two phones** (one iOS, one Android) with the signed test builds (§8), the M1 and M2
    integration tests run once by hand against the public endpoint
    (`app/integration_test/m1_flow_test.dart`, `m2_flow_test.dart`), then the 4 weeks of

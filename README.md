@@ -3,7 +3,8 @@
 A small mobile wallet for **Ycash (YEC)** and **Ycash Yellowback (YED)**, a dollar on Ycash
 backed by YEC locked in post-quantum vaults. iOS and Android, one Flutter UI over one Rust core.
 YEW is one component of the [Ycash vaults and Yellowback](https://github.com/boyfromcave/yellowback)
-project. A web wallet built on the same core is in progress (branch `up/web`).
+project. A web wallet on the same core is in [`web/`](web/README.md), and `yewd`, the core as a
+wallet daemon in front of a node without a wallet (kogany), is in [`yewd/`](yewd/README.md).
 
 **For users.** YEW holds YED and public YEC in transparent addresses and private YEC in a
 shielded Ycash address (`ys1…`), and lets you receive, send and see your history for all of
@@ -26,10 +27,13 @@ after a delay during which the release can be cancelled. Lock YEC in a vault to 
 of the YED it backs, others can claim it. The YEC/USD price comes from mining pools and from
 **attestors**, the bonded members of Yellowback's signer set who sign prices.
 
-> **Status: in development.** It runs on regtest and on a one-laptop devnet only. No activation
-> height is set on mainnet or testnet, the upgrade has not been adopted by the Ycash Foundation,
-> and there is no external audit. The app runs on the iOS simulator and the Android emulator; there
-> are no public servers and no store builds yet ([What is left](#what-is-left)).
+> **Status: beta.** No activation height is set on mainnet, the upgrade has not been adopted by
+> the Ycash Foundation, and there is no external audit. YEW runs on regtest, on a one-laptop
+> devnet and on the project's fast testnet (testnet-yb-fast, where the vault upgrade is active):
+> there, public, private and post-quantum YEC work, but YED cannot be minted, because no attestor
+> set is compiled in for it. The app runs on the iOS simulator and the Android emulator; there are
+> no store builds yet, and no server is built in for mainnet or testnet: you type one
+> ([What is left](#what-is-left)). Release notes: [docs/release-notes-beta3.md](docs/release-notes-beta3.md).
 
 - **What YEW does with it:** mints, redeems, claims and releases, signing every vault spend
   itself, and signs every transaction for the consensus branch ID of the *next* block, so sends
@@ -38,19 +42,25 @@ of the YED it backs, others can claim it. The YEC/USD price comes from mining po
 - **Post-quantum keys:** each vault's owner is an SLH-DSA key, and YED is received, held and sent
   with Falcon-512 keys, from the seed. YED addresses are 53 characters and start `yb…` on mainnet
   (`yt…` testnet, `yr…` regtest). Falcon is active from the upgrade's first block on mainnet.
-  YEW sends YEC to plain post-quantum addresses (`sq…`) and finds payments to its own; post-quantum
-  YEC it receives shows separately and moves into the wallet with one tap.
-  Private (Sapling) YEC is not post-quantum.
+  For plain YEC, YEW receives at its own post-quantum addresses (`sqf…` for FN-DSA-512, `sqs…` for
+  SLH-DSA on mainnet; `tqf…`/`tqs…` on testnet), sends to them and spends from them (the **From**
+  chooser); Home shows the balance by type. Private (Sapling) YEC is not post-quantum.
 - **Fees:** YEW computes every fee it signs. The protocol fee is in dollars of the debt, like tax
   brackets (1 % up to $1,000, 0.5 % up to $10,000, 0.1 % above, $1 minimum), charged at the mint
   and again at the redeem at the vault's mint price; redeeming before the end of the term adds 5 /
   2.5 / 1 % of the debt (class A / B / C). The largest mint is $100,000. Network fees are dollars
-  per KB at the attested price, capped. The screens show fees in dollars and YEC.
+  per KB at the attested price, capped. A plain YEC send pays what ycashd's own wallet pays for the
+  same shape: 1,000 zat for a send with Sapling outputs or spends (up to 50 Sapling outputs), a
+  size-based fee when a post-quantum address pays. A fee more than twice the node's fee for the
+  shape needs a separate confirmation; a fee of 0.01 YEC or less is never asked about. The screens
+  show fees in dollars and YEC.
 - **What it needs:** a light-client server, [lightwalletd](https://github.com/boyfromcave/lightwalletd)
-  (`lightwalletd-dd`) with `--yellowback`, over a `ycashd` built from the `upgrade/quantum-vaults`
-  branch of [ycash-dd](https://github.com/boyfromcave/ycash-dd) or
-  [ycash6](https://github.com/boyfromcave/ycash6) (this line joins `upgrade/vault` at release). The
-  core accepts Yellowback `rpcversion` 9 (beta2) and 10 (beta3).
+  (`lightwalletd-dd`), over a `ycashd` of the vault upgrade (ycashd 6.22.0-beta2 or later from
+  [ycash6](https://github.com/boyfromcave/ycash6), or the `upgrade/vault` branch of
+  [ycash-dd](https://github.com/boyfromcave/ycash-dd)) started with `-insightexplorer`. For YED the
+  server runs with `--yellowback` on a node where Yellowback is live; without that service YEW
+  shows and sends YEC only. The core accepts Yellowback `rpcversion` 9 (beta2) and 10 (beta3) and
+  refuses a server at any other version.
 - **Try it:** [Quick start for developers](#quick-start-for-developers) below brings up the local
   test network and runs the app on it.
 
@@ -189,7 +199,7 @@ Cargo.toml              Rust workspace: core (yew-core) and core/cli (yew-cli)
 core/src/               the core; api.rs is the bridge surface, frb_generated.rs is generated
 core/cli/               yew-cli: the developer's driver and what the devnet tests use
 core/tests/             vectors.rs (node vectors), devnet.rs (acceptance incl. s2_ shielded and s4_ moves on both node lines; YEW_DEVNET=1, ignored otherwise)
-core/tests/vectors/     node-generated vectors (ywallet.json is pending an owner capture; sapling_keys_ycash.json is node-confirmed)
+core/tests/vectors/     node-generated vectors (ywallet.json is pending a capture from a Ywallet build; sapling_keys_ycash.json is node-confirmed)
 app/                    Flutter project yew_app (org cash.ycash.yew)
 app/lib/api/            WalletApi interface + the one file that calls the bridge
 app/lib/state/          AppState, the single app state
@@ -327,8 +337,8 @@ and Falcon keygen/sign/verify on the device itself (`xcrun simctl spawn booted �
 | Unit | `core/src/**` `#[test]` | `cargo test`; includes property tests that no YEC-path transaction ever spends a token, vault or carrier input, on thousands of random coin sets |
 | Node vectors | `core/tests/vectors.rs`; `core/src/vault.rs`, `pq.rs` | `cargo test`; twelve node-signed transactions, addresses, templates reproduced byte for byte; the node's golden `vault_vectors.json` (both owner schemes: SLH-DSA and Falcon owner spends), `pq_vectors.json` and `pq_wallet_vectors.json` (the A-12 derivation, also from a BIP39 phrase) replayed. `scripts/check-node-vectors.sh` (CI, `core-linux`) compares the copies with both node lines at `core/tests/vectors/PIN`; it fails, never skips |
 | Widget | `app/test/` | `flutter test`; 29 tests over the fake bridge |
-| Devnet acceptance | `core/tests/devnet.rs` | `scripts/devnet-w1.sh test`, `devnet-w2.sh test`, `devnet-w4.sh test`; YEC round trip and restore, YED transfer and gate refusal, mint/redeem/claim/lapse/resume; `devnet-it.sh test [it|w4]` on the in-term line (early redeem in term, the in-term claim, listed-not-claimable refusal); `devnet-falcon.sh up && devnet-falcon.sh test` on the quantum line (Falcon YED holders across `-pqfalconheight`); `devnet-pqaddr.sh up && devnet-pqaddr.sh test` (`sq…` receive, send and move); nightly, non-gating: `.github/workflows/devnet-nightly.yml` job `hosted` on a GitHub-hosted runner (W1, W2, W4, `q_falcon_*`, `q_pqaddr_*`; ycashd from the node CI artifact, 60 min), job `self-hosted` (every suite) on the owner's `yb-devnet` runner by manual dispatch (SECURITY-CI.md, "Devnet tiers"), an issue on failure |
-| Shielded devnet | `core/tests/devnet.rs` `s2_` | `scripts/devnet-s2.sh dd <seed>` and `scripts/devnet-s2.sh 6 <seed>` (the 4.5.0 and 6.21.0 node lines; builds lightwalletd-dd 0b3448e+, needs the Sapling parameters on the machine): restore with a memo, z→z with a memo confirmed by `z_listreceivedbyaddress`, z→t with `revealsShielded`, transparent fallback, transparent YEC and YED regressions, no spending key in any file; `s4_`: move 1 YEC to private, 0.5 YEC to public, all to private, the mint shortfall to public and the mint, with YED and the fee reserve untouched and balances exact; `s5_`: restore with a birthday (at, after and without one), reorgs under a synced wallet (re-mined, dropped and re-mined, a send dropped past its expiry) with lightwalletd-dd following, an interrupted sync (future dropped, process killed) resuming to the same state |
+| Devnet acceptance | `core/tests/devnet.rs` | `scripts/devnet-w1.sh test`, `devnet-w2.sh test`, `devnet-w4.sh test`; YEC round trip and restore, YED transfer and gate refusal, mint/redeem/claim/lapse/resume; `devnet-it.sh test [it|w4]` on the in-term line (early redeem in term, the in-term claim, listed-not-claimable refusal); `devnet-falcon.sh up && devnet-falcon.sh test` on the quantum line (Falcon YED holders across `-pqfalconheight`); `devnet-pqaddr.sh up && devnet-pqaddr.sh test` (`sq…` receive, send and move); nightly, non-gating: `.github/workflows/devnet-nightly.yml` job `hosted` on a GitHub-hosted runner (W1, W2, W4, `q_falcon_*`, `q_pqaddr_*`; ycashd from the node CI artifact, 60 min), job `self-hosted` (every suite) on the project's `yb-devnet` runner by manual dispatch (SECURITY-CI.md, "Devnet tiers"), an issue on failure |
+| Shielded devnet | `core/tests/devnet.rs` `s2_` | `scripts/devnet-s2.sh dd <seed>` and `scripts/devnet-s2.sh 6 <seed>` (the ycash-dd and ycash6 node lines; builds lightwalletd-dd 0b3448e+, needs the Sapling parameters on the machine): restore with a memo, z→z with a memo confirmed by `z_listreceivedbyaddress`, z→t with `revealsShielded`, transparent fallback, transparent YEC and YED regressions, no spending key in any file; `s4_`: move 1 YEC to private, 0.5 YEC to public, all to private, the mint shortfall to public and the mint, with YED and the fee reserve untouched and balances exact; `s5_`: restore with a birthday (at, after and without one), reorgs under a synced wallet (re-mined, dropped and re-mined, a send dropped past its expiry) with lightwalletd-dd following, an interrupted sync (future dropped, process killed) resuming to the same state |
 | Device integration | `app/integration_test/` | `scripts/run-ios.sh --test m1`, `run-android.sh --test m1`; `--test q` on the quantum line (Falcon receive/send, SLH-DSA mint and redeem, restore; unattended with `scripts/devnet-operator.py`) |
 
 `ywallet_derivation_vector` is `#[ignore]`d until `core/tests/vectors/ywallet.json` is filled
@@ -416,7 +426,9 @@ Everything below needs a device, an account, a public server or a decision:
 4. **Public endpoints**: a `lightwalletd-dd --yellowback` over a `ycashd -insightexplorer`
    running the vault upgrade, behind TLS, once a release sets the network's activation height and
    YED attestor set, entered in `net/tls.rs` `default_servers` (mainnet and testnet
-   ship empty; the app asks for a server until then).
+   ship empty; the app asks for a server until then). For the fast testnet the project runs
+   `fastnet-lightwallet.ycash.team` (YEC only: no YED there); it is not yet in the default list,
+   so type it.
 5. **Testnet run**, store metadata and signing: `docs/release.md`.
 6. **Private (Sapling) YEC, hardening**: the HTTPS
    Ycash-hosted mirror for the 52 MB proving files, to list first (today YEW defaults to the
@@ -424,17 +436,16 @@ Everything below needs a device, an account, a public server or a decision:
    binary; sync time, proving time and battery on real phones; `lite.ycash.xyz` upgraded to
    lightwalletd-dd with `GetChainInfo`. (Restore with a birthday, reorgs and interrupted sync
    run on both node lines in `s5_`; the private screens ran on the iOS simulator against both.)
-7. **Post-quantum**: receiving YEC at an `sq…` address (YEW still hands out `s…`) and spending
-   PQ coins directly in a YEC send (today they are moved first); signing on a real
+7. **Post-quantum**: signing on a real
    phone and the device keystore (`docs/design-notes.md` "Q7"). Falcon YED holders are done:
    YED is received, held and sent as Falcon `TX_PQPKH` from the Falcon height (mainnet and
    testnet: day one). The `q` device flow passes on the iOS simulator and the arm64 Android
    emulator; `pq_bench` there (Apple-silicon host, so near desktop speed, not a phone's): SLH-DSA
    keygen ~85 ms, sign ~0.75-0.8 s, verify 0.5 ms; Falcon keygen ~10 ms, sign ~3 ms. Signing
    runs on the bridge's worker thread: the UI kept drawing through the SLH-DSA redeem preview.
-8. **Fee structure (rpcversion 8; the workspace's
-   `docs/plans/yellowback-quantum-fees-spec.md`, owner decisions D-Q-23..D-Q-26)**: the core
-   requires `rpcversion` 8 and computes every fee it signs locally — the protocol fee in dollars
+8. **Fee structure (since rpcversion 8; the workspace's
+   `docs/plans/yellowback-quantum-fees-spec.md`, decisions D-Q-23..D-Q-26)**: the core
+   accepts `rpcversion` 9 and 10 and computes every fee it signs locally — the protocol fee in dollars
    of the debt in marginal bands (1 % to $1,000, 0.5 % to $10,000, 0.1 % above, $1 minimum) at
    the vault's stored `pMint` (`params::protocol_fee_zat`), the early-redeem fee of the debt,
    `maxMint` $100,000, and network fees at `params.fees.network`'s dollars-per-KB rates
