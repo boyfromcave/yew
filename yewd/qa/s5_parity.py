@@ -16,12 +16,21 @@ every script unchanged.
     column 3m pair-mixed   column 3 with one ycash6 peer (YEWD_YCASH6_PEER=1): a ycashd -disablewallet
                            dialing pair 0, judging every block and transaction the pairs make (§4.3 rule 3),
                            compared at every sync point; the pairs' blocks are solved by the harness
+    column     pair-ycashd yewd in front of ycashd -disablewallet backends (YEWD_BIN without YEWD_KOGANY,
+                           the yewd gates' pairs): the backends apply every flag the script gives a node
 
 The script list is the manifest's (ycash6 qa/kogany-mixed-shards.txt, group `pair`, the same 50 as
 `sidecar`), or --scripts. Each script runs on its own (--srcdir, a distinct --portseed, its own
 --tmpdir); a passing script's chain data is removed, its log kept. The table (script x column: pass,
 or FAIL at the failure point, seconds; the state-hash points from the harness's KOGANY_STATS_FILE)
-is written as Markdown and JSON. Scripts get port seeds two apart (--portseed + 2, + 4, ...), so
+is written as Markdown and JSON.
+
+yew's own cases (yewd/qa/parity/<script>.py, the LOCAL table below: ycash6 scripts on a schedule
+koganyd can run, with extra cross-line checks) join the manifest's list for their group, and run
+from the same directory. A script that writes the wallet's answers to $YEWD_PARITY_RECORD (JSON
+lines) has them compared across the columns of the run, field by field, against the first column
+that wrote one (ycash6 when it runs): a difference fails the script in that column. --reference
+adds the ycash6 column for yew's own cases only (the nightly's reference for their answers). Scripts get port seeds two apart (--portseed + 2, + 4, ...), so
 no two scripts running side by side share a port. The failure point is the script's own frame of the traceback
 (``<script>.py:<line> <function>``), the error (the first ``Assertion failed`` / ``JSONRPC error``
 / ``Unexpected exception`` line), the innermost helper frame and the step (the script's last
@@ -38,8 +47,8 @@ CHAINVIZ_BIN that is not executable.
     YCASH6=<ycash6 checkout at vaults/kogany-compat (the YEWD_KOGANY harness)> \\
     ZCASHD=<ycashd> YEWD_BIN=<yewd> KOGANYD=<koganyd, -p kogany --features ycash> \\
     CHAINVIZ_BIN=<chain-viz, current build> \\
-        <venv>/bin/python yewd/qa/s5_parity.py --columns pair,pair-mixed,rig,ycash6 \\
-        --out <dir> [--jobs 3] [--rounds 2] [--portseed 7000] [--scripts a,b] [--of vault]
+        <venv>/bin/python yewd/qa/s5_parity.py --columns pair,pair-mixed,rig,ycash6,pair-ycashd \\
+        --out <dir> [--jobs 3] [--rounds 2] [--portseed 7000] [--scripts a,b] [--of vault] [--reference]
 
 Exit 0 when every selected script passed in every column and round, 1 otherwise.
 """
@@ -54,7 +63,13 @@ import subprocess
 import sys
 import time
 
-COLUMNS = ('ycash6', 'rig', 'pair', 'pair-mixed')
+COLUMNS = ('ycash6', 'rig', 'pair', 'pair-mixed', 'pair-ycashd')
+HERE = os.path.dirname(os.path.abspath(__file__))
+# yew's own parity cases (yewd/qa/parity/), each with the manifest group it runs in
+LOCAL = {
+    # beta3: a post-quantum miner shields its coinbase (ycash6 wallet_pq_coinbase_spend on kogany's schedule)
+    'yewd_pq_coinbase_spend': 'node',
+}
 ERR = re.compile(r'(JSONRPC error|Assertion failed|Unexpected exception|key not found)')
 FRAME = re.compile(r'^\s+File "([^"]+)", line (\d+), in (\S+)')
 NOT_A_STEP = re.compile(r'^(\s|Initializing test directory|yewd column|Stopping nodes|Failed|Cleaning up|'
@@ -116,6 +131,8 @@ def column_env(col, base, ycash6, zakurad, yewd, script_flags):
         env.update({'YEWD_BIN': yewd, 'YEWD_KOGANY': zakurad})
         if col == 'pair-mixed':
             env['YEWD_YCASH6_PEER'] = '1'
+    elif col == 'pair-ycashd':
+        env['YEWD_BIN'] = yewd
     return env
 
 
@@ -138,7 +155,14 @@ def manifest(ycash6, group='pair', of=None):
         f = body.split()
         if len(f) >= 4 and f[0] == group and (of is None or groups.get(f[1]) == of):
             rows.append((f[1], flags.get(f[1], [])))
+    if group == 'pair':
+        rows += [(s, []) for s, g in sorted(LOCAL.items()) if of is None or g == of]
     return rows
+
+
+def script_path(script):
+    """The file to run for ``script``: yew's own case, or the ycash6 script (relative to qa/rpc-tests)."""
+    return os.path.join(HERE, 'parity', script + '.py') if script in LOCAL else script + '.py'
 
 
 def run_one(col, script, flags, seed, out, args):
@@ -153,8 +177,12 @@ def run_one(col, script, flags, seed, out, args):
     env = column_env(col, os.environ, args.ycash6, args.zakurad, args.yewd, flags)
     env['KOGANY_STATS_FILE'] = stats
     env['ZCASHD'] = args.zcashd
+    record = os.path.join(d, script + '.record.jsonl')
+    if os.path.exists(record):
+        os.remove(record)
+    env['YEWD_PARITY_RECORD'] = record
     srcdir = os.path.dirname(os.path.abspath(args.zcashd))
-    cmd = [sys.executable, '-u', script + '.py', '--srcdir=' + srcdir, '--tmpdir=' + tmp,
+    cmd = [sys.executable, '-u', script_path(script), '--srcdir=' + srcdir, '--tmpdir=' + tmp,
            '--portseed=%d' % seed, '--nocleanup']
     t0 = time.time()
     with open(os.path.join(d, script + '.log'), 'w') as log:
@@ -184,7 +212,42 @@ def run_one(col, script, flags, seed, out, args):
     if rc == 0:
         shutil.rmtree(tmp, ignore_errors=True)
     return {'column': col, 'script': script, 'rc': rc, 'seconds': secs, 'first_error': first, 'points': points,
-            'failure_point': point}
+            'failure_point': point, 'record': record if os.path.exists(record) else None}
+
+
+def compare_records(results, columns):
+    """Each script's wallet answers ($YEWD_PARITY_RECORD), compared across the columns that passed
+    against the first column (in ``columns`` order) that wrote one; a difference fails that column's
+    result (rc 3) and names the first differing record and field."""
+    by = {}
+    for r in results:
+        if r['rc'] == 0 and r.get('record'):
+            by.setdefault(r['script'], []).append(r)
+    for script, rs in by.items():
+        rs.sort(key=lambda r: columns.index(r['column']))
+        def load(r):
+            with open(r['record'], encoding='utf-8') as fh:
+                return [json.loads(l) for l in fh if l.strip()]
+        ref = rs[0]
+        want = load(ref)
+        for r in rs[1:]:
+            got = load(r)
+            diff = None
+            for n in range(max(len(want), len(got))):
+                a = want[n] if n < len(want) else None
+                b = got[n] if n < len(got) else None
+                if a != b:
+                    keys = sorted(set(a or {}) | set(b or {}))
+                    k = next((k for k in keys if (a or {}).get(k) != (b or {}).get(k)), '-')
+                    diff = 'record %d field %s: %s %r, %s %r' % (n, k, ref['column'], (a or {}).get(k),
+                                                                  r['column'], (b or {}).get(k))
+                    break
+            r['records_compared'] = len(got)
+            if diff:
+                r['rc'] = 3
+                r['first_error'] = 'wallet answers differ from %s: %s' % (ref['column'], diff)
+                r['failure_point'] = {'at': 'record comparison', 'code': '', 'error': r['first_error'],
+                                      'helper': '', 'step': ''}
 
 
 def table(results, columns, scripts):
@@ -199,7 +262,10 @@ def table(results, columns, scripts):
             elif r['rc'] == 0:
                 p = r['points']
                 hashes = p.get('statehash_vault', 0) + p.get('statehash_yed', 0)
-                cells.append('pass (%ds%s)' % (r['seconds'], ', %d hash pts' % hashes if hashes else ''))
+                extra = ', %d hash pts' % hashes if hashes else ''
+                if r.get('records_compared'):
+                    extra += ', %d answers = first column' % r['records_compared']
+                cells.append('pass (%ds%s)' % (r['seconds'], extra))
             else:
                 fp = r.get('failure_point') or {}
                 at = fp.get('at') or ('timeout' if r['rc'] == 124 else 'rc %d' % r['rc'])
@@ -232,6 +298,9 @@ def main():
     ap.add_argument('--scripts')
     ap.add_argument('--of', choices=('node', 'vault', 'yed', 'fees', 'attest'))
     ap.add_argument('--timeout', type=int, default=2400)
+    ap.add_argument('--reference', action='store_true',
+                    help="also run yew's own cases (yewd/qa/parity) on plain ycashd: column ycash6, the "
+                         'reference their wallet answers are compared with')
     ap.add_argument('--ycash6', default=os.environ.get('YCASH6'))
     ap.add_argument('--zcashd', default=os.environ.get('ZCASHD'))
     ap.add_argument('--yewd', default=os.environ.get('YEWD_BIN'))
@@ -245,7 +314,7 @@ def main():
             ap.error('unknown column %s (one of %s)' % (c, ', '.join(COLUMNS)))
     if not (args.ycash6 and args.zcashd):
         ap.error('YCASH6 and ZCASHD are required')
-    if any(c != 'ycash6' for c in columns) and not args.zakurad:
+    if any(c not in ('ycash6', 'pair-ycashd') for c in columns) and not args.zakurad:
         ap.error('KOGANYD (koganyd; ZAKURAD is the old name) is required for the kogany columns')
     if any(c.startswith('pair') for c in columns) and not args.yewd:
         ap.error('YEWD_BIN is required for the pair columns')
@@ -254,6 +323,9 @@ def main():
         want = args.scripts.split(',')
         rows = [r for r in rows if r[0] in want] or [(s, []) for s in want]
     scripts = [r[0] for r in rows]
+    reference_only = args.reference and 'ycash6' not in columns
+    if reference_only:
+        columns = ['ycash6'] + columns
     if args.chainviz:
         args.chainviz = os.path.abspath(args.chainviz)
         if not (os.path.isfile(args.chainviz) and os.access(args.chainviz, os.X_OK)):
@@ -270,6 +342,8 @@ def main():
         seed = args.portseed
         for c in columns:
             for s, flags in rows:
+                if c == 'ycash6' and reference_only and s not in LOCAL:
+                    continue
                 # two seeds apart: a seed's ports are its offset (MAX_NODES x seed) plus the node
                 # index, and the harness gives an index up to MAX_NODES inclusive (the mixed
                 # column's ycash6 peer, kogany slot MAX_NODES), so the last index of seed n is the
@@ -281,6 +355,7 @@ def main():
                 jobs.append((c, s, flags, seed))
         with concurrent.futures.ThreadPoolExecutor(args.jobs) as ex:
             results = list(ex.map(lambda j: run_one(*j, out, args), jobs))
+        compare_records(results, columns)
         md = table(results, columns, scripts)
         os.makedirs(out, exist_ok=True)
         with open(os.path.join(out, 'matrix.md'), 'w') as fh:

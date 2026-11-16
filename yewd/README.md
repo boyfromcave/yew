@@ -334,8 +334,10 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
     within the largest reward selects that one coin, so a call moves one reward unless the amount
     named is more than it; then the next coin joins and the refusal names the amount for all the
     coins selected. Two rewards of 6.25 at an FN-DSA address (amounts made up; the fees are those
-    ycashd 6.22 charges on regtest for one and two FN-DSA inputs, the rule yewd's fee follows; an
-    SLH-DSA input costs more; the refusal always names the exact figure):
+    ycashd 6.22 charges on regtest for one and two FN-DSA inputs, and yewd charges the same in front
+    of koganyd: every refusal, fee and transaction shape of `qa/parity/yewd_pq_coinbase_spend.py`
+    is compared with ycashd's wallet; an SLH-DSA input costs more; the refusal always names the
+    exact figure):
 
     ```
     z_sendmany "<sqf… address>" '[{"address":"<ys1… address>","amount":1}]'

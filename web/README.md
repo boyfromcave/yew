@@ -68,6 +68,7 @@ not change between two visits.
 
 Rules (as `app/lib`): the TypeScript never constructs transaction bytes, keys or scripts, and
 never imports a crypto, SQLite or socket package (`scripts/check-web-imports.sh`). Its only
-network destination is its own origin (the gateway). `src/core.ts` is the whole surface the
+network destinations are its own origin (the gateway) and, in a build made with
+`VITE_DEFAULT_SERVER`, that light-client server. `src/core.ts` is the whole surface the
 screens see (the W1a contract); `src/keystore.ts` keeps the seed encrypted at rest (WebAuthn
 PRF or PBKDF2 → AES-GCM, in IndexedDB).

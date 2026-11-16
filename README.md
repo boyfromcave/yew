@@ -177,9 +177,12 @@ Other things worth knowing before reading code:
   when they cover it (`revealsShielded`, the amber line), else from transparent YEC exactly as
   before. A shielded spend has no transparent input at all (gate path `Shielded`), so the fee
   reserve and every YED path never meet it. The Sapling proving parameters (52 MB) are fetched
-  on first private send (`params_status` / `download_params`, `sapling_params.rs`) from a
-  configurable HTTPS base URL and kept only if their SHA-256s match the pins; where they are
-  hosted is not decided yet, so no URL is compiled in.
+  on first private send (`params_status` / `download_params`, `sapling_params.rs`) and kept
+  only if their SHA-256s match the pins. With no address in Settings the app and the CLI try
+  `https://download.z.cash/downloads/` (where ycashd's `fetch-params` downloads), then the
+  project's own copy, the `zcash-params-v1` release of ycash-infra; the web wallet fetches them
+  from its own origin, under `/sapling-params/` (`download.z.cash` sends no CORS header). Settings
+  can name another HTTPS base URL (not on the hosted web wallet, whose policy allows none).
 - **Moving YEC between private and public** is one explicit action, Home → "Move…"
   (`move_preview` / `move_confirm`, `build/yec_move.rs`). To private: plain `YEC` coins only
   (never the fee reserve, a token, a vault, a carrier or a held output) into one Sapling output
@@ -431,9 +434,7 @@ Everything below needs a device, an account, a public server or a decision:
    default list (`fastnet-lightwallet.ycash.team:443`, TLS; the web wallet's testnet build
    defaults to `https://fastnet-lightwallet.ycash.team`), so nothing has to be typed.
 5. **Testnet run**, store metadata and signing: `docs/release.md`.
-6. **Private (Sapling) YEC, hardening**: the HTTPS
-   Ycash-hosted mirror for the 52 MB proving files, to list first (today YEW defaults to the
-   source ycashd uses; Settings can name another address); a YWallet-built `ys1…` address for the test seed to pin YWallet compatibility from a real
+6. **Private (Sapling) YEC, hardening**: a YWallet-built `ys1…` address for the test seed to pin YWallet compatibility from a real
    binary; sync time, proving time and battery on real phones; `lite.ycash.xyz` upgraded to
    lightwalletd-dd with `GetChainInfo`. (Restore with a birthday, reorgs and interrupted sync
    run on both node lines in `s5_`; the private screens ran on the iOS simulator against both.)

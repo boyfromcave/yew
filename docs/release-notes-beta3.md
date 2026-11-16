@@ -53,6 +53,24 @@ clearer, and closes yewd's remaining gaps against ycashd's wallet (ycashd 6.22.0
 - A post-quantum coin the wallet holds back because its creating transaction assigns it YED marks the
   wallet as having held YED, as a listed YED token does.
 
+### The hosted web wallet (fast testnet only)
+
+- **https://fastnet-wallet.ycash.team** serves the web wallet built for the fast testnet, with a
+  "Fast testnet: coins here have no value" banner above every screen. Its server is fixed to the
+  fast testnet's lightwalletd (`fastnet-lightwallet.ycash.team`): it cannot be changed, and no
+  proving-file mirror can be set.
+- **Keys stay in the browser.** The seed is kept encrypted in the browser's storage (passkey or
+  passphrase) and is never sent. The page talks only to that lightwalletd and to its own origin,
+  which serves the page and the Sapling proving files (the project's copy, checked against the
+  pins in `core/src/sapling_params.rs`).
+- **An answer is shown only for the selection it was asked for.** On Receive, Send, Vault and
+  Settings a slow answer could arrive after you had changed the selection and be shown under the new
+  one (for example an address of the previous type). Such an answer is now dropped. A payment was
+  never affected: Send confirms the preview it was shown, by that preview's id.
+- **Deployed by hand.** A merge never changes what the name serves: a maintainer runs the
+  `web-wallet-deploy` workflow. `/BUNDLE-SHA256SUMS` and `web/scripts/verify-bundle.sh` let you
+  compare what the name serves with a build of the commit (`web/README.md`).
+
 ### yewd: the gaps against ycashd's wallet
 
 - **Watch-only.** `importaddress` (an ECC P2PKH or P2SH address, a post-quantum address, or a script
@@ -90,7 +108,8 @@ clearer, and closes yewd's remaining gaps against ycashd's wallet (ycashd 6.22.0
   move rewards, name an amount, read the exact amount in the refusal and send that. Coins are taken
   largest first, so a call moves one reward unless the amount is more than the largest one. Two
   rewards of 6.25 at an FN-DSA address (amounts made up; the fees are those ycashd 6.22 charges on
-  regtest, the rule yewd's fee follows; the refusal always names the exact figure):
+  regtest, and yewd charges the same in front of koganyd, measured on real nodes by
+  `yewd/qa/parity/yewd_pq_coinbase_spend.py`; the refusal always names the exact figure):
 
   ```
   z_sendmany "<sqf… address>" '[{"address":"<ys1… address>","amount":1}]'
@@ -138,6 +157,11 @@ clearer, and closes yewd's remaining gaps against ycashd's wallet (ycashd 6.22.0
 - **The fast-testnet server serves YEC only.** It is built in (`fastnet-lightwallet.ycash.team:443`,
   TLS, the testnet default of the app and of the web wallet's testnet build), but it runs without
   the Yellowback service.
+- **The web wallet is hosted for the fast testnet only.** A web page is whatever its server sends
+  on that visit; keep money in the apps (`web/README.md`).
+- **Passkey unlock is not covered by automated tests.** The headless tests unlock with a
+  passphrase; for a passkey only cancelling and the two-minute timeout are tested, with a stand-in
+  for the browser's passkey prompt.
 - **Three shapes are app only.** The web wallet cannot send post-quantum → private, private →
   post-quantum, or fund a mint from the private balance.
 - **A post-quantum → private send copies the Sapling spending key**, and the copies are not
