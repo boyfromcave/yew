@@ -76,6 +76,10 @@ YCASH6_QA=... ZCASHD=... YEWD_BIN=... <workspace>/.venv/bin/python yewd/qa/s4_co
 YCASH6_QA=... ZCASHD=... YEWD_BIN=... <workspace>/.venv/bin/python yewd/qa/s4_facade.py --tmpdir=<dir> --portseed=<n>
 # any other ycash6 script with every node a pair (a probe ahead of S5's gate)
 YCASH6_QA=... ZCASHD=... YEWD_BIN=... <workspace>/.venv/bin/python yewd/qa/s4_contract.py --script=yellowback_sapling --tmpdir=<dir> --portseed=<n>
+# the S6 gap checks: a plain ycashd column, then yewd, then the pair column (YEWD_KOGANY=<koganyd>);
+# a plain ycashd peer with only Overwinter and Sapling set cannot be paired with koganyd on regtest
+# (koganyd puts Blossom, Heartwood and Canopy at the Sapling height): s6 gives every node all of them at 1
+YCASH6_QA=... ZCASHD=... [YEWD_BIN=... [YEWD_KOGANY=...]] <workspace>/.venv/bin/python yewd/qa/s6_gaps.py --tmpdir=<dir> --portseed=<n>
 # the pinned PQ wallet vectors from kogany (else yew's byte-identical copy is replayed)
 YEWD_PQ_WALLET_VECTORS=<kogany>/testdata/yellowback/pq_wallet_vectors.json cargo test --manifest-path yewd/Cargo.toml -p yewd-signer
 ```

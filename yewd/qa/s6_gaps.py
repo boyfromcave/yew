@@ -74,6 +74,8 @@ from test_framework.util import (                                             # 
 )
 
 UNDER_TEST = 0
+# Overwinter, Sapling, Ycash, Blossom, Heartwood, Canopy (Ycash's ids), all at height 1
+REGTEST_UPGRADES = (0x5ba81b19, 0x76b809bb, 0x374d694f, 0x8e471bd6, 0x66314da3, 0x19bd2d2f)
 ACTIVATION = 210
 FALCON = 215
 DELAY = 5
@@ -135,7 +137,12 @@ class GapParity(BitcoinTestFramework):
                           help='comma-separated checks to run (%s)' % ', '.join(CHECKS))
 
     def node_args(self, i):
-        return [nuparams(VAULT_BRANCH_ID, ACTIVATION), '-pqfalconheight=%d' % FALCON, '-debug=vault']
+        # every upgrade through Canopy at 1, on every node: koganyd's regtest puts an unset
+        # Blossom/Heartwood/Canopy at the Sapling height, so a plain ycashd given only Overwinter
+        # and Sapling mines a pre-Blossom chain that the pair column's koganyd refuses at block 1
+        # (founders' reward); with the same schedule on both, the generated zakurad.toml carries it
+        return [nuparams(b, 1) for b in REGTEST_UPGRADES] + [
+            nuparams(VAULT_BRANCH_ID, ACTIVATION), '-pqfalconheight=%d' % FALCON, '-debug=vault']
 
     def setup_network(self, split=False):
         self.nodes = [util.start_node(i, self.options.tmpdir, self.node_args(i)) for i in range(self.num_nodes)]
