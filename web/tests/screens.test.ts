@@ -159,15 +159,18 @@ describe("send", () => {
 });
 
 describe("receive / history / settings", () => {
-  it("three address kinds and a fresh private one", async () => {
-    const vm = new ReceiveVm(await openWallet());
-    await vm.show("shielded"); expect(vm.state.address.startsWith("ys1")).toBe(true);
-    await vm.show("yed"); expect(vm.state.address.startsWith("ye")).toBe(true);
-    await vm.show("transparent"); expect(vm.state.address.startsWith("s1")).toBe(true);
-    await vm.show("pq_falcon"); expect(vm.state.address.startsWith("rqf")).toBe(true);
-    await vm.show("pq_slh"); expect(vm.state.address.startsWith("rqs")).toBe(true);
-    await vm.show("transparent");
-    const a = vm.state.address; await vm.fresh(); expect(vm.state.kind).toBe("shielded"); expect(vm.state.address).not.toBe(a);
+  it("five address kinds, each under its own tab, and a fresh private one", async () => {
+    const vm = new ReceiveVm(await openWallet(), () => "regtest");
+    await vm.show("shielded"); expect(vm.shown.startsWith("yregtestsapling1")).toBe(true);
+    await vm.show("yed"); expect(vm.shown.startsWith("yrf")).toBe(true);
+    await vm.show("transparent"); expect(vm.shown.startsWith("sm")).toBe(true);
+    await vm.show("pq_falcon"); expect(vm.shown.startsWith("rqf")).toBe(true);
+    await vm.show("pq_slh"); expect(vm.shown.startsWith("rqs")).toBe(true);
+    await vm.show("shielded");
+    const a = vm.state.address; const f = vm.fresh();
+    expect(vm.shown).toBe(""); expect(vm.state.loading).toBe(true); // the old private address leaves at once
+    await f; expect(vm.state.kind).toBe("shielded"); expect(vm.shown).not.toBe(a); expect(vm.shown.startsWith("yregtestsapling1")).toBe(true);
+    vm.show("transparent"); await vm.show("shielded"); expect(vm.shown).not.toBe(a); // the fresh one is kept
   });
   it("history pages and memos", async () => {
     const vm = new HistoryVm(await openWallet()); await vm.load(0);
@@ -179,7 +182,7 @@ describe("receive / history / settings", () => {
     await vm.loadParams(); expect(vm.state.params?.present).toBe(false);
     const seen: number[] = []; vm.subscribe(() => { if (vm.state.fetching) seen.push(vm.state.fetching.bytesDone); });
     await vm.fetchParams(); expect(seen.length).toBeGreaterThan(0); expect(vm.state.params?.present).toBe(true); expect(vm.state.fetching).toBeNull();
-    await vm.exportWif("nope"); expect(vm.state.error).toContain("invalid"); await vm.exportWif("s1MockTransparentAddress000000000000"); expect(vm.state.wif.startsWith("c")).toBe(true);
+    await vm.exportWif("nope"); expect(vm.state.error).toContain("invalid"); await vm.exportWif("smMockTransparentAddress000000000000"); expect(vm.state.wif.startsWith("c")).toBe(true); expect(vm.state.wifFor).toBe("smMockTransparentAddress000000000000");
     await vm.forget({ birthday: 1, serverUrl: "", network: "regtest", createdAt: 0 }); expect(ks.forgotten).toBe(true); expect((await core.status()).server).toBeNull();
     expect(await core.stores()).toEqual([]); // the store's files went with the seed
   });
