@@ -1546,7 +1546,7 @@ mod tests {
         fn lead(version: &[u8], hash_len: usize, n: usize) -> String {
             let enc = |b: u8| {
                 let mut v = version.to_vec();
-                v.extend(std::iter::repeat(b).take(hash_len));
+                v.extend(std::iter::repeat_n(b, hash_len));
                 base58check_encode(&v)[..n].to_string()
             };
             assert_eq!(enc(0), enc(0xff), "{version:02x?}");
