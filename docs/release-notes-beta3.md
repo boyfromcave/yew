@@ -99,8 +99,9 @@ clearer, and closes yewd's remaining gaps against ycashd's wallet (ycashd 6.22.0
   merges them.
 - **YED cannot be minted on the fast testnet:** no attestor set is compiled in. Public, private and
   post-quantum YEC work there.
-- **No fast-testnet server is built in.** Type `fastnet-lightwallet.ycash.team:443` (TLS) in the app;
-  it serves YEC only.
+- **The fast-testnet server serves YEC only.** It is built in (`fastnet-lightwallet.ycash.team:443`,
+  TLS, the testnet default of the app and of the web wallet's testnet build), but it runs without
+  the Yellowback service.
 - **Three shapes are app only.** The web wallet cannot send post-quantum → private, private →
   post-quantum, or fund a mint from the private balance.
 - **A post-quantum → private send copies the Sapling spending key**, and the copies are not

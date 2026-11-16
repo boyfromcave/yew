@@ -425,10 +425,11 @@ Everything below needs a device, an account, a public server or a decision:
    blur; the keystore binding, the iOS backup exclusion and the webpki roots on real devices.
 4. **Public endpoints**: a `lightwalletd-dd --yellowback` over a `ycashd -insightexplorer`
    running the vault upgrade, behind TLS, once a release sets the network's activation height and
-   YED attestor set, entered in `net/tls.rs` `default_servers` (mainnet and testnet
-   ship empty; the app asks for a server until then). For the fast testnet the project runs
-   `fastnet-lightwallet.ycash.team` (YEC only: no YED there); it is not yet in the default list,
-   so type it.
+   YED attestor set, entered in `net/tls.rs` `default_servers` (mainnet ships empty; the app
+   asks for a server until then). For the fast testnet the project runs
+   `fastnet-lightwallet.ycash.team` (YEC only: no YED there); it is the testnet entry of the
+   default list (`fastnet-lightwallet.ycash.team:443`, TLS; the web wallet's testnet build
+   defaults to `https://fastnet-lightwallet.ycash.team`), so nothing has to be typed.
 5. **Testnet run**, store metadata and signing: `docs/release.md`.
 6. **Private (Sapling) YEC, hardening**: the HTTPS
    Ycash-hosted mirror for the 52 MB proving files, to list first (today YEW defaults to the
