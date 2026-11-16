@@ -7,7 +7,7 @@ import type { Core } from "./core";
 import { CoreClient, messageOf, serialized } from "./core";
 import { clear, currentRoute, go, h, onRoute } from "./dom";
 import * as keystore from "./keystore";
-import { setNetwork } from "./prefixes";
+import { networkBanner, setNetwork } from "./prefixes";
 import { renderOnboarding, renderUnlock } from "./screens/onboarding";
 import { renderHome } from "./screens/home";
 import { renderReceive } from "./screens/receive";
@@ -28,9 +28,12 @@ const query = new URLSearchParams(location.search);
 const useMock = query.get("mock") === "1" || import.meta.env.VITE_MOCK === "1";
 /** The network the wallet is for (W2: regtest on the kind cluster; `VITE_NETWORK` for a build). */
 const network = import.meta.env.VITE_NETWORK || "regtest";
+/** A build served apart from its light-client server (the hosted fast-testnet wallet) names the
+ *  server: `VITE_DEFAULT_SERVER`; vite.config.ts puts the same origin in the page's connect-src. */
+const hostedServer: string = import.meta.env.VITE_DEFAULT_SERVER || "";
 /** Served by the gateway (https), the API is on this origin: the server field defaults to it.
  *  The dev loop (vite over http) keeps an explicit URL (the plain :9067 listener). */
-const defaultServer = useMock ? "http://localhost:8080" : location.protocol === "https:" ? `https://${location.hostname}:${location.port || "443"}` : "";
+const defaultServer = useMock ? "http://localhost:8080" : hostedServer || (location.protocol === "https:" ? `https://${location.hostname}:${location.port || "443"}` : "");
 /** `?params=<base URL>`: a mirror for the proving files (the test helper); the Settings field. */
 const paramsSource = query.get("params") ?? "";
 
@@ -40,6 +43,8 @@ async function makeCore(): Promise<Core> {
 }
 
 async function main() {
+  const note = networkBanner(network);
+  if (note) document.body.prepend(h("div", { class: "netbanner", role: "note" }, note));
   app.textContent = "YEW — loading…";
   const core = serialized(await makeCore());
   const version = (await core.status()).version;

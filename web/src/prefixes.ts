@@ -30,3 +30,11 @@ export function localize(text: string, network: Network = current): string {
   const p = PREFIXES[network];
   return text.replace(/\b(sqf|sqs|ybf|ybs|yb|ys1)…/g, (_, k: string) => `${p[k]}…`);
 }
+
+/** The line shown above every screen of a build for a network whose coins are worth nothing, or
+ *  null. `testnet` is the fast testnet (core/src/params.rs: the one testnet profile this wallet
+ *  signs for). A hosted wallet is a testnet build (web/README.md, "The hosted fast-testnet wallet"),
+ *  and nobody should take it for a wallet that holds money. */
+export function networkBanner(network: string): string | null {
+  return network === "testnet" ? "Fast testnet: coins here have no value" : null;
+}
