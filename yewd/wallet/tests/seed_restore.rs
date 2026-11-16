@@ -59,7 +59,7 @@ fn unspent(w: &Wallet) -> Vec<(String, u32, i64)> {
     v
 }
 
-/// Append a block holding `txs` (the mock's sibling salt is its height: one chain, no siblings).
+/// Append a block holding `txs` (the mock's sibling variant is its height: one chain, no siblings).
 fn mine(node: &MockNode, txs: Vec<Vec<u8>>) {
     let height = node.0.lock().unwrap().blocks.len() as u8;
     node.mine(txs, height);

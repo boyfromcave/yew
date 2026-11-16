@@ -148,8 +148,10 @@ impl Chain {
 }
 
 impl MockNode {
-    /// Append a block (on top of the current tip) holding `txs`; `salt` makes sibling blocks differ.
-    pub fn mine(&self, txs: Vec<Vec<u8>>, salt: u8) -> String {
+    /// Append a block (on top of the current tip) holding `txs`. `variant` is a test tag, not a
+    /// cryptographic value: it only makes two sibling blocks at one height differ (a fork in a
+    /// reorg test), as the first byte of the mock header's 32 nonce bytes.
+    pub fn mine(&self, txs: Vec<Vec<u8>>, variant: u8) -> String {
         let mut c = self.0.lock().unwrap();
         let prev = c
             .blocks
@@ -168,10 +170,11 @@ impl MockNode {
         raw.extend_from_slice(&[0u8; 64]);
         raw.extend_from_slice(&(1_700_000_000u32 + c.blocks.len() as u32).to_le_bytes());
         raw.extend_from_slice(&0x200f0f0fu32.to_le_bytes());
-        let mut nonce = [0u8; 32];
-        nonce[0] = salt;
-        nonce[1] = c.blocks.len() as u8;
-        raw.extend_from_slice(&nonce);
+        // the header's 32 nonce bytes: the variant, then the height (no proof of work is checked)
+        let mut header_tail = [0u8; 32];
+        header_tail[0] = variant;
+        header_tail[1] = c.blocks.len() as u8;
+        raw.extend_from_slice(&header_tail);
         raw.push(0); // empty solution
         raw.push(txs.len() as u8);
         for t in &txs {

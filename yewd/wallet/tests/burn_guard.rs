@@ -140,7 +140,7 @@ async fn fixture(name: &str) -> (MockNode, Wallet, Vec<u8>, OutPoint) {
     (node, w, script, plain)
 }
 
-/// Mine a block of `txs` on the tip; its salt is its height (sibling blocks never arise here).
+/// Mine a block of `txs` on the tip; its variant is its height (sibling blocks never arise here).
 fn mine_next(node: &MockNode, txs: Vec<Vec<u8>>) {
     let height = node.0.lock().unwrap().blocks.len();
     node.mine(txs, u8::try_from(height).unwrap());
