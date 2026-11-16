@@ -42,7 +42,12 @@ const NU5_ACCOUNTS: &str =
 /// ycashd's `listaddresses` sources, in the order it lists them (no `imported_watchonly` and no
 /// `legacy_hdseed`: yewd watches no script without its key and derives Sapling from the
 /// mnemonic only).
-const SOURCES: [&str; 3] = ["legacy_random", "imported", "mnemonic_seed"];
+const SOURCES: [&str; 4] = [
+    "legacy_random",
+    "imported",
+    "imported_watchonly",
+    "mnemonic_seed",
+];
 
 /// The keys of one source: `transparent.addresses`, `transparent.changeAddresses`, Sapling
 /// addresses, post-quantum entries.
@@ -84,7 +89,7 @@ impl Wallet {
     /// holds are locked in ycashd and left out here too), `private` the unspent Sapling notes at
     /// depth >= minconf, and the split by address type and scheme as ycashd answers it
     /// (`transparent_ecc` = `transparent` minus `transparent_pq`). Amounts are strings
-    /// (`FormatMoney`). yewd holds no watch-only script, so `includeWatchonly` changes nothing.
+    /// (`FormatMoney`). `includeWatchonly` adds the coins of the watched scripts (`importaddress`).
     async fn z_gettotalbalance(&self, node: &dyn Node, p: &[Value]) -> Result<J, RpcError> {
         arity("z_gettotalbalance", p, 2)?;
         let min = p_int(p, 0, 1)?;
@@ -93,7 +98,7 @@ impl Wallet {
                 "Minimum number of confirmations cannot be less than 0",
             ));
         }
-        let _watch = p_bool(p, 1, false)?;
+        let watch = p_bool(p, 1, false)?;
         let reserved = self.yed_reserved(node).await?;
         // the split by type: the YEW core's (one implementation with the app, beta2 D-8)
         let mut split = yew_core::build::any_to_any::TypeSplit::default();
@@ -102,6 +107,14 @@ impl Wallet {
                 continue;
             }
             split.add(&c.script, c.value);
+        }
+        if watch {
+            // AvailableTransparentSplit(minconf, false): the watched scripts' coins, any script
+            for (c, d) in self.available_watch_coins(None) {
+                if d >= min {
+                    split.add(&c.script, c.value);
+                }
+            }
         }
         let (transparent, pq) = (split.transparent, split.pq);
         let private: i64 = self
@@ -165,6 +178,13 @@ impl Wallet {
             if let Some(h) = yew_core::script::p2pkh_hash(&script) {
                 if let Some(Owner::T(chain, _)) = self.book.owns_script(&script) {
                     by.entry(Self::t_source(chain)).or_default().t.insert((
+                        0,
+                        h.to_vec(),
+                        a.clone(),
+                    ));
+                } else if self.is_watched(&script) {
+                    // importaddress / importpubkey (PaymentAddressSource::ImportedWatchOnly)
+                    by.entry("imported_watchonly").or_default().t.insert((
                         0,
                         h.to_vec(),
                         a.clone(),
@@ -234,7 +254,19 @@ impl Wallet {
         }
         for id in pq_ids.values() {
             let Some(own) = self.book.pq_by_id(id) else {
-                continue; // a book entry this wallet does not hold
+                // a watched post-quantum address of the book: imported_watchonly
+                let script = yew_core::pq::pqpkh_script(id);
+                if script.as_ref().is_some_and(|s| self.is_watched(s)) {
+                    if let Some(address) = yew_core::keys::encode_pq_yec(self.network, id) {
+                        by.entry("imported_watchonly").or_default().pq.push(
+                            J::obj()
+                                .with("address", address)
+                                .with("pqscheme", id.scheme as i64)
+                                .with("pqschemename", pq_scheme_name(id.scheme)),
+                        );
+                    }
+                }
+                continue; // otherwise a book entry this wallet neither holds nor watches
             };
             let Some(address) = yew_core::keys::encode_pq_yec(self.network, id) else {
                 continue;

@@ -192,13 +192,17 @@ pub const BETA2_WALLET: &[(&str, Stage)] = &[("listaddresses", S5), ("z_gettotal
 
 /// K-25, amended for beta3 (item 14, the gaps of the parity suite): ycashd's
 /// `getunconfirmedbalance`, and the four unified-address account RPCs, which ycashd refuses while
-/// NU5 is not active (it has no activation height on Ycash): the façade gives the same refusal.
+/// NU5 is not active (it has no activation height on Ycash): the façade gives the same refusal; and
+/// the watch-only imports `importaddress`, `importpubkey` (`yewd_wallet::watch`).
 pub const BETA3_WALLET: &[(&str, Stage)] = &[
     ("getunconfirmedbalance", S5),
     ("z_getnewaccount", S5),
     ("z_getaddressforaccount", S5),
     ("z_listaccounts", S5),
     ("z_getbalanceforaccount", S5),
+    // watch-only scripts (yewd_wallet::watch): importaddress, importpubkey
+    ("importaddress", S5),
+    ("importpubkey", S5),
 ];
 
 /// The rest of ycashd's wallet table (`src/wallet/rpcwallet.cpp`, `rpcdump.cpp`, the
@@ -207,8 +211,6 @@ pub const OUT_OF_SCOPE: &[&str] = &[
     "resendwallettransactions",
     "dumpwallet",
     "z_converttex",
-    "importaddress",
-    "importpubkey",
     "keypoolrefill",
     "listaddressgroupings",
     "listsinceblock",
@@ -329,8 +331,8 @@ mod tests {
         assert_eq!(ROLE_WALLET.len(), 4, "K-25 roles");
         assert_eq!(GATE_WALLET.len(), 5, "S5's findings F-S5-1, F-S5-10");
         assert_eq!(BETA2_WALLET.len(), 2, "K-25 amended for beta2, 2026-11-11");
-        assert_eq!(BETA3_WALLET.len(), 5, "K-25 amended for beta3, item 14");
-        assert_eq!(OUT_OF_SCOPE.len(), 28, "the rest of ycashd's wallet table");
+        assert_eq!(BETA3_WALLET.len(), 7, "K-25 amended for beta3, item 14");
+        assert_eq!(OUT_OF_SCOPE.len(), 26, "the rest of ycashd's wallet table");
     }
 
     #[test]

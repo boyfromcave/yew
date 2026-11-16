@@ -118,6 +118,10 @@ pub struct State {
     /// pqowner). Absent in older wallet files: false.
     #[serde(default)]
     pub yed_held: bool,
+    /// The scripts this wallet watches without a key (`importaddress`, `importpubkey`; ycashd's
+    /// `setWatchOnly`): script hex → what is known of it. Absent in older wallet files: none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub watch: BTreeMap<String, WatchRec>,
     /// The coins a vault RPC call in progress locked through `Fund` (`txid:n`, its fund scope,
     /// review M1): written with the locks, so a process stopped inside the call releases them at
     /// the next open. Empty outside a call.
@@ -131,6 +135,14 @@ pub struct State {
     /// `restorescan` marker). Absent in older wallet files: false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub restore_pending: bool,
+}
+
+/// A watched script (`importaddress` / `importpubkey`): the public key behind a P2PKH script when
+/// `importpubkey` gave it (`validateaddress`'s `pubkey`), compressed or not, hex.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchRec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pubkey: Option<String>,
 }
 
 /// The progress of a wallet scan (the seed-only restore's re-pass, ycash6 beta2): the scan read
@@ -202,6 +214,7 @@ impl State {
             unknown: None,
             yed_held: false,
             fund_scope: BTreeSet::new(),
+            watch: BTreeMap::new(),
             scan: None,
             restore_pending: false,
         }
