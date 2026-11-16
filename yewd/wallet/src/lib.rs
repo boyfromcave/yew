@@ -41,6 +41,7 @@ pub mod sapling;
 pub mod send;
 pub mod state;
 pub mod vaultrpc;
+pub mod watch;
 pub mod yed;
 pub mod zfund;
 pub mod zsend;
@@ -200,6 +201,11 @@ pub struct Wallet {
     /// wallet is already at the node's tip still reads them once (the Vault activation height).
     chain_read: bool,
     pub coins: Vec<Coin>,
+    /// The coins of the scripts the wallet watches without a key (`importaddress`): never in
+    /// `coins`, so no selection, change, vault or YED path sees them ([`watch`]).
+    pub watch_coins: Vec<watch::WatchCoin>,
+    /// The watched scripts (`st.watch`'s keys, bytes).
+    pub(crate) watched: BTreeSet<Vec<u8>>,
     pub notes: Vec<NoteRow>,
     /// Chain facts the read RPCs need, refreshed by [`Wallet::sync`] when the tip moves.
     pub chain: ChainFacts,
@@ -620,6 +626,8 @@ impl Wallet {
             reaccept_pending: true,
             chain_read: false,
             coins: Vec::new(),
+            watch_coins: Vec::new(),
+            watched: BTreeSet::new(),
             notes: Vec::new(),
             chain: ChainFacts::default(),
             pending: Vec::new(),
@@ -630,6 +638,7 @@ impl Wallet {
             fund_scope: None,
         };
         w.refresh_keys()?;
+        w.load_watched();
         let txids: Vec<String> = w.st.wtx.keys().cloned().collect();
         for t in txids {
             let bytes = hex::decode(&w.st.wtx[&t].hex).map_err(|e| e.to_string())?;
@@ -655,6 +664,7 @@ impl Wallet {
     /// Derive keys up to `issued + WINDOW`, and ask the signer for PQ keys up to
     /// `issued + PQ_LOOKAHEAD`.
     pub fn refresh_keys(&mut self) -> Result<(), String> {
+        let watched_own = self.watched_own();
         self.book
             .extend(EXTERNAL, self.st.issued.external + WINDOW)?;
         self.book
@@ -698,6 +708,11 @@ impl Wallet {
                 .and_then(|b| b.try_into().ok())
                 .ok_or("an imported public key is not 33 bytes")?;
             self.book.add_imported(i as u32, pk);
+        }
+        // a key derived or imported now may be one a watched script pays: the key wins
+        // (ycashd's IsMineInner), so that script's coins move from the watched to the own ones
+        if self.watched_own() != watched_own {
+            self.rebuild();
         }
         Ok(())
     }
@@ -811,6 +826,11 @@ impl Wallet {
                 .iter()
                 .any(|i| own_outpoints.contains(&(txid_hex(&i.prevout.txid), i.prevout.n)))
             || !p.received.is_empty()
+            // a payment to a watched script (ycashd's IsMine includes watch-only: mapWallet)
+            || p.tx
+                .vout
+                .iter()
+                .any(|o| self.watched.contains(&o.script_pubkey))
             || p.nullifiers.iter().any(|n| own_nfs.contains(n))
             || !p.owned_templates.is_empty()
             // a claim's release or cancel spends the intent of an own claim (a YED payload in a
@@ -827,6 +847,7 @@ impl Wallet {
             .coins
             .iter()
             .map(|c| (c.txid.clone(), c.vout))
+            .chain(self.watch_coins.iter().map(|c| (c.txid.clone(), c.vout)))
             .collect();
         let nfs = self.notes.iter().filter_map(|n| n.nullifier).collect();
         (outs, nfs)
@@ -935,6 +956,7 @@ impl Wallet {
         });
         self.coins = coins;
         self.notes = notes;
+        self.watch_coins = self.watched_coins(&spent);
     }
 
     /// Rewind every wallet transaction above `fork` (`None`: everything) to the mempool; coinbase

@@ -61,7 +61,7 @@ async fn fixture(name: &str, index: Option<i64>) -> (MockNode, Wallet) {
         .text()
         .trim_matches('"')
         .to_string();
-    // four blocks; the block salt is the block's place in this list
+    // four blocks; the block variant is the block's place in this list
     let blocks = vec![
         vec![coinbase(1, vec![0x51], 0)],
         vec![

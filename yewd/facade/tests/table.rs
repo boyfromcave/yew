@@ -43,8 +43,8 @@ async fn every_wallet_method_answers_32601() {
     }
     assert_eq!(
         n,
-        22 + 25 + 1 + 30 + 4 + 5 + 2 + 5,
-        "+ 2: K-25 amended for beta2, + 5 for beta3 (item 14)"
+        22 + 25 + 1 + 30 + 4 + 5 + 2 + 7,
+        "+ 2: K-25 amended for beta2, + 7 for beta3 (item 14, the watch-only imports among them)"
     );
     for m in methods::OUT_OF_SCOPE {
         let (status, v, _) = call(&c, m, "[]").await;

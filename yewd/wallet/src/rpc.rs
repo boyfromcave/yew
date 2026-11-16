@@ -81,6 +81,7 @@ pub fn served(method: &str) -> bool {
         || crate::legacy::SERVED.contains(&method)
         || crate::merge::SERVED.contains(&method)
         || crate::bytype::SERVED.contains(&method)
+        || crate::watch::SERVED.contains(&method)
 }
 
 /// Every served wallet method, S1's reads and S2's builders.
@@ -98,6 +99,7 @@ pub fn all_served() -> Vec<&'static str> {
         .chain(crate::legacy::SERVED)
         .chain(crate::merge::SERVED)
         .chain(crate::bytype::SERVED)
+        .chain(crate::watch::SERVED)
         .copied()
         .collect()
 }
@@ -235,6 +237,9 @@ pub(crate) fn pq_scheme_name(scheme: u8) -> &'static str {
     ykeys::pq_scheme_name(scheme).unwrap_or("unknown")
 }
 
+/// One `listunspent` row before formatting: (txid, vout, coinbase, script, value, depth, spendable).
+type UnspentRow<'a> = (&'a String, u32, bool, &'a Vec<u8>, i64, i64, bool);
+
 impl Wallet {
     // ------------------------------------------------------------------ chain views
 
@@ -264,7 +269,7 @@ impl Wallet {
     }
 
     /// Whether `outpoint` is spent by a wallet transaction in the `asof` view.
-    fn spent_at(&self, txid: &str, vout: u32, asof: Option<u32>) -> bool {
+    pub(crate) fn spent_at(&self, txid: &str, vout: u32, asof: Option<u32>) -> bool {
         self.parsed_all().any(|(t, p)| {
             self.tx_depth(t, asof) >= 0
                 && p.tx
@@ -393,10 +398,12 @@ impl Wallet {
             .collect()
     }
 
-    /// Whether `addr` (an `s…`/`t…`/`sq…` address) is in the address book (the first test of
-    /// ycashd's `IsChange`, [`Wallet::is_change`]).
+    /// Whether the script's destination (`ExtractDestination`: an `s…`/`t…`/`sq…` address, a
+    /// pay-to-pubkey as its key's P2PKH) is in the address book (the first test of ycashd's
+    /// `IsChange`, [`Wallet::is_change`]).
     pub(crate) fn in_book(&self, script: &[u8]) -> bool {
-        script_address(self.network, script).is_some_and(|a| self.st.book.contains_key(&a))
+        self.destination_address(script)
+            .is_some_and(|a| self.st.book.contains_key(&a))
     }
 
     /// `CWallet::IsChange` (ycash6 src/wallet/wallet.cpp:5808): an own output that is not in the
@@ -406,7 +413,11 @@ impl Wallet {
     /// imported key outside the book and a post-quantum key outside the book are change.
     pub(crate) fn is_change(&self, script: &[u8]) -> bool {
         match self.book.owns_script(script) {
-            None => false,
+            // ycashd's IsChange asks ::IsMine, which counts watch-only: a watched script whose
+            // destination is outside the address book (the raw redeem script of an importaddress
+            // p2sh) is change; one in the book is not, and that includes the pay-to-pubkey script
+            // of an importpubkey, whose destination (its key ID) importpubkey filed in the book
+            None => self.is_watched(script) && !self.in_book(script),
             Some(_) if self.in_book(script) => false,
             Some(crate::keys::Owner::T(chain, _)) => chain != crate::keys::EXTERNAL,
             Some(_) => true,
@@ -463,6 +474,7 @@ impl Wallet {
             m if crate::merge::SERVED.contains(&m) => self.merge_call(node, m, p).await,
             m if crate::legacy::SERVED.contains(&m) => self.legacy_call(node, m, p).await,
             m if crate::bytype::SERVED.contains(&m) => self.bytype_call(node, m, p).await,
+            m if crate::watch::SERVED.contains(&m) => self.watch_call(node, m, p).await,
             _ => Err(RpcError::new(code::METHOD_NOT_FOUND, "Method not found")),
         }
     }
@@ -485,10 +497,15 @@ impl Wallet {
         }
         let asof = as_of(p, 4)?;
         let min_depth = minconf(p, 1, 0)?;
-        let _watch = p_bool(p, 2, false)?;
+        let watch = p_bool(p, 2, false)?;
         let in_zat = p_bool(p, 3, false)?;
         let reserved = self.yed_reserved(node).await?;
-        let b = self.balance(asof, min_depth) - self.reserved_credit(&reserved, asof, min_depth);
+        let mut b =
+            self.balance(asof, min_depth) - self.reserved_credit(&reserved, asof, min_depth);
+        if watch {
+            // ISMINE_SPENDABLE | ISMINE_WATCH_ONLY: the watched scripts' coins too
+            b += self.watch_balance(asof, min_depth);
+        }
         Ok(if in_zat { J::Int(b) } else { J::Amount(b) })
     }
 
@@ -532,28 +549,52 @@ impl Wallet {
         }
         let reserved = self.yed_reserved(node).await?;
         let mut rows = Vec::new();
-        let mut coins = self.available_coins(asof);
-        coins.sort_by(|a, b| (&a.0.txid, a.0.vout).cmp(&(&b.0.txid, b.0.vout)));
-        for (c, d) in coins {
-            if d < min
-                || d > max
-                || (!filter.is_empty() && !filter.contains(&c.script))
-                || reserved.contains(&(c.txid.clone(), c.vout))
+        // (txid, vout, coinbase, script, value, depth, spendable): the own coins, and the coins
+        // of watched scripts with `spendable: false` (AvailableCoins without coin control)
+        let mut coins: Vec<UnspentRow> = self
+            .available_coins(asof)
+            .into_iter()
+            .filter(|(c, _)| !reserved.contains(&(c.txid.clone(), c.vout)))
+            .map(|(c, d)| (&c.txid, c.vout, c.coinbase, &c.script, c.value, d, true))
+            .chain(
+                self.available_watch_coins(asof)
+                    .into_iter()
+                    .map(|(c, d)| (&c.txid, c.vout, c.coinbase, &c.script, c.value, d, false)),
+            )
+            .collect();
+        coins.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+        for (txid, vout, coinbase, script, value, d, spendable) in coins {
+            if d < min || d > max {
+                continue;
+            }
+            // AvailableCoins filters by the output's destination (`ExtractDestination`), so a
+            // pay-to-pubkey coin matches its key's P2PKH address
+            if !filter.is_empty()
+                && !filter.contains(script)
+                && !self
+                    .destination_address(script)
+                    .and_then(|a| parse_taddr_script(self.network, &a))
+                    .is_some_and(|s| filter.contains(&s))
             {
                 continue;
             }
             let mut o = J::obj()
-                .with("txid", c.txid.clone())
-                .with("vout", c.vout)
-                .with("generated", c.coinbase);
-            if let Some(a) = script_address(self.network, &c.script) {
+                .with("txid", txid.clone())
+                .with("vout", vout)
+                .with("generated", coinbase);
+            if let Some(a) = self.destination_address(script) {
+                // a P2SH whose redeem script the wallet keeps (importaddress p2sh)
+                let redeem = self.st.scripts.get(&a).cloned();
                 o.push("address", J::Str(a));
+                if let Some(r) = redeem.filter(|_| yew_core::script::p2sh_hash(script).is_some()) {
+                    o.push("redeemScript", J::Str(r));
+                }
             }
-            o.push("scriptPubKey", J::Str(hex::encode(&c.script)));
-            o.push("amount", J::Amount(c.value));
-            o.push("amountZat", J::Int(c.value));
+            o.push("scriptPubKey", J::Str(hex::encode(script)));
+            o.push("amount", J::Amount(value));
+            o.push("amountZat", J::Int(value));
             o.push("confirmations", J::Int(d));
-            o.push("spendable", J::Bool(true));
+            o.push("spendable", J::Bool(spendable));
             rows.push(o);
         }
         Ok(J::Arr(rows))
@@ -591,14 +632,15 @@ impl Wallet {
                 "Invalid or non-wallet transaction id",
             ));
         }
-        let debit = self.debit(&txid);
+        let watch = p_bool(p, 1, false)?;
+        let debit = self.debit_f(&txid, watch);
         let credit: i64 = if self.immature(px.coinbase, depth) {
             0
         } else {
             px.tx
                 .vout
                 .iter()
-                .filter(|o| self.book.owns_script(&o.script_pubkey).is_some())
+                .filter(|o| self.mine_f(&o.script_pubkey, watch))
                 .map(|o| o.value)
                 .sum()
         };
@@ -637,51 +679,8 @@ impl Wallet {
         o.push("time", J::Int(w.time_received));
         o.push("timereceived", J::Int(w.time_received));
         o.push("vjoinsplit", J::Arr(vec![]));
-        let mut details = Vec::new();
-        let size = px.size as i64;
-        for (n, out) in px.tx.vout.iter().enumerate() {
-            let mine = self.book.owns_script(&out.script_pubkey).is_some();
-            let address = script_address(self.network, &out.script_pubkey);
-            if debit > 0 {
-                if self.is_change(&out.script_pubkey) {
-                    continue;
-                }
-                let mut d = J::obj();
-                if let Some(a) = &address {
-                    d.push("address", J::Str(a.clone()));
-                }
-                d.push("category", J::Str("send".into()));
-                d.push("amount", J::Amount(-out.value));
-                d.push("amountZat", J::Int(-out.value));
-                d.push("vout", J::Int(n as i64));
-                d.push("fee", J::Amount(-fee));
-                d.push("size", J::Int(size));
-                details.push(d);
-            }
-            if mine {
-                let category = if px.coinbase {
-                    if depth < 1 {
-                        "orphan"
-                    } else if self.immature(true, depth) {
-                        "immature"
-                    } else {
-                        "generate"
-                    }
-                } else {
-                    "receive"
-                };
-                let mut d = J::obj();
-                if let Some(a) = &address {
-                    d.push("address", J::Str(a.clone()));
-                }
-                d.push("category", J::Str(category.into()));
-                d.push("amount", J::Amount(out.value));
-                d.push("amountZat", J::Int(out.value));
-                d.push("vout", J::Int(n as i64));
-                d.push("size", J::Int(size));
-                details.push(d);
-            }
-        }
+        // ListTransactions(wtx, 0, false, details, filter): the sent entries, then the received
+        let details = self.list_rows(&txid, asof, watch, false);
         o.push("details", J::Arr(details));
         o.push("hex", J::Str(w.hex.clone()));
         Ok(o)
@@ -926,7 +925,8 @@ impl Wallet {
         let asof = as_of(p, 3)?;
         let min = minconf(p, 1, 1)?;
         let mut total = 0i64;
-        if self.book.owns_script(&script).is_some() {
+        // IsMine includes watch-only: a watched address answers what it received
+        if self.book.owns_script(&script).is_some() || self.is_watched(&script) {
             for (t, px) in self.parsed_all() {
                 if px.coinbase || self.tx_depth(t, asof) < min {
                     continue;
@@ -1195,16 +1195,25 @@ impl Wallet {
         // ycashd 6.x's string.
         let total: i64 = if let Some(script) = parse_taddr_script(self.network, a) {
             if self.book.owns_script(&script).is_none() {
-                return Err(RpcError::new(
-                    code::INVALID_ADDRESS_OR_KEY,
-                    "From address does not belong to this node, transparent or post-quantum key or watch-only script not found.",
-                ));
+                if !self.is_watched(&script) {
+                    return Err(RpcError::new(
+                        code::INVALID_ADDRESS_OR_KEY,
+                        "From address does not belong to this node, transparent or post-quantum key or watch-only script not found.",
+                    ));
+                }
+                // a watch-only address answers its balance, as ycashd's getBalanceTaddr
+                self.available_watch_coins(None)
+                    .into_iter()
+                    .filter(|(c, d)| c.script == script && *d >= min)
+                    .map(|(c, _)| c.value)
+                    .sum()
+            } else {
+                self.available_coins(None)
+                    .into_iter()
+                    .filter(|(c, d)| c.script == script && *d >= min)
+                    .map(|(c, _)| c.value)
+                    .sum()
             }
-            self.available_coins(None)
-                .into_iter()
-                .filter(|(c, d)| c.script == script && *d >= min)
-                .map(|(c, _)| c.value)
-                .sum()
         } else if yew_core::shielded_keys::is_sapling_address(self.network, a) {
             if self.view.owns_address(a).is_none() {
                 return Err(RpcError::new(
@@ -2216,8 +2225,9 @@ impl Wallet {
                 if valid {
                     let script = parse_taddr_script(self.network, a);
                     let owner = script.as_ref().and_then(|s| self.book.owns_script(s));
+                    let watched = script.as_ref().is_some_and(|s| self.is_watched(s));
                     o.insert("ismine".into(), (owner.is_some()).to_string());
-                    o.insert("iswatchonly".into(), "false".into());
+                    o.insert("iswatchonly".into(), watched.to_string());
                     let isscript = script
                         .as_ref()
                         .is_some_and(|s| yew_core::script::p2sh_hash(s).is_some());
@@ -2227,6 +2237,24 @@ impl Wallet {
                         let k = self.book.key(c, i).expect("held");
                         o.insert("pubkey".into(), J::Str(hex::encode(k.pubkey)).text());
                         o.insert("iscompressed".into(), "true".into());
+                    }
+                    // importpubkey's key of a watched P2PKH (DescribeAddressVisitor's GetPubKey)
+                    if let Some(pk) = script
+                        .as_ref()
+                        .filter(|_| watched)
+                        .and_then(|s| self.watched_pubkey(s))
+                    {
+                        o.insert("pubkey".into(), J::Str(hex::encode(&pk)).text());
+                        o.insert("iscompressed".into(), (pk.len() == 33).to_string());
+                    }
+                    // the address book's label: an own address, or a watched one in the book
+                    let in_book = script.as_ref().is_some_and(|s| self.in_book(s));
+                    if watched && in_book {
+                        let label = script
+                            .as_ref()
+                            .and_then(|s| self.address_book_label(s))
+                            .unwrap_or_default();
+                        o.insert("account".into(), J::Str(label).text());
                     }
                     if owner.is_some() {
                         let label = script

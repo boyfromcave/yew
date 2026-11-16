@@ -66,8 +66,21 @@ impl Wallet {
         };
         // vault.cpp CheckLockFrom: RPC_INVALID_ADDRESS_OR_KEY (-5) for another wallet's address and
         // for a scheme-2 address before Falcon, as z_sendmany answers the same conditions (beta2
-        // audit L-5; doc/vault-rpc-contract.json). yewd holds no watch-only address, so the -4
-        // "from: a watch-only address of this wallet" row has no yewd source.
+        // audit L-5; doc/vault-rpc-contract.json); RPC_WALLET_ERROR (-4) for a watched one
+        // (importaddress): it has no spending key
+        let not_ours_script = |script: &[u8]| {
+            if self.is_watched(script) {
+                RpcError::new(
+                    code::WALLET_ERROR,
+                    "from: a watch-only address of this wallet (no spending key)",
+                )
+            } else {
+                RpcError::new(
+                    code::INVALID_ADDRESS_OR_KEY,
+                    "from: not an address of this wallet",
+                )
+            }
+        };
         let not_ours = || {
             RpcError::new(
                 code::INVALID_ADDRESS_OR_KEY,
@@ -87,10 +100,10 @@ impl Wallet {
                     "from: an FN-DSA-512 (scheme 2) address cannot be spent before Falcon is active at the next block",
                 ));
             }
-            if self.book.pq_by_id(&id).is_none() {
-                return Err(not_ours());
-            }
             let script = yew_core::pq::pqpkh_script(&id).ok_or_else(not_ours)?;
+            if self.book.pq_by_id(&id).is_none() {
+                return Err(not_ours_script(&script));
+            }
             return Ok(Some(LockFrom::Coins {
                 text: s.to_string(),
                 script,
@@ -99,7 +112,7 @@ impl Wallet {
         if let Some(script) = crate::rpc::parse_taddr_script(self.network, s) {
             if yew_core::script::p2pkh_hash(&script).is_some() {
                 if !matches!(self.book.owns_script(&script), Some(Owner::T(..))) {
-                    return Err(not_ours());
+                    return Err(not_ours_script(&script));
                 }
                 return Ok(Some(LockFrom::Coins {
                     text: s.to_string(),
