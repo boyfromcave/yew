@@ -608,6 +608,9 @@ impl Wallet {
             self.lock_coin(&c.outpoint);
             if let Some(scope) = self.fund_scope.as_mut() {
                 scope.insert(op_str(&c.outpoint));
+                // written with the locks: a process that stops inside the call releases them at
+                // the next open (review M1)
+                self.st.fund_scope.insert(op_str(&c.outpoint));
             }
         }
         self.persist_state()?;
@@ -1154,7 +1157,9 @@ impl Wallet {
     /// barrier after `sendrawtransaction`), and come back if it leaves the mempool unmined; a
     /// refused one leaves them free. Coins locked with `lockunspent` are never in the scope.
     pub(crate) fn end_fund_scope(&mut self, scope: BTreeSet<String>) {
-        if scope.is_empty() {
+        let recorded = !self.st.fund_scope.is_empty();
+        self.st.fund_scope.clear();
+        if scope.is_empty() && !recorded {
             return;
         }
         let held: BTreeSet<String> = self
@@ -1164,7 +1169,7 @@ impl Wallet {
             .filter_map(|h| parse_hex_tx(h))
             .flat_map(|t| t.vin.into_iter().map(|i| op_str(&i.prevout)))
             .collect();
-        let mut changed = false;
+        let mut changed = recorded;
         for op in scope {
             if held.contains(&op) {
                 continue;
@@ -1245,4 +1250,40 @@ pub fn txid_of(t: &Transaction) -> Result<String, RpcError> {
     Ok(txid_hex(&t.txid().map_err(|e| {
         RpcError::new(code::INTERNAL_ERROR, e.to_string())
     })?))
+}
+
+/// A vault RPC call's fund scope (ycashd's `FundScope`, vault.cpp; audit L-1, review M1): opened
+/// around one call, it ends in `Drop`, so the coins [`Wallet::fund`] locked for the call are
+/// released whether the call returns, panics, or its future is dropped part-way (hyper drops the
+/// service future when the client disconnects or times out). A scope an earlier call left open
+/// (a process stopped inside it: the scope is written with the locks, `wallet.json`'s
+/// `fund_scope`) is ended first, at the next call and at the next open.
+pub(crate) struct FundScope<'a> {
+    pub w: &'a mut Wallet,
+}
+
+impl<'a> FundScope<'a> {
+    pub(crate) fn open(w: &'a mut Wallet) -> FundScope<'a> {
+        w.end_stale_fund_scope();
+        w.fund_scope = Some(BTreeSet::new());
+        FundScope { w }
+    }
+}
+
+impl Drop for FundScope<'_> {
+    fn drop(&mut self) {
+        let scope = self.w.fund_scope.take().unwrap_or_default();
+        self.w.end_fund_scope(scope);
+    }
+}
+
+impl Wallet {
+    /// End a fund scope an earlier call left open: the recorded coins are released as at its end.
+    pub(crate) fn end_stale_fund_scope(&mut self) {
+        let mut all = self.fund_scope.take().unwrap_or_default();
+        if !all.is_empty() || !self.st.fund_scope.is_empty() {
+            all.extend(self.st.fund_scope.iter().cloned());
+            self.end_fund_scope(all);
+        }
+    }
 }

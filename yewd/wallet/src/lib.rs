@@ -637,6 +637,8 @@ impl Wallet {
             w.parsed.insert(t, p);
         }
         w.rebuild();
+        // review M1: a fund scope the last process left open (stopped inside a vault RPC call)
+        w.end_stale_fund_scope();
         Ok(w)
     }
 

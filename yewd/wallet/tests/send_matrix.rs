@@ -12,6 +12,7 @@
 mod common;
 
 use common::*;
+use std::future::Future;
 use yew_core::pq::PqKeyId;
 
 const VAULT_BRANCH: u32 = 0x6d5b7a31;
@@ -830,6 +831,112 @@ async fn vault_lock_default_funding_leaves_no_coin_lock() {
     }
     f.mine_sync().await;
     assert_eq!(locked(&mut f).await, before);
+}
+
+/// A node whose `sendrawtransaction` never answers (a hung backend): a vault RPC waiting on it is
+/// cancelled by the client (hyper drops the service future).
+struct HangSend(MockNode);
+
+impl yewd_wallet::node::Node for HangSend {
+    fn call<'a>(&'a self, method: &'a str, params: Value) -> yewd_wallet::node::NodeFuture<'a> {
+        if method == "sendrawtransaction" {
+            return Box::pin(std::future::pending());
+        }
+        self.0.call(method, params)
+    }
+}
+
+fn lock_params() -> Value {
+    json!({"tag": "TEST", "setid": "11".repeat(32), "delay": 1, "ownerheight": 1000, "amount": 1.0})
+}
+
+/// Review M1: a vault RPC whose future is dropped part-way (the client disconnected or timed out
+/// while the node was being asked to accept the lock) leaves no coin lock: the fund scope ends in
+/// its guard's `Drop`. Before: the scope ended only when the call returned, so the coins `Fund`
+/// chose stayed locked, also across a restart (the locks are written to `wallet.json`).
+#[tokio::test]
+async fn a_cancelled_vault_call_leaves_no_coin_lock() {
+    let mut f = fixture("lockcancel").await;
+    let hang = HangSend(f.node.clone());
+    let r = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        f.w.call(&hang, "vault_lock", &[lock_params()]),
+    )
+    .await;
+    assert!(r.is_err(), "the call waits on the hung node");
+    assert_eq!(f.node.0.lock().unwrap().sent.len(), 0);
+    assert!(
+        locked(&mut f).await.is_empty(),
+        "the dropped call's coins are free"
+    );
+    // the next call funds from them again and is accepted
+    f.lock(None).await.unwrap();
+    assert!(locked(&mut f).await.is_empty());
+}
+
+/// Review M1: a fund scope left open (the process stopped inside the call: here the call's future
+/// is forgotten, so no guard runs) is written with its locks, and is ended by the next vault RPC
+/// call, and at the next open of the wallet.
+#[tokio::test]
+async fn a_stale_fund_scope_is_ended_by_the_next_call_and_at_open() {
+    let name = "lockstale";
+    let mut f = fixture(name).await;
+    let hang = HangSend(f.node.clone());
+    let params = [lock_params()];
+    let leave_open = |f: &mut Fix| {
+        let mut fut = Box::pin(f.w.call(&hang, "vault_lock", &params));
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        assert!(fut.as_mut().poll(&mut cx).is_pending());
+        std::mem::forget(fut);
+    };
+    leave_open(&mut f);
+    let stuck = locked(&mut f).await;
+    assert!(
+        !stuck.is_empty(),
+        "Fund locked the coins and the call never ended"
+    );
+    // the next vault RPC call ends the stale scope first
+    f.lock(None).await.unwrap();
+    assert!(
+        locked(&mut f).await.is_empty(),
+        "{stuck:?} released by the next call"
+    );
+    // and a restart: the stale scope is on disk with its locks, released at open
+    leave_open(&mut f);
+    assert!(!locked(&mut f).await.is_empty());
+    let node = f.node.clone();
+    drop(f);
+    let d = std::env::temp_dir().join(format!("yewd-wallet-{}-{name}", std::process::id()));
+    let mut w = Wallet::open(&d, Network::Regtest, core_signer(&d.join("signer")), 0).unwrap();
+    w.sync(&node).await.unwrap();
+    let after = call_json(&mut w, &node, "listlockunspent", &[]).await;
+    assert_eq!(after, json!([]), "the stale scope is ended at open");
+}
+
+/// Review M2: `yed_buildcancel` runs inside a fund scope, as ycashd's (vault.cpp `FundScope`
+/// around the cancel's build): a call, whatever its outcome, first ends a scope an earlier call
+/// left open and ends its own.
+#[tokio::test]
+async fn yed_buildcancel_runs_inside_a_fund_scope() {
+    let mut f = fixture("cancelscope").await;
+    let hang = HangSend(f.node.clone());
+    let params = [lock_params()];
+    let mut fut = Box::pin(f.w.call(&hang, "vault_lock", &params));
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(waker);
+    assert!(fut.as_mut().poll(&mut cx).is_pending());
+    std::mem::forget(fut);
+    assert!(!locked(&mut f).await.is_empty());
+    let e =
+        f.w.call(
+            &f.node,
+            "yed_buildcancel",
+            &[json!(format!("{}:0", "22".repeat(32)))],
+        )
+        .await;
+    assert!(e.is_err(), "no such intent");
+    assert!(locked(&mut f).await.is_empty(), "the scope ended");
 }
 
 /// The funding change of a default-funded vault_lock (ycash6 vault.cpp `Fund`: a fresh external
