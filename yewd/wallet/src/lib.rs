@@ -664,6 +664,7 @@ impl Wallet {
     /// Derive keys up to `issued + WINDOW`, and ask the signer for PQ keys up to
     /// `issued + PQ_LOOKAHEAD`.
     pub fn refresh_keys(&mut self) -> Result<(), String> {
+        let watched_own = self.watched_own();
         self.book
             .extend(EXTERNAL, self.st.issued.external + WINDOW)?;
         self.book
@@ -707,6 +708,11 @@ impl Wallet {
                 .and_then(|b| b.try_into().ok())
                 .ok_or("an imported public key is not 33 bytes")?;
             self.book.add_imported(i as u32, pk);
+        }
+        // a key derived or imported now may be one a watched script pays: the key wins
+        // (ycashd's IsMineInner), so that script's coins move from the watched to the own ones
+        if self.watched_own() != watched_own {
+            self.rebuild();
         }
         Ok(())
     }

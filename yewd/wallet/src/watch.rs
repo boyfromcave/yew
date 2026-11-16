@@ -108,6 +108,15 @@ impl Wallet {
         self.watched.contains(script) && !self.spendable_script(script)
     }
 
+    /// How many watched scripts the wallet can spend (a key it derived or imported after the
+    /// import): [`Wallet::refresh_keys`] rebuilds the coins when this changes.
+    pub(crate) fn watched_own(&self) -> usize {
+        self.watched
+            .iter()
+            .filter(|s| self.spendable_script(s))
+            .count()
+    }
+
     /// ycashd's `IsMine(script) == ISMINE_SPENDABLE` for the scripts yewd can hold: P2PKH and
     /// `TX_PQPKH` of its keys, and pay-to-pubkey of one of its transparent keys.
     pub(crate) fn spendable_script(&self, script: &[u8]) -> bool {
