@@ -280,8 +280,9 @@ impl Wallet {
     }
 
     /// `ExtractDestination` + `EncodeDestination`: P2PKH, P2SH, `TX_PQPKH`, and pay-to-pubkey as
-    /// its key's P2PKH address.
-    fn destination_address(&self, script: &[u8]) -> Option<String> {
+    /// its key's P2PKH address (ycashd maps `TX_PUBKEY` to its key ID, so a pay-to-pubkey output
+    /// to a key `importpubkey` filed is in the address book and has an address).
+    pub(crate) fn destination_address(&self, script: &[u8]) -> Option<String> {
         if let Some(k) = p2pk_key(script) {
             return Some(yew_core::keys::encode_p2pkh(
                 self.network,

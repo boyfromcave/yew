@@ -398,10 +398,12 @@ impl Wallet {
             .collect()
     }
 
-    /// Whether `addr` (an `s…`/`t…`/`sq…` address) is in the address book (the first test of
-    /// ycashd's `IsChange`, [`Wallet::is_change`]).
+    /// Whether the script's destination (`ExtractDestination`: an `s…`/`t…`/`sq…` address, a
+    /// pay-to-pubkey as its key's P2PKH) is in the address book (the first test of ycashd's
+    /// `IsChange`, [`Wallet::is_change`]).
     pub(crate) fn in_book(&self, script: &[u8]) -> bool {
-        script_address(self.network, script).is_some_and(|a| self.st.book.contains_key(&a))
+        self.destination_address(script)
+            .is_some_and(|a| self.st.book.contains_key(&a))
     }
 
     /// `CWallet::IsChange` (ycash6 src/wallet/wallet.cpp:5808): an own output that is not in the
@@ -411,9 +413,10 @@ impl Wallet {
     /// imported key outside the book and a post-quantum key outside the book are change.
     pub(crate) fn is_change(&self, script: &[u8]) -> bool {
         match self.book.owns_script(script) {
-            // ycashd's IsChange asks ::IsMine, which counts watch-only: a watched script outside
-            // the address book (the raw script of an importaddress p2sh, a pay-to-pubkey of
-            // importpubkey) is change, one in the book is not
+            // ycashd's IsChange asks ::IsMine, which counts watch-only: a watched script whose
+            // destination is outside the address book (the raw redeem script of an importaddress
+            // p2sh) is change; one in the book is not, and that includes the pay-to-pubkey script
+            // of an importpubkey, whose destination (its key ID) importpubkey filed in the book
             None => self.is_watched(script) && !self.in_book(script),
             Some(_) if self.in_book(script) => false,
             Some(crate::keys::Owner::T(chain, _)) => chain != crate::keys::EXTERNAL,
@@ -561,14 +564,25 @@ impl Wallet {
             .collect();
         coins.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
         for (txid, vout, coinbase, script, value, d, spendable) in coins {
-            if d < min || d > max || (!filter.is_empty() && !filter.contains(script)) {
+            if d < min || d > max {
+                continue;
+            }
+            // AvailableCoins filters by the output's destination (`ExtractDestination`), so a
+            // pay-to-pubkey coin matches its key's P2PKH address
+            if !filter.is_empty()
+                && !filter.contains(script)
+                && !self
+                    .destination_address(script)
+                    .and_then(|a| parse_taddr_script(self.network, &a))
+                    .is_some_and(|s| filter.contains(&s))
+            {
                 continue;
             }
             let mut o = J::obj()
                 .with("txid", txid.clone())
                 .with("vout", vout)
                 .with("generated", coinbase);
-            if let Some(a) = script_address(self.network, script) {
+            if let Some(a) = self.destination_address(script) {
                 // a P2SH whose redeem script the wallet keeps (importaddress p2sh)
                 let redeem = self.st.scripts.get(&a).cloned();
                 o.push("address", J::Str(a));

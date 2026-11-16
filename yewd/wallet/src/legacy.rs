@@ -13,7 +13,6 @@ use std::collections::BTreeSet;
 use serde_json::Value;
 
 use crate::json::J;
-use crate::keys::script_address;
 use crate::node::Node;
 use crate::rpc::{arity, invalid, minconf, p_bool, p_int, p_str, param, parse_taddr_script};
 use crate::{code, RpcError, Wallet};
@@ -249,7 +248,7 @@ impl Wallet {
             if involves || self.is_watched(script) {
                 e.push("involvesWatchonly", J::Bool(true));
             }
-            if let Some(a) = script_address(self.network, script) {
+            if let Some(a) = self.destination_address(script) {
                 e.push("address", J::Str(a));
             }
             e

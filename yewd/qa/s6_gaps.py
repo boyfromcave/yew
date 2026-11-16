@@ -534,6 +534,46 @@ class GapParity(BitcoinTestFramework):
         assert_equal(n0.validateaddress(late)['account'], 'w-late2')
         assert_equal(n0.getbalance('*', 1, True), kept)
 
+        print('  pay-to-pubkey to the importpubkey key: in the book (its key ID), so never change')
+        pub_spk = n1.validateaddress(pub_addr)['scriptPubKey']
+
+        def pay_p2pk(node, amount):
+            # createrawtransaction takes addresses only: swap the key's P2PKH script for its P2PK
+            raw = node.createrawtransaction([], {pub_addr: amount})
+            assert_equal(raw.count('19' + pub_spk), 1)
+            raw = raw.replace('19' + pub_spk, '23' + '21' + pub + 'ac')
+            funded = node.fundrawtransaction(raw)['hex']
+            return node.sendrawtransaction(node.signrawtransaction(funded)['hex'])
+
+        def p2pk_vout(txid):
+            outs = [i for i, o in enumerate(n1.getrawtransaction(txid, 1)['vout']) if o['scriptPubKey']['type'] == 'pubkey']
+            assert_equal(len(outs), 1)
+            return outs[0]
+
+        t_pk_in = pay_p2pk(n1, Decimal('0.375'))
+        n1.lockunspent(False, [{'txid': t_pk_in, 'vout': p2pk_vout(t_pk_in)}])
+        sync_mempools(self.nodes)
+        t_pk_own = pay_p2pk(n0, Decimal('0.0625'))
+        sync_mempools(self.nodes)
+        n1.lockunspent(False, [{'txid': t_pk_own, 'vout': p2pk_vout(t_pk_own)}])
+        self.mine(1)
+        pk_ops = {(t_pk_in, p2pk_vout(t_pk_in)), (t_pk_own, p2pk_vout(t_pk_own))}
+        assert_equal(n0.getbalance('*', 1, True) - kept, Decimal('0.375') - (-n0.gettransaction(t_pk_own)['fee']))
+        pk_rows = [u for u in n0.listunspent() if (u['txid'], u['vout']) in pk_ops]
+        assert_equal(sorted((u['address'], u['spendable'], u['amount']) for u in pk_rows),
+                     [(pub_addr, False, Decimal('0.0625')), (pub_addr, False, Decimal('0.375'))])
+        by_addr = {(u['txid'], u['vout']) for u in n0.listunspent(1, 9999999, [pub_addr])}
+        assert pk_ops <= by_addr, (pk_ops, by_addr)
+        pk_txs = {t_pk_in, t_pk_own}
+        lt = [(r['txid'], r['category'], r.get('address'), r['amount'], r.get('involvesWatchonly'))
+              for r in n0.listtransactions('*', 200) if r.get('txid') in pk_txs]
+        assert_equal(lt, [(t_pk_own, 'send', pub_addr, Decimal('-0.0625'), True)])
+        ltw = sorted((r['txid'], r['category'], r.get('address'), r['amount'], r.get('involvesWatchonly'))
+                     for r in n0.listtransactions('*', 200, 0, True) if r.get('txid') in pk_txs)
+        assert_equal(ltw, sorted([(t_pk_in, 'receive', pub_addr, Decimal('0.375'), True),
+                                  (t_pk_own, 'send', pub_addr, Decimal('-0.0625'), True),
+                                  (t_pk_own, 'receive', pub_addr, Decimal('0.0625'), True)]))
+
     def help_text(self):
         """ycashd's help, from the table yewd answers it from; getunconfirmedbalance; the NU5 refusals."""
         print('help_text: the wallet methods answer ycashd\'s help')
