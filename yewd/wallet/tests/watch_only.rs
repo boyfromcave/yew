@@ -484,3 +484,69 @@ async fn merging_any_taddr_never_takes_a_watched_coin() {
     );
     assert!(f.sent().is_empty());
 }
+
+/// A node whose raw block reads never answer: a scan through it hangs.
+struct Hanging(MockNode);
+
+impl yewd_wallet::node::Node for Hanging {
+    fn call<'a>(&'a self, method: &'a str, params: Value) -> NodeFuture<'a> {
+        if method == "getblock" && params[1] == json!(0) {
+            return Box::pin(std::future::pending());
+        }
+        self.0.call(method, params)
+    }
+}
+
+/// A rescan cut off before its first checkpoint (the call dropped, as by a restart) is still
+/// owed: the import wrote its state with the scan from genesis pending, so the reopened wallet
+/// reads the chain again and finds the coin paid before the import.
+#[tokio::test]
+async fn a_rescan_cut_off_resumes_after_a_restart() {
+    let f = fixture("watch-cut-off").await;
+    let node = f.node.clone();
+    let name = f.name.clone();
+    let mut w = f.w;
+    // paid before the import, at height 2
+    let late = yew_core::keys::encode_p2pkh(Network::Regtest, &[6u8; 20]);
+    let h = node.0.lock().unwrap().blocks.len() as u32;
+    node.mine(
+        vec![
+            coinbase(h, vec![0x51], 0),
+            payment(
+                OutPoint {
+                    txid: [4; 32],
+                    n: 0,
+                },
+                addr_script(&late),
+                2 * COIN,
+            ),
+        ],
+        h as u8,
+    );
+    w.sync(&node).await.unwrap();
+    let hanging = Hanging(node.clone());
+    let cut = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        w.call(&hanging, "importaddress", &[json!(late), json!("late")]),
+    )
+    .await;
+    assert!(cut.is_err(), "the rescan was cut off");
+    drop(w);
+    let d = std::env::temp_dir().join(format!("yewd-wallet-{}-{name}", std::process::id()));
+    let mut w = Wallet::open(&d, Network::Regtest, core_signer(&d.join("signer")), 0).unwrap();
+    w.sync(&node).await.unwrap();
+    let late_script = addr_script(&late);
+    assert!(
+        w.watch_coins.iter().any(|c| c.script == late_script),
+        "the rescan was not resumed"
+    );
+    assert_eq!(w.st.birthday, 0);
+    let b = call_json(
+        &mut w,
+        &node,
+        "getbalance",
+        &[json!("*"), json!(1), json!(true)],
+    )
+    .await;
+    assert_eq!(zat(&b), 78 * COIN);
+}

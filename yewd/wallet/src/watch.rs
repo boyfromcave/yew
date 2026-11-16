@@ -306,11 +306,15 @@ impl Wallet {
     async fn after_import(&mut self, node: &dyn Node, rescan: bool) -> Result<(), RpcError> {
         self.load_watched();
         self.rebuild();
-        self.save()
-            .map_err(|e| RpcError::new(code::WALLET_ERROR, e))?;
         if rescan {
             self.st.birthday = 0;
             self.rewind(None);
+        }
+        // written before the scan: a restart before its first checkpoint still owes the rescan
+        // (from genesis), never leaves it undone
+        self.save()
+            .map_err(|e| RpcError::new(code::WALLET_ERROR, e))?;
+        if rescan {
             self.sync(node).await?;
         }
         Ok(())
