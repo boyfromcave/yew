@@ -1,13 +1,14 @@
 // YEW Web entry. The core (yew-web-core, WebAssembly) runs in a dedicated worker so proving and
 // scanning never block the UI thread; this file wires the screens to the view-models and the
 // view-models to the core, exactly as app/lib does for the Flutter shell. Nothing here
-// constructs bytes. `?mock=1` (or VITE_MOCK=1) swaps in MockCore for development and tests.
+// constructs bytes. MockCore, for development and tests, runs only on the dev server (`?mock=1`)
+// or in a build made with VITE_MOCK=1; every other build ignores `?mock` and does not contain it.
 import "./style.css";
 import type { Core } from "./core";
 import { CoreClient, messageOf, serialized } from "./core";
 import { clear, currentRoute, go, h, onRoute } from "./dom";
 import * as keystore from "./keystore";
-import { networkBanner, setNetwork } from "./prefixes";
+import { mockMode, networkBanner, setNetwork } from "./prefixes";
 import { renderOnboarding, renderUnlock } from "./screens/onboarding";
 import { renderHome } from "./screens/home";
 import { renderReceive } from "./screens/receive";
@@ -25,7 +26,11 @@ import { YellowbackVm } from "./vm/yellowback";
 
 const app = document.getElementById("app")!;
 const query = new URLSearchParams(location.search);
-const useMock = query.get("mock") === "1" || import.meta.env.VITE_MOCK === "1";
+/** A build that may run the mock at all (a constant after the build: false removes the mock chunk). */
+const mockBuild: boolean = import.meta.env.DEV || import.meta.env.VITE_MOCK === "1";
+const useMock = mockBuild && mockMode({ dev: import.meta.env.DEV, flag: import.meta.env.VITE_MOCK }, location.search);
+// The mock never touches the wallet's keystore: its (public) seed goes to a database of its own.
+if (useMock) keystore.useDatabase("yew-mock");
 /** The network the wallet is for (W2: regtest on the kind cluster; `VITE_NETWORK` for a build). */
 const network = import.meta.env.VITE_NETWORK || "regtest";
 /** A build served apart from its light-client server (the hosted fast-testnet wallet) names the
@@ -38,7 +43,7 @@ const defaultServer = useMock ? "http://localhost:8080" : hostedServer || (locat
 const paramsSource = query.get("params") ?? "";
 
 async function makeCore(): Promise<Core> {
-  if (useMock) { const { MockCore } = await import("./mock"); return new MockCore({ delayMs: 50 }); }
+  if (mockBuild && useMock) { const { MockCore } = await import("./mock"); return new MockCore({ delayMs: 50 }); }
   const c = new CoreClient(); await c.install_storage(); return c;
 }
 

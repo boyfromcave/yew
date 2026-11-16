@@ -5,7 +5,11 @@
 // is the fallback; a later W1a export of argon2 from the core's wasm can replace it here alone.
 // Never localStorage, never a cookie, never sent. Unlock hands the plaintext seed straight to
 // the core's open() and drops it.
-const DB = "yew", STORE = "keystore", KEY = "wallet";
+const STORE = "keystore", KEY = "wallet";
+let DB = "yew";
+/** Keep the seed in another IndexedDB database. For MockCore only (main.ts, before any read or
+ *  write): a mock session must never read, replace or remove the real wallet's record. */
+export function useDatabase(name: string): void { DB = name; }
 const PBKDF2_ITERS = 600_000;
 
 export interface WalletMeta {

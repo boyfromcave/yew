@@ -14,10 +14,13 @@
 // A pure function so the rule has a test (tests/hosted-csp.test.ts); vite.config.ts applies it.
 export function hostedCsp(html: string, server: string | undefined): string {
   if (!server) return html;
-  const url = new URL(server);
-  if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
-    throw new Error(`VITE_DEFAULT_SERVER: an https origin with nothing after it, not ${server}`);
+  // The same shape the infrastructure accepts for its header: https, a plain host name (no
+  // wildcard: `new URL("https://*")` parses), an optional numeric port, nothing after it.
+  if (!/^https:\/\/[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$/.test(server)) {
+    throw new Error(`VITE_DEFAULT_SERVER: an https origin (https://host or https://host:port, lower case) with nothing after it, not ${server}`);
   }
+  const url = new URL(server);
+  if (url.origin !== server && url.origin !== server.replace(/:443$/, "")) throw new Error(`VITE_DEFAULT_SERVER: not an origin: ${server}`);
   const directive = /connect-src [^;"]*/g;
   if ((html.match(directive) ?? []).length !== 1) throw new Error("index.html: expected exactly one connect-src in the <meta> policy");
   return html.replace(directive, `connect-src 'self' ${url.origin}`).replace(/; frame-ancestors 'none'(?=[;"])/, "");

@@ -13,8 +13,10 @@ scripts/test-web-smoke.sh --kind                     # … on the real core agai
 scripts/test-web-smoke.sh --kind https://localhost/  # … the bundle the gateway serves (ycash-infra K4), API on the same origin
 ```
 
-`http://localhost:5173/?mock=1` (or `VITE_MOCK=1`) runs the screens on `src/mock.ts`, a canned
-core, without the wasm module or a server. Without it the real core runs in a worker: served
+`http://localhost:5173/?mock=1` on the dev server, or a build made with `VITE_MOCK=1`, runs the
+screens on `src/mock.ts`, a canned core, without the wasm module or a server, and keeps its (public)
+seed in an IndexedDB database of its own, never the wallet's. Every other build ignores `?mock` and
+does not contain the mock: a link cannot swap the core of a real wallet. Without it the real core runs in a worker: served
 over https the server defaults to the page's origin; in the dev loop type the plain gRPC-web
 listener (`http://localhost:9067` on kind). `?params=<base URL>` prefills a mirror for the
 proving files (Settings); `VITE_NETWORK` picks the network of a build (default `regtest`);
@@ -39,8 +41,9 @@ the default; it must send CORS headers and be allowed by the page's `connect-src
 
 **The hosted fast-testnet wallet.** `https://fastnet-wallet.ycash.team` serves this bundle built
 with `VITE_NETWORK=testnet` and `VITE_DEFAULT_SERVER=https://fastnet-lightwallet.ycash.team`, by
-`.github/workflows/web-wallet-deploy.yml` on every push to `upgrade/vault` that touches `web/` or
-`core/` (once the repository variable `WEB_WALLET_DEPLOY` is `true`). A testnet build shows "Fast
+`.github/workflows/web-wallet-deploy.yml`, run by hand (Actions, "Run workflow" on `upgrade/vault`;
+the repository variable `WEB_WALLET_DEPLOY` must be `true`). A deploy is a deliberate act by a
+maintainer who has read the merged commit: a merge alone never changes what the name serves. A testnet build shows "Fast
 testnet: coins here have no value" above every screen. The proving files are on the same origin,
 under `/sapling-params/`: the workflow takes them from the project's own copy (ycash-infra release
 `zcash-params-v1`) and uploads them only if they match the pins in `core/src/sapling_params.rs`

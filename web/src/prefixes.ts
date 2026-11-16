@@ -38,3 +38,14 @@ export function localize(text: string, network: Network = current): string {
 export function networkBanner(network: string): string | null {
   return network === "testnet" ? "Fast testnet: coins here have no value" : null;
 }
+
+/** Whether this page runs on MockCore (src/mock.ts: canned data, a public seed). Only a build made
+ *  for it can: the dev server (`dev`), where `?mock=1` asks for it, or a build with `VITE_MOCK=1`
+ *  (`flag`), which is always the mock. Any other build, the hosted wallet among them, ignores
+ *  `?mock` whatever the address says: a link must never be able to swap the core of a real wallet.
+ *  main.ts repeats the build half of the rule as a constant, so such a build does not even contain
+ *  the mock. */
+export function mockMode(build: { dev: boolean; flag: string | undefined }, search: string): boolean {
+  if (build.flag === "1") return true;
+  return build.dev && new URLSearchParams(search).get("mock") === "1";
+}

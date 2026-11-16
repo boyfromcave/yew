@@ -1,5 +1,6 @@
 // MockCore: the W1a contract with canned data, so every screen can be built and tested before
-// the wasm binding lands. Dev only: main.ts selects it behind `?mock=1` or VITE_MOCK=1. The
+// the wasm binding lands. Dev only: main.ts selects it on the dev server (`?mock=1`) or in a
+// VITE_MOCK=1 build, with a keystore database of its own; no other build contains this file. The
 // mock never leaves the browser's memory and constructs no bytes: previews are opaque ids.
 import type {
   AddressCheck, AddressKind, AddressPair, Balances, ClaimPreview, ClaimableItem, Confirmed, Core, HistoryRow,

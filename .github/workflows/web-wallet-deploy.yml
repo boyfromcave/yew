@@ -2,16 +2,18 @@
 # https://fastnet-wallet.ycash.team (the infrastructure is managed separately).
 # Copyright (c) 2026 The Ycash developers. MIT licence (LICENSE).
 #
-# In plain words: a push to upgrade/vault that touches the web wallet or the core (or a click on
-# "Run workflow") builds the wallet for the fast testnet, with that network's light-wallet server
-# as its default and a banner saying the coins have no value; a second job, the only one with AWS
-# access, uploads that build and the two Sapling proving files to the wallet's bucket and tells
-# CloudFront to drop its cached copy. Nothing waits: the invalidation is requested and the job ends.
-# It is a testnet wallet only (web/README.md, "The hosted fast-testnet wallet", says why).
+# In plain words: a click on "Run workflow" (on upgrade/vault) builds the wallet for the fast
+# testnet, with that network's light-wallet server as its default and a banner saying the coins
+# have no value; a second job, the only one with AWS access, uploads that build and the two Sapling
+# proving files to the wallet's bucket and tells CloudFront to drop its cached copy. Nothing waits:
+# the invalidation is requested and the job ends. It is a testnet wallet only (web/README.md, "The
+# hosted fast-testnet wallet", says why).
 #
-# Off until it is switched on: both jobs are skipped unless the repository variable
-# WEB_WALLET_DEPLOY is `true` (set once the bucket exists and the environment holds its secrets),
-# so a merge before that day costs no runner and leaves no failed run.
+# A deploy is a deliberate act: there is no push trigger. A maintainer reads the merged commit and
+# then runs this by hand; a merge alone never changes what the name serves. (A required reviewer on
+# the environment can be added later.) And it is off until it is switched on: both jobs are skipped
+# unless the repository variable WEB_WALLET_DEPLOY is `true` (set once the bucket exists and the
+# environment holds its secrets).
 #
 # Two jobs, so the build (which runs the repository's code and its dependencies' build scripts)
 # never holds an OIDC token: `build` has contents: read only and hands dist/ and the proving files'
@@ -40,13 +42,6 @@
 # Third-party actions are pinned by commit, never by tag; the comment carries the tag (bump both).
 name: web-wallet-deploy
 on:
-  push:
-    branches: [upgrade/vault]
-    paths:
-      - "web/**"
-      - "core/**"
-      - "rust-toolchain.toml"
-      - ".github/workflows/web-wallet-deploy.yml"
   workflow_dispatch: {}
 permissions: {}
 concurrency:
@@ -100,11 +95,13 @@ jobs:
           AR_wasm32_unknown_unknown: llvm-ar-18
           CLEAN: "0"
         run: scripts/build-release.sh
-      # What makes this a hosted fast-testnet build, read back from the files that will be served:
-      # the <meta> policy names the one server and no other; the banner and the default server are
-      # in the main chunk; and nothing in the bundle needs more than the response header's policy
-      # allows (no eval, no Function constructor, no blob: URL), so a dependency that starts to is
-      # caught here and not in a visitor's console.
+      # What makes this the hosted fast-testnet build, read back from the files that will be served:
+      # the <meta> policy names the one server and no other; the main chunk carries the network and
+      # the default server as its two build constants (main.ts declares them one after the other,
+      # and a build without VITE_NETWORK would carry "regtest" there); the mock core is not in the
+      # bundle (no chunk, and not its public seed in any file); and nothing in the bundle needs more
+      # than the response header's policy allows (no eval, no Function constructor, no blob: URL),
+      # so a dependency that starts to is caught here and not in a visitor's console.
       - name: check the hosted build
         working-directory: web
         run: |
@@ -113,8 +110,12 @@ jobs:
           if grep -qE 'download\.z\.cash|frame-ancestors' dist/index.html; then
             echo "dist/index.html: the <meta> policy is not the hosted one" >&2; exit 1
           fi
-          grep -lF 'Fast testnet: coins here have no value' dist/assets/index-*.js
-          grep -lF "$VITE_DEFAULT_SERVER" dist/assets/index-*.js
+          constants="=\"$VITE_NETWORK\",[A-Za-z_\$][A-Za-z0-9_\$]*=\"$VITE_DEFAULT_SERVER\""
+          grep -lE "$constants" dist/assets/index-*.js || {
+            echo "the main chunk is not the $VITE_NETWORK build with $VITE_DEFAULT_SERVER as its server" >&2; exit 1; }
+          if ls dist/assets/mock-*.js 2>/dev/null || grep -lE 'abandon abandon|MockCore' dist/assets/*.js; then
+            echo "the mock core is in the bundle (the files above)" >&2; exit 1
+          fi
           if grep -lE 'new Function|(^|[^A-Za-z0-9_.$])eval\(|blob:|createObjectURL' dist/assets/*.js; then
             echo "the bundle uses something the content security policy refuses (the files above)" >&2; exit 1
           fi
@@ -200,30 +201,38 @@ jobs:
       #   assets/*           1 year, immutable (Vite names every file by its content hash)
       #   sapling-params/*   1 year, immutable (pinned by SHA-256; they never change)
       #   index.html, BUNDLE-SHA256SUMS   1 minute
-      # --size-only on the hashed and pinned files: a name that is already there with the same
-      # length is the same file, so a deploy uploads only what changed (the proving files once).
-      # The .wasm gets its type by name: instantiateStreaming needs application/wasm.
+      # Every object is written on every deploy (cp, never a size or date comparison): whatever is
+      # in the bucket under one of these names, altered or not, is replaced by the bytes checked
+      # above, so deploying a commit again always restores exactly that commit. The proving files
+      # too (52 MB a deploy; deploys are by hand). The .wasm gets its type by name:
+      # instantiateStreaming needs application/wasm.
       - name: upload
         run: |
           set -euo pipefail
           s3="s3://$BUCKET"
           forever='public, max-age=31536000, immutable'
-          aws s3 sync params/ "$s3/sapling-params/" --only-show-errors --size-only \
+          aws s3 cp params/ "$s3/sapling-params/" --recursive --only-show-errors \
             --content-type application/octet-stream --cache-control "$forever"
-          aws s3 sync out/dist/assets/ "$s3/assets/" --only-show-errors --size-only --exclude '*.wasm' \
+          aws s3 cp out/dist/assets/ "$s3/assets/" --recursive --only-show-errors --exclude '*.wasm' \
             --cache-control "$forever"
-          aws s3 sync out/dist/assets/ "$s3/assets/" --only-show-errors --size-only --exclude '*' --include '*.wasm' \
+          aws s3 cp out/dist/assets/ "$s3/assets/" --recursive --only-show-errors --exclude '*' --include '*.wasm' \
             --content-type application/wasm --cache-control "$forever"
           aws s3 cp out/dist/BUNDLE-SHA256SUMS "$s3/BUNDLE-SHA256SUMS" --only-show-errors \
             --content-type 'text/plain; charset=utf-8' --cache-control 'public, max-age=60'
           aws s3 cp out/dist/index.html "$s3/index.html" --only-show-errors \
             --content-type 'text/html; charset=utf-8' --cache-control 'public, max-age=60'
-      # Everything is uploaded now, so this pass only removes objects no longer in dist/ (the
-      # previous build's hashed files): --size-only keeps it from re-uploading a file just written
-      # (which would drop its headers), and the proving files are left out of it. A removed object
-      # keeps its earlier version for the bucket's retention, so a rollback can bring it back.
+      # Every file of dist/ was written a moment ago, so this pass has nothing to upload and only
+      # removes what is no longer in dist/ (the previous build's hashed files, anything stray).
+      # --size-only is what keeps it from uploading: without it sync would copy files again by date
+      # and drop their headers; it cannot leave an altered object behind, since each was just
+      # replaced. The proving files are left out of it (and anything else under sapling-params/ is
+      # removed by the line after). A removed object keeps its earlier version for the bucket's
+      # retention.
       - name: remove stale objects
-        run: aws s3 sync out/dist/ "s3://$BUCKET" --delete --size-only --only-show-errors --exclude 'sapling-params/*'
+        run: |
+          set -euo pipefail
+          aws s3 sync out/dist/ "s3://$BUCKET" --delete --size-only --only-show-errors --exclude 'sapling-params/*'
+          aws s3 sync params/ "s3://$BUCKET/sapling-params/" --delete --size-only --only-show-errors
       # One path, one invalidation (1,000 paths a month are free). Requested, not awaited.
       - name: invalidate
         run: |
