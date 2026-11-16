@@ -9,9 +9,11 @@ import type {
 } from "./core";
 
 export const MOCK_SEED = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-const SHIELDED = "ys1qmockshieldedaddress0000000000000000000000000000000000000000000000000000qq";
-const TRANSPARENT = "s1MockTransparentAddress000000000000";
-const YED = "ye1MockYedAddress0000000000000000000";
+// The wallet's own addresses carry regtest prefixes (the mock's network; src/prefixes.ts): Receive
+// shows an address only under the tab its prefix names.
+const SHIELDED = "yregtestsapling1qmockshieldedaddress0000000000000000000000000000000000000000qq";
+const TRANSPARENT = "smMockTransparentAddress000000000000";
+const YED = "yrfMockYedAddress00000000000000000000000000000000000";
 const PQ_FALCON = "rqf1MockFalconAddress000000000000000000000000000000000";
 const PQ_SLH = "rqs1MockSlhAddress000000000000000000000000000000000000";
 const NO_HYBRID = "Not available in the browser: this send needs the wallet's combined private and post-quantum builder, which only the app has. Use the app.";
@@ -316,11 +318,11 @@ export class MockCore implements Core {
 /** The core's kinds: `sapling`, `p2pkh` (with `yellowbackForm` for the ye… form), `p2sh`. */
 export function checkAddress(s: string): AddressCheck {
   const t = s.trim();
-  if (/^ys1[a-z0-9]{20,}$/.test(t)) return { valid: true, kind: "sapling", yellowbackForm: false, message: "" };
+  if (/^(ys1|yregtestsapling1)[a-z0-9]{20,}$/.test(t)) return { valid: true, kind: "sapling", yellowbackForm: false, message: "" };
   if (/^ye1?[A-Za-z0-9]{20,}$/.test(t)) return { valid: true, kind: "p2pkh", yellowbackForm: true, message: "" };
   if (/^r?qf1?[A-Za-z0-9]{20,}$/.test(t) || /^r?qs1?[A-Za-z0-9]{20,}$/.test(t)) return { valid: true, kind: "pq_yec", yellowbackForm: false, message: "" };
   if (/^yr[fs][A-Za-z0-9]{20,}$/.test(t)) return { valid: true, kind: "pq", yellowbackForm: true, message: "" };
-  if (/^s1[A-Za-z0-9]{20,}$/.test(t)) return { valid: true, kind: "p2pkh", yellowbackForm: false, message: "" };
+  if (/^(s1|sm)[A-Za-z0-9]{20,}$/.test(t)) return { valid: true, kind: "p2pkh", yellowbackForm: false, message: "" };
   return { valid: false, kind: "", yellowbackForm: false, message: "not an address of this network" };
 }
 

@@ -37,7 +37,7 @@ export function renderOnboarding(root: HTMLElement, vm: OnboardingVm) {
           h("button", { class: "secondary", on: { click: () => vm.set({ step: "start", error: "" }) } }, "Back")));
     } else if (s.step === "server") {
       // A hosted build connects to its own server only (its policy allows no other): shown, not editable.
-      const url = h("input", { type: "url", value: s.serverUrl, readOnly: s.serverFixed, placeholder: "https://host:port — no default: enter one you trust" });
+      const url = h("input", { type: "url", value: s.serverUrl, readOnly: s.serverFixed, placeholder: s.serverFixed ? null : "https://host:port — no default: enter one you trust" });
       mount(root, h("h2", null, "Server"), h("p", null, "The light-client server this wallet trusts (the statement follows). On mainnet it must be https."), url,
         s.serverFixed ? h("p", { class: "small" }, hostedServerText(s.serverUrl)) : null, err,
         h("div", { class: "actions" }, h("button", { class: "secondary", disabled: busy, on: { click: () => vm.checkServer(url.value) } }, s.tip === null ? "Check server" : `Server ok · tip ${s.tip}`),

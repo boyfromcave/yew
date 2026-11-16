@@ -10,7 +10,10 @@ export function renderReceive(root: HTMLElement, vm: ReceiveVm) {
     clear(root);
     const s = vm.state;
     const seg = (k: AddressKind, label: string) => h("button", { class: s.kind === k ? "on" : "", on: { click: () => vm.show(k) } }, label);
-    const cp = h("button", { class: "secondary", disabled: !s.address, on: { click: () => copy(s.address, cp) } }, "Copy");
+    // only the current tab's own, prefix-checked address is shown, copied or encoded (vm.shown); while it
+    // is on its way the screen says so and Copy is off
+    const addr = vm.shown;
+    const cp = h("button", { class: "secondary", disabled: !addr, on: { click: () => { if (vm.shown) copy(vm.shown, cp); } } }, "Copy");
     // beta2 D-8, D-9: the post-quantum plain-YEC forms, the scheme in the label and in the prefix
     const about: Record<AddressKind, string> = {
       shielded: "Private YEC (ys1…): amounts and messages are hidden on the chain.",
@@ -21,8 +24,10 @@ export function renderReceive(root: HTMLElement, vm: ReceiveVm) {
     };
     mount(root, h("h2", null, "Receive"), h("div", { class: "seg" }, seg("shielded", "Private"), seg("transparent", "Public (ECC)"), seg("pq_falcon", "PQ · FN-DSA-512"), seg("pq_slh", "PQ · SLH-DSA"), seg("yed", "YED")),
       h("p", { class: "small" }, localize(about[s.kind])),
-      s.address ? qr(s.address) : null, s.address ? h("code", { class: "addr" }, s.address) : null, errorCard(s.error),
+      addr ? qr(addr) : null, addr ? h("code", { class: "addr" }, addr) : null,
+      s.loading ? h("p", { class: "small pending", "data-receive": "loading" }, "Getting this address…") : null, errorCard(s.error),
       h("div", { class: "actions" }, cp, s.kind === "shielded" ? h("button", { class: "secondary", on: { click: () => vm.fresh() } }, "New private address") : null));
   };
-  draw(); if (!vm.state.address) vm.show(vm.state.kind); return vm.subscribe(draw);
+  // subscribed first: show() answers from the cache synchronously, and that change must draw
+  const unsub = vm.subscribe(draw); void vm.show(vm.state.kind); return unsub;
 }

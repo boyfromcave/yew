@@ -26,6 +26,10 @@ export interface SendState {
   /** The shapes this build cannot run, with the core's one-line reason. */
   unavailable: Unavailable[];
   pq: PqSendPreview | null;
+  /** The `yec` preview's recipient is private (ys1…), from that preview's own address check. */
+  yecToPrivate: boolean;
+  /** The direction `move` was previewed for (the Move screen shows only a preview of its own direction). */
+  moveDirection: MoveDirection | null;
 }
 
 /** Why a valid address of `kind` is not a destination for `asset` (app/lib/screens/send.dart
@@ -37,14 +41,19 @@ export function destinationMismatch(asset: Asset, kind: string): string | null {
 }
 
 export class SendVm extends Vm<SendState> {
+  /** Bumped by every change that makes an answer in flight stale (reset: the asset, the source, the
+   *  direction, "Change"): a preview asked for before it is dropped, never shown (beta3). */
+  private gen = 0;
   constructor(private core: Core, asset: Asset = "yed") {
-    super({ asset, to: "", amount: "", memo: "", toKind: "", busy: false, error: "", errorKind: "", yec: null, yed: null, move: null, txid: "", feeAccepted: false, from: "", sources: [], unavailable: [], pq: null });
+    super({ asset, to: "", amount: "", memo: "", toKind: "", busy: false, error: "", errorKind: "", yec: null, yed: null, move: null, txid: "", feeAccepted: false, from: "", sources: [], unavailable: [], pq: null, moveDirection: null, yecToPrivate: false });
   }
-  private async run(f: () => Promise<void>) {
+  /** `g`: the generation a preview was asked for in; its error is dropped, like its answer, once the
+   *  user has left that selection (beta3 review). A confirm passes none: its error always shows. */
+  private async run(f: () => Promise<void>, g?: number) {
     this.set({ busy: true, error: "", errorKind: "" });
-    try { await f(); } catch (e) { this.set({ error: messageOf(e), errorKind: kindOf(e) }); } finally { this.set({ busy: false }); }
+    try { await f(); } catch (e) { if (g === undefined || g === this.gen) this.set({ error: messageOf(e), errorKind: kindOf(e) }); } finally { this.set({ busy: false }); }
   }
-  reset() { this.set({ yec: null, yed: null, move: null, pq: null, error: "", errorKind: "", txid: "", feeAccepted: false }); }
+  reset() { this.gen++; this.set({ yec: null, yed: null, move: null, moveDirection: null, pq: null, error: "", errorKind: "", txid: "", feeAccepted: false }); }
   setAsset(asset: Asset) { this.set({ asset }); this.reset(); }
   /** The From chooser's contents: the post-quantum sources and what this build cannot do. A source that
    *  dropped out of the list (spent, a refresh) falls back to Automatic (review YEW-REVIEW-3 L5). */
@@ -68,6 +77,8 @@ export class SendVm extends Vm<SendState> {
   async setTo(to: string) {
     this.state.to = to;
     const k = to.trim() ? await this.core.validate_address(to.trim()).catch(() => ({ valid: false, kind: "" })) : { valid: false, kind: "" };
+    // the recipient changed again while this one was checked: its answer is not the field's
+    if (this.state.to !== to) return;
     const toKind = k.valid ? k.kind : "";
     // the message field exists only for a private recipient: when it goes, its text goes with it (a hidden
     // message the user cannot see or clear would refuse every later preview)
@@ -76,36 +87,45 @@ export class SendVm extends Vm<SendState> {
   get toPrivate() { return this.state.asset === "yec" && !this.state.from && this.state.toKind === "sapling"; }
   get memoBytes() { return new TextEncoder().encode(this.state.memo).length; }
   preview() {
+    const g = this.gen;
     return this.run(async () => {
       const s = this.state; const to = s.to.trim();
       if (!to) throw new Error("invalid: enter an address");
       const check = await this.core.validate_address(to);
+      // private-ness from this check of this address, never from an older field check
+      const toPrivate = s.asset === "yec" && !s.from && check.valid && check.kind === "sapling";
       if (check.valid) { const wrong = destinationMismatch(s.asset, check.kind); if (wrong) throw new Error(`invalid: ${wrong}`); }
       if (s.asset === "yed") {
         if (check.kind === "sapling") throw new Error(localize("invalid: YED can only be sent to a public address (yb… or s…)."));
         const cents = parseYedCents(s.amount); if (cents === null || cents <= 0n) throw new Error("invalid: enter an amount in dollars, like 25.00");
-        this.set({ yed: await this.core.send_yed_preview(to, cents.toString()), yec: null, feeAccepted: false });
+        const yed = await this.core.send_yed_preview(to, cents.toString());
+        if (g === this.gen) this.set({ yed, yec: null, feeAccepted: false });
       } else {
         const zat = parseYecZat(s.amount); if (zat === null || zat <= 0n) throw new Error("invalid: enter an amount in YEC, like 0.5");
-        if (s.memo && !this.toPrivate) throw new Error("invalid: a message needs a private (ys1…) recipient");
+        if (s.memo && !toPrivate) throw new Error("invalid: a message needs a private (ys1…) recipient");
         if (this.memoBytes > 512) throw new Error("invalid: the message is longer than 512 bytes");
         if (s.from) {
           // from a post-quantum address: the core plans and signs (build::pq_send); its refusals verbatim
           const blocked = check.kind === "sapling" ? this.unavailableReason("pq_to_private") : null;
           if (blocked) throw new Error(`unsupported: ${blocked}`);
-          this.set({ pq: await this.core.pq_send_preview(s.from, to, zat.toString()), yec: null, yed: null, feeAccepted: false });
+          const pq = await this.core.pq_send_preview(s.from, to, zat.toString());
+          if (g === this.gen) this.set({ pq, yec: null, yed: null, feeAccepted: false });
           return;
         }
-        this.set({ yec: await this.core.send_yec_preview(to, zat.toString(), this.toPrivate && s.memo ? s.memo : undefined), yed: null });
+        const yec = await this.core.send_yec_preview(to, zat.toString(), toPrivate && s.memo ? s.memo : undefined);
+        if (g === this.gen) this.set({ yec, yed: null, yecToPrivate: check.valid && check.kind === "sapling" });
       }
-    });
+    }, g);
   }
   /** Move YEC between the own private and public balances. */
   movePreview(direction: MoveDirection, amount: string) {
+    const g = this.gen;
     return this.run(async () => {
       const zat = parseYecZat(amount); if (zat === null || zat <= 0n) throw new Error("invalid: enter an amount in YEC");
-      this.set({ move: await this.core.move_preview(direction, zat.toString()) });
-    });
+      const move = await this.core.move_preview(direction, zat.toString());
+      // the direction changed meanwhile (reset): this preview moves the other way, so it is not shown
+      if (g === this.gen) this.set({ move, moveDirection: direction });
+    }, g);
   }
   get previewId(): string { const s = this.state; return s.yed?.previewId ?? s.pq?.previewId ?? s.yec?.previewId ?? s.move?.previewId ?? ""; }
   /** The flagged fee's note (null when the fee is usual). */
@@ -123,7 +143,7 @@ export class SendVm extends Vm<SendState> {
       if (ack && !this.state.feeAccepted) throw new Error("invalid: this fee is unusual; press \"Pay this fee\" first");
       const r = await this.core.confirm(id, ack ?? undefined);
       // a sent payment's form is done with: the next send starts empty (its message included)
-      this.set({ txid: r.txid, yec: null, yed: null, move: null, pq: null, feeAccepted: false, to: "", toKind: "", amount: "", memo: "" });
+      this.set({ txid: r.txid, yec: null, yed: null, move: null, moveDirection: null, pq: null, feeAccepted: false, to: "", toKind: "", amount: "", memo: "" });
     });
   }
 }
