@@ -9,7 +9,7 @@
 # the invalidation is requested and the job ends. It is a testnet wallet only (web/README.md, "The
 # hosted fast-testnet wallet", says why).
 #
-# A deploy is a deliberate act: there is no push trigger. A maintainer reads the merged commit and
+# A deploy is a deliberate act: a push never builds or deploys (the push trigger below only lists the workflow). A maintainer reads the merged commit and
 # then runs this by hand; a merge alone never changes what the name serves. (A required reviewer on
 # the environment can be added later.) And it is off until it is switched on: both jobs are skipped
 # unless the repository variable WEB_WALLET_DEPLOY is `true` (set once the bucket exists and the
@@ -43,6 +43,13 @@
 name: web-wallet-deploy
 on:
   workflow_dispatch: {}
+  # GitHub lists a workflow for manual runs only once an event has run it, and a workflow whose
+  # only trigger is workflow_dispatch was never listed here. A push that changes THIS FILE starts
+  # a run in which both jobs are skipped (the build job requires a manual run, below), which is
+  # enough to list it. A push never builds or deploys.
+  push:
+    branches: [upgrade/vault]
+    paths: ['.github/workflows/web-wallet-deploy.yml']
 permissions: {}
 concurrency:
   group: web-wallet-deploy
@@ -55,7 +62,7 @@ env:
   VITE_DEFAULT_SERVER: https://fastnet-lightwallet.ycash.team
 jobs:
   build:
-    if: github.ref == 'refs/heads/upgrade/vault' && vars.WEB_WALLET_DEPLOY == 'true'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/upgrade/vault' && vars.WEB_WALLET_DEPLOY == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
