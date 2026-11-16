@@ -173,7 +173,7 @@ Other things worth knowing before reading code:
 - **Moving YEC between private and public** is one explicit action, Home → "Move…"
   (`move_preview` / `move_confirm`, `build/yec_move.rs`). To private: plain `YEC` coins only
   (never the fee reserve, a token, a vault, a carrier or a held output) into one Sapling output
-  to the wallet's own default `ys1…` address, transparent change back, ZIP-317 fee; built and
+  to the wallet's own default `ys1…` address, transparent change back, the fee ycashd's own wallet pays the shape, 1,000 zat (as every plain Sapling send of the core: `any_to_any::node_fee`, `shielded::ycash_fee_rule`); built and
   signed by the librustzcash6 builder (`transparent-inputs`), since YEW's own serializer makes
   no Sapling outputs; gate path `Shield`. To public: a private spend to the wallet's own `s…`
   address (the amount is visible on the chain, `revealsShielded`). "Move YEC to public first"

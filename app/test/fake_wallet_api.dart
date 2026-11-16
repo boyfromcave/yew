@@ -536,7 +536,7 @@ class FakeWalletApi implements WalletApi {
     if (linkingText != null && !allowLinking) throw YewError(kind: ErrorKind.addressLinkingNeeded, message: linkingText!);
     if (yecPreviewError != null) throw yecPreviewError!;
     final private = yecFunding == YecFunding.shielded;
-    return YecPreview(previewId: 'p1', to: to, amountZat: zat, amountBumped: zat == 10000, feeZat: private ? 10000 : 1000, changeZat: 150000000 - zat - 1000, inputs: 1, usesReserve: sendEverything, keepsReservedZat: 105000, expiryHeight: 524, txid: private ? '' : 'aa' * 32, funding: yecFunding, revealsShielded: revealsShielded, memo: memo, paramsNeeded: private && paramsNeeded);
+    return YecPreview(previewId: 'p1', to: to, amountZat: zat, amountBumped: zat == 10000, feeZat: 1000, changeZat: 150000000 - zat - 1000, inputs: 1, usesReserve: sendEverything, keepsReservedZat: 105000, expiryHeight: 524, txid: private ? '' : 'aa' * 32, funding: yecFunding, revealsShielded: revealsShielded, memo: memo, paramsNeeded: private && paramsNeeded);
   }
 
   @override
@@ -559,7 +559,7 @@ class FakeWalletApi implements WalletApi {
     if (linkingText != null && !allowLinking) throw YewError(kind: ErrorKind.addressLinkingNeeded, message: linkingText!);
     if (movePreviewError != null) throw movePreviewError!;
     final toPrivate = direction == MoveDirection.toPrivate;
-    const fee = 15000;
+    const fee = 1000; // the node's fee (yew-core any_to_any::node_fee)
     final zat = amountZat ?? (toPrivate ? balancesAnswer.yecZat : balancesAnswer.yecShieldedSpendableZat) - fee;
     return YecPreview(previewId: 'm1', to: toPrivate ? fakeZ : fakeS, amountZat: zat, amountBumped: false, feeZat: fee, changeZat: 0, inputs: 1, usesReserve: false, keepsReservedZat: balancesAnswer.yecReservedZat, expiryHeight: 525, txid: '', funding: toPrivate ? YecFunding.transparent : YecFunding.shielded, revealsShielded: !toPrivate, memo: null, paramsNeeded: paramsNeeded);
   }
@@ -573,6 +573,9 @@ class FakeWalletApi implements WalletApi {
   // ---- beta2 D-8: sends from an own post-quantum address.
   /// The server offers Yellowback (the capability post-quantum coins are listed under).
   bool yellowbackPresent = true;
+
+  /// The fake sync's `Done` reports a server that cannot index post-quantum addresses.
+  bool pqUnindexed = false;
   List<PqSource> pqSourcesAnswer = const [];
   Object? pqPreviewError;
   Object? pqConfirmError;
@@ -680,9 +683,9 @@ class FakeWalletApi implements WalletApi {
     calls.add('sync');
     if (syncController != null) return syncController!.stream;
     return Stream.fromIterable([
-      const SyncEvent(stage: SyncStage.connecting, message: 'Connecting', tip: 0, syncHeight: 0, yellowbackUsable: false, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
-      SyncEvent(stage: SyncStage.probing, message: 'Yellowback service present', tip: 484, syncHeight: 0, yellowbackUsable: yellowbackPresent, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
-      SyncEvent(stage: SyncStage.done, message: 'Synced to 484', tip: 484, syncHeight: 484, yellowbackUsable: yellowbackPresent, percent: 100, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: ''),
+      const SyncEvent(stage: SyncStage.connecting, message: 'Connecting', tip: 0, syncHeight: 0, yellowbackUsable: false, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: '', pqUnindexed: false),
+      SyncEvent(stage: SyncStage.probing, message: 'Yellowback service present', tip: 484, syncHeight: 0, yellowbackUsable: yellowbackPresent, percent: 0, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: '', pqUnindexed: false),
+      SyncEvent(stage: SyncStage.done, message: 'Synced to 484', tip: 484, syncHeight: 484, yellowbackUsable: yellowbackPresent, percent: 100, shieldedHeight: 0, shieldedSendable: false, shieldedMessage: '', pqUnindexed: pqUnindexed),
     ]);
   }
 
@@ -713,6 +716,9 @@ class FakeWalletApi implements WalletApi {
 
   @override
   String coreVersion() => '0.1.0-test';
+
+  @override
+  String pqUnindexedNote() => 'post-quantum addresses not looked up';
 }
 
 /// The app over the fake, with an in-memory keystore and no biometric prompt.

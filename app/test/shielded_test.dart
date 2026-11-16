@@ -49,6 +49,7 @@ SyncEvent ev(
   shieldedHeight: 300,
   shieldedSendable: sendable,
   shieldedMessage: shieldedMessage,
+  pqUnindexed: false,
 );
 
 Future<void> openSendYec(WidgetTester tester, Harness h) async {
@@ -177,6 +178,7 @@ void main() {
           shieldedHeight: 0,
           shieldedSendable: false,
           shieldedMessage: '',
+          pqUnindexed: false,
         ),
       );
       await ctl.close();

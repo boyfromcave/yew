@@ -227,4 +227,7 @@ class RustWalletApi implements WalletApi {
 
   @override
   String coreVersion() => rust.coreVersion();
+
+  @override
+  String pqUnindexedNote() => rust.pqUnindexedNote();
 }

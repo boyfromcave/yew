@@ -11,6 +11,11 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Conn`, `Open`, `Preview`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
 
+/// The line a shell shows while [`SyncEvent::pq_unindexed`] is set
+/// ([`crate::sync::PQ_UNINDEXED_NOTE`]; the web wallet shows the same text, `web/core-wasm`
+/// `SyncResult.pq_note`).
+String pqUnindexedNote() => RustLib.instance.api.crateApiPqUnindexedNote();
+
 /// The core's version.
 String coreVersion() => RustLib.instance.api.crateApiCoreVersion();
 
@@ -888,7 +893,8 @@ class ClaimableItem {
 
   /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
   /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
-  /// the server). `None`: the normal confirmation.
+  /// the server; or, when only the server's low YEC price flags it, that price against the
+  /// wallet's reference, `terms::PRICE_ONLY_NOTE_PREFIX`). `None`: the normal confirmation.
   final String? feeNote;
 
   /// Set exactly when [`ClaimableItem::fee_note`] is: pass it back in `accept_unusual_fee` of
@@ -1411,7 +1417,8 @@ class MintEstimate {
 
   /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
   /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
-  /// the server). `None`: the normal confirmation.
+  /// the server; or, when only the server's low YEC price flags it, that price against the
+  /// wallet's reference, `terms::PRICE_ONLY_NOTE_PREFIX`). `None`: the normal confirmation.
   final String? feeNote;
 
   /// Set exactly when [`MintEstimate::fee_note`] is: pass it back in `accept_unusual_fee` of
@@ -1953,7 +1960,8 @@ class PqSendPreviewInfo {
 
   /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
   /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
-  /// the server). Show it next to the fee.
+  /// the server; or, when only the server's low YEC price flags it, that price against the
+  /// wallet's reference, `terms::PRICE_ONLY_NOTE_PREFIX`). Show it next to the fee.
   final String? feeNote;
 
   /// Set exactly when [`PqSendPreviewInfo::fee_note`] is: pass it as `accept_unusual_fee` to
@@ -2394,7 +2402,8 @@ class ReleasePreview {
 
   /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
   /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
-  /// the server). `None`: the normal confirmation.
+  /// the server; or, when only the server's low YEC price flags it, that price against the
+  /// wallet's reference, `terms::PRICE_ONLY_NOTE_PREFIX`). `None`: the normal confirmation.
   final String? feeNote;
 
   /// Set exactly when [`ReleasePreview::fee_note`] is: pass it as `accept_unusual_fee` to the confirm call
@@ -2675,6 +2684,11 @@ class SyncEvent {
   /// transparent sync still counts; YED and transparent YEC are unaffected).
   final String shieldedMessage;
 
+  /// On `Done`: the server refused the wallet's post-quantum addresses (a lightwalletd that
+  /// cannot index them), so their coins were not looked up this run: the post-quantum balance
+  /// is unknown, not 0. Show [`pq_unindexed_note`] (yew#38 review).
+  final bool pqUnindexed;
+
   const SyncEvent({
     required this.stage,
     required this.message,
@@ -2685,6 +2699,7 @@ class SyncEvent {
     required this.shieldedHeight,
     required this.shieldedSendable,
     required this.shieldedMessage,
+    required this.pqUnindexed,
   });
 
   @override
@@ -2697,7 +2712,8 @@ class SyncEvent {
       percent.hashCode ^
       shieldedHeight.hashCode ^
       shieldedSendable.hashCode ^
-      shieldedMessage.hashCode;
+      shieldedMessage.hashCode ^
+      pqUnindexed.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -2712,7 +2728,8 @@ class SyncEvent {
           percent == other.percent &&
           shieldedHeight == other.shieldedHeight &&
           shieldedSendable == other.shieldedSendable &&
-          shieldedMessage == other.shieldedMessage;
+          shieldedMessage == other.shieldedMessage &&
+          pqUnindexed == other.pqUnindexed;
 }
 
 /// A stage of [`sync_now`].
@@ -3270,7 +3287,8 @@ class YedPreview {
 
   /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
   /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
-  /// the server). `None`: the normal confirmation.
+  /// the server; or, when only the server's low YEC price flags it, that price against the
+  /// wallet's reference, `terms::PRICE_ONLY_NOTE_PREFIX`). `None`: the normal confirmation.
   final String? feeNote;
 
   /// Set exactly when [`YedPreview::fee_note`] is: pass it as `accept_unusual_fee` to the confirm call

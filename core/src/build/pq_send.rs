@@ -934,7 +934,7 @@ mod tests {
         assert!(
             note.starts_with("Unusual fee:")
                 && note.contains("× the usual")
-                && note.contains("came from the server"),
+                && note.contains("try another server"),
             "{note}"
         );
         let ack = p

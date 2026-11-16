@@ -590,7 +590,8 @@ pub struct YedPreview {
     pub dry_run: DryRun,
     /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
     /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
-    /// the server). `None`: the normal confirmation.
+    /// the server; or, when only the server's low YEC price flags it, that price against the
+    /// wallet's reference, `terms::PRICE_ONLY_NOTE_PREFIX`). `None`: the normal confirmation.
     pub fee_note: Option<String>,
     /// Set exactly when [`YedPreview::fee_note`] is: pass it as `accept_unusual_fee` to the confirm call
     /// after the user confirmed the fee separately; without it the confirm refuses.
@@ -698,6 +699,18 @@ pub struct SyncEvent {
     /// On `Done`: why the private sync did not run or failed, empty when it succeeded (the
     /// transparent sync still counts; YED and transparent YEC are unaffected).
     pub shielded_message: String,
+    /// On `Done`: the server refused the wallet's post-quantum addresses (a lightwalletd that
+    /// cannot index them), so their coins were not looked up this run: the post-quantum balance
+    /// is unknown, not 0. Show [`pq_unindexed_note`] (yew#38 review).
+    pub pq_unindexed: bool,
+}
+
+/// The line a shell shows while [`SyncEvent::pq_unindexed`] is set
+/// ([`crate::sync::PQ_UNINDEXED_NOTE`]; the web wallet shows the same text, `web/core-wasm`
+/// `SyncResult.pq_note`).
+#[frb(sync)]
+pub fn pq_unindexed_note() -> String {
+    crate::sync::PQ_UNINDEXED_NOTE.to_string()
 }
 
 /// [`mint_estimate`]: what the Mint screen shows before anything is signed (plan §5.3).
@@ -755,7 +768,8 @@ pub struct MintEstimate {
     pub bundle_seqs: Vec<u32>,
     /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
     /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
-    /// the server). `None`: the normal confirmation.
+    /// the server; or, when only the server's low YEC price flags it, that price against the
+    /// wallet's reference, `terms::PRICE_ONLY_NOTE_PREFIX`). `None`: the normal confirmation.
     pub fee_note: Option<String>,
     /// Set exactly when [`MintEstimate::fee_note`] is: pass it back in `accept_unusual_fee` of
     /// [`MintTerms`] to [`mint_start`] after the separate confirmation; without it the start refuses.
@@ -1051,7 +1065,8 @@ pub struct ReleasePreview {
     pub txid: String,
     /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
     /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
-    /// the server). `None`: the normal confirmation.
+    /// the server; or, when only the server's low YEC price flags it, that price against the
+    /// wallet's reference, `terms::PRICE_ONLY_NOTE_PREFIX`). `None`: the normal confirmation.
     pub fee_note: Option<String>,
     /// Set exactly when [`ReleasePreview::fee_note`] is: pass it as `accept_unusual_fee` to the confirm call
     /// after the user confirmed the fee separately; without it the confirm refuses.
@@ -1159,7 +1174,8 @@ pub struct ClaimableItem {
     pub cancel_quiet_until: i64,
     /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
     /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
-    /// the server). `None`: the normal confirmation.
+    /// the server; or, when only the server's low YEC price flags it, that price against the
+    /// wallet's reference, `terms::PRICE_ONLY_NOTE_PREFIX`). `None`: the normal confirmation.
     pub fee_note: Option<String>,
     /// Set exactly when [`ClaimableItem::fee_note`] is: pass it back in `accept_unusual_fee` of
     /// [`ClaimTerms`] to [`claim`] after the separate confirmation; without it the start refuses.
@@ -2429,7 +2445,8 @@ pub struct PqSendPreviewInfo {
     pub sign_millis: Option<u64>,
     /// Set when the fee is unusual (review YEW-REVIEW-4 M2): the text of the separate confirmation
     /// (the fee in YEC, how many times the usual fee for this size it is, that the terms came from
-    /// the server). Show it next to the fee.
+    /// the server; or, when only the server's low YEC price flags it, that price against the
+    /// wallet's reference, `terms::PRICE_ONLY_NOTE_PREFIX`). Show it next to the fee.
     pub fee_note: Option<String>,
     /// Set exactly when [`PqSendPreviewInfo::fee_note`] is: pass it as `accept_unusual_fee` to
     /// [`pq_send_confirm`] after the separate confirmation; without it the confirm refuses.
@@ -2987,6 +3004,7 @@ pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
         shielded_height: 0,
         shielded_sendable: false,
         shielded_message: String::new(),
+        pq_unindexed: false,
     };
     let inner = sink.clone();
     type Both = (sync::SyncReport, Result<ShieldedSyncReport, YewError>);
@@ -3045,6 +3063,7 @@ pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
                     shielded_height: 0,
                     shielded_sendable: false,
                     shielded_message: String::new(),
+                    pq_unindexed: false,
                 });
             });
             let r = o.sync_with(Some(checking)).await?;
@@ -3087,6 +3106,7 @@ pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
                     shielded_height: p.scanned_height as i64,
                     shielded_sendable: p.percent == 100,
                     shielded_message: String::new(),
+                    pq_unindexed: false,
                 });
             });
             let z = o.sync_shielded(progress).await;
@@ -3109,10 +3129,15 @@ pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
                 .as_ref()
                 .map(|why| format!("; Yellowback service refused, YED hidden: {why}"))
                 .unwrap_or_default();
+            let pq = if r.pq_unindexed {
+                "; post-quantum addresses not looked up (the server cannot index them)"
+            } else {
+                ""
+            };
             emit(SyncEvent {
                 stage: SyncStage::Done,
                 message: format!(
-                    "Synced to {}: {} transactions, {} outputs, {} tokens{extra}{refused}",
+                    "Synced to {}: {} transactions, {} outputs, {} tokens{extra}{refused}{pq}",
                     r.tip, r.transactions, r.utxos, r.tokens
                 ),
                 tip: r.tip as i64,
@@ -3122,6 +3147,7 @@ pub fn sync_now(sink: StreamSink<SyncEvent>) -> Result<(), YewError> {
                 shielded_height,
                 shielded_sendable,
                 shielded_message,
+                pq_unindexed: r.pq_unindexed,
             });
             Ok(())
         }

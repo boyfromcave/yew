@@ -136,6 +136,27 @@ pub fn peroutput_fee(padded_sapling_outputs: usize) -> i64 {
     PER_SAPLING_OUTPUT_FEE.max(per)
 }
 
+/// The fee ycashd's wallet pays a plain YEC transaction (no post-quantum input, no YED) when no
+/// fee is given, for a shape with `sapling_outputs` Sapling outputs (the change included, before
+/// the builder pads a lone output to two): ycash6 `src/wallet/wallet_tx_builder.cpp:32-133`
+/// `CalcZIP317Fee` under the default `-feepolicy=peroutput` (`src/zip317.h:50`), then
+/// `CWallet::ConstrainFee` (`src/wallet/wallet.cpp:8031`, which only raises it to the relay fee,
+/// below 1,000 zat for any size these shapes reach). That is 1,000 zat for every shape with at most
+/// 50 Sapling outputs, whatever its inputs; the same figure ycash-dd's v4.5.0 `z_sendmany` pays,
+/// and the relay floor of both node lines and koganyd (`PerSaplingOutputFees`).
+///
+/// **The one fee rule of YEW's plain sends**: the app, the web wallet ([`ycash_fee_rule`] in the
+/// Sapling builders) and yewd call this for the fee of a send with no explicit fee and no
+/// post-quantum input; a post-quantum input raises it with [`pq_builder_fee`], as ycash6 does.
+///
+/// [`ycash_fee_rule`]: crate::shielded::ycash_fee_rule
+pub fn node_fee(sapling_outputs: usize) -> i64 {
+    peroutput_fee(padded(sapling_outputs))
+}
+
+/// [`node_fee`] of every shape with at most [`EXEMPT_SAPLING_OUTPUTS`] Sapling outputs: 1,000 zat.
+pub const NODE_FEE_ZAT: i64 = PER_SAPLING_OUTPUT_FEE;
+
 /// ycash6 `PQBuilderFee(base, shape)`: max(min(max(base, PQSizeFee(LEGACY_DEFAULT_FEE, bytes)),
 /// PQMaxTxFee()), the shape's ZIP-317 conventional fee), the size fee at the node's plain rate.
 pub fn pq_builder_fee(base: i64, bytes: usize, conventional: i64, rate: i64, cap: i64) -> i64 {
@@ -646,6 +667,28 @@ pub fn check_signed_fee(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The one fee rule of plain sends (beta3 item 10) against ycashd's own figures: ycash6
+    /// `upgrade/vault` `src/wallet/wallet_tx_builder.cpp:115-132` (`CalcZIP317Fee`, default
+    /// `-feepolicy=peroutput`): `max(1000, n > 50 ? (n - 50) * 1000 : 1000)` over the padded
+    /// Sapling output count `n` (`PadCount`, lines 27-30), constants `src/policy/policy.h:27-28`.
+    #[test]
+    fn node_fee_is_ycashds_peroutput_fee() {
+        // (Sapling outputs before padding, ycashd's fee)
+        for (outs, ycashd) in [
+            (0, 1_000), // transparent only
+            (1, 1_000), // one Sapling output, padded to two
+            (2, 1_000), // payment + change
+            (50, 1_000),
+            (51, 1_000),
+            (52, 2_000),
+            (60, 10_000),
+        ] {
+            assert_eq!(node_fee(outs), ycashd, "{outs} Sapling outputs");
+        }
+        assert_eq!(NODE_FEE_ZAT, node_fee(2));
+        assert_eq!(NODE_FEE_ZAT, crate::params::FEE_ZAT);
+    }
 
     /// Fee parity with the node (real-stack run YEW-REAL finding 3, re-run 2026-11-11 in
     /// `scripts/real-run`, ycash6 6.22.0-beta2): the eight post-quantum-source cells of the matrix,

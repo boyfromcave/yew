@@ -170,6 +170,11 @@ that server and a burn. They are listed in the order a coin meets them.
      median of the server's reports, one per day, moving at most ×4 per day.
    - **When the reference is weak.** With fewer than three days of reports, or below $0.05, every
      fee above 0.1 YEC is flagged.
+   - **The absolute floor (beta3).** A fee of 0.01 YEC or less is never flagged, whatever the
+     prices: a claim after a price drop pays a few cents more YEC, and a question about every such
+     fee teaches people to ignore it. The floor applies per guarded transaction: a mint guards its
+     carrier funding and its main transaction separately, so up to 0.02 YEC per mint can pass
+     without the question.
    - **The second confirmation.** A flagged fee needs the user's separate confirmation, and the
      core refuses it without that confirmation. A mint's finish whose fee rose above what the start
      accepted is refused, with a new acknowledgement in the message.
@@ -182,7 +187,7 @@ that server and a burn. They are listed in the order a coin meets them.
    | honest reference $0.30 (≥ 3 days) | 0.24 YEC (honest fee 0.12) | 1.08 YEC (0.54) | 0.38 YEC (0.19) |
    | poisoned low (reference < $0.05: weak) | 0.1 YEC | 0.1 YEC | 0.1 YEC |
    | poisoned high, one $4,000 report on an honest window | as at $0.30 (the median does not move; one report moves it ×4 at most) | as at $0.30 | as at $0.30 |
-   | poisoned high, hostile reports on more than half of 30 days | about 0 unflagged; every honest fee is flagged by the low-price rule | same | same |
+   | poisoned high, hostile reports on more than half of 30 days | 0.01 YEC (the floor); every honest fee above it is flagged by the low-price rule | same | same |
 
    **With the separate confirmation**, up to the limit:
 

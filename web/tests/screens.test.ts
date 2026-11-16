@@ -12,6 +12,7 @@ import { YellowbackVm } from "../src/vm/yellowback";
 import type { Unlock, WalletMeta } from "../src/keystore";
 import { localize, setNetwork } from "../src/prefixes";
 import { termsRefusedText } from "../src/screens/home";
+import { unusualFeeTitle } from "../src/widgets";
 
 class FakeKeystore {
   saved: { seed: string; unlock: Unlock; meta: WalletMeta } | null = null; forgotten = false;
@@ -70,6 +71,12 @@ describe("home", () => {
     expect(vm.state.balances?.yedCents).toBe("12500"); expect(vm.state.network).toBe("regtest");
     const b = vm.state.balances!; expect(BigInt(b.pqSlhZat) + BigInt(b.pqFalconZat)).toBe(BigInt(b.pqZat)); expect(b.stagedForMintZat).toBe("0");
     await vm.sync(); expect(vm.state.progress?.pct).toBe(100); expect(vm.state.syncing).toBe(false);
+    expect(vm.state.pqNote).toBe("");
+  });
+  it("a server that cannot look up post-quantum addresses is said, never a silent 0 (yew#38 review)", async () => {
+    const core = await openWallet(new MockCore({ pqUnindexed: true }));
+    const vm = new HomeVm(core); await vm.attach(); await vm.sync();
+    expect(vm.state.pqNote).toBe("post-quantum addresses not looked up");
   });
 });
 
@@ -129,6 +136,15 @@ describe("send", () => {
     expect(vm.feeNote).toContain("Unusual fee"); await vm.confirm(); expect(vm.state.error).toContain("Pay this fee"); expect(core.broadcasts).toHaveLength(0);
     vm.acceptFee(); await vm.confirm(); expect(vm.state.error).toBe(""); expect(core.broadcasts).toHaveLength(1);
   });
+  it("a fee flagged only for a low server price is a price check, and still needs its own step (yew#37 review)", async () => {
+    const note = "Low YEC price: your server reports a YEC price of $0.1000 per YEC, less than half the $0.5000 per YEC this wallet has seen over the last 30 days. Fees are set in dollars, so at that price this one is 0.575 YEC (about $0.06) instead of about 0.115 YEC.";
+    expect(unusualFeeTitle(note)).toBe("YEC price check"); expect(unusualFeeTitle("Unusual fee: 0.84 YEC, 4.0× the usual.")).toBe("Unusual fee");
+    const core = await openWallet(); core.unusualPqFee = note; const vm = new SendVm(core, "yec");
+    await vm.loadSources(); vm.setFrom(vm.state.sources[0].address);
+    await vm.setTo("s1PublicRecipient0000000000000000000"); vm.state.amount = "0.1"; await vm.preview();
+    expect(vm.feeNote).not.toContain("×"); await vm.confirm(); expect(vm.state.error).toContain("Pay this fee"); expect(core.broadcasts).toHaveLength(0);
+    vm.acceptFee(); await vm.confirm(); expect(vm.state.error).toBe(""); expect(core.broadcasts).toHaveLength(1);
+  });
   it("post-quantum forms are asset-bound (D-Q-20/D-Q-21)", async () => {
     expect(destinationMismatch("yec", "pq")).toContain("YED address"); expect(destinationMismatch("yed", "pq_yec")).toContain("receives YEC");
     const vm = new SendVm(await openWallet(), "yec");
@@ -138,7 +154,7 @@ describe("send", () => {
   it("move: shield needs the params", async () => {
     const core = await openWallet(); const vm = new SendVm(core, "yec");
     await vm.movePreview("to_private", "1"); expect(vm.state.errorKind).toBe("params");
-    await core.fetch_params(() => {}); await vm.movePreview("to_private", "1"); expect(vm.state.move?.fee).toBe("10000");
+    await core.fetch_params(() => {}); await vm.movePreview("to_private", "1"); expect(vm.state.move?.fee).toBe("1000");
   });
 });
 

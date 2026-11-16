@@ -863,7 +863,9 @@ pub enum FeeKind {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FeeGuard {
     /// Set when the fee is unusual: the text the separate confirmation shows (the fee in YEC, how
-    /// many times the usual fee for this size it is, and that the fee terms came from the server).
+    /// many times the usual fee for this size it is, and that the fee terms came from the server;
+    /// when only the server's low price flags it and the fee in dollars is normal, the note begins
+    /// [`PRICE_ONLY_NOTE_PREFIX`] and names the two prices instead of a multiple, yew#37 review).
     pub note: Option<String>,
     /// Set exactly when [`FeeGuard::note`] is: the acknowledgement the confirm call must pass back
     /// (`accept_unusual_fee`); without it the confirm refuses.
@@ -888,6 +890,12 @@ pub const PRICE_MAX_STEP: i64 = 4;
 pub const PRICE_MIN_OBSERVATIONS: usize = 3;
 /// While the reference is weak, a fee above this (0.1 YEC) is flagged whatever the reference.
 pub const WEAK_REFERENCE_FLAG_ZAT: i64 = 10_000_000;
+/// The guard's absolute floor (beta3 item 16): a fee of at most this (0.01 YEC) never needs its
+/// own confirmation, whatever the prices say. A claim after a price drop pays a few cents more
+/// YEC than at the old price, and asking about every such fee teaches people to ignore the
+/// question; a server that lies about the price can take at most this much extra per
+/// transaction without being asked (and never more than this build's limit).
+pub const UNUSUAL_FEE_FLOOR_ZAT: i64 = 1_000_000;
 
 /// The YEC prices servers reported to this wallet (review YEW-REVIEW-5 M1): at most one per day
 /// (the day's first; the wallet does not tell servers apart), kept for [`PRICE_WINDOW_DAYS`]
@@ -998,12 +1006,17 @@ impl FeeReference {
 /// for a transaction of `size` bytes whose conventional fee is `conventional`:
 /// - refused above this build's limit ([`params::pq_send_fee_limit`] for [`FeeKind::Plain`],
 ///   [`params::yed_fee_limit`] for [`FeeKind::Yed`]), whatever the server says;
-/// - unusual (a separate confirmation, [`require_ack`]) when the wallet has a reference price
-///   (`reference`, [`PriceObservations`]) and either the fee is above twice the usual fee (the
-///   default dollar target at the reference price: `max(FEE_ZAT, rate × size, conventional)`) or
-///   the server's price is below half the reference;
-/// - also unusual, while the reference is weak ([`FeeReference::weak`]: fewer than three days of
-///   reports, or a reference below $0.05; first use included), when the fee is above 0.1 YEC.
+/// - never unusual at or below [`UNUSUAL_FEE_FLOOR_ZAT`] (0.01 YEC), the absolute floor;
+/// - above it, unusual (a separate confirmation, [`require_ack`]) when the wallet has a reference
+///   price (`reference`, [`PriceObservations`]) and either the fee is above twice the usual fee
+///   (the fee the node charges this shape at the reference price: `max(FEE_ZAT, rate × size,
+///   conventional)`) or the server's price is below half the reference (when the fee in dollars
+///   at the server's price is within twice the usual fee in dollars at the reference, the note
+///   says the price is low, [`PRICE_ONLY_NOTE_PREFIX`], not that the fee is a multiple of the
+///   usual YEC);
+/// - also unusual above the floor, while the reference is weak ([`FeeReference::weak`]: fewer
+///   than three days of reports, or a reference below $0.05; first use included), when the fee is
+///   above 0.1 YEC.
 ///
 /// `id` names the transaction (a txid, or a stable label for a step not yet built): the ack binds
 /// the fee and it.
@@ -1053,29 +1066,49 @@ pub fn guard_fee(
             .max(conventional);
         g.usual_zat = Some(usual);
         let low_price = price > 0 && price.saturating_mul(2) < high_water;
-        if fee > usual.saturating_mul(2) || low_price {
+        // yew#37 review: in dollars at the server's price, is the fee within twice the usual fee
+        // in dollars at the reference? Then only the low price flags it, and the note says that
+        // instead of a multiple of the usual YEC (a claim after a price drop, the usual case)
+        let normal_in_dollars =
+            (fee as i128) * (price as i128) <= 2 * (usual as i128) * (high_water as i128);
+        // beta3 item 16: at or below the absolute floor a fee is never asked about
+        let above_floor = fee > UNUSUAL_FEE_FLOOR_ZAT;
+        if above_floor && low_price && normal_in_dollars {
+            g.note = Some(format!(
+                "{PRICE_ONLY_NOTE_PREFIX} your server reports a YEC price of {}, less than half the {} this wallet has seen over the last {PRICE_WINDOW_DAYS} days. Fees are set in dollars, so at that price this one is {} YEC (about {}) instead of about {} YEC. If the YEC price really fell, this fee is normal. If it did not, the server may be wrong: cancel and try another server.",
+                price_text(price),
+                price_text(high_water),
+                yec_text(fee),
+                usd_text(fee, price),
+                yec_text(usual)
+            ));
+        } else if above_floor && (fee > usual.saturating_mul(2) || low_price) {
             let times = fee as f64 / usual as f64;
             g.note = Some(format!(
-                "Unusual fee: {} YEC, {times:.1}× the usual {} YEC for a transaction of this size at this wallet's reference YEC price ({}, the median of the last {PRICE_WINDOW_DAYS} days' reports). The fee terms came from the server, which reports {}; this app cannot verify them. Confirm only if you expect this fee.",
+                "Unusual fee: {} YEC (about {}), {times:.1}× the usual {} YEC for a transaction like this one. Your server sets the fee from {}; this wallet has seen {} over the last {PRICE_WINDOW_DAYS} days and cannot check the server. If you did not expect this fee, cancel and try another server.",
                 yec_text(fee),
+                usd_text(fee, high_water),
                 yec_text(usual),
-                price_text(high_water),
-                price_text(price)
+                server_price_text(price),
+                price_text(high_water)
             ));
         }
     }
-    if g.note.is_none() && reference.weak() && fee > WEAK_REFERENCE_FLAG_ZAT {
+    if g.note.is_none()
+        && reference.weak()
+        && fee > WEAK_REFERENCE_FLAG_ZAT.max(UNUSUAL_FEE_FLOOR_ZAT)
+    {
         g.note = Some(format!(
-            "Unusual fee: {} YEC, above {} YEC, and this wallet has too few YEC price reports to judge it ({} of {PRICE_MIN_OBSERVATIONS} days{}). The fee terms came from the server, which reports {}; this app cannot verify them. Confirm only if you expect this fee.",
+            "Unusual fee: {} YEC, more than {} YEC. This wallet has not yet seen enough YEC prices to tell whether that is normal ({} of {PRICE_MIN_OBSERVATIONS} days{}). Your server sets the fee from {}, which this wallet cannot check. If you did not expect this fee, cancel and try another server.",
             yec_text(fee),
             yec_text(WEAK_REFERENCE_FLAG_ZAT),
             reference.observations.min(PRICE_MIN_OBSERVATIONS),
             if high_water > 0 {
-                format!(", reference {}", price_text(high_water))
+                format!(", about {} so far", price_text(high_water))
             } else {
                 String::new()
             },
-            price_text(price)
+            server_price_text(price)
         ));
     }
     if g.note.is_some() {
@@ -1104,6 +1137,27 @@ pub fn require_ack(g: &FeeGuard, accept: Option<&str>) -> Result<(), WalletError
 
 fn yec_text(zat: i64) -> String {
     crate::build::any_to_any::format_money(zat)
+}
+
+/// How a fee-guard note flagged only for the server's low YEC price begins (the fee in dollars
+/// is normal): the shells title it "YEC price check" instead of "Unusual fee" (yew#37 review).
+pub const PRICE_ONLY_NOTE_PREFIX: &str = "Low YEC price:";
+
+/// `zat` in dollars at `micro_usd` per YEC, to the cent ("$0.06").
+fn usd_text(zat: i64, micro_usd: i64) -> String {
+    let cents =
+        (((zat as i128) * (micro_usd as i128) + 500_000_000_000) / 1_000_000_000_000).max(0);
+    format!("${}.{:02}", cents / 100, cents % 100)
+}
+
+/// How a note names the price the server reports: "the YEC price it reports ($x per YEC)", or
+/// that it reports none.
+fn server_price_text(micro_usd: i64) -> String {
+    if micro_usd <= 0 {
+        "its own fee terms (it reports no YEC price)".into()
+    } else {
+        format!("the YEC price it reports ({})", price_text(micro_usd))
+    }
 }
 
 fn price_text(micro_usd: i64) -> String {
@@ -2735,7 +2789,7 @@ mod tests {
                     && g.note
                         .as_deref()
                         .unwrap()
-                        .contains("too few YEC price reports")
+                        .contains("not yet seen enough YEC prices")
             );
             // a price was seen ($0.05): the honest fee at it is not flagged...
             let target = match kind {
@@ -2773,11 +2827,129 @@ mod tests {
                 price_micro_usd: 24_999,
                 ..t
             };
-            assert!(guard_fee(&low, est(50_000), kind, honest, size, 0, "x")
-                .unwrap()
-                .ack
-                .is_some());
+            let g = guard_fee(&low, est(50_000), kind, honest, size, 0, "x").unwrap();
+            assert!(g.ack.is_some());
+            // yew#37 review: the fee in dollars is normal, so the note names the low price, not a
+            // multiple of the usual YEC; a fee also unusual in dollars keeps the multiple
+            let note = g.note.unwrap();
+            assert!(
+                note.starts_with(PRICE_ONLY_NOTE_PREFIX) && !note.contains('×'),
+                "{note}"
+            );
+            // (where five times the honest fee is still under the build's limit)
+            if 5 * honest <= limit {
+                let g = guard_fee(&low, est(50_000), kind, 5 * honest, size, 0, "x").unwrap();
+                assert!(g.ack.is_some());
+                let note = g.note.unwrap();
+                assert!(
+                    note.starts_with("Unusual fee:") && note.contains("5.0× the usual"),
+                    "{note}"
+                );
+            }
         }
+        // the yew#37 case (beta3 item 16): a claim after a drop from $50 to $10, at the honest
+        // fee at $10 (0.00575 YEC, 5.0× the usual YEC at $50, about $0.06): under the absolute
+        // floor, so no question at all
+        let size = 1_150usize;
+        let at = |p: i64| {
+            params::rate_fee(
+                params::attested_rate_zat_per_kb(
+                    params::DEFAULT_YED_FEE_USD_PER_KB_MICRO,
+                    p,
+                    params::ATTESTED_FEE_FLOOR_ZAT_PER_KB,
+                ),
+                size,
+            )
+            .max(params::FEE_ZAT)
+        };
+        let terms_at = |p: i64| PqTerms {
+            price_micro_usd: p,
+            ..PqTerms::default()
+        };
+        let fee = at(10_000_000);
+        assert_eq!(fee, 575_000);
+        assert!(fee <= UNUSUAL_FEE_FLOOR_ZAT);
+        let g = guard_fee(
+            &terms_at(10_000_000),
+            est(50_000_000),
+            FeeKind::Yed,
+            fee,
+            size,
+            0,
+            "claim",
+        )
+        .unwrap();
+        assert_eq!(g.usual_zat, Some(at(50_000_000)));
+        assert!(g.note.is_none() && g.ack.is_none(), "{g:?}");
+        assert!(require_ack(&g, None).is_ok());
+        // the floor never reaches the hard cap: above this build's limit a fee is refused outright
+        // (no acknowledgement can pass it), at every price and with or without a reference
+        for (kind, sz) in [
+            (FeeKind::Yed, size),
+            (FeeKind::Plain, 1_800),
+            (FeeKind::Plain, 8_100),
+        ] {
+            let limit = match kind {
+                FeeKind::Plain => params::pq_send_fee_limit(sz, 0),
+                FeeKind::Yed => params::yed_fee_limit(sz, 0),
+            };
+            assert!(limit > UNUSUAL_FEE_FLOOR_ZAT, "{limit}");
+            for (p, r) in [
+                (10_000_000i64, est(50_000_000)),
+                (100_000, FeeReference::default()),
+            ] {
+                let e = guard_fee(&terms_at(p), r, kind, limit + 1, sz, 0, "x").unwrap_err();
+                assert!(e.to_string().contains("above this app's limit"), "{e}");
+                assert!(guard_fee(&terms_at(p), r, kind, limit, sz, 0, "x").is_ok());
+            }
+        }
+        // even ten times the usual is not asked about while it stays under the floor
+        let g = guard_fee(
+            &terms_at(50_000_000),
+            est(50_000_000),
+            FeeKind::Yed,
+            UNUSUAL_FEE_FLOOR_ZAT,
+            size,
+            0,
+            "x",
+        )
+        .unwrap();
+        assert!(UNUSUAL_FEE_FLOOR_ZAT > 2 * at(50_000_000) && g.note.is_none());
+        // the same drop at a price where the fee is above the floor ($0.50 to $0.10: 0.575 YEC):
+        // flagged, the note about the price, in plain words, the acknowledgement unchanged
+        let (reference, server) = (500_000i64, 100_000i64);
+        let fee = at(server);
+        assert!(
+            fee > UNUSUAL_FEE_FLOOR_ZAT && fee <= params::yed_fee_limit(size, 0),
+            "{fee}"
+        );
+        let g = guard_fee(
+            &terms_at(server),
+            est(reference),
+            FeeKind::Yed,
+            fee,
+            size,
+            0,
+            "claim",
+        )
+        .unwrap();
+        assert_eq!(g.usual_zat, Some(at(reference)));
+        assert_eq!(
+            g.ack.as_deref(),
+            Some(&*format!("accept-unusual-fee:{fee}:claim"))
+        );
+        assert!(require_ack(&g, None).is_err());
+        assert!(require_ack(&g, g.ack.as_deref()).is_ok());
+        let note = g.note.unwrap();
+        assert!(
+            note.starts_with("Low YEC price: your server reports a YEC price of $0.1000 per YEC, less than half the $0.5000 per YEC this wallet has seen")
+                && note.contains(&format!("instead of about {} YEC", yec_text(at(reference))))
+                && note.contains("If the YEC price really fell, this fee is normal.")
+                && !note.contains('×'),
+            "{note}"
+        );
+        assert_eq!(usd_text(575_000, 10_000_000), "$0.06");
+        assert_eq!(usd_text(0, 10_000_000), "$0.00");
         // the reviewer's case: honest FN-DSA sends at real prices are not flagged once the price
         // is known (the old rule flagged every one below about $0.34)
         for price in [20_000i64, 50_000, 100_000, 340_000] {
