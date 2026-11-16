@@ -90,7 +90,8 @@ clearer, and closes yewd's remaining gaps against ycashd's wallet (ycashd 6.22.0
   move rewards, name an amount, read the exact amount in the refusal and send that. Coins are taken
   largest first, so a call moves one reward unless the amount is more than the largest one. Two
   rewards of 6.25 at an FN-DSA address (amounts made up; the fees are those ycashd 6.22 charges on
-  regtest, the rule yewd's fee follows; the refusal always names the exact figure):
+  regtest, and yewd charges the same in front of koganyd, measured on real nodes by
+  `yewd/qa/parity/yewd_pq_coinbase_spend.py`; the refusal always names the exact figure):
 
   ```
   z_sendmany "<sqf… address>" '[{"address":"<ys1… address>","amount":1}]'
