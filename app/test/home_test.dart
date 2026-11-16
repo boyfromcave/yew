@@ -28,6 +28,8 @@ void main() {
     await h.pump(tester);
     // nothing staged for a mint: no row
     expect(find.byKey(const Key('yec-staged-for-mint')), findsNothing);
+    // a server that indexes post-quantum addresses: no "not looked up" line
+    expect(find.byKey(const Key('pq-unindexed')), findsNothing);
     // The lock screen auto-unlocks (no biometrics) and Home syncs once.
     expect(h.api.calls, contains('unlock'));
     expect(h.api.calls, contains('sync'));
@@ -70,6 +72,16 @@ void main() {
     expect(find.text('0.00100000'), findsOneWidget);
     expect(find.text('0.00100000 YEC'), findsOneWidget);
     expect(find.textContaining('2.50100000'), findsNothing);
+  });
+
+  testWidgets('a server that cannot look up post-quantum addresses is said, never a silent 0', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.pqUnindexed = true;
+    await h.pump(tester);
+    expect(
+      (tester.widget(find.byKey(const Key('pq-unindexed'))) as Text).data,
+      'post-quantum addresses not looked up',
+    );
   });
 
   testWidgets('YEC at an own post-quantum address shows apart from the balance and moves to the wallet', (tester) async {

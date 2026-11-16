@@ -313,7 +313,7 @@ void main() {
   testWidgets('an unusual fee is never sent by the slider alone: a separate confirmation passes the core\'s acknowledgement', (tester) async {
     final h = Harness(withWallet: true);
     h.api.pqSourcesAnswer = const [slhSource];
-    const note = 'Unusual fee: 0.50000000 YEC, 4.2× the usual 0.11880000 YEC for a transaction of this size at the highest YEC price this wallet has seen. The fee terms came from the server.';
+    const note = 'Unusual fee: 0.5 YEC (about \$0.03), 4.2× the usual 0.1188 YEC for a transaction like this one. Your server sets the fee from the YEC price it reports (\$0.0500 per YEC); this wallet has seen \$0.0500 per YEC over the last 30 days and cannot check the server. If you did not expect this fee, cancel and try another server.';
     h.api.pqFeeNote = note;
     h.api.pqFeeAck = 'accept-unusual-fee:50000000:qq';
     await openSend(tester, h);
@@ -327,6 +327,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('unusual-fee-dialog')), findsOneWidget);
     expect(find.descendant(of: find.byKey(const Key('unusual-fee-dialog')), matching: find.text(note)), findsOneWidget);
+    expect((tester.widget(find.byKey(const Key('unusual-fee-title'))) as Text).data, 'Unusual fee');
     await tester.tap(find.byKey(const Key('unusual-fee-cancel')));
     await tester.pumpAndSettle();
     expect(h.api.calls.where((c) => c.startsWith('pqConfirm')), isEmpty);
@@ -339,6 +340,27 @@ void main() {
     await tester.pumpAndSettle();
     expect(h.api.calls, contains('pqConfirm q1 ack=accept-unusual-fee:50000000:qq'));
     expect(find.text('Sent'), findsWidgets);
+  });
+
+  testWidgets('a fee flagged only for a low server price is titled a price check, and still needs the acknowledgement', (tester) async {
+    final h = Harness(withWallet: true);
+    h.api.pqSourcesAnswer = const [slhSource];
+    const note = 'Low YEC price: your server reports a YEC price of \$0.1000 per YEC, less than half the \$0.5000 per YEC this wallet has seen over the last 30 days. Fees are set in dollars, so at that price this one is 0.575 YEC (about \$0.06) instead of about 0.115 YEC. If the YEC price really fell, this fee is normal. If it did not, the server may be wrong: cancel and try another server.';
+    h.api.pqFeeNote = note;
+    h.api.pqFeeAck = 'accept-unusual-fee:57500000:qq';
+    await openSend(tester, h);
+    await choosePqSource(tester);
+    await tester.enterText(find.byKey(const Key('address')), fakeS);
+    await tester.enterText(find.byKey(const Key('amount')), '0.5');
+    await tester.tap(find.byKey(const Key('preview')));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.byKey(const Key('slide-to-confirm')));
+    await tester.pumpAndSettle();
+    expect((tester.widget(find.byKey(const Key('unusual-fee-title'))) as Text).data, 'YEC price check');
+    expect(find.textContaining('×'), findsNothing);
+    await tester.tap(find.byKey(const Key('unusual-fee-accept')));
+    await tester.pumpAndSettle();
+    expect(h.api.calls, contains('pqConfirm q1 ack=accept-unusual-fee:57500000:qq'));
   });
 
   testWidgets('a fee that is not flagged sends with the slider and no acknowledgement', (tester) async {

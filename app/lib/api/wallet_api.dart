@@ -222,6 +222,10 @@ abstract class WalletApi {
   AddressCheck validateAddress({required NetworkId network, required String address});
 
   String coreVersion();
+
+  /// The line shown while the last sync's `pqUnindexed` is set: the server cannot look up
+  /// post-quantum addresses, so their balance is unknown, not 0 (yew#38 review).
+  String pqUnindexedNote();
 }
 
 /// The text to show for any error the bridge throws: a [YewError]'s message verbatim

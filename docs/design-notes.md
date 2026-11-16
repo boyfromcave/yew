@@ -462,6 +462,19 @@ transaction paying less, and every ycash6 node's ZIP-401 limiter ranks it first 
 At the default 1× rate an SLH-DSA owner spend therefore pays 27,000 zat (54 actions), not the
 1,000 of client survey C-5, and a Falcon input 5,500 (11 actions).
 
+**Fees of plain sends (beta3 item 10).** A YEC send with no post-quantum input and no YED pays
+what ycashd's own wallet pays the shape with no fee given, `any_to_any::node_fee`: ycash6
+`CalcZIP317Fee` under the default `-feepolicy=peroutput`, 1,000 zat up to 50 Sapling outputs,
+whatever the inputs. That covers Sapling to Sapling, Sapling to transparent, Sapling to a
+post-quantum address (no post-quantum input, so no `PQBuilderFee`), and public to a Sapling
+address. The relay asks no more of these shapes: the minimum relay fee, the per-Sapling-output
+floor, and an unpaid-action limit that is `SIZE_MAX` by default. They differ from the ZIP-317
+minimum above in one way: a ycash6 node run with `-txunpaidactionlimit=0` would refuse a
+three-action shape at 1,000 zat, as it refuses ycashd's own. One shape keeps ZIP-317 at 500: the
+carrier funding from Sapling notes (`mint::sapling_carrier_fee`). That is a Yellowback
+transaction, and ycashd's Yellowback builder prices it with `NetworkFee` = `max(g_yellowbackFee,
+conventional)` (ycash6 `src/yellowback/txbuilder.cpp:369-375`), not with `z_sendmany`'s rule.
+
 **TOK-PQ: Falcon YED holders.** Owner decision 2026-10-10: Falcon goes live with the vault
 upgrade, `pqFalconHeight = 0` on mainnet and testnet, so every YED holder there is a Falcon key
 from the first block. `Wallet::pq_terms` enforces that off regtest whatever a server says;

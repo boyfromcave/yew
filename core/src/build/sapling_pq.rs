@@ -14,9 +14,13 @@
 //!   (change) address (D-4: Sapling-source change stays a Sapling note). Proven and authorized by
 //!   the hybrid builder (`build::hybrid::sapling_prepare`, `sign_hybrid` with no transparent input
 //!   to sign); nothing in it is new signing code.
-//! - **Fee**: the ZIP-317 conventional fee of the shape (ycash6's `CalcZIP317Fee` with the
-//!   post-quantum output's longer script; no post-quantum input, so `PQBuilderFee` does not apply),
-//!   re-checked on the signed bytes, bounded by [`params::pq_send_fee_limit`], and passed through
+//! - **Fee**: the node's fee for the shape, [`plan::node_fee`] (1,000 zat): ycashd's `z_sendmany`
+//!   from a Sapling address to a post-quantum one prices it with `CalcZIP317Fee` under the default
+//!   `-feepolicy=peroutput`, the post-quantum payment counted as a transparent output (ycash6
+//!   `src/wallet/wallet_tx_builder.cpp:32-133`); with no post-quantum input `PQBuilderFee` does not
+//!   apply (`wallet_tx_builder.cpp:1438-1458` runs it only for `pqInputs`), and the relay asks no
+//!   more (`src/main.cpp:2121-2161`: the minimum relay fee, the per-Sapling-output floor, the
+//!   unpaid-action limit, `SIZE_MAX` by default). Re-checked on the signed bytes, bounded by [`params::pq_send_fee_limit`], and passed through
 //!   the fee guard ([`terms::guard_fee`]: an unusual fee needs its own acknowledgement at confirm).
 //!   No server-quoted rate enters it.
 //! - **Gate**: [`gate::Path::SaplingToPq`] (no transparent input, at least one Sapling spend,
@@ -80,12 +84,11 @@ fn other(m: impl Into<String>) -> WalletError {
     WalletError::Other(m.into())
 }
 
-/// The ZIP-317 conventional fee of the shape with `notes` Sapling spends, one transparent output
-/// of `script` and the Sapling outputs padded to two (the change, or none).
-pub fn shape_fee(script: &[u8], notes: usize) -> i64 {
-    let out = 8 + plan::compact(script.len()) + script.len();
-    let extra = out.saturating_sub(params::ZIP317_OUTPUT_SIZE);
-    plan::conventional_fee_bytes(0, 1, extra, notes, 1)
+/// The node's fee for the shape with `notes` Sapling spends, one transparent output of `script`
+/// and the Sapling change (padded to two): [`plan::node_fee`], 1,000 zat whatever the spends and
+/// the script (beta3 item 10; before, the ZIP-317 conventional fee at 500 zat, 2,000 for one note).
+pub fn shape_fee(_script: &[u8], _notes: usize) -> i64 {
+    plan::node_fee(1)
 }
 
 /// A planned Sapling -> post-quantum send: the recipient checked, the notes selected with their
@@ -404,11 +407,12 @@ pub fn build_sapling_to_pq(
         )));
     }
     let conventional = signed.zip317_conventional_fee(&[])?;
-    if fee < conventional {
+    let node_fee = plan::node_fee(signed.shielded.outputs);
+    if fee < node_fee {
         return Err(other(format!(
             "the fee {} YEC is below the {} YEC this transaction needs",
             plan::format_money(fee),
-            plan::format_money(conventional)
+            plan::format_money(node_fee)
         )));
     }
     let limit = params::pq_send_fee_limit(raw.len(), conventional);
@@ -498,24 +502,33 @@ pub async fn broadcast(
 mod tests {
     use super::*;
 
-    /// The fee of the shape: one `TX_PQPKH` output (35-byte script, 44 bytes: two ZIP-317
-    /// transparent actions) and two padded Sapling outputs; more spends cost more above two (Ycash's
-    /// ZIP-317 marginal fee is 500 zat).
+    /// Beta3 item 10: Sapling to a post-quantum address pays ycashd's own figure for the shape,
+    /// 1,000 zat for any number of notes and either scheme (ycash6 `upgrade/vault`
+    /// `src/wallet/wallet_tx_builder.cpp:115-132`, `CalcZIP317Fee` under `-feepolicy=peroutput`:
+    /// the post-quantum payment is a transparent output, which that rule does not count; no
+    /// post-quantum input, so no `PQBuilderFee`, lines 1438-1458). Was 2,000 / 2,500 (ZIP-317 at 500).
     #[test]
-    fn shape_fee_counts_the_longer_output() {
-        let id = crate::pq::PqKeyId {
-            scheme: crate::pq::SCHEME_FN_DSA_512,
-            hash: [1; 32],
-        };
-        let s = crate::pq::pqpkh_script(&id).unwrap();
-        assert_eq!(
-            shape_fee(&s, 1),
-            plan::conventional_fee_bytes(0, 1, 10, 1, 1)
-        );
-        assert_eq!(shape_fee(&s, 1), 2_000);
-        assert_eq!(shape_fee(&s, 3), 2_500);
+    fn shape_fee_is_the_nodes_fee() {
+        const YCASHD: i64 = 1_000;
+        for scheme in [
+            crate::pq::SCHEME_FN_DSA_512,
+            crate::pq::SCHEME_SLH_DSA_SHA2_128S,
+        ] {
+            let s = crate::pq::pqpkh_script(&crate::pq::PqKeyId {
+                scheme,
+                hash: [1; 32],
+            })
+            .unwrap();
+            for notes in [1, 2, 3, 20] {
+                assert_eq!(
+                    shape_fee(&s, notes),
+                    YCASHD,
+                    "scheme {scheme}, {notes} notes"
+                );
+            }
+        }
         let p2pkh = crate::script::p2pkh_script(&[2; 20]);
-        assert_eq!(shape_fee(&p2pkh, 1), 1_500);
+        assert_eq!(shape_fee(&p2pkh, 1), YCASHD);
     }
 
     const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -634,7 +647,7 @@ mod tests {
         let ecc = keys::encode_p2pkh(w.network, &[3; 20]);
         let e = err(build(&mut w, &side, &ecc, 1_000_000, VAULT_BRANCH_ID, &f));
         assert!(e.contains("post-quantum address"), "{e}");
-        let e = err(build(&mut w, &side, &to, 2_499_000, VAULT_BRANCH_ID, &f));
+        let e = err(build(&mut w, &side, &to, 2_499_001, VAULT_BRANCH_ID, &f));
         assert!(e.starts_with("Not enough private YEC"), "{e}");
 
         // the notes' transactions must be fetched and be exactly the txid's bytes

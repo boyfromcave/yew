@@ -12,7 +12,11 @@ export type AddressKind = "shielded" | "transparent" | "yed" | "pq_falcon" | "pq
 export type MoveDirection = "to_private" | "to_public";
 
 export interface Status { version: string; server: string | null; network: string | null; tip: number | null; yellowbackUsable: boolean | null; branchId: string | null }
-export interface SyncResult { tip: number; scanned_height: number; blocks: number; received_notes: number; millis: number }
+export interface SyncResult {
+  tip: number; scanned_height: number; blocks: number; received_notes: number; millis: number;
+  /** The server cannot look up post-quantum addresses: their balance is unknown, not 0; `pq_note` says so (yew#38 review). */
+  pq_unindexed?: boolean; pq_note?: string;
+}
 export interface Progress { scanned_height: number; tip_height: number; percent: number; enhancing: boolean }
 export interface ProgressEvent { phase: string; pct: number; height: number; tip: number }
 export interface ShieldedBalance { total_zat: string; spendable_zat: string; pending_incoming_zat: string }

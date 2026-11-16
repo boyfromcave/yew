@@ -269,6 +269,7 @@ class _YecSplit extends StatelessWidget {
             b.yecPqFalconZat,
           ),
         ],
+        if (app.pqUnindexed) note(app.api.pqUnindexedNote(), const Key('pq-unindexed')),
         if (b.yecPqZat > 0 && b.pqCoins.isNotEmpty)
           InkWell(
             key: const Key('pq-yec'),

@@ -181,7 +181,8 @@ pub async fn broadcast(
 ) -> Result<String, WalletError> {
     // the has-held-YED guard (beta2 item 32): a wallet that held YED spends transparent YEC
     // only where Yellowback tells its YED outputs apart
-    // beta2 item 3: a post-quantum recipient is its own path, whose dry run is mandatory
+    // beta2 item 3: a post-quantum recipient is its own path (`YecToPq`): the node's dry run
+    // when the server offers it; without the service (W-P1) the local layer and layer 3 below
     let path = send_path(wallet.network, &preview.to)?;
     gate::refuse_held_absent(validator, path, wallet.has_held_yed()?)?;
     gate::confirm(validator, path, &preview.raw, |op| {

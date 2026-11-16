@@ -29,7 +29,7 @@ void main() {
     expect(h.api.calls, contains('movePreview toPrivate 100000000'));
     expect(find.text('your private balance'), findsOneWidget); // To
     expect(find.text('your public balance'), findsOneWidget); // From
-    expect(find.text('0.00015000 YEC'), findsOneWidget); // fee
+    expect(find.text('0.00001000 YEC'), findsOneWidget); // fee
     expect(find.text('0.00105000 YEC for YED fees'), findsOneWidget);
     expect(find.byKey(const Key('reveals')), findsNothing);
     expect(h.api.calls.where((c) => c.startsWith('moveConfirm')), isEmpty);
@@ -76,11 +76,11 @@ void main() {
     await tester.tap(find.byKey(const Key('move-preview')));
     await tester.pumpAndSettle();
     expect(h.api.calls, contains('movePreview toPublic all'));
-    expect(find.text('0.39985000 YEC'), findsOneWidget);
+    expect(find.text('0.39999000 YEC'), findsOneWidget);
     expect(find.text('your private balance'), findsOneWidget); // From
     expect(find.text('your public balance'), findsOneWidget); // To
     expect(find.text('The amount will be visible on the chain'), findsOneWidget);
-    expect(find.text('Slide to move 0.39985000 YEC'), findsOneWidget);
+    expect(find.text('Slide to move 0.39999000 YEC'), findsOneWidget);
   });
 
   testWidgets('first move fetches the proving files once, then confirms', (tester) async {
