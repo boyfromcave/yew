@@ -339,7 +339,12 @@ impl Wallet {
             }
             self.import_script(script, &label, false)?;
         } else if is_hex(&s) {
-            let script = hex::decode(&s).expect("hex");
+            let script = hex::decode(&s).map_err(|_| {
+                RpcError::new(
+                    code::INVALID_ADDRESS_OR_KEY,
+                    "Invalid Ycash address or script",
+                )
+            })?;
             self.import_script(script, &label, p2sh)?;
         } else {
             return Err(RpcError::new(
@@ -366,7 +371,9 @@ impl Wallet {
                 "Pubkey must be a hex string",
             ));
         }
-        let pk = hex::decode(&s).expect("hex");
+        let pk = hex::decode(&s).map_err(|_| {
+            RpcError::new(code::INVALID_ADDRESS_OR_KEY, "Pubkey must be a hex string")
+        })?;
         if secp256k1::PublicKey::from_slice(&pk).is_err() {
             return Err(RpcError::new(
                 code::INVALID_ADDRESS_OR_KEY,
