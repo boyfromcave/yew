@@ -5,6 +5,9 @@
 # `pair`), unchanged, with every node kogany + yewd and no ycashd behind any node, then the mixed
 # variant with one ycash6 peer judging every block and transaction the pairs make. One job per mixed
 # group and column (re-run on its own); yewd/qa/s5_parity.py runs the scripts and writes the table.
+# yew's own cases (yewd/qa/parity/, s5_parity.py's LOCAL table) run in their group beside the
+# manifest's, and with --reference on plain ycashd too: their wallet answers (refusal codes and texts,
+# the shape and fee of every transaction) are compared with ycashd's wallet field by field.
 # The harness (ycash6 qa/rpc-tests/test_framework/kogany.py, YEWD_KOGANY) compares
 # vault_getinfo.statehash and yed_getstatehash at every sync point, so a green run is the evidence.
 #
@@ -36,14 +39,15 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # kogany upgrade/vault at its newest koganyd-bin (beta2: 2f247bd32, "Ycash's block time bounds",
-  # #27; the head after it, 2f8cb8740, changes only release notes and packaging)
-  KOGANY_REF: 2f247bd32a6eda5cad242813614a1e2b786c5618
+  # kogany upgrade/vault at its newest koganyd-bin (beta3: f2387999d, rpcversion 10 and the beta3
+  # parity scripts, #42; getcoinbasetemplatefor since #39)
+  KOGANY_REF: f2387999dfc76f193234bdc7d17fe7079fc86938
   YCASH6_REPO: boyfromcave/ycash6
   # ycash6 upgrade/vault at its newest node-bin (a successful push run of yellowback-tests.yml:
-  # c8f25b0ba, #109; the head after it, fbc9f625c, changes only qa/ rc-qualify scripts); moves
-  # with KOGANY_REF (the one ycash6 pin here: node-bin, qa/ and zcutil all come from this commit)
-  YCASH6_REF: c8f25b0ba067ed9eb5f8907220028471d9a4106d
+  # 883a7fdc2, #133, z_sendmany spends a post-quantum address's mature coinbase, with
+  # getcoinbasetemplatefor and rpcversion 10); moves with KOGANY_REF (the one ycash6 pin here:
+  # node-bin, qa/ and zcutil all come from this commit)
+  YCASH6_REF: 883a7fdc2ecdc819c4f263ee4faf049aeacf86d5
 
 jobs:
   parity:
@@ -167,7 +171,7 @@ jobs:
         run: |
           if ldd "$ZAKURAD" | grep 'not found'; then echo "::error::koganyd needs a library this runner lacks"; exit 1; fi
           YCASH6="$GITHUB_WORKSPACE/ycash6" python3 -u yewd/qa/s5_parity.py --columns "$COLUMN" --of "$GROUP" \
-            --rounds "$ROUNDS" --jobs 2 --out "$RUNNER_TEMP/s5"
+            --reference --rounds "$ROUNDS" --jobs 2 --out "$RUNNER_TEMP/s5"
       - name: the table
         if: ${{ !cancelled() }}
         run: cat "$RUNNER_TEMP"/s5/round*/matrix.md >> "$GITHUB_STEP_SUMMARY" || true
