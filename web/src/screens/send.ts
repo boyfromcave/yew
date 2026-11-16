@@ -38,7 +38,7 @@ export function renderSend(root: HTMLElement, vm: SendVm) {
         slideToConfirm("Slide to send", () => vm.confirm(), s.busy || (!!s.yed.unusualFeeAck && !s.feeAccepted)), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Change")] : null,
       s.yec ? [previewCard(`Send ${formatYec(s.yec.amountZat)} YEC`, [["To", s.yec.to], ...(s.yec.memo ? [["Message", s.yec.memo] as [string, string]] : []), ["Fee", feeLine(s.yec.fee)], ["Change", `${formatYec(s.yec.change)} YEC`], ["Paid from", s.yec.funding === "shielded" ? "your private balance" : "your public balance"]],
           s.yec.revealsShielded ? "This payment leaves your private balance for a public address: its amount will be visible on the chain."
-            : s.yec.funding !== "shielded" && s.toKind === "sapling" ? publicToPrivateNote : undefined),
+            : s.yec.funding !== "shielded" && s.yecToPrivate ? publicToPrivateNote : undefined),
         s.yec.paramsNeeded ? h("p", { class: "small" }, "Proved in this browser at confirm (private spends take a while).") : null,
         slideToConfirm("Slide to send", () => vm.confirm(), s.busy), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Change")] : null,
       s.pq ? [pqPreviewCard(s.pq),
@@ -75,7 +75,7 @@ export function renderMove(root: HTMLElement, vm: SendVm) {
     clear(root);
     const s = vm.state;
     if (s.txid) { mount(root, resultCard("Moved", s.txid, () => { vm.reset(); go("home"); })); return; }
-    const amount = h("input", { type: "text", inputmode: "decimal", placeholder: "0.5", value: s.amount, on: { input: () => (vm.state.amount = amount.value) } });
+    const amount = h("input", { type: "text", inputmode: "decimal", placeholder: "0.5", value: s.amount, disabled: s.busy || !!(s.move && s.moveDirection === direction), on: { input: () => (vm.state.amount = amount.value) } });
     const seg = (d: typeof direction, label: string) => h("button", { class: direction === d ? "on" : "", on: { click: () => { direction = d; vm.reset(); } } }, label);
     mount(root, h("h2", null, "Move YEC"), h("div", { class: "seg" }, seg("to_private", "Public → private"), seg("to_public", "Private → public")),
       h("p", { class: "small" }, direction === "to_private" ? "Shield: public YEC becomes private. Needs the private sending files (Settings)." : "Unshield: private YEC becomes public; the amount is visible on the chain."),

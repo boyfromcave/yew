@@ -26,6 +26,8 @@ export interface SendState {
   /** The shapes this build cannot run, with the core's one-line reason. */
   unavailable: Unavailable[];
   pq: PqSendPreview | null;
+  /** The `yec` preview's recipient is private (ys1…), from that preview's own address check. */
+  yecToPrivate: boolean;
   /** The direction `move` was previewed for (the Move screen shows only a preview of its own direction). */
   moveDirection: MoveDirection | null;
 }
@@ -43,11 +45,13 @@ export class SendVm extends Vm<SendState> {
    *  direction, "Change"): a preview asked for before it is dropped, never shown (beta3). */
   private gen = 0;
   constructor(private core: Core, asset: Asset = "yed") {
-    super({ asset, to: "", amount: "", memo: "", toKind: "", busy: false, error: "", errorKind: "", yec: null, yed: null, move: null, txid: "", feeAccepted: false, from: "", sources: [], unavailable: [], pq: null, moveDirection: null });
+    super({ asset, to: "", amount: "", memo: "", toKind: "", busy: false, error: "", errorKind: "", yec: null, yed: null, move: null, txid: "", feeAccepted: false, from: "", sources: [], unavailable: [], pq: null, moveDirection: null, yecToPrivate: false });
   }
-  private async run(f: () => Promise<void>) {
+  /** `g`: the generation a preview was asked for in; its error is dropped, like its answer, once the
+   *  user has left that selection (beta3 review). A confirm passes none: its error always shows. */
+  private async run(f: () => Promise<void>, g?: number) {
     this.set({ busy: true, error: "", errorKind: "" });
-    try { await f(); } catch (e) { this.set({ error: messageOf(e), errorKind: kindOf(e) }); } finally { this.set({ busy: false }); }
+    try { await f(); } catch (e) { if (g === undefined || g === this.gen) this.set({ error: messageOf(e), errorKind: kindOf(e) }); } finally { this.set({ busy: false }); }
   }
   reset() { this.gen++; this.set({ yec: null, yed: null, move: null, moveDirection: null, pq: null, error: "", errorKind: "", txid: "", feeAccepted: false }); }
   setAsset(asset: Asset) { this.set({ asset }); this.reset(); }
@@ -109,9 +113,9 @@ export class SendVm extends Vm<SendState> {
           return;
         }
         const yec = await this.core.send_yec_preview(to, zat.toString(), toPrivate && s.memo ? s.memo : undefined);
-        if (g === this.gen) this.set({ yec, yed: null });
+        if (g === this.gen) this.set({ yec, yed: null, yecToPrivate: check.valid && check.kind === "sapling" });
       }
-    });
+    }, g);
   }
   /** Move YEC between the own private and public balances. */
   movePreview(direction: MoveDirection, amount: string) {
@@ -121,7 +125,7 @@ export class SendVm extends Vm<SendState> {
       const move = await this.core.move_preview(direction, zat.toString());
       // the direction changed meanwhile (reset): this preview moves the other way, so it is not shown
       if (g === this.gen) this.set({ move, moveDirection: direction });
-    });
+    }, g);
   }
   get previewId(): string { const s = this.state; return s.yed?.previewId ?? s.pq?.previewId ?? s.yec?.previewId ?? s.move?.previewId ?? ""; }
   /** The flagged fee's note (null when the fee is usual). */

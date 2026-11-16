@@ -32,7 +32,7 @@ export function renderSettings(root: HTMLElement, vm: SettingsVm, meta: WalletMe
       h("div", { class: "card" }, h("h3", null, trustTitle), h("p", { class: "small" }, "The trust statement shown at setup."), h("button", { class: "secondary", on: { click: () => { showTrust = true; draw(); } } }, "Read")),
       h("div", { class: "card" }, h("h3", null, "Export private key"), h("p", { class: "small" }, "WIF for one public address (YecWallet, ycashd). Anyone with it can spend that address."), wifAddr,
         h("div", { class: "actions" }, h("button", { class: "secondary", on: { click: () => vm.exportWif(wifAddr.value) } }, "Export"), s.wif ? h("button", { class: "secondary", on: { click: () => vm.clearWif() } }, "Hide") : null),
-        s.wif ? [h("p", { class: "small" }, `The key of ${s.wifFor}:`), h("code", { class: "addr" }, s.wif)] : null),
+        s.wif ? [h("p", { class: "small" }, `The private key for the address requested, ${s.wifFor}:`), h("code", { class: "addr" }, s.wif)] : null),
       h("div", { class: "card" }, h("h3", null, "Import private key"), h("p", { class: "small" }, "A WIF from YecWallet, outside the seed: the phrase will not restore it."), wifIn, h("label", null, "Birthday height"), wifBday,
         h("div", { class: "actions" }, h("button", { class: "secondary", on: { click: () => vm.importWif(wifIn.value, Number(wifBday.value)) } }, "Import"))),
       s.status ? h("p", { class: "small" }, s.status) : null, errorCard(s.error),

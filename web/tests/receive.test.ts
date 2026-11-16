@@ -14,6 +14,8 @@ import { addressMatchesKind, receiveKindOf } from "../src/prefixes";
 import { SendVm } from "../src/vm/send";
 import { YellowbackVm } from "../src/vm/yellowback";
 import { renderVault } from "../src/screens/yellowback";
+import { renderMove, renderSend } from "../src/screens/send";
+import { SettingsVm } from "../src/vm/settings";
 
 async function openWallet() { const c = new MockCore(); await c.open(MOCK_SEED, 0, "http://localhost:8080", "regtest"); return c; }
 
@@ -122,5 +124,92 @@ describe("the same race elsewhere: an answer for a selection the user left is ne
     await vm.redeemPreview(mine); expect(root.textContent).not.toContain("Slide to redeem"); unsub();
     const own = document.createElement("div"); const unsub2 = renderVault(own, vm, mine);
     expect(own.textContent).toContain("Slide to redeem"); unsub2();                  // on its own vault it is
+  });
+});
+
+async function delayed(ms = 5) { const c = new MockCore({ delayMs: ms }); await c.open(MOCK_SEED, 0, "http://localhost:8080", "regtest"); return c; }
+const YED_TO = "ye1Recipient000000000000000000000000";
+const inputs = (root: HTMLElement) => [...root.querySelectorAll("input[type=text], textarea")] as HTMLInputElement[];
+const button = (root: HTMLElement, text: string) => [...root.querySelectorAll("button")].find((b) => b.textContent === text) as HTMLButtonElement | undefined;
+
+describe("review of the race fix: forms, confirm, stale errors, the exported key", () => {
+  it("Send: the inputs are disabled while a preview is open and enabled again on Change, on an error and after a send", async () => {
+    const core = await openWallet(); const vm = new SendVm(core, "yed");
+    const root = document.createElement("div"); const unsub = renderSend(root, vm);
+    await vm.setTo(YED_TO); vm.state.amount = "25.00"; vm.set({});
+    expect(inputs(root).every((i) => !i.disabled)).toBe(true);
+    await vm.preview(); expect(inputs(root).length).toBeGreaterThan(0); expect(inputs(root).every((i) => i.disabled)).toBe(true);
+    button(root, "Change")!.click(); expect(inputs(root).every((i) => !i.disabled)).toBe(true);
+    vm.state.amount = "abc"; await vm.preview(); expect(vm.state.error).toContain("dollars"); expect(inputs(root).every((i) => !i.disabled)).toBe(true);
+    vm.state.amount = "25.00"; await vm.preview(); await vm.confirm(); expect(vm.state.txid).not.toBe("");
+    vm.reset(); expect(inputs(root).every((i) => !i.disabled)).toBe(true);
+    unsub();
+  });
+
+  it("Send: the card shows the preview's own recipient and amount, and confirm sends the previewed id, whatever the form says now", async () => {
+    const core = await openWallet(); const vm = new SendVm(core, "yed");
+    const root = document.createElement("div"); const unsub = renderSend(root, vm);
+    await vm.setTo(YED_TO); vm.state.amount = "25.00"; await vm.preview();
+    const id = vm.previewId; expect(id).not.toBe("");
+    vm.state.to = "ye1Other00000000000000000000000000000"; vm.state.amount = "99.00"; vm.set({}); // the form changed underneath
+    expect(root.textContent).toContain(YED_TO); expect(root.textContent).toContain("$25.00");
+    expect(root.textContent).not.toContain("ye1Other"); expect(root.textContent).not.toContain("$99.00");
+    await vm.confirm(); expect(core.broadcasts.at(-1)).toBe(id);
+    unsub();
+  });
+
+  it("Send: the public-to-private note follows the preview's recipient, not the field", async () => {
+    const core = await openWallet(); const vm = new SendVm(core, "yec");
+    const z = "yregtestsapling1qmockrecipient000000000000000000000000000000000000000000qq";
+    await vm.setTo(z); vm.state.amount = "0.5"; await vm.preview();
+    expect(vm.state.yecToPrivate).toBe(true);
+    vm.set({ toKind: "p2pkh" }); expect(vm.state.yecToPrivate).toBe(true);
+  });
+
+  it("Move: a preview for the direction left behind is dropped, and the amount is frozen while one shows", async () => {
+    const core = await delayed(); const vm = new SendVm(core, "yec"); await core.fetch_params(() => {});
+    const root = document.createElement("div"); const unsub = renderMove(root, vm);
+    const p = vm.movePreview("to_private", "1"); button(root, "Private → public")!.click(); await p;
+    expect(vm.state.move).toBeNull(); expect(root.textContent).not.toContain("Slide to move");
+    await vm.movePreview("to_public", "1"); expect(vm.state.moveDirection).toBe("to_public");
+    expect(root.textContent).toContain("Slide to move"); expect(inputs(root).every((i) => i.disabled)).toBe(true);
+    button(root, "Public → private")!.click(); expect(root.textContent).not.toContain("Slide to move"); expect(inputs(root).every((i) => !i.disabled)).toBe(true);
+    unsub();
+  });
+
+  it("a stale preview's ERROR is dropped like its answer (Send)", async () => {
+    const core = await delayed(); const vm = new SendVm(core, "yed");
+    await vm.setTo(YED_TO); vm.state.amount = "999999.00";       // more than the wallet holds: the core refuses
+    const p = vm.preview(); vm.setAsset("yec"); await p;
+    expect(vm.state.error).toBe(""); expect(vm.state.yed).toBeNull();
+    vm.setAsset("yed"); await vm.preview(); expect(vm.state.error).toContain("insufficient"); // on its own selection it shows
+  });
+
+  it("Mint: an estimate (and its error) asked for before the funding source changed is dropped", async () => {
+    const core = await delayed(); const vm = new YellowbackVm(core);
+    let p = vm.estimate("100", 100); vm.setFrom("rqf1MockFalconAddress000000000000000000000000000000000"); await p;
+    expect(vm.state.estimate).toBeNull();
+    p = vm.estimate("100", -1 as number); await p; expect(vm.state.error).toContain("blocks"); // a check before any call still shows
+    core.mint_estimate = () => new Promise((_, no) => setTimeout(() => no(new Error("network: the server did not answer")), 5));
+    p = vm.estimate("100", 100); vm.reset(); await p; expect(vm.state.error).toBe(""); expect(vm.state.estimate).toBeNull();
+  });
+
+  it("Claim: a preview asked for before Cancel is dropped", async () => {
+    const core = await delayed(); const vm = new YellowbackVm(core);
+    await vm.loadClaimable(); const c = vm.state.claimable.find((x) => x.claimable)!;
+    const p = vm.claimPreview(c.vaultTxid); vm.reset(); await p;
+    expect(vm.state.claim).toBeNull(); expect(vm.previewId).toBe("");
+    await vm.claimPreview(c.vaultTxid); expect(vm.state.claim?.item.vaultTxid).toBe(c.vaultTxid);
+  });
+
+  it("Settings: only the latest export's key is shown, with the address requested; Hide, lock and leaving clear it", async () => {
+    const core = await delayed(); const vm = new SettingsVm(core, { forget: async () => {} });
+    const a = "smMockTransparentAddress000000000000";
+    let p = vm.exportWif(a); vm.clearWif(); await p;                // left (main.ts route calls clearWif) before the answer
+    expect(vm.state.wif).toBe(""); expect(vm.state.wifFor).toBe("");
+    p = vm.exportWif("nope"); vm.clearWif(); await p; expect(vm.state.error).toBe(""); // its error is stale too
+    await vm.exportWif(a); expect(vm.state.wif.startsWith("c")).toBe(true); expect(vm.state.wifFor).toBe(a);
+    vm.clearWif(); expect(vm.state.wif).toBe("");
+    await vm.exportWif(a); expect(vm.state.wif).not.toBe(""); await vm.lock(); expect(vm.state.wif).toBe(""); expect(vm.state.wifFor).toBe("");
   });
 });

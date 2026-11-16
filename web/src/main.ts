@@ -104,6 +104,8 @@ async function main() {
 
   function route() {
     unsub?.(); unsub = undefined;
+    // an exported private key leaves with the Settings screen (beta3 review): never redrawn on return
+    settings.clearWif();
     if (!open) { if (useMock && currentRoute().name === "onboard") onboard(); else if (method) unlockScreen(method); else onboard(); return; }
     const r = currentRoute(); const body = h("div");
     shell(r.name, body);
