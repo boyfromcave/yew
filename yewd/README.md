@@ -28,7 +28,69 @@ signer), the dumps and their imports (written and read by the signer), `backupwa
 notes and computes their Merkle paths from the node's tree state; the signer proves and signs), the same
 Sapling build inside the YED builders (a mint funded from a Sapling address, a redemption or a bond
 withdrawal paying one), the armed attestation layer's wallet facts (the AFEE-W attestor payee, the
-claim notice, `canNotice`), and the backend-exit watch (H6).
+claim notice, `canNotice`), and the backend-exit watch (H6). Beta3 closed the gaps the parity suite
+found against ycashd's wallet: `z_mergetoaddress`, `getunconfirmedbalance`, the watch-only imports
+(`importaddress`, `importpubkey`) and the reads that include watch-only entries, vault coin locks
+released on every path, the vault funding change listed, ycashd's help texts, and ycashd's fee for
+each send shape (the method table below).
+
+## Running yewd beside koganyd
+
+koganyd has no wallet; yewd is its wallet. Together they answer ycashd's RPCs: yewd serves the
+wallet methods itself and forwards every other call to koganyd. yewd listens where ycashd would
+(8832 on mainnet, 18832 on the fast testnet), so tools written for ycashd, `ycash-cli` included,
+talk to yewd unchanged, and koganyd's own RPC moves to another loopback port. One yewd serves one
+node and one wallet.
+
+1. **Build** (the Rust version is pinned by `rust-toolchain.toml`):
+
+   ```sh
+   git clone https://github.com/boyfromcave/yew && cd yew
+   cargo build --release --locked --manifest-path yewd/Cargo.toml   # yewd/target/release/{yewd,yewd-signer}
+   ```
+
+   Keep `yewd-signer` beside `yewd` (or name it with `-signerbin`): yewd starts it as its child,
+   and it alone holds the seed.
+2. **Configure koganyd** with its RPC on another loopback port and its cookie (on by default) in a
+   directory you name. For the fast testnet, beside your `[network]` section:
+
+   ```toml
+   [rpc]
+   listen_addr = "127.0.0.1:18831"
+   cookie_dir = "/home/me/.cache/kogany/rpc"
+   # optional: lets koganyd's chain-tip and mempool streams wake the wallet at once
+   indexer_listen_addr = "127.0.0.1:18230"
+   ```
+
+   On mainnet use, for example, `127.0.0.1:8831`. Keep cookie authentication on: without it,
+   koganyd serves only a restricted method set on mainnet and testnet.
+3. **Sapling parameters.** A send with a Sapling source or recipient is proved by the signer with
+   the files ycashd uses (`~/.zcash-params`; `~/Library/Application Support/ZcashParams` on
+   macOS), or the directory `-paramsdir` names. Transparent and post-quantum sends do not need them.
+4. **Start both:**
+
+   ```sh
+   koganyd -c testnet.toml start
+   yewd -testnet -backendrpcport=18831 -backendrpccookiefile=/home/me/.cache/kogany/rpc/.cookie \
+        -backendindexer=127.0.0.1:18230
+   ycash-cli -testnet -datadir=$HOME/.yewd getwalletinfo
+   ```
+
+   yewd answers `-28` (ycashd's warm-up code) until koganyd answers, so the order does not matter.
+   The wallet is created at the first start in `~/.yewd/testnet-yb-fast/` (`~/.yewd/` on mainnet);
+   `-datadir` moves it. To restore instead, start a new data directory once with
+   `-mnemonicfile=<file>` (a yewd or YEW phrase; see "Restore from the recovery phrase"): the
+   restore stays open, and balances are incomplete, until koganyd has synced and the scan has
+   reached its tip (`getwalletinfo.restore_in_progress`).
+5. **Back up** with `backupwallet` (or `z_exportwallet`, with `-exportdir`), and keep the recovery
+   phrase (`z_exportwallet` writes it). Watched scripts are not derived from the phrase: after a
+   restore from it, import them again.
+6. **Mining to the wallet** (optional): `yewd -initwallet` creates the wallet and prints its
+   coinbase address; give it to koganyd as `mining.miner_address`. Where Yellowback is live, quote
+   the price with `yed_setquote` through yewd (koganyd's README, "Mining: quote the price").
+
+Everything else, from the options to the wallet's limits, is below. yewd is built from source; it
+has no release binaries of its own.
 
 ## Layout
 
@@ -157,8 +219,10 @@ ycashd's wallet arguments (`-keypool`, `-exportdir`, …) and a ycashd-format `y
 | `-mnemonicfile=<file>` | — | ycashd's seed-only restore: a **new** wallet takes its seed from the recovery phrase in `<file>` (the phrase on one line, or a `z_exportwallet` file's `recovery_phrase=` line), read by the signer itself; birthday 0 (a scan from genesis, with the re-pass below) and the sign-once restore marker set; ignored for a wallet with this seed, refused for one with another (F-S5-17). The phrase must be a **yewd (or YEW) phrase**: a ycashd phrase derives other transparent keys ("Restore from the recovery phrase", below) |
 | `-paramsdir=<dir>` | ycashd's (`~/Library/Application Support/ZcashParams`, `~/.zcash-params`) | the Sapling parameters the signer proves with |
 | `-yellowback=0` | off | ycashd's acknowledgement: a wallet that has held YED (`getwalletinfo.yed_held`) may spend as plain YEC while the node reports Yellowback not live; logged at start and on each such send (below) |
+| `-backendindexer=<ip:port>` | — | koganyd's indexer gRPC listener (`[rpc] indexer_listen_addr`): its chain-tip and mempool streams wake the wallet between polls; never the source of truth |
 | `-backendexitgrace=<s>` | 20 | with `-stopbackend`: exit once the backend has been gone this long after it was up (H6: the node stopped itself); 0 = never |
 | `-backendlostexit=<s>` | 10 on regtest, else 0 | with `-stopbackend` and a cookie: once the backend has been gone this long with its cookie left (a crash), log it and end with SIGKILL, as the node did; 0 = never |
+| `-disablewallet`, `-mocktime=<t>`, `-pqfeerate=<YEC/kB>`, `-pqfalconheight=<h>`, `-sendchangeback` | | ycashd's, read as ycashd reads them; the functional harness passes them |
 | `-debug` | off | log each method called |
 | `-help`, `-version` | | |
 

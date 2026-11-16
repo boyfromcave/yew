@@ -67,7 +67,7 @@ fn usage() -> ! {
          commands: status | yed-info | price | address [--new] [--shielded] [--falcon] | balance | sync | coins\n\
          \x20         | send-yec <addr> <zat> [--all] [--link] [--memo TEXT] | send-yed <addr> <cents> [<addr> <cents> ...]\n\
          \x20         | params-status | params-download <base-url>\n\
-         \x20         | export-wif <addr> | import-wif <wif> | history | version | fee-reference [--reset]\n\
+         \x20         | export-wif <addr> | import-wif <wif> | history | version | new-seed <file> | fee-reference [--reset]\n\
          \x20         | mint-estimate <cents> <lockBlocks> | mint-start <cents> <lockBlocks>\n\
          \x20         | mint-status [<id>] | mint-finish <id> | mint-sweep <id>\n\
          \x20         | vaults | redeem <vaultTxid> | claimable | claim <vaultTxid>\n\
@@ -300,6 +300,22 @@ async fn main() {
             env!("CARGO_PKG_VERSION"),
             yew_core::VERSION
         ),
+        // A fresh 24-word mnemonic written to a new file (mode 0600), never printed: a throwaway
+        // wallet for a smoke run against a public server (the app generates its own).
+        "new-seed" => {
+            let path = o.rest.get(1).unwrap_or_else(|| usage());
+            let words = fail(yew_core::api::generate_seed_words(24));
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+            let mut f = fail(opts.open(path));
+            fail(std::io::Write::write_all(
+                &mut f,
+                format!("{words}\n").as_bytes(),
+            ));
+            println!("wrote a new 24-word seed to {path}");
+        }
         "status" => {
             let (mut c, _, a) = clients(&o).await;
             let info = fail(c.lightd_info().await);

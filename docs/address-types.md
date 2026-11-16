@@ -2,7 +2,7 @@
 
 # Address types, sends between them, and the safety layers
 
-_YEW 1.x, beta2 (workspace plan `wt/beta2-address-interop-plan.md`, decisions D-2 … D-9). What the
+_YEW 1.x, beta2, with beta3's fee changes (workspace plan `wt/beta2-address-interop-plan.md`, decisions D-2 … D-9). What the
 app and the web wallet can send between Ycash address types, which gate path each send passes,
 what stays with the full node, the layers that keep a light client from burning Ycash Yellowback
 (YED) through a lying server, what each send reveals, and what is still unproven._
@@ -113,8 +113,9 @@ decisions.
 These calls are served by `yewd` (the YEW core as a daemon) and the full nodes. They are not in the
 app or the web wallet:
 
-- **`z_mergetoaddress`.** Outside the K-25 RPC set. It merges many inputs into one destination;
-  the app's sends pick their inputs themselves.
+- **`z_mergetoaddress`.** Served by `yewd` since beta3 (ECC, post-quantum and Sapling sources; a
+  P2SH source is refused). It merges many inputs into one destination; the app's sends pick their
+  inputs themselves.
 - **The generic `vault_lock` with `"from"` (D-3).** The app opens a vault only through the MINT. It
   funds that vault from a chosen source with **Fund from** (above), not with a free-standing lock
   transaction.

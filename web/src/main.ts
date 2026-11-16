@@ -23,6 +23,7 @@ import { SendVm } from "./vm/send";
 import { HistoryVm } from "./vm/history";
 import { SettingsVm } from "./vm/settings";
 import { YellowbackVm } from "./vm/yellowback";
+import { defaultServerFor } from "./servers";
 
 const app = document.getElementById("app")!;
 const query = new URLSearchParams(location.search);
@@ -36,9 +37,10 @@ const network = import.meta.env.VITE_NETWORK || "regtest";
 /** A build served apart from its light-client server (the hosted fast-testnet wallet) names the
  *  server: `VITE_DEFAULT_SERVER`; vite.config.ts puts the same origin in the page's connect-src. */
 const hostedServer: string = import.meta.env.VITE_DEFAULT_SERVER || "";
-/** Served by the gateway (https), the API is on this origin: the server field defaults to it.
- *  The dev loop (vite over http) keeps an explicit URL (the plain :9067 listener). */
-const defaultServer = useMock ? "http://localhost:8080" : hostedServer || (location.protocol === "https:" ? `https://${location.hostname}:${location.port || "443"}` : "");
+/** The server field's default: the mock's in mock mode, else the hosted build's server, else
+ *  `servers.ts` (the fast testnet's server for a testnet build, the gateway's own origin over
+ *  https, none in the dev loop). */
+const defaultServer = !useMock && hostedServer ? hostedServer : defaultServerFor(network, location, useMock);
 /** `?params=<base URL>`: a mirror for the proving files (the test helper); the Settings field. */
 const paramsSource = query.get("params") ?? "";
 

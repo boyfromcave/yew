@@ -4,8 +4,9 @@
 
 // The <meta> content security policy of a build that is served apart from its light-client server
 // (VITE_DEFAULT_SERVER, the hosted fast-testnet wallet). index.html's policy says `connect-src
-// 'self' https://download.z.cash`: right where the gateway serves the bundle and the API on one
-// origin, but it would refuse the hosted wallet's only server (a browser enforces the <meta> policy
+// 'self' https://download.z.cash https://fastnet-lightwallet.ycash.team` (the testnet default
+// server, servers.ts): right where the gateway serves the bundle and the API on one origin, but it
+// would refuse any other hosted server (a browser enforces the <meta> policy
 // and the response header's, each on its own). For such a build connect-src becomes exactly
 // `'self'` and that server's origin: the proving files come from the page's own origin
 // (/sapling-params/), and download.z.cash sends no CORS header, so it is dropped rather than kept.

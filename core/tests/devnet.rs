@@ -549,7 +549,11 @@ async fn w2_yed_tokens_transfer_gate_and_key_round_trip() {
     assert!(availability.usable(), "{availability:?}");
     match &availability {
         Availability::Present { info, .. } => {
-            assert_eq!(info.rpcversion, yew_core::net::yellowback::KNOWN_RPCVERSION)
+            assert!(
+                yew_core::net::yellowback::rpcversion_accepted(info.rpcversion),
+                "rpcversion {}",
+                info.rpcversion
+            )
         }
         Availability::Absent => panic!("the W2 devnet's lightwalletd must run --yellowback"),
     }
@@ -2155,10 +2159,10 @@ async fn it_early_redeem_and_in_term_claim() {
     assert!(availability.usable(), "{availability:?}");
     let ref_lag = match &availability {
         Availability::Present { info, .. } => {
-            assert_eq!(
-                info.rpcversion,
-                yew_core::net::yellowback::KNOWN_RPCVERSION,
-                "the in-term rules on the quantum line (rpcversion 7)"
+            assert!(
+                yew_core::net::yellowback::rpcversion_accepted(info.rpcversion),
+                "the in-term rules on the quantum line (rpcversion 7 on): {}",
+                info.rpcversion
             );
             let p = info.params.as_ref().unwrap();
             assert!(p.in_term_claims, "params.inTermClaims");
