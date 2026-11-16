@@ -100,7 +100,7 @@ pub enum NetError {
     #[error("the server offers no Yellowback service (UNIMPLEMENTED)")]
     Unimplemented,
     /// The node's `rpcversion` is not the one this build implements (contract rule 1).
-    #[error("unknown Yellowback rpcversion {0} (this build implements {known})", known = yellowback::KNOWN_RPCVERSION)]
+    #[error("unknown Yellowback rpcversion {0} (this build implements {min} to {known})", min = yellowback::MIN_RPCVERSION, known = yellowback::KNOWN_RPCVERSION)]
     UnknownRpcVersion(i64),
     /// A stream exceeded its bound ([`limits`]): the server answered more than any honest
     /// server would.

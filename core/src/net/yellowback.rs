@@ -7,7 +7,7 @@
 //! thin proxy of one read-only `yed_*` RPC on the server's node. Streams are collected.
 //!
 //! Contract rule 1 lives in [`YellowbackClient::probe`]: `UNIMPLEMENTED` ⇒ no Yellowback here
-//! (T0 only, YED hidden); an `rpcversion` other than [`KNOWN_RPCVERSION`] ⇒ refused; YED is
+//! (T0 only, YED hidden); an `rpcversion` outside [`MIN_RPCVERSION`]..=[`KNOWN_RPCVERSION`] ⇒ refused; YED is
 //! shown only when `enabled && upgrade.status == "active"` (rpcversion 5: the vault upgrade's
 //! status, `yed_getactivation`; the v3 activation state machine is gone). Errors (lightwalletd plan §3.3):
 //! a node RPC error arrives as `FAILED_PRECONDITION` with the node's identifier
@@ -52,7 +52,22 @@ use crate::tx::{txid_from_hex, OutPoint};
 /// and `yed_getinfo`'s `params.pqAddressVersion` / `params.pq.plainAddressVersion` are objects
 /// keyed by scheme. Exact again: an rpcversion-8 node and its lightwalletd index and print the
 /// pre-D-9 form, which this build refuses.
-pub const KNOWN_RPCVERSION: i64 = 9;
+/// `10` is beta3 (the workspace's `docs/plans/beta3/beta3-plan.md` R-1, decision B3-D5): the node
+/// call `getcoinbasetemplatefor`, `getblockchaininfo.transparentPools`, input addresses for
+/// post-quantum spends, the `gettransaction` fee and the `-ydf` default. None of them changes a
+/// `YellowbackStreamer` answer this build reads, so the match is no longer exact: a node speaking
+/// [`MIN_RPCVERSION`] (a beta2 node) to [`KNOWN_RPCVERSION`] (beta3) is accepted
+/// ([`rpcversion_accepted`]); 8 and anything above 10 are refused.
+pub const KNOWN_RPCVERSION: i64 = 10;
+
+/// The oldest node `rpcversion` this build still accepts (9: an 8 node prints the pre-D-9
+/// post-quantum form this build refuses).
+pub const MIN_RPCVERSION: i64 = 9;
+
+/// Contract rule 1: whether this build speaks to a node reporting `rpcversion` `v`.
+pub fn rpcversion_accepted(v: i64) -> bool {
+    (MIN_RPCVERSION..=KNOWN_RPCVERSION).contains(&v)
+}
 
 /// The upgrade status string that means "active" (`YellowbackActivation.status`, rpcversion 5:
 /// `"pending"` | `"active"`).
@@ -261,7 +276,7 @@ impl YellowbackClient {
     }
 
     /// Contract rule 1: `GetYellowbackInfo`; `UNIMPLEMENTED` ⇒ [`Availability::Absent`]; an
-    /// `rpcversion` other than [`KNOWN_RPCVERSION`] ⇒ [`NetError::UnknownRpcVersion`];
+    /// `rpcversion` outside [`MIN_RPCVERSION`]..=[`KNOWN_RPCVERSION`] ⇒ [`NetError::UnknownRpcVersion`];
     /// otherwise [`Availability::Present`] with the `enabled && active` gate evaluated.
     pub async fn probe(&mut self) -> Result<Availability, NetError> {
         let info = match paced(|| {
@@ -275,7 +290,7 @@ impl YellowbackClient {
             Err(s) if s.code() == Code::Unimplemented => return Ok(Availability::Absent),
             Err(s) => return Err(map_status(s)),
         };
-        if info.rpcversion != KNOWN_RPCVERSION {
+        if !rpcversion_accepted(info.rpcversion) {
             return Err(NetError::UnknownRpcVersion(info.rpcversion));
         }
         let enabled = info.enabled;
@@ -896,6 +911,16 @@ mod tests {
             map_status(tonic::Status::unavailable("x")),
             NetError::Status(_)
         ));
+    }
+
+    #[test]
+    fn rpcversion_window() {
+        // beta3 (R-1, B3-D5): a beta2 node (9) and a beta3 node (10) are accepted.
+        assert_eq!((MIN_RPCVERSION, KNOWN_RPCVERSION), (9, 10));
+        assert!(rpcversion_accepted(9) && rpcversion_accepted(10));
+        for v in [0, 5, 7, 8, 11, 12] {
+            assert!(!rpcversion_accepted(v), "rpcversion {v} must be refused");
+        }
     }
 
     #[test]

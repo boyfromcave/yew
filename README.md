@@ -50,7 +50,7 @@ of the YED it backs, others can claim it. The YEC/USD price comes from mining po
   (`lightwalletd-dd`) with `--yellowback`, over a `ycashd` built from the `upgrade/quantum-vaults`
   branch of [ycash-dd](https://github.com/boyfromcave/ycash-dd) or
   [ycash6](https://github.com/boyfromcave/ycash6) (this line joins `upgrade/vault` at release). The
-  core requires Yellowback `rpcversion` 8.
+  core accepts Yellowback `rpcversion` 9 (beta2) and 10 (beta3).
 - **Try it:** [Quick start for developers](#quick-start-for-developers) below brings up the local
   test network and runs the app on it.
 
