@@ -1838,7 +1838,7 @@ async fn a_post_quantum_coinbase_is_shielded_once_mature() {
         "an immature coinbase is not listed"
     );
     let immature_tail =
-        " The address holds 10.00 of immature coinbase funds, which can be spent after 101 confirmations.";
+        " The address holds 10.00 of immature coinbase funds, which can be sent to shielded recipients only, with no change, after 101 confirmations.";
     for from in [&slh, &fn_] {
         // more than the ordinary coin: refused, the immature coinbase named
         let e = f

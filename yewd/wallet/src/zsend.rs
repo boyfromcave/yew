@@ -120,7 +120,7 @@ pub(crate) fn pq_insufficient_funds(
     }
     if immature_coinbase > 0 {
         s += &format!(
-            " The address holds {} of immature coinbase funds, which can be spent after {} confirmations.",
+            " The address holds {} of immature coinbase funds, which can be sent to shielded recipients only, with no change, after {} confirmations.",
             money(immature_coinbase),
             crate::COINBASE_MATURITY + 1
         );
@@ -1075,7 +1075,8 @@ impl Wallet {
         // is kept apart: it is spent only when every recipient is shielded, only with no change
         // (the rule a transparent coinbase is under where coinbase must be shielded, applied on
         // every network as z_sendmany applies it to an ECC address), and only when the
-        // address's other coins do not cover the send (ycash6 `select_pq_inputs`)
+        // address's other coins do not cover the send (ycash-dd `select_pq_inputs`, ycash6
+        // `WalletTxBuilder::PreparePQTransaction`)
         let shielded_only = recipients.iter().all(|r| matches!(r.0, Dest::Z(_)));
         let immature_coinbase = self.pq_immature_coinbase(source);
         let reserved = self.yed_reserved(node).await?;
