@@ -47,7 +47,11 @@ maintainer who has read the merged commit: a merge alone never changes what the 
 testnet: coins here have no value" above every screen. The proving files are on the same origin,
 under `/sapling-params/`: the workflow takes them from the project's own copy (ycash-infra release
 `zcash-params-v1`) and uploads them only if they match the pins in `core/src/sapling_params.rs`
-(`scripts/sapling-params-pins.sh` reads them). The bucket, the CloudFront distribution and the
+(`scripts/sapling-params-pins.sh` reads them). Such a build cannot change its server or set a
+mirror (its policy allows neither): onboarding shows the one server read-only and Settings has no
+Source field, each with a sentence saying so (`src/plain.ts`). A second tab on the same wallet says
+"This wallet is open in another tab or window" (the first holds the browser storage), and a
+passkey request can be cancelled and times out after two minutes. The bucket, the CloudFront distribution and the
 response headers (the content security policy among them) are the operations repository's.
 
 It is hosted for the testnet only, and that is a decision about trust, not about readiness. A web

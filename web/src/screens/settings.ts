@@ -1,27 +1,33 @@
 import { mount } from "../dom";
 import { clear, go, h } from "../dom";
 import { SettingsVm } from "../vm/settings";
-import { trustParagraphs, trustTitle } from "../trust";
+import { trustParagraphsFor, trustTitle } from "../trust";
+import { localize } from "../prefixes";
+import { hostedServerText } from "../plain";
 import { errorCard, progressBar } from "../widgets";
 import type { WalletMeta } from "../keystore";
 
-export function renderSettings(root: HTMLElement, vm: SettingsVm, meta: WalletMeta | null, version: string, onLocked: () => void) {
+/** `hosted`: the server of a hosted build (VITE_DEFAULT_SERVER), else "": such a build cannot change its
+ *  server and takes the proving files from its own site only (the page's policy allows nothing else). */
+export function renderSettings(root: HTMLElement, vm: SettingsVm, meta: WalletMeta | null, version: string, onLocked: () => void, hosted = "") {
   let showTrust = false;
   const draw = () => {
     clear(root);
     const s = vm.state;
-    if (showTrust) { mount(root, h("h2", null, trustTitle), trustParagraphs.map((p) => h("p", { class: "trust" }, p)), h("button", { on: { click: () => { showTrust = false; draw(); } } }, "Back")); return; }
-    const wifAddr = h("input", { type: "text", placeholder: "an own s1… or ye… address", spellcheck: false });
+    if (showTrust) { mount(root, h("h2", null, trustTitle), trustParagraphsFor(!!hosted).map((p) => h("p", { class: "trust" }, localize(p))), h("button", { on: { click: () => { showTrust = false; draw(); } } }, "Back")); return; }
+    const wifAddr = h("input", { type: "text", placeholder: localize("one of your public addresses (s1… or yb…)"), spellcheck: false });
     const wifIn = h("input", { type: "password", placeholder: "WIF from YecWallet", autocomplete: "off" });
     const wifBday = h("input", { type: "number", min: 0, value: "0" });
     const mb = (s.params?.bytes ?? 0) / 1e6;
-    const src = h("input", { type: "url", value: s.paramsSource, placeholder: "this wallet's server (/sapling-params/)", spellcheck: false, on: { input: () => (vm.state.paramsSource = src.value) } });   // no re-render per keystroke: the field would be rebuilt and lose all but its first character
+    const src = h("input", { type: "url", value: s.paramsSource, placeholder: "this site (/sapling-params/)", spellcheck: false, on: { input: () => (vm.state.paramsSource = src.value) } });   // no re-render per keystroke: the field would be rebuilt and lose all but its first character
     mount(root, h("h2", null, "Settings"),
-      h("div", { class: "card" }, h("h3", null, "Server"), h("p", null, meta ? `${meta.serverUrl} · ${meta.network} · birthday ${meta.birthday}` : "—"), h("p", { class: "small" }, "Set at onboarding; to change it, forget this wallet and restore with the phrase.")),
+      h("div", { class: "card" }, h("h3", null, "Server"), h("p", null, meta ? `${meta.serverUrl} · ${meta.network} · birthday ${meta.birthday}` : "—"), h("p", { class: "small" }, hosted ? hostedServerText(hosted) : "Set at onboarding; to change it, forget this wallet and restore with the phrase.")),
       h("div", { class: "card" }, h("h3", null, "Private sending files"),
-        h("p", null, s.params === null ? "Checking…" : s.params.present ? `Ready (${mb.toFixed(1)} MB in the browser cache).` : "Not fetched. Needed before any private send or shield; 52 MB, fetched once from this wallet's server and kept only if the fingerprints built into YEW match."),
+        h("p", null, s.params === null ? "Checking…" : s.params.present ? `Ready (${mb.toFixed(1)} MB in the browser cache).` : "Not fetched. Needed before any private send or shield; 52 MB, fetched once from this site and kept only if the fingerprints built into YEW match."),
         s.fetching ? progressBar((100 * s.fetching.bytesDone) / Math.max(1, s.fetching.bytesTotal), `${s.fetching.name} · ${(s.fetching.bytesDone / 1e6).toFixed(1)} / ${(s.fetching.bytesTotal / 1e6).toFixed(1)} MB`) : null,
-        s.params && !s.params.present && !s.fetching ? [h("label", null, "Source (advanced: a mirror; the fingerprints are checked either way)"), src,
+        s.params && !s.params.present && !s.fetching ? [
+          hosted ? h("p", { class: "small" }, "On this hosted wallet they come only from this site: its security policy lets the page download from no other address.")
+            : [h("label", null, "Source (advanced: a mirror; the fingerprints are checked either way)"), src],
           h("div", { class: "actions" }, h("button", { on: { click: () => vm.fetchParams() } }, "Fetch (52 MB)"))] : null),
       h("div", { class: "card" }, h("h3", null, trustTitle), h("p", { class: "small" }, "The trust statement shown at setup."), h("button", { class: "secondary", on: { click: () => { showTrust = true; draw(); } } }, "Read")),
       h("div", { class: "card" }, h("h3", null, "Export private key"), h("p", { class: "small" }, "WIF for one public address (YecWallet, ycashd). Anyone with it can spend that address."), wifAddr,

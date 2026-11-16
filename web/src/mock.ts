@@ -177,7 +177,7 @@ export class MockCore implements Core {
     return this.step(() => {
       this.need();
       const check = checkAddress(to);
-      if (!check.valid || check.kind === "sapling") throw new Error("invalid: YED can only be sent to a public address (ye… or s…)");
+      if (!check.valid || check.kind === "sapling") throw new Error("invalid: YED can only be sent to a public address (yb… or s…)");
       if (BigInt(cents) <= 0n || BigInt(cents) > BigInt(this.bal.yedCents)) throw new Error("build: insufficient YED");
       const verdict = "ok: valid, burns nothing, would be accepted";
       const ack = this.unusualYedFee ? `accept-unusual-fee:${FEE}:mock` : null;

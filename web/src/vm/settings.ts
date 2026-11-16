@@ -5,6 +5,7 @@ import { messageOf } from "../core";
 import { Vm } from "./base";
 import type { WalletMeta } from "../keystore";
 import { storeDirOf } from "../keystore";
+import { hostedParamsText } from "../plain";
 export interface SettingsState {
   params: ParamsStatus | null; fetching: ParamsProgress | null; wif: string; error: string; status: string;
   /** Base URL (ending in `/`) the proving files are fetched from; "" = this page's own server, `/sapling-params/`. */
@@ -12,10 +13,13 @@ export interface SettingsState {
 }
 export interface Forgettable { forget(): Promise<void> }
 export class SettingsVm extends Vm<SettingsState> {
-  constructor(private core: Core, private keystore: Forgettable, paramsSource = "", private network = "regtest") { super({ params: null, fetching: null, wif: "", error: "", status: "", paramsSource }); }
+  /** `hosted`: a hosted build, which fetches the proving files from its own site only (no mirror). */
+  constructor(private core: Core, private keystore: Forgettable, paramsSource = "", private network = "regtest", private hosted = false) {
+    super({ params: null, fetching: null, wif: "", error: "", status: "", paramsSource: hosted ? "" : paramsSource });
+  }
   private async run(f: () => Promise<void>) {
     this.set({ error: "", status: "" });
-    try { await f(); } catch (e) { this.set({ error: messageOf(e) }); }
+    try { await f(); } catch (e) { this.set({ error: this.hosted ? hostedParamsText(messageOf(e)) : messageOf(e) }); }
   }
   loadParams() { return this.run(async () => this.set({ params: await this.core.params_status() })); }
   fetchParams() {

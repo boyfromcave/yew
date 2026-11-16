@@ -101,7 +101,9 @@ jobs:
       # and a build without VITE_NETWORK would carry "regtest" there); the mock core is not in the
       # bundle (no chunk, and not its public seed in any file); and nothing in the bundle needs more
       # than the response header's policy allows (no eval, no Function constructor, no blob: URL),
-      # so a dependency that starts to is caught here and not in a visitor's console.
+      # so a dependency that starts to is caught here and not in a visitor's console. The tab icon is
+      # a file of the bundle under assets/ (img-src 'self' refuses a data: URL; without it the browser
+      # asks for /favicon.ico, which is not served, and logs an error on every load).
       - name: check the hosted build
         working-directory: web
         run: |
@@ -119,7 +121,9 @@ jobs:
           if grep -lE 'new Function|(^|[^A-Za-z0-9_.$])eval\(|blob:|createObjectURL' dist/assets/*.js; then
             echo "the bundle uses something the content security policy refuses (the files above)" >&2; exit 1
           fi
-          ls dist/assets/*.wasm dist/BUNDLE-SHA256SUMS
+          grep -qE '<link rel="icon" type="image/svg\+xml" href="/assets/favicon-[A-Za-z0-9_-]+\.svg"' dist/index.html || {
+            echo "dist/index.html: no tab icon from the bundle's assets/" >&2; exit 1; }
+          ls dist/assets/*.wasm dist/assets/favicon-*.svg dist/BUNDLE-SHA256SUMS
       - name: stage the artifact (dist/ and the proving files' pins)
         run: |
           set -euo pipefail
@@ -205,7 +209,8 @@ jobs:
       # in the bucket under one of these names, altered or not, is replaced by the bytes checked
       # above, so deploying a commit again always restores exactly that commit. The proving files
       # too (52 MB a deploy; deploys are by hand). The .wasm gets its type by name:
-      # instantiateStreaming needs application/wasm.
+      # instantiateStreaming needs application/wasm. The other assets (the .svg tab icon among them)
+      # get the CLI's type for their extension.
       - name: upload
         run: |
           set -euo pipefail

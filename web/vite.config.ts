@@ -38,5 +38,7 @@ export default defineConfig({
   server: { headers: isolation, port: 5173 },
   preview: { headers: isolation },
   worker: { format: "es", plugins: () => [wasm()] },
-  build: { target: "es2022", sourcemap: false, reportCompressedSize: false },
+  // assetsInlineLimit 0: every asset stays a file of the bundle (the favicon among them), never a
+  // data: URL, which the hosted response header's img-src 'self' refuses.
+  build: { target: "es2022", sourcemap: false, reportCompressedSize: false, assetsInlineLimit: 0 },
 });

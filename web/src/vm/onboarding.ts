@@ -6,13 +6,18 @@ import { messageOf } from "../core";
 import type { Unlock, WalletMeta } from "../keystore";
 import { storeDirOf } from "../keystore";
 import { Vm } from "./base";
+import { unreachableServer } from "../plain";
 
 export type Step = "start" | "seed" | "confirm" | "restore" | "server" | "trust" | "unlock" | "done";
 export interface OnboardingState {
   step: Step; restoring: boolean; seedWords: string; confirmIndexes: number[]; birthday: number;
   serverUrl: string; tip: number | null; trustAccepted: boolean; busy: boolean; error: string; network: string;
+  /** A hosted build: the server is the build's and cannot be changed (the page's policy allows no other). */
+  serverFixed: boolean;
+  /** A passkey request is waiting for the authenticator (the screen offers Cancel). */
+  passkeyWaiting: boolean;
 }
-export interface Keystore { saveSeed(seed: string, unlock: Unlock, meta: WalletMeta): Promise<void> }
+export interface Keystore { saveSeed(seed: string, unlock: Unlock, meta: WalletMeta): Promise<void>; cancelPasskey?(): void }
 
 /** A new seed's birthday: the tip less a margin, so a payment made while the phrase is being
  *  written down is still scanned (W2). */
@@ -26,8 +31,8 @@ export function normalizeServer(url: string): string {
 }
 
 export class OnboardingVm extends Vm<OnboardingState> {
-  constructor(private core: Core, private keystore: Keystore, private defaultServer = "", network = "regtest") {
-    super({ step: "start", restoring: false, seedWords: "", confirmIndexes: [], birthday: 0, serverUrl: defaultServer, tip: null, trustAccepted: false, busy: false, error: "", network });
+  constructor(private core: Core, private keystore: Keystore, private defaultServer = "", network = "regtest", serverFixed = false) {
+    super({ step: "start", restoring: false, seedWords: "", confirmIndexes: [], birthday: 0, serverUrl: defaultServer, tip: null, trustAccepted: false, busy: false, error: "", network, serverFixed: serverFixed && !!defaultServer, passkeyWaiting: false });
   }
   private async run(f: () => Promise<void>) {
     this.set({ busy: true, error: "" });
@@ -64,10 +69,11 @@ export class OnboardingVm extends Vm<OnboardingState> {
   }
   checkServer(serverUrl: string) {
     return this.run(async () => {
-      const url = normalizeServer(serverUrl);
+      const url = normalizeServer(this.state.serverFixed ? this.defaultServer : serverUrl);
       if (!/^https?:\/\/[^\s/]+:\d+$/.test(url)) throw new Error("invalid: a server is http(s)://host:port");
       if (url.startsWith("http://") && !/localhost|127\.0\.0\.1|\.local/.test(url) && !import.meta.env?.DEV) throw new Error("invalid: a plain connection is for a local devnet only");
-      const tip = await this.core.latest_height(url, this.state.network);
+      let tip: number;
+      try { tip = await this.core.latest_height(url, this.state.network); } catch (e) { throw new Error(unreachableServer(messageOf(e), url)); }
       // A seed made here starts BIRTHDAY_MARGIN blocks below the tip; a restore keeps its own.
       const birthday = this.state.restoring ? this.state.birthday : Math.max(1, tip - BIRTHDAY_MARGIN);
       this.set({ serverUrl: url, tip, birthday });
@@ -96,10 +102,15 @@ export class OnboardingVm extends Vm<OnboardingState> {
     return this.run(async () => {
       const s = this.state;
       const storeDir = await this.openStore();
+      this.set({ passkeyWaiting: unlock.method === "prf" });
       try {
         await this.keystore.saveSeed(s.seedWords, unlock, { birthday: s.birthday, serverUrl: s.serverUrl, network: s.network, createdAt: Date.now(), ...(storeDir ? { storeDir } : {}) });
       } catch (e) { await this.core.close().catch(() => {}); throw e; }
+      finally { this.set({ passkeyWaiting: false }); }
       this.set({ step: "done", seedWords: "" });
     });
   }
+  /** Cancel a passkey request in progress: `finish` then fails with the keystore's plain message and
+   *  the unlock step offers the passkey and the passphrase again. */
+  cancelPasskey() { this.keystore.cancelPasskey?.(); }
 }

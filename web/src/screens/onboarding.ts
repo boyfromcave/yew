@@ -1,9 +1,11 @@
 import { mount } from "../dom";
 import { clear, h } from "../dom";
 import { OnboardingVm } from "../vm/onboarding";
-import { trustParagraphs, trustTitle } from "../trust";
+import { trustParagraphsFor, trustTitle } from "../trust";
 import { errorCard } from "../widgets";
 import { prfAvailable } from "../keystore";
+import { localize } from "../prefixes";
+import { OPEN_ELSEWHERE, hostedServerText, openElsewhere } from "../plain";
 
 export function renderOnboarding(root: HTMLElement, vm: OnboardingVm) {
   const draw = () => {
@@ -34,18 +36,27 @@ export function renderOnboarding(root: HTMLElement, vm: OnboardingVm) {
         h("div", { class: "actions" }, h("button", { on: { click: () => vm.restore(words.value, Number(bday.value)) } }, "Continue"),
           h("button", { class: "secondary", on: { click: () => vm.set({ step: "start", error: "" }) } }, "Back")));
     } else if (s.step === "server") {
-      const url = h("input", { type: "url", value: s.serverUrl, placeholder: "https://host:port — no default: enter one you trust" });
-      mount(root, h("h2", null, "Server"), h("p", null, "The light-client server this wallet trusts (the statement follows). On mainnet it must be https."), url, err,
+      // A hosted build connects to its own server only (its policy allows no other): shown, not editable.
+      const url = h("input", { type: "url", value: s.serverUrl, readOnly: s.serverFixed, placeholder: "https://host:port — no default: enter one you trust" });
+      mount(root, h("h2", null, "Server"), h("p", null, "The light-client server this wallet trusts (the statement follows). On mainnet it must be https."), url,
+        s.serverFixed ? h("p", { class: "small" }, hostedServerText(s.serverUrl)) : null, err,
         h("div", { class: "actions" }, h("button", { class: "secondary", disabled: busy, on: { click: () => vm.checkServer(url.value) } }, s.tip === null ? "Check server" : `Server ok · tip ${s.tip}`),
           h("button", { disabled: s.tip === null || busy, on: { click: () => vm.serverDone() } }, "Continue")));
     } else if (s.step === "trust") {
       const cb = h("input", { type: "checkbox", checked: s.trustAccepted, on: { change: () => vm.acceptTrust(cb.checked) } });
-      mount(root, h("h2", null, trustTitle), trustParagraphs.map((p) => h("p", { class: "trust" }, p)),
+      mount(root, h("h2", null, trustTitle), trustParagraphsFor(s.serverFixed).map((p) => h("p", { class: "trust" }, localize(p))),
         h("label", null, cb, " I understand what this wallet trusts"), h("div", { class: "actions" }, h("button", { disabled: !s.trustAccepted, on: { click: () => vm.trustDone() } }, "Continue")));
     } else if (s.step === "unlock") {
       const pass = h("input", { type: "password", autocomplete: "new-password", placeholder: "at least 8 characters" });
       const pass2 = h("input", { type: "password", autocomplete: "new-password", placeholder: "again" });
       const prf = prfAvailable();
+      // A passkey request can always be ended here (a browser without an authenticator may never answer).
+      if (s.passkeyWaiting) {
+        mount(root, h("h2", null, "Unlock"), h("div", { class: "card" }, h("h3", null, "Waiting for your passkey"),
+          h("p", { class: "small" }, "Follow your browser's prompt. If nothing appears, cancel and choose a passphrase."),
+          h("div", { class: "actions" }, h("button", { class: "secondary", on: { click: () => vm.cancelPasskey() } }, "Cancel"))));
+        return;
+      }
       mount(root, h("h2", null, "Unlock"), h("p", null, "The phrase is encrypted in this browser. Choose what unlocks it."),
         prf ? h("div", { class: "card" }, h("h3", null, "Passkey (recommended)"), h("p", { class: "small" }, "The key is derived by your authenticator (WebAuthn PRF: Touch ID, Windows Hello, a security key); no passphrase to remember."),
           h("button", { disabled: busy, on: { click: () => vm.finish({ method: "prf" }) } }, s.restoring ? "Restore with a passkey" : "Create with a passkey")) : null,
@@ -58,12 +69,20 @@ export function renderOnboarding(root: HTMLElement, vm: OnboardingVm) {
   draw(); return vm.subscribe(draw);
 }
 
-/** The returning-user unlock. */
-export function renderUnlock(root: HTMLElement, method: "prf" | "passphrase", onUnlock: (u: { method: "prf" } | { method: "passphrase"; passphrase: string }) => Promise<void>, onForget: () => void) {
+/** The returning-user unlock. `onCancel` ends a passkey request in progress (keystore.cancelPasskey). */
+export function renderUnlock(root: HTMLElement, method: "prf" | "passphrase", onUnlock: (u: { method: "prf" } | { method: "passphrase"; passphrase: string }) => Promise<void>, onForget: () => void, onCancel?: () => void) {
   clear(root);
   const pass = h("input", { type: "password", autocomplete: "current-password" });
   const err = h("div");
-  const run = async (u: { method: "prf" } | { method: "passphrase"; passphrase: string }) => { clear(err); try { await onUnlock(u); } catch (e) { err.append(errorCard(e instanceof Error ? e.message : String(e))!); } };
+  const run = async (u: { method: "prf" } | { method: "passphrase"; passphrase: string }) => {
+    clear(err);
+    if (u.method === "prf" && onCancel) mount(err, h("div", { class: "card" }, h("p", { class: "small" }, "Waiting for your passkey. Follow your browser's prompt."),
+      h("div", { class: "actions" }, h("button", { class: "secondary", on: { click: () => onCancel() } }, "Cancel"))));
+    try { await onUnlock(u); } catch (e) {
+      const m = e instanceof Error ? e.message : String(e);
+      clear(err); err.append(errorCard(openElsewhere(m) ? OPEN_ELSEWHERE : m)!);
+    }
+  };
   mount(root, h("h1", { class: "yed" }, "YEW"), h("h2", null, "Unlock"),
     method === "prf" ? h("button", { on: { click: () => run({ method: "prf" }) } }, "Unlock with your passkey")
       : [h("label", null, "Passphrase"), pass, h("div", { class: "actions" }, h("button", { on: { click: () => run({ method: "passphrase", passphrase: pass.value }) } }, "Unlock"))],
