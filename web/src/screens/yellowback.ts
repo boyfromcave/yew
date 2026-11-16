@@ -107,17 +107,20 @@ export function renderVault(root: HTMLElement, vm: YellowbackVm, vaultTxid: stri
   const draw = () => {
     clear(root);
     const s = vm.state; const v = s.vaults.find((x) => x.vaultTxid === vaultTxid);
+    // only this vault's preview: one asked for on another vault's screen is not this one's (beta3)
+    const redeem = vm.redeemFor(vaultTxid);
     if (s.txid) { mount(root, resultCard("Vault redeemed", s.txid, () => { vm.reset(); go("yellowback"); })); return; }
     if (!v) { mount(root, h("h2", null, "Vault"), h("p", null, s.vaults.length ? "No such vault." : "Loading…")); return; }
     mount(root, h("h2", null, "Vault"), h("div", { class: "big yed" }, formatYed(v.cents)), h("p", { class: "yec" }, `minted against ${formatYec(v.collateralZat)} YEC`),
       h("p", { class: "small" }, `${v.status} · class ${v.termClass} · minted at ${v.mintHeight} · term ends at ${v.lockHeight} · claimable from ${v.claimHeight} · tip ${v.tip}`),
       claimNotice(v),
       errorCard(s.error, s.errorKind),
-      !s.redeem ? h("div", { class: "actions" }, h("button", { disabled: s.busy || !v.open, on: { click: () => vm.redeemPreview(v.vaultTxid) } }, s.busy ? "Preparing…" : "Preview the redeem"), v.open ? h("span", { class: "small pending" }, redeemLabel(v)) : null) : null,
-      s.redeem ? [previewCard(s.redeem.kind === "early" ? "Redeem early" : "Redeem", [["YED burned", formatYed(s.redeem.burnCents)], ["Collateral returned", `${formatYec(s.redeem.collateralZat)} YEC`], ["Enforcement fee", feeLine(s.redeem.feeZat)], ["Fee payee", s.redeem.payee || "none"]],
-          BigInt(s.redeem.earlyRedeemFeeZat || 0) > 0n ? `Before the lock: an early-redeem fee of ${formatYec(s.redeem.earlyRedeemFeeZat)} YEC is taken from the collateral.` : undefined),
+      !redeem ? h("div", { class: "actions" }, h("button", { disabled: s.busy || !v.open, on: { click: () => vm.redeemPreview(v.vaultTxid) } }, s.busy ? "Preparing…" : "Preview the redeem"), v.open ? h("span", { class: "small pending" }, redeemLabel(v)) : null) : null,
+      redeem ? [previewCard(redeem.kind === "early" ? "Redeem early" : "Redeem", [["YED burned", formatYed(redeem.burnCents)], ["Collateral returned", `${formatYec(redeem.collateralZat)} YEC`], ["Enforcement fee", feeLine(redeem.feeZat)], ["Fee payee", redeem.payee || "none"]],
+          BigInt(redeem.earlyRedeemFeeZat || 0) > 0n ? `Before the lock: an early-redeem fee of ${formatYec(redeem.earlyRedeemFeeZat)} YEC is taken from the collateral.` : undefined),
         slideToConfirm("Slide to redeem", () => vm.confirm(), s.busy), h("button", { class: "secondary", on: { click: () => vm.reset() } }, "Cancel")] : null);
   };
+  if (vm.state.redeem && !vm.redeemFor(vaultTxid)) vm.set({ redeem: null });
   draw(); if (!vm.state.vaults.length) vm.load(); return vm.subscribe(draw);
 }
 

@@ -52,3 +52,32 @@ export function mockMode(build: { dev: boolean; flag: string | undefined }, sear
   if (build.flag === "1") return true;
   return build.dev && new URLSearchParams(search).get("mock") === "1";
 }
+
+/** Each receive tab's address prefixes, as keys of the table above (`yb` covers the YED forms with
+ *  and without a scheme letter: `yb…`, `ybf…`, `ybs…`). */
+const KIND_KEYS: Record<"shielded" | "transparent" | "pq_falcon" | "pq_slh" | "yed", string[]> = {
+  shielded: ["ys1"], transparent: ["s1"], pq_falcon: ["sqf"], pq_slh: ["sqs"], yed: ["yb", "ybf", "ybs"],
+};
+export type ReceiveKind = keyof typeof KIND_KEYS;
+
+/** The receive tab an address belongs to on `network`, by its longest matching prefix (so a testnet
+ *  `ytestsapling1…` is private, never YED's `yt…`), or null when it is none of the wallet's forms. */
+export function receiveKindOf(address: string, network: Network = current): ReceiveKind | null {
+  const p = PREFIXES[network];
+  let best: ReceiveKind | null = null, len = 0;
+  for (const [kind, keys] of Object.entries(KIND_KEYS) as [ReceiveKind, string[]][]) {
+    for (const k of keys) if (p[k].length > len && address.startsWith(p[k])) { best = kind; len = p[k].length; }
+  }
+  return best;
+}
+
+/** Whether `address` is of the type the `kind` tab names (beta3, the hosted acceptance run: the
+ *  Public (ECC) tab showed the private address). The Receive screen shows nothing else. */
+export function addressMatchesKind(kind: ReceiveKind, address: string, network: Network = current): boolean {
+  return address.length > 0 && receiveKindOf(address, network) === kind;
+}
+
+/** The prefixes the `kind` tab expects, for an error message (`ytestsapling1…`, `sm…`, …). */
+export function expectedPrefixes(kind: ReceiveKind, network: Network = current): string {
+  return [...new Set(KIND_KEYS[kind].map((k) => PREFIXES[network][k]))].map((p) => `${p}…`).join(", ");
+}

@@ -55,14 +55,17 @@ export function finishAck(message: string): { note: string; ack: string } | null
 }
 
 export class YellowbackVm extends Vm<YellowbackState> {
+  /** Bumped by reset and a new funding source: an estimate or preview asked for before is dropped (beta3). */
+  private gen = 0;
   constructor(private core: Core) {
     super({ vaults: [], claimable: [], busy: false, error: "", errorKind: "", availability: null, estimate: null, mint: null, mintId: null, mintStatus: null, step: null, redeem: null, claim: null, txid: "", feeAccepted: false, finishFee: null, from: "", sources: [], unavailable: [], carrierFeeAccepted: false, pending: [] });
   }
-  private async run(f: () => Promise<void>) {
+  /** `g`: the generation an estimate or preview was asked for in; its error is dropped once the user left it (beta3 review). */
+  private async run(f: () => Promise<void>, g?: number) {
     this.set({ busy: true, error: "", errorKind: "" });
-    try { await f(); } catch (e) { this.set({ error: messageOf(e), errorKind: kindOf(e) }); } finally { this.set({ busy: false }); }
+    try { await f(); } catch (e) { if (g === undefined || g === this.gen) this.set({ error: messageOf(e), errorKind: kindOf(e) }); } finally { this.set({ busy: false }); }
   }
-  reset() { this.set({ estimate: null, mint: null, mintId: null, mintStatus: null, step: null, redeem: null, claim: null, txid: "", error: "", errorKind: "", feeAccepted: false, finishFee: null, carrierFeeAccepted: false }); }
+  reset() { this.gen++; this.set({ estimate: null, mint: null, mintId: null, mintStatus: null, step: null, redeem: null, claim: null, txid: "", error: "", errorKind: "", feeAccepted: false, finishFee: null, carrierFeeAccepted: false }); }
   /** The "Fund from" chooser: the post-quantum sources and the shapes this build cannot run. */
   async loadSources() {
     try {
@@ -70,7 +73,7 @@ export class YellowbackVm extends Vm<YellowbackState> {
       this.set({ sources, unavailable, from: sources.some((x) => x.address === this.state.from) ? this.state.from : "" });
     } catch (e) { this.set({ error: messageOf(e), errorKind: kindOf(e) }); }
   }
-  setFrom(from: string) { this.set({ from, estimate: null, mint: null, error: "", errorKind: "", carrierFeeAccepted: false }); }
+  setFrom(from: string) { this.gen++; this.set({ from, estimate: null, mint: null, error: "", errorKind: "", carrierFeeAccepted: false }); }
   unavailableReason(shape: Unavailable["shape"]): string | null { return this.state.unavailable.find((u) => u.shape === shape)?.reason ?? null; }
   acceptCarrierFee() { this.set({ carrierFeeAccepted: true }); }
   /** The user's own confirmation of the shown unusual fee (estimate, claim, or the finish's new fee). */
@@ -102,11 +105,14 @@ export class YellowbackVm extends Vm<YellowbackState> {
   loadClaimable() { return this.run(async () => { this.set({ claimable: await this.core.claimable() }); await this.loadPending(); }); }
 
   estimate(amount: string, lockBlocks: number) {
+    const g = this.gen;
     return this.run(async () => {
       const cents = parseYedCents(amount); if (cents === null || cents <= 0n) throw new Error("invalid: enter an amount in dollars, like 25.00");
       if (!Number.isInteger(lockBlocks) || lockBlocks <= 0) throw new Error("invalid: the lock is a number of blocks");
-      this.set({ estimate: await this.core.mint_estimate(cents.toString(), lockBlocks, this.state.from), mint: null, mintId: null, mintStatus: null, step: null, txid: "", feeAccepted: false, finishFee: null, carrierFeeAccepted: false });
-    });
+      const est = await this.core.mint_estimate(cents.toString(), lockBlocks, this.state.from);
+      if (g !== this.gen) return;
+      this.set({ estimate: est, mint: null, mintId: null, mintStatus: null, step: null, txid: "", feeAccepted: false, finishFee: null, carrierFeeAccepted: false });
+    }, g);
   }
   /** Start: the carrier preview for the estimate the user saw. */
   mintStart() {
@@ -198,14 +204,24 @@ export class YellowbackVm extends Vm<YellowbackState> {
   }
   mintSweep() { return this.run(async () => { const id = this.state.mintId; if (id === null) return; const step = await this.core.mint_sweep(id); this.set({ step, mintStatus: step.row }); }); }
 
-  redeemPreview(vaultTxid: string) { return this.run(async () => this.set({ redeem: await this.core.redeem_preview(vaultTxid), claim: null, txid: "" })); }
+  redeemPreview(vaultTxid: string) {
+    const g = this.gen;
+    return this.run(async () => {
+      const redeem = await this.core.redeem_preview(vaultTxid);
+      if (g === this.gen) this.set({ redeem, claim: null, txid: "" });
+    }, g);
+  }
+  /** The redeem preview for `vaultTxid` only: a preview of another vault is never shown on this one's screen (beta3). */
+  redeemFor(vaultTxid: string): RedeemPreview | null { const r = this.state.redeem; return r && r.vaultTxid === vaultTxid ? r : null; }
   claimPreview(vaultTxid: string) {
+    const g = this.gen;
     return this.run(async () => {
       // final-run D-3: only a vault the node judges claimable at its tip (`claimable: true`)
       const row = this.state.claimable.find((c) => c.vaultTxid === vaultTxid);
       if (row && !row.claimable) throw new Error("invalid: The node does not judge this vault claimable now.");
-      this.set({ claim: await this.core.claim_preview(vaultTxid), redeem: null, txid: "", feeAccepted: false });
-    });
+      const claim = await this.core.claim_preview(vaultTxid);
+      if (g === this.gen) this.set({ claim, redeem: null, txid: "", feeAccepted: false });
+    }, g);
   }
   get previewId() { return this.state.redeem?.previewId ?? this.state.claim?.previewId ?? ""; }
   confirm() {
