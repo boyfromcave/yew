@@ -966,6 +966,63 @@ fn mint_state(w: &Wallet, id: i64) -> yew_core::store::MintState {
     w.store.mint(id).unwrap().unwrap().state
 }
 
+/// Finish the CLAIM row `id` after the suites' price drop (the server's YEC price is below half
+/// the wallet's reference). The start priced the CLAIM at the estimate's size
+/// (`main_fee_guard`: one P2PKH input, 1,150 bytes), under the guard's floor
+/// (`UNUSUAL_FEE_FLOOR_ZAT`, beta3 item 16), so it asked nothing. The real transaction carries
+/// the wallet's Falcon YED input (TOK-PQ) and is about twice that size: its fee at the dropped
+/// price is above the floor, so the low-price rule flags it at the finish. Asserted here:
+/// - the finish without an acknowledgement is refused (`unusual-fee:`), names the
+///   acknowledgement `accept-unusual-fee:<fee>:row:<id>` with a fee above the floor, and sends
+///   nothing: the row is exactly as before, `CARRIER_CONFIRMED`;
+/// - the finish with a different acknowledgement is refused the same way;
+/// - the finish with the acknowledgement the refusal names is accepted.
+async fn finish_claim_acknowledged(
+    w: &Wallet,
+    c: &mut CompactClient,
+    v: &mut Validator,
+    id: i64,
+    tip: u64,
+    branch_id: u32,
+) -> yew_core::build::mint::Finished {
+    let before = w.store.mint(id).unwrap().unwrap();
+    assert_eq!(
+        before.state,
+        yew_core::store::MintState::CarrierConfirmed,
+        "{before:?}"
+    );
+    let m = w
+        .mint_finish(c, v, id, tip, branch_id, None)
+        .await
+        .expect_err("a CLAIM fee above the floor at a low price needs its own acknowledgement")
+        .to_string();
+    assert!(
+        m.starts_with("unusual-fee:") && m.contains("nothing was sent"),
+        "{m}"
+    );
+    let at = m.find("accept-unusual-fee:").expect("an acknowledgement");
+    let ack = m[at..].split(';').next().unwrap().to_string();
+    let fields: Vec<&str> = ack.split(':').collect();
+    let fee: i64 = match fields.as_slice() {
+        ["accept-unusual-fee", fee, "row", row] if *row == id.to_string() => fee.parse().unwrap(),
+        _ => panic!("the acknowledgement is accept-unusual-fee:<fee>:row:{id}: {m}"),
+    };
+    assert!(fee > yew_core::build::terms::UNUSUAL_FEE_FLOOR_ZAT, "{m}");
+    println!("claim finish of row {id} asks for {ack}");
+    assert_eq!(w.store.mint(id).unwrap().unwrap(), before, "nothing sent");
+    let wrong = format!("accept-unusual-fee:{}:row:{id}", fee - 1);
+    let m2 = w
+        .mint_finish(c, v, id, tip, branch_id, Some(&wrong))
+        .await
+        .expect_err("another fee's acknowledgement does not pass")
+        .to_string();
+    assert!(m2.starts_with("unusual-fee:") && m2.contains(&ack), "{m2}");
+    assert_eq!(w.store.mint(id).unwrap().unwrap(), before, "nothing sent");
+    w.mint_finish(c, v, id, tip, branch_id, Some(&ack))
+        .await
+        .expect("the finish with the acknowledgement it asked for")
+}
+
 #[tokio::test]
 #[ignore = "needs the ARMED regtest devnet (scripts/devnet-w4.sh) and YEW_DEVNET=1"]
 async fn w4_mint_resume_lapse_redeem_import_and_claim() {
@@ -1623,28 +1680,9 @@ async fn w4_mint_resume_lapse_redeem_import_and_claim() {
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
     assert_eq!(mint_state(&a, idc), MintState::CarrierConfirmed);
     let (yed_before, yec_before) = (r.yed.0, r.yec.0 + r.yec.1);
-    // The start priced the CLAIM at the estimate's size, under the guard's floor, so it asked
-    // nothing. The real transaction burns the debt's YED inputs and is larger: when its fee at the
-    // dropped price is above the floor, the finish asks for the acknowledgement it names (the fee
-    // is the accepted rate at the real size); nothing is sent until it is passed back.
-    let fc = match a
-        .mint_finish(&mut c, &mut v, idc, r.tip, r.branch_id, None)
-        .await
-    {
-        Ok(fc) => fc,
-        Err(e) => {
-            let m = e.to_string();
-            assert!(m.starts_with("unusual-fee:"), "{m}");
-            let at = m.find("accept-unusual-fee:").expect("an acknowledgement");
-            let ack = m[at..].split(';').next().unwrap().to_string();
-            println!("claim finish asks for {ack}");
-            let fee: i64 = ack.split(':').nth(1).unwrap().parse().unwrap();
-            assert!(fee > yew_core::build::terms::UNUSUAL_FEE_FLOOR_ZAT, "{m}");
-            a.mint_finish(&mut c, &mut v, idc, r.tip, r.branch_id, Some(&ack))
-                .await
-                .unwrap()
-        }
-    };
+    // The start asked nothing (its estimate is under the guard's floor); the real CLAIM is above
+    // it, so the finish is refused once and then passes with the acknowledgement it names.
+    let fc = finish_claim_acknowledged(&a, &mut c, &mut v, idc, r.tip, r.branch_id).await;
     assert_eq!(
         (
             fc.validation.verdict.as_str(),
@@ -1963,11 +2001,14 @@ async fn w4_claim_cancelled_by_the_attestor_set() {
     );
     let target_id = txid_from_hex(&target).unwrap();
     // After the price shock the server reports a YEC price below half this wallet's reference; the
-    // CLAIM fee stays at or below the guard's floor (beta3 item 16), so there is no acknowledgement
-    // to pass. Whatever the confirmation screen would show is passed.
-    let accept = yew_core::build::mint::main_fee_guard(&b, "claim")
-        .unwrap()
-        .ack;
+    // CLAIM start's fee is at or below the guard's floor (beta3 item 16), so the start is not
+    // flagged and takes no acknowledgement.
+    let guard = yew_core::build::mint::main_fee_guard(&b, "claim").unwrap();
+    assert!(
+        guard.fee <= yew_core::build::terms::UNUSUAL_FEE_FLOOR_ZAT && guard.ack.is_none(),
+        "{guard:?}"
+    );
+    let accept = guard.ack;
     let bounds = yew_core::build::terms::ClaimBounds {
         max_burn_cents: entry.minted_cents,
         min_out_zat: entry.claimant_zat,
@@ -1987,28 +2028,9 @@ async fn w4_claim_cancelled_by_the_attestor_set() {
     let mc = b.store.mint(id).unwrap().unwrap();
     confirm(&dn, &mut c, &txid_hex(&mc.carrier_txid)).await;
     let r = sync(&mut b, &mut c, v.client_mut()).await.unwrap();
-    // The start priced the CLAIM at the estimate's size, under the guard's floor, so it asked
-    // nothing. The real transaction burns the debt's YED inputs and is larger: when its fee at the
-    // dropped price is above the floor, the finish asks for the acknowledgement it names (the fee
-    // is the accepted rate at the real size); nothing is sent until it is passed back.
-    let fc = match b
-        .mint_finish(&mut c, &mut v, id, r.tip, r.branch_id, None)
-        .await
-    {
-        Ok(fc) => fc,
-        Err(e) => {
-            let m = e.to_string();
-            assert!(m.starts_with("unusual-fee:"), "{m}");
-            let at = m.find("accept-unusual-fee:").expect("an acknowledgement");
-            let ack = m[at..].split(';').next().unwrap().to_string();
-            println!("claim finish asks for {ack}");
-            let fee: i64 = ack.split(':').nth(1).unwrap().parse().unwrap();
-            assert!(fee > yew_core::build::terms::UNUSUAL_FEE_FLOOR_ZAT, "{m}");
-            b.mint_finish(&mut c, &mut v, id, r.tip, r.branch_id, Some(&ack))
-                .await
-                .unwrap()
-        }
-    };
+    // The start asked nothing (its estimate is under the guard's floor); the real CLAIM is above
+    // it, so the finish is refused once and then passes with the acknowledgement it names.
+    let fc = finish_claim_acknowledged(&b, &mut c, &mut v, id, r.tip, r.branch_id).await;
     assert_eq!(fc.validation.verdict, "ok");
     dn.wait_mempool(&fc.txid);
     let h = mine_split(&pool_px, &attested_px);
@@ -2470,28 +2492,9 @@ async fn it_early_redeem_and_in_term_claim() {
     let mc = a.store.mint(idc).unwrap().unwrap();
     confirm(&dn, &mut c, &txid_hex(&mc.carrier_txid)).await;
     let r = sync(&mut a, &mut c, v.client_mut()).await.unwrap();
-    // The start priced the CLAIM at the estimate's size, under the guard's floor, so it asked
-    // nothing. The real transaction burns the debt's YED inputs and is larger: when its fee at the
-    // dropped price is above the floor, the finish asks for the acknowledgement it names (the fee
-    // is the accepted rate at the real size); nothing is sent until it is passed back.
-    let fc = match a
-        .mint_finish(&mut c, &mut v, idc, r.tip, r.branch_id, None)
-        .await
-    {
-        Ok(fc) => fc,
-        Err(e) => {
-            let m = e.to_string();
-            assert!(m.starts_with("unusual-fee:"), "{m}");
-            let at = m.find("accept-unusual-fee:").expect("an acknowledgement");
-            let ack = m[at..].split(';').next().unwrap().to_string();
-            println!("claim finish asks for {ack}");
-            let fee: i64 = ack.split(':').nth(1).unwrap().parse().unwrap();
-            assert!(fee > yew_core::build::terms::UNUSUAL_FEE_FLOOR_ZAT, "{m}");
-            a.mint_finish(&mut c, &mut v, idc, r.tip, r.branch_id, Some(&ack))
-                .await
-                .unwrap()
-        }
-    };
+    // The start asked nothing (its estimate is under the guard's floor); the real CLAIM is above
+    // it, so the finish is refused once and then passes with the acknowledgement it names.
+    let fc = finish_claim_acknowledged(&a, &mut c, &mut v, idc, r.tip, r.branch_id).await;
     assert_eq!(
         (fc.validation.verdict.as_str(), fc.validation.path.as_str()),
         ("ok", "claim")
