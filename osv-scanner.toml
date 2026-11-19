@@ -18,6 +18,51 @@ ignoreUntil = 2027-01-21
 reason = "atomic-polyfill is unmaintained (informational, no vulnerability, no fix). It is in Cargo.lock only through frost-core -> postcard -> heapless 0.7, which no enabled feature builds: `cargo tree --locked --target all -e all -i atomic-polyfill` prints nothing. cargo audit reports it as a non-blocking warning too."
 
 [[IgnoredVulns]]
+id = "RUSTSEC-2026-0574"
+ignoreUntil = 2027-02-17
+reason = "heapless 0.7.17 (unsound APIs in heapless 0.7, fixed only in 0.9.4+): heapless arrives only via frost-core 3.0.0 -> postcard 1.1.3 (default features) and is not compiled (in Cargo.lock, yewd/, web/core-wasm/ and web/spike-* locks only as an optional dependency of reddsa's unused frost feature); no affected API reachable. Accepted by the Yellowback lead architect 2026-11-19; tracked in issue #64."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0575"
+ignoreUntil = 2027-02-17
+reason = "heapless 0.7.17 (unsound APIs in heapless 0.7, fixed only in 0.9.4+): heapless arrives only via frost-core 3.0.0 -> postcard 1.1.3 (default features) and is not compiled (in Cargo.lock, yewd/, web/core-wasm/ and web/spike-* locks only as an optional dependency of reddsa's unused frost feature); no affected API reachable. Accepted by the Yellowback lead architect 2026-11-19; tracked in issue #64."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0576"
+ignoreUntil = 2027-02-17
+reason = "heapless 0.7.17 (unsound APIs in heapless 0.7, fixed only in 0.9.4+): heapless arrives only via frost-core 3.0.0 -> postcard 1.1.3 (default features) and is not compiled (in Cargo.lock, yewd/, web/core-wasm/ and web/spike-* locks only as an optional dependency of reddsa's unused frost feature); no affected API reachable. Accepted by the Yellowback lead architect 2026-11-19; tracked in issue #64."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0577"
+ignoreUntil = 2027-02-17
+reason = "heapless 0.7.17 (unsound APIs in heapless 0.7, fixed only in 0.9.4+): heapless arrives only via frost-core 3.0.0 -> postcard 1.1.3 (default features) and is not compiled (in Cargo.lock, yewd/, web/core-wasm/ and web/spike-* locks only as an optional dependency of reddsa's unused frost feature); no affected API reachable. Accepted by the Yellowback lead architect 2026-11-19; tracked in issue #64."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0578"
+ignoreUntil = 2027-02-17
+reason = "heapless 0.7.17 (unsound APIs in heapless 0.7, fixed only in 0.9.4+): heapless arrives only via frost-core 3.0.0 -> postcard 1.1.3 (default features) and is not compiled (in Cargo.lock, yewd/, web/core-wasm/ and web/spike-* locks only as an optional dependency of reddsa's unused frost feature); no affected API reachable. Accepted by the Yellowback lead architect 2026-11-19; tracked in issue #64."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0579"
+ignoreUntil = 2027-02-17
+reason = "heapless 0.7.17 (unsound APIs in heapless 0.7, fixed only in 0.9.4+): heapless arrives only via frost-core 3.0.0 -> postcard 1.1.3 (default features) and is not compiled (in Cargo.lock, yewd/, web/core-wasm/ and web/spike-* locks only as an optional dependency of reddsa's unused frost feature); no affected API reachable. Accepted by the Yellowback lead architect 2026-11-19; tracked in issue #64."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0580"
+ignoreUntil = 2027-02-17
+reason = "heapless 0.7.17 (unsound APIs in heapless 0.7, fixed only in 0.9.4+): heapless arrives only via frost-core 3.0.0 -> postcard 1.1.3 (default features) and is not compiled (in Cargo.lock, yewd/, web/core-wasm/ and web/spike-* locks only as an optional dependency of reddsa's unused frost feature); no affected API reachable. Accepted by the Yellowback lead architect 2026-11-19; tracked in issue #64."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0581"
+ignoreUntil = 2027-02-17
+reason = "heapless 0.7.17 (unsound APIs in heapless 0.7, fixed only in 0.9.4+): heapless arrives only via frost-core 3.0.0 -> postcard 1.1.3 (default features) and is not compiled (in Cargo.lock, yewd/, web/core-wasm/ and web/spike-* locks only as an optional dependency of reddsa's unused frost feature); no affected API reachable. Accepted by the Yellowback lead architect 2026-11-19; tracked in issue #64."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0582"
+ignoreUntil = 2027-02-17
+reason = "heapless 0.7.17 (unsound APIs in heapless 0.7, fixed only in 0.9.4+): heapless arrives only via frost-core 3.0.0 -> postcard 1.1.3 (default features) and is not compiled (in Cargo.lock, yewd/, web/core-wasm/ and web/spike-* locks only as an optional dependency of reddsa's unused frost feature); no affected API reachable. Accepted by the Yellowback lead architect 2026-11-19; tracked in issue #64."
+
+[[IgnoredVulns]]
 id = "GHSA-qwgh-2vcv-g2f7"
 ignoreUntil = 2027-01-25
 reason = "Cargo.lock: block-buffer 0.10.4 and 0.11.0-rc.3 under digest (sha2/blake2 in the zcash_* crates and the wallet's own hashing). GHSA-qwgh-2vcv-g2f7 (moderate, GitHub-only, not in the RustSec database cargo-deny reads): a panic caught inside a digest's compress callback can leave block-buffer's cursor out of range, so a later use of the same buffer reads or writes out of bounds. Fixed only in 0.12.1 (the digest 0.11 line); the digest 0.10 line, which every released sha2/sha3/blake2 still uses, has no fixed release. Nothing in yew calls catch_unwind, so a panic inside a compress callback is never caught and the cursor is never reused. Revisit when the RustCrypto hashes ship on digest 0.11."
