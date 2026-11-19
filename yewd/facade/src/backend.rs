@@ -5,8 +5,10 @@
 //! The façade→backend leg: one HTTP/1.1 POST per call to the wallet-less node's JSON-RPC
 //! endpoint over a small pool of kept-alive connections (a connection per call left thousands of
 //! sockets in TIME_WAIT under the parity suites and ran the host out of ephemeral ports, finding
-//! F-S5-8), authenticated with the backend's cookie (re-read after a 401, so a backend restart
-//! is followed) or a configured user and password. The body goes out and comes back as bytes:
+//! F-S5-8), authenticated with the backend's cookie or a configured user and password. The cookie
+//! is re-read when the backend refuses it, so a backend restart is followed: after a 401 (ycashd),
+//! and after a connection the backend closed without an answer when the cookie on disk has
+//! changed meanwhile (koganyd up to beta3 answers a stale cookie that way, not with a 401). The body goes out and comes back as bytes:
 //! nothing is re-encoded, so amounts keep the node's decimal text.
 
 use std::net::SocketAddr;
@@ -31,6 +33,8 @@ pub enum BackendError {
     Unreachable(String),
     /// The backend refused the credentials twice.
     Unauthorized,
+    /// The backend closed the connection after the request was sent, without an answer.
+    Closed(String),
     Other(String),
 }
 
@@ -39,7 +43,7 @@ impl std::fmt::Display for BackendError {
         match self {
             BackendError::Unreachable(m) => write!(f, "backend not reachable: {m}"),
             BackendError::Unauthorized => f.write_str("backend refused the credentials"),
-            BackendError::Other(m) => write!(f, "backend error: {m}"),
+            BackendError::Closed(m) | BackendError::Other(m) => write!(f, "backend error: {m}"),
         }
     }
 }
@@ -98,14 +102,29 @@ impl Backend {
     /// POST `body` to `path` and return the backend's status and body unchanged.
     pub async fn call(&self, path: &str, body: Bytes) -> Result<(StatusCode, Bytes), BackendError> {
         let first = self.auth_header(false).await?;
-        let (status, out) = self.post(path, body.clone(), &first).await?;
+        let r = self.post(path, body.clone(), &first).await;
+        let closed = matches!(r, Err(BackendError::Closed(_)));
+        match &r {
+            Ok((status, _)) => {
+                self.answered
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                if *status != StatusCode::UNAUTHORIZED {
+                    return r;
+                }
+            }
+            Err(BackendError::Closed(_)) if matches!(self.auth, BackendAuth::Cookie(_)) => {}
+            Err(_) => return r,
+        }
+        // refused: re-read the credentials (a restarted backend wrote a new cookie)
+        let second = self.auth_header(true).await?;
+        if closed && second == first {
+            // the cookie did not change: the close was not a refusal of it, and the call may
+            // have reached the node, so it is not sent again
+            return r;
+        }
+        let (status, out) = self.post(path, body, &second).await?;
         self.answered
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        if status != StatusCode::UNAUTHORIZED {
-            return Ok((status, out));
-        }
-        let second = self.auth_header(true).await?;
-        let (status, out) = self.post(path, body, &second).await?;
         if status == StatusCode::UNAUTHORIZED {
             return Err(BackendError::Unauthorized);
         }
@@ -183,11 +202,16 @@ impl Backend {
                 .header(hyper::header::CONTENT_TYPE, "application/json")
                 .body(Full::new(body))
                 .map_err(|e| (false, BackendError::Other(e.to_string())))?;
-            // is_canceled: hyper never sent the request (the connection had closed)
-            let resp = send
-                .send_request(req)
-                .await
-                .map_err(|e| (e.is_canceled(), BackendError::Other(e.to_string())))?;
+            // is_canceled: hyper never sent the request (the connection had closed);
+            // is_incomplete_message: sent, and the backend closed the connection unanswered
+            let resp = send.send_request(req).await.map_err(|e| {
+                let err = if e.is_incomplete_message() {
+                    BackendError::Closed(e.to_string())
+                } else {
+                    BackendError::Other(e.to_string())
+                };
+                (e.is_canceled(), err)
+            })?;
             let status = resp.status();
             let keep = !resp
                 .headers()
