@@ -49,6 +49,9 @@ void main() {
     expect(find.text(fakePqSlh), findsOneWidget);
     expect(find.text(fakePqFalcon), findsNothing);
     expect(find.textContaining('~7.9 KB signature, so its fees are the largest'), findsOneWidget);
+    // beta4: never a mining payout address
+    expect(find.byKey(const Key('pq-mining-warning')), findsOneWidget);
+    expect(find.textContaining('Not for mining payouts'), findsOneWidget);
   });
 
   testWidgets('without Yellowback on the server the post-quantum tab is hidden', (tester) async {

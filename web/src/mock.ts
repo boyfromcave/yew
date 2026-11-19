@@ -4,9 +4,10 @@
 // mock never leaves the browser's memory and constructs no bytes: previews are opaque ids.
 import type {
   AddressCheck, AddressKind, AddressPair, Balances, ClaimPreview, ClaimableItem, Confirmed, Core, HistoryRow,
-  MintAvailability, MintEstimate, MintStart, MintStatus, MintStep, MintStartAcks, MoveDirection, MovePreview, ParamsProgress, ParamsStatus,
+  MiningReward, MintAvailability, MintEstimate, MintStart, MintStatus, MintStep, MintStartAcks, MoveDirection, MovePreview, ParamsProgress, ParamsStatus,
   PqSendPreview, PqSource, Progress, ProgressEvent, RedeemPreview, ShieldedBalance, Status, SyncResult, Unavailable, Vault, YecPreview, YedPreview,
 } from "./core";
+import { PQ_REWARD_WEB } from "./core";
 
 export const MOCK_SEED = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 // The wallet's own addresses carry regtest prefixes (the mock's network; src/prefixes.ts): Receive
@@ -149,6 +150,19 @@ export class MockCore implements Core {
     });
   }
   pq_sources() { return this.step(() => { this.need(); return this.pqSourceRows.map((x) => ({ ...x })); }); }
+  /** beta4: the wallet's mining rewards (none unless a test sets them). */
+  rewardRows: MiningReward[] = [];
+  mining_rewards() { return this.step(() => { this.need(); return this.rewardRows.map((x) => ({ ...x })); }); }
+  reward_move_preview(from: string) {
+    return this.step(() => {
+      this.need();
+      const rows = this.rewardRows.filter((r) => r.address === from && r.maturesIn === 0);
+      if (rows.some((r) => r.postQuantum)) throw new Error(`unavailable: ${PQ_REWARD_WEB}`);
+      if (!rows.length) throw new Error("build: This address holds no mature mining reward (a mining reward can be moved after 101 confirmations).");
+      const total = rows.reduce((a, r) => a + BigInt(r.valueZat), 0n);
+      return yec(this.preview("reward"), SHIELDED, (total - BigInt(FEE)).toString(), "0", "transparent", false, null, this.tip) as MovePreview;
+    });
+  }
   unavailable_shapes() {
     return this.step(() => [
       { shape: "pq_to_private", reason: NO_HYBRID }, { shape: "private_to_pq", reason: NO_HYBRID },

@@ -25,6 +25,7 @@ export '../src/rust/api.dart'
         MintEstimate,
         MintStatus,
         MintTerms,
+        MiningReward,
         MoveDirection,
         NetworkId,
         ParamsProgress,
@@ -135,6 +136,19 @@ abstract class WalletApi {
   Future<PqSendPreviewInfo> pqSendPreview({required String from, required String to, required int zat});
 
   Future<SendResult> pqSendConfirm({required String previewId, String? acceptUnusualFee});
+
+  /// The wallet's mining rewards (coinbase outputs; beta4), oldest first: in no balance and no
+  /// send until moved to the private balance at the exact amount.
+  Future<List<MiningReward>> miningRewards();
+
+  /// "Move to Sapling" for the mature mining rewards of the own post-quantum address [from]:
+  /// the exact amount (rewards less fee, no change), proven at the preview (the proving files
+  /// first), confirmed with [pqSendConfirm].
+  Future<PqSendPreviewInfo> rewardMovePreview({required String from});
+
+  /// The same for an own public (`s…`) address: a shield of the exact amount, confirmed with
+  /// [moveConfirm].
+  Future<YecPreview> rewardShieldPreview({required String from});
 
   /// A send from the private balance to a post-quantum address (`sqf…`/`sqs…`; beta2 D-2):
   /// proven at the preview (the proving files first), confirmed with [pqSendConfirm]. The

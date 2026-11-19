@@ -389,6 +389,8 @@ pub async fn sync_with_progress(
     }
 
     // 2. The confirmed UTXO set, classified, then the fee reserve.
+    // beta4: the outpoints the server says are coinbase (`GetAddressUtxosReply.coinbase`)
+    let mut flagged_coinbase: HashSet<OutPoint> = HashSet::new();
     let mut utxos: Vec<Utxo> = client
         .address_utxos(&addresses, birthday)
         .await?
@@ -398,6 +400,9 @@ pub async fn sync_with_progress(
                 txid: u.txid,
                 n: u.index,
             };
+            if u.coinbase {
+                flagged_coinbase.insert(outpoint);
+            }
             let (class, cents) = coins::classify(
                 &outpoint,
                 &u.script,
@@ -437,6 +442,9 @@ pub async fn sync_with_progress(
                     if falcon_ops.contains(&outpoint) {
                         continue;
                     }
+                    if u.coinbase {
+                        flagged_coinbase.insert(outpoint);
+                    }
                     let (class, cents) = coins::classify_pq_listed(
                         &outpoint,
                         &u.script,
@@ -463,8 +471,13 @@ pub async fn sync_with_progress(
     // creating transaction assigns it YED, or cannot be fetched and verified, is HELD: out of the
     // balance and of every selection, so it can neither burn YED nor block a send other coins
     // can fund. The broadcast gate checks again (`gate::confirm_provenance`).
-    report.provenance_held = hold_unproven(wallet, client, &mut utxos, progress.as_ref()).await?
-        + hold_unproven(wallet, client, &mut pq_rows, progress.as_ref()).await?;
+    // 2b'. beta4: the mining rewards (coinbase outputs) become their own classes before the
+    // provenance check and the fee reserve, so no ordinary path ever selects one.
+    let mut prefetched = mark_coinbase(wallet, client, &mut utxos, &flagged_coinbase).await?;
+    prefetched.extend(mark_coinbase(wallet, client, &mut pq_rows, &flagged_coinbase).await?);
+    report.provenance_held =
+        hold_unproven(wallet, client, &mut utxos, progress.as_ref(), &prefetched).await?
+            + hold_unproven(wallet, client, &mut pq_rows, progress.as_ref(), &prefetched).await?;
     utxos.extend(falcon_rows);
     coins::apply_fee_reserve(&mut utxos);
     for u in &utxos {
@@ -749,6 +762,87 @@ async fn fetch_parent(mut client: CompactClient, id: [u8; 32]) -> Option<Vec<u8>
     }
 }
 
+/// True when `tx` is a coinbase: exactly one input, with the null prevout (all-zero txid,
+/// index `0xffffffff`), as `CTransaction::IsCoinBase`.
+pub(crate) fn is_coinbase_tx(tx: &Transaction) -> bool {
+    tx.vin.len() == 1 && tx.vin[0].prevout.txid == [0u8; 32] && tx.vin[0].prevout.n == u32::MAX
+}
+
+/// Step 2b' (beta4): give every own `YEC` / `PQ_OWNED` row that is a coinbase output its class,
+/// [`UtxoClass::Coinbase`] / [`UtxoClass::PqCoinbase`] ([`coins::coinbase_class`]). The server's
+/// flag (`flagged`) decides when it is set; otherwise the stored answer for the txid; otherwise
+/// the creating transaction is fetched once ([`CHECK_CONCURRENCY`] at a time, each bounded by
+/// [`CHECK_TIMEOUT`]) and its first input read, so a server without the flag (an older
+/// lightwalletd, or an index such as ycash-infra's yindex that does not fill it) costs one
+/// `GetTransaction` per new transaction, once. The answer is stored for good (a txid's
+/// coinbase-ness never changes). A row whose transaction cannot be fetched or does not match
+/// its txid is `HELD` for this sync: it is not offered until the wallet knows. Returns the
+/// fetched transactions, verified by txid, for step 2c to reuse.
+async fn mark_coinbase(
+    wallet: &Wallet,
+    client: &mut CompactClient,
+    rows: &mut [Utxo],
+    flagged: &HashSet<OutPoint>,
+) -> Result<HashMap<[u8; 32], Vec<u8>>, WalletError> {
+    let mut known: HashMap<[u8; 32], bool> = HashMap::new();
+    let mut want: Vec<[u8; 32]> = Vec::new();
+    for u in rows.iter() {
+        if !matches!(u.class, UtxoClass::Yec | UtxoClass::PqOwned) {
+            continue;
+        }
+        let id = u.outpoint.txid;
+        if flagged.contains(&u.outpoint) {
+            if known.insert(id, true) != Some(true) {
+                wallet.store.set_tx_coinbase(&id, true)?;
+            }
+            continue;
+        }
+        if known.contains_key(&id) || want.contains(&id) {
+            continue;
+        }
+        match wallet.store.tx_coinbase(&id)? {
+            Some(v) => {
+                known.insert(id, v);
+            }
+            None => want.push(id),
+        }
+    }
+    let mut fetched: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+    for chunk in want.chunks(CHECK_CONCURRENCY) {
+        let got = join_all(
+            chunk
+                .iter()
+                .map(|id| fetch_parent(client.clone(), *id))
+                .collect(),
+        )
+        .await;
+        for (id, bytes) in chunk.iter().zip(got) {
+            let Some(raw) = bytes else { continue };
+            let Ok((tx, txid)) = Transaction::parse(&raw) else {
+                continue;
+            };
+            if txid != *id {
+                continue;
+            }
+            let cb = is_coinbase_tx(&tx);
+            wallet.store.set_tx_coinbase(id, cb)?;
+            known.insert(*id, cb);
+            fetched.insert(*id, raw);
+        }
+    }
+    for u in rows.iter_mut() {
+        if !matches!(u.class, UtxoClass::Yec | UtxoClass::PqOwned) {
+            continue;
+        }
+        match known.get(&u.outpoint.txid) {
+            Some(true) => u.class = coins::coinbase_class(u.class),
+            Some(false) => {}
+            None => u.class = UtxoClass::Held,
+        }
+    }
+    Ok(fetched)
+}
+
 /// Step 2c: classify `HELD` every row of class `YEC` or `PQ_OWNED` that layer 3 does not prove
 /// plain YEC ([`gate::output_provenance`]). A verdict reached on bytes whose txid matches the
 /// outpoint is final and stored (the bytes are the transaction); a fetch error or a server that
@@ -761,6 +855,7 @@ async fn hold_unproven(
     client: &mut CompactClient,
     rows: &mut [Utxo],
     progress: Option<&CheckProgress>,
+    prefetched: &HashMap<[u8; 32], Vec<u8>>,
 ) -> Result<usize, WalletError> {
     let now = crate::wallet::unix_secs();
     let mut backoff = wallet.provenance_backoff();
@@ -782,11 +877,15 @@ async fn hold_unproven(
             continue;
         }
         let id = u.outpoint.txid;
-        if is_due(&backoff, &id, now) && !want.contains(&id) {
+        if is_due(&backoff, &id, now) && !want.contains(&id) && !prefetched.contains_key(&id) {
             want.push(id);
         }
     }
-    let mut fetched: HashMap<[u8; 32], Option<Vec<u8>>> = HashMap::new();
+    // the transactions [`mark_coinbase`] fetched already (verified by txid there)
+    let mut fetched: HashMap<[u8; 32], Option<Vec<u8>>> = prefetched
+        .iter()
+        .map(|(id, raw)| (*id, Some(raw.clone())))
+        .collect();
     let total = want.len();
     for chunk in want.chunks(CHECK_CONCURRENCY) {
         let got = join_all(
@@ -1942,6 +2041,89 @@ mod tests {
         }
     }
 
+    /// beta4, step 2b': the server's flag makes a coin a mining reward (and is stored); a stored
+    /// answer decides without a fetch; a coin the wallet cannot check (the server unreachable)
+    /// is HELD for this sync; other classes are untouched; a fetched coinbase is recognised.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn mark_coinbase_flag_store_and_fallback() {
+        let dir = std::env::temp_dir().join(format!("yew-sync-coinbase-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.sqlite");
+        let w = Wallet::open(
+            path.to_str().unwrap(),
+            crate::params::Network::Regtest,
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            "",
+            Some(5),
+        )
+        .unwrap();
+        let mut client = CompactClient::from_channel(
+            tonic::transport::Endpoint::from_static("http://127.0.0.1:9").connect_lazy(),
+        );
+        let row = |b: u8, class: UtxoClass| Utxo {
+            outpoint: OutPoint {
+                txid: [b; 32],
+                n: 0,
+            },
+            address: String::new(),
+            script: Vec::new(),
+            value: 1_250_000_000,
+            height: 5,
+            class,
+            cents: 0,
+        };
+        w.store.set_tx_coinbase(&[2; 32], true).unwrap();
+        w.store.set_tx_coinbase(&[3; 32], false).unwrap();
+        let mut rows = vec![
+            row(1, UtxoClass::Yec),
+            row(2, UtxoClass::PqOwned),
+            row(3, UtxoClass::Yec),
+            row(4, UtxoClass::PqOwned),
+            row(5, UtxoClass::Token),
+        ];
+        let flagged: HashSet<OutPoint> = [
+            row(1, UtxoClass::Yec).outpoint,
+            row(5, UtxoClass::Token).outpoint,
+        ]
+        .into();
+        let fetched = mark_coinbase(&w, &mut client, &mut rows, &flagged)
+            .await
+            .unwrap();
+        assert!(fetched.is_empty());
+        let classes: Vec<UtxoClass> = rows.iter().map(|u| u.class).collect();
+        assert_eq!(
+            classes,
+            [
+                UtxoClass::Coinbase,
+                UtxoClass::PqCoinbase,
+                UtxoClass::Yec,
+                UtxoClass::Held,
+                UtxoClass::Token
+            ]
+        );
+        assert_eq!(w.store.tx_coinbase(&[1; 32]).unwrap(), Some(true));
+        assert_eq!(
+            w.store.tx_coinbase(&[4; 32]).unwrap(),
+            None,
+            "not stored when unknown"
+        );
+        // the fallback's reading of a fetched transaction
+        let mut cb = Transaction::new_v4();
+        cb.vin.push(crate::tx::TxIn::new(OutPoint {
+            txid: [0; 32],
+            n: u32::MAX,
+        }));
+        assert!(is_coinbase_tx(&cb));
+        cb.vin[0].prevout.n = 0;
+        assert!(!is_coinbase_tx(&cb));
+        cb.vin[0].prevout.n = u32::MAX;
+        cb.vin.push(cb.vin[0].clone());
+        assert!(!is_coinbase_tx(&cb));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// yew#38 review: the stored layer-3 verdict that sets the has-held-YED marker is exactly
     /// `InputCarriesYed` (the text the sync stores), never another provenance refusal, nor the
     /// plain-YEC verdict (empty).
@@ -2012,7 +2194,7 @@ mod tests {
             .unwrap();
         let mut rows = vec![row(1)];
         assert_eq!(
-            hold_unproven(&w, &mut client, &mut rows, None)
+            hold_unproven(&w, &mut client, &mut rows, None, &HashMap::new())
                 .await
                 .unwrap(),
             1
@@ -2032,7 +2214,7 @@ mod tests {
             .unwrap();
         let mut rows = vec![row(1), row(2)];
         assert_eq!(
-            hold_unproven(&w, &mut client, &mut rows, None)
+            hold_unproven(&w, &mut client, &mut rows, None, &HashMap::new())
                 .await
                 .unwrap(),
             2

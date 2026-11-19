@@ -997,6 +997,19 @@ pub struct PqSource {
     pub balance_zat: String,
 }
 
+/// One mining reward (a coinbase output) at an own address (`api::MiningReward`, beta4).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MiningReward {
+    pub address: String,
+    pub post_quantum: bool,
+    pub outpoint: String,
+    pub value_zat: String,
+    pub height: u64,
+    /// Blocks until it can be moved (0: mature, 101 confirmations).
+    pub matures_in: u64,
+}
+
 /// A send from a post-quantum address before confirmation (`api::PqSendPreviewInfo`).
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

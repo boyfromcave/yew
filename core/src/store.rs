@@ -546,6 +546,7 @@ CREATE TABLE IF NOT EXISTS vaults (
 CREATE TABLE IF NOT EXISTS pq_owners (idx INTEGER PRIMARY KEY, scheme INTEGER NOT NULL, hash BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS pq_holders (idx INTEGER PRIMARY KEY, scheme INTEGER NOT NULL, hash BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS provenance (txid BLOB NOT NULL, n INTEGER NOT NULL, verdict TEXT NOT NULL, classifier INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (txid, n));
+CREATE TABLE IF NOT EXISTS tx_coinbase (txid BLOB PRIMARY KEY, coinbase INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS claim_bounds (
   mint_id INTEGER PRIMARY KEY, max_burn_cents INTEGER NOT NULL, min_out_zat INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS claim_intents (
@@ -1604,6 +1605,30 @@ impl Store {
             )
             .optional()?;
         Ok(row.and_then(|(v, c)| (v.is_empty() || c >= classifier).then_some(v)))
+    }
+
+    /// Whether the transaction `txid` is a coinbase, as last found (beta4: the server's
+    /// `GetAddressUtxosReply.coinbase`, or the transaction itself); `None` when not yet known.
+    /// A txid's coinbase-ness never changes, so the answer is kept for good.
+    pub fn tx_coinbase(&self, txid: &[u8; 32]) -> Result<Option<bool>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT coinbase FROM tx_coinbase WHERE txid = ?1",
+                params![txid.as_slice()],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?
+            .map(|v| v != 0))
+    }
+
+    /// Record whether `txid` is a coinbase ([`Store::tx_coinbase`]).
+    pub fn set_tx_coinbase(&self, txid: &[u8; 32], coinbase: bool) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO tx_coinbase (txid, coinbase) VALUES (?1, ?2)",
+            params![txid.as_slice(), coinbase as i64],
+        )?;
+        Ok(())
     }
 
     /// Record a final provenance verdict (`""` = proven plain YEC), reached by `classifier`.

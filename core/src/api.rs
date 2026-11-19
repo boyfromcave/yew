@@ -2502,30 +2502,127 @@ pub fn pq_send_preview(from: String, to: String, zat: i64) -> Result<PqSendPrevi
                     r.branch_id,
                 )?
             };
-            let txid = txid_hex(&p.txid);
-            let out = PqSendPreviewInfo {
-                preview_id: format!("q{txid}"),
-                from: p.from.clone(),
-                scheme_name: keys::pq_scheme_name(p.scheme)
-                    .unwrap_or("unknown")
-                    .to_string(),
-                to: p.to.clone(),
-                amount_zat: p.amount,
-                amount_bumped: p.amount_bumped,
-                fee_zat: p.fee,
-                change_zat: p.change,
-                inputs: p.inputs.len() as u32,
-                size_bytes: p.raw.len() as u32,
-                sign_millis: p.sign_millis,
-                fee_note: p.fee_note.clone(),
-                unusual_fee_ack: p.fee_guard.ack.clone(),
-                fee_price_micro_usd: price_opt(p.fee_guard.reported_price_micro_usd),
-                expiry_height: p.expiry_height,
-                txid,
-                from_private: false,
-            };
+            Ok(pq_preview_info(o, p))
+        })
+    })
+}
+
+/// The preview of a post-quantum send, kept under its id for [`pq_send_confirm`].
+fn pq_preview_info(o: &mut Open, p: crate::build::pq_send::PqSendPreview) -> PqSendPreviewInfo {
+    let txid = txid_hex(&p.txid);
+    let out = PqSendPreviewInfo {
+        preview_id: format!("q{txid}"),
+        from: p.from.clone(),
+        scheme_name: keys::pq_scheme_name(p.scheme)
+            .unwrap_or("unknown")
+            .to_string(),
+        to: p.to.clone(),
+        amount_zat: p.amount,
+        amount_bumped: p.amount_bumped,
+        fee_zat: p.fee,
+        change_zat: p.change,
+        inputs: p.inputs.len() as u32,
+        size_bytes: p.raw.len() as u32,
+        sign_millis: p.sign_millis,
+        fee_note: p.fee_note.clone(),
+        unusual_fee_ack: p.fee_guard.ack.clone(),
+        fee_price_micro_usd: price_opt(p.fee_guard.reported_price_micro_usd),
+        expiry_height: p.expiry_height,
+        txid,
+        from_private: false,
+    };
+    o.previews
+        .insert(out.preview_id.clone(), Preview::Pq(Box::new(p)));
+    out
+}
+
+/// One mining reward (a coinbase output) at one of the wallet's own addresses (beta4). Consensus
+/// spends it only after 100 blocks and only into a transaction with no transparent output, so
+/// it is in no balance and in no ordinary send: it is moved to the private balance at the exact
+/// amount ([`reward_move_preview`]) once [`MiningReward::matures_in`] is 0.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MiningReward {
+    /// The own address that holds it (`s…`, or a post-quantum `sqf…`/`sqs…` form).
+    pub address: String,
+    /// True for a post-quantum address.
+    pub post_quantum: bool,
+    /// The coin, `txid:n`.
+    pub outpoint: String,
+    /// Its value, zat.
+    pub value_zat: i64,
+    /// The height it was mined at.
+    pub height: i64,
+    /// Blocks until it can be moved (0: mature, 101 confirmations).
+    pub matures_in: i64,
+}
+
+/// The wallet's mining rewards, oldest first, as of the last sync (beta4). A reward being moved
+/// (an input of an own unconfirmed transaction) is left out.
+pub fn mining_rewards() -> Result<Vec<MiningReward>, YewError> {
+    with_open(|o| {
+        let tip = o
+            .wallet
+            .store
+            .meta_u64("last_synced_height")
+            .map_err(|e| YewError::new(ErrorKind::Other, e.to_string()))?;
+        Ok(o.wallet
+            .spendable_utxos()?
+            .into_iter()
+            .filter(|u| u.class.is_coinbase())
+            .map(|u| MiningReward {
+                address: u.address.clone(),
+                post_quantum: u.class == UtxoClass::PqCoinbase,
+                outpoint: format!("{}:{}", txid_hex(&u.outpoint.txid), u.outpoint.n),
+                value_zat: u.value,
+                height: u.height as i64,
+                matures_in: crate::coins::coinbase_matures_in(u.height, tip) as i64,
+            })
+            .collect())
+    })
+}
+
+/// beta4, "Move to Sapling" for the mature mining rewards of the own post-quantum address
+/// `from`: all of them (the largest 100), into the wallet's own private (Sapling) address at the
+/// exact amount, the coins less the fee, no change (`build::pq_send::build_pq_reward_move`).
+/// Proven here: it needs the Sapling parameters ([`ErrorKind::ParamsMissing`] otherwise). Confirm
+/// with [`pq_send_confirm`]. Nothing is broadcast.
+pub fn reward_move_preview(from: String) -> Result<PqSendPreviewInfo, YewError> {
+    with_open_async(|o| {
+        Box::pin(async move {
+            let r = o.sync().await?;
+            if !sapling_params::status(&o.params_dir).present() {
+                return Err(YewError::new(
+                    ErrorKind::ParamsMissing,
+                    "Moving a mining reward to the private balance needs a one-time download of 52 MB (the Sapling proving parameters).",
+                ));
+            }
+            let side = crate::build::pq_send::SaplingSide::of(&o.wallet, &o.params_dir)?;
+            let to = o.wallet.shielded()?.default_address().1;
+            let p = crate::build::pq_send::build_pq_reward_move(
+                &o.wallet,
+                &side,
+                &from,
+                &to,
+                r.tip,
+                r.branch_id,
+            )?;
+            Ok(pq_preview_info(o, p))
+        })
+    })
+}
+
+/// beta4, "Move to Sapling" for the mature mining rewards of the own public (`s…`) address
+/// `from`: a shield of exactly the coins less the node's fee, no change
+/// (`build::yec_move::plan_reward_shield`). Confirm with [`move_confirm`].
+pub fn reward_shield_preview(from: String) -> Result<YecPreview, YewError> {
+    with_open_async(|o| {
+        Box::pin(async move {
+            let r = o.sync().await?;
+            o.sync_shielded(yec_private::no_progress()).await?;
+            let plan = yec_move::plan_reward_shield(&o.wallet, &from, r.tip)?;
+            let out = yec_preview_of(o, &plan, r.yec.1);
             o.previews
-                .insert(out.preview_id.clone(), Preview::Pq(Box::new(p)));
+                .insert(out.preview_id.clone(), Preview::Yec(Box::new(plan)));
             Ok(out)
         })
     })

@@ -135,6 +135,15 @@ class RustWalletApi implements WalletApi {
       rust.pqSendConfirm(previewId: previewId, acceptUnusualFee: acceptUnusualFee);
 
   @override
+  Future<List<MiningReward>> miningRewards() => rust.miningRewards();
+
+  @override
+  Future<PqSendPreviewInfo> rewardMovePreview({required String from}) => rust.rewardMovePreview(from: from);
+
+  @override
+  Future<YecPreview> rewardShieldPreview({required String from}) => rust.rewardShieldPreview(from: from);
+
+  @override
   Future<PqSendPreviewInfo> privatePqSendPreview({required String to, required int zat, bool allowNoteLookup = false}) =>
       rust.privatePqSendPreview(to: to, zat: zat, allowNoteLookup: allowNoteLookup);
 

@@ -7,9 +7,9 @@ import 'frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `claim_intent_of`, `connect`, `download_params_inner`, `download_params_to`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `height_time`, `hex_or_empty`, `history_item`, `locked`, `merge_shielded`, `mint_source_of`, `mint_status_of`, `new`, `now_secs`, `open_wallet`, `params_dir_of`, `params_status_of`, `parse_outpoint`, `parse_server`, `parse_txid`, `price_opt`, `renew_lock_blocks`, `row_status`, `runtime`, `shielded_pair`, `store_err`, `sync_shielded`, `sync_with`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `with_pending_spend`, `yec_preview_of`, `yellowback_refusal`, `yellowback_status`, `yellowback_usable`
+// These functions are ignored because they are not marked as `pub`: `claim_intent_of`, `connect`, `download_params_inner`, `download_params_to`, `ensure_conn`, `format_yec`, `from_network`, `gate_message`, `height_time`, `hex_or_empty`, `history_item`, `locked`, `merge_shielded`, `mint_source_of`, `mint_status_of`, `new`, `now_secs`, `open_wallet`, `params_dir_of`, `params_status_of`, `parse_outpoint`, `parse_server`, `parse_txid`, `pq_preview_info`, `price_opt`, `renew_lock_blocks`, `row_status`, `runtime`, `shielded_pair`, `store_err`, `sync_shielded`, `sync_with`, `sync`, `synced_tip`, `to_network`, `vault_summary`, `wallet_id`, `with_open_async`, `with_open`, `with_pending_spend`, `yec_preview_of`, `yellowback_refusal`, `yellowback_status`, `yellowback_usable`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `Conn`, `Open`, `Preview`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
 
 /// The line a shell shows while [`SyncEvent::pq_unindexed`] is set
 /// ([`crate::sync::PQ_UNINDEXED_NOTE`]; the web wallet shows the same text, `web/core-wasm`
@@ -205,6 +205,25 @@ Future<PqSendPreviewInfo> pqSendPreview({
   required String to,
   required PlatformInt64 zat,
 }) => RustLib.instance.api.crateApiPqSendPreview(from: from, to: to, zat: zat);
+
+/// The wallet's mining rewards, oldest first, as of the last sync (beta4). A reward being moved
+/// (an input of an own unconfirmed transaction) is left out.
+Future<List<MiningReward>> miningRewards() =>
+    RustLib.instance.api.crateApiMiningRewards();
+
+/// beta4, "Move to Sapling" for the mature mining rewards of the own post-quantum address
+/// `from`: all of them (the largest 100), into the wallet's own private (Sapling) address at the
+/// exact amount, the coins less the fee, no change (`build::pq_send::build_pq_reward_move`).
+/// Proven here: it needs the Sapling parameters ([`ErrorKind::ParamsMissing`] otherwise). Confirm
+/// with [`pq_send_confirm`]. Nothing is broadcast.
+Future<PqSendPreviewInfo> rewardMovePreview({required String from}) =>
+    RustLib.instance.api.crateApiRewardMovePreview(from: from);
+
+/// beta4, "Move to Sapling" for the mature mining rewards of the own public (`s…`) address
+/// `from`: a shield of exactly the coins less the node's fee, no change
+/// (`build::yec_move::plan_reward_shield`). Confirm with [`move_confirm`].
+Future<YecPreview> rewardShieldPreview({required String from}) =>
+    RustLib.instance.api.crateApiRewardShieldPreview(from: from);
 
 /// Plan, prove and authorize a send of `zat` from the private (Sapling) balance to the
 /// post-quantum address `to` (`sqf…`/`sqs…` of this network), after a sync of both pools
@@ -1273,6 +1292,60 @@ class HistoryPage {
           rows == other.rows &&
           page == other.page &&
           total == other.total;
+}
+
+/// One mining reward (a coinbase output) at one of the wallet's own addresses (beta4). Consensus
+/// spends it only after 100 blocks and only into a transaction with no transparent output, so
+/// it is in no balance and in no ordinary send: it is moved to the private balance at the exact
+/// amount ([`reward_move_preview`]) once [`MiningReward::matures_in`] is 0.
+class MiningReward {
+  /// The own address that holds it (`s…`, or a post-quantum `sqf…`/`sqs…` form).
+  final String address;
+
+  /// True for a post-quantum address.
+  final bool postQuantum;
+
+  /// The coin, `txid:n`.
+  final String outpoint;
+
+  /// Its value, zat.
+  final PlatformInt64 valueZat;
+
+  /// The height it was mined at.
+  final PlatformInt64 height;
+
+  /// Blocks until it can be moved (0: mature, 101 confirmations).
+  final PlatformInt64 maturesIn;
+
+  const MiningReward({
+    required this.address,
+    required this.postQuantum,
+    required this.outpoint,
+    required this.valueZat,
+    required this.height,
+    required this.maturesIn,
+  });
+
+  @override
+  int get hashCode =>
+      address.hashCode ^
+      postQuantum.hashCode ^
+      outpoint.hashCode ^
+      valueZat.hashCode ^
+      height.hashCode ^
+      maturesIn.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MiningReward &&
+          runtimeType == other.runtimeType &&
+          address == other.address &&
+          postQuantum == other.postQuantum &&
+          outpoint == other.outpoint &&
+          valueZat == other.valueZat &&
+          height == other.height &&
+          maturesIn == other.maturesIn;
 }
 
 /// Whether a mint can be made now (hardening H-1, H-5; the Mint screen's gate): read from

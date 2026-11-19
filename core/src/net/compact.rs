@@ -49,6 +49,10 @@ pub struct Utxo {
     pub value_zat: i64,
     /// The height it was mined at.
     pub height: u64,
+    /// The output belongs to a coinbase transaction (`GetAddressUtxosReply.coinbase`,
+    /// lightwalletd-dd beta4). A server without the field always says false: the sync then
+    /// checks the creating transaction itself (`sync::mark_coinbase`).
+    pub coinbase: bool,
 }
 
 /// A raw transaction with the height it was mined at (`RawTransaction`).
@@ -369,6 +373,7 @@ fn from_reply(r: rpc::GetAddressUtxosReply) -> Result<Utxo, NetError> {
         script: r.script,
         value_zat: r.value_zat,
         height: r.height,
+        coinbase: r.coinbase,
     })
 }
 
@@ -384,6 +389,7 @@ mod tests {
             script: vec![0x76, 0xa9, 0x14],
             value_zat: 10_000,
             height: 5,
+            coinbase: false,
         }
     }
 

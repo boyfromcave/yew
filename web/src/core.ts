@@ -106,6 +106,9 @@ export interface ClaimableItem {
 export interface ClaimPreview { previewId: string; item: ClaimableItem; maxBurnCents: string; minOutZat: string; feeNote: string | null; unusualFeeAck: string | null; feePriceMicroUsd: string | null; }
 /** One of the wallet's post-quantum addresses holding plain YEC (a send or mint source, beta2 D-8). */
 export interface PqSource { address: string; scheme: number; schemeName: string; balanceZat: string }
+/** A mining reward (a coinbase output) at an own address (`api::MiningReward`, beta4): in no balance and no
+ *  ordinary send; moved only into Sapling at the exact amount once `maturesIn` is 0 (101 confirmations). */
+export interface MiningReward { address: string; postQuantum: boolean; outpoint: string; valueZat: string; height: number; maturesIn: number }
 /** A send from a post-quantum address before confirmation (`api::PqSendPreviewInfo`). */
 export interface PqSendPreview {
   previewId: string; from: string; schemeName: string; to: string; amountZat: string; amountBumped: boolean;
@@ -155,6 +158,11 @@ export interface Core {
   send_yed_preview(to: string, cents: string): Promise<YedPreview>;
   /** The wallet's post-quantum addresses holding spendable plain YEC, largest first. */
   pq_sources(): Promise<PqSource[]>;
+  /** The mining rewards (coinbase outputs), oldest first, as of the last sync (beta4). */
+  mining_rewards(): Promise<MiningReward[]>;
+  /** "Move to Sapling" for the mature rewards of the own public address `from`: exactly the rewards less the fee,
+   *  no change; confirm with `confirm`. A post-quantum address's rewards are refused here (no builder in the browser). */
+  reward_move_preview(from: string): Promise<MovePreview>;
   /** A send from the own post-quantum address `from` to an `s…` or post-quantum address; confirm with `confirm`. */
   pq_send_preview(from: string, to: string, zat: string): Promise<PqSendPreview>;
   /** The shapes the app supports that this build cannot run (hidden by the screens; the core refuses them anyway). */
@@ -181,6 +189,8 @@ export interface Core {
 }
 
 /** The text to show for any core error: the message verbatim (a gate refusal is the node's verdict). */
+/** The core's answer for a post-quantum mining reward in the browser (`PQ_REWARD_WEB`, web/core-wasm). */
+export const PQ_REWARD_WEB = "This mining reward can only be moved by shielding it into Sapling, and the web wallet cannot shield from a post-quantum address yet. Restore your recovery phrase in yewd and move it there: https://github.com/boyfromcave/yew/blob/upgrade/vault/yewd/README.md#recovering-a-mining-reward-paid-to-a-yew-address (the YEW app can move it too).";
 export function messageOf(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 /** The kind prefix of a core error ("gate", "network", …) or "" for anything else. */
 export function kindOf(e: unknown): string {
@@ -249,6 +259,8 @@ export class CoreClient implements Core {
   send_yec_preview(to: string, zat: string, memo?: string) { return this.call<YecPreview>("send_yec_preview", to, zat, memo); }
   send_yed_preview(to: string, cents: string) { return this.call<YedPreview>("send_yed_preview", to, cents); }
   pq_sources() { return this.call<PqSource[]>("pq_sources"); }
+  mining_rewards() { return this.call<MiningReward[]>("mining_rewards"); }
+  reward_move_preview(from: string) { return this.call<MovePreview>("reward_move_preview", from); }
   pq_send_preview(from: string, to: string, zat: string) { return this.call<PqSendPreview>("pq_send_preview", from, to, zat); }
   unavailable_shapes() { return this.call<Unavailable[]>("unavailable_shapes"); }
   move_preview(direction: MoveDirection, zat: string) { return this.call<MovePreview>("move_preview", direction, zat); }

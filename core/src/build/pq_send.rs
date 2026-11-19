@@ -28,7 +28,7 @@
 //! A post-quantum recipient paid from Sapling notes is [`super::sapling_pq`]'s.
 
 use crate::build::any_to_any::{self as plan, PlanRecipient, PqCoin};
-use crate::coins::{Utxo, UtxoClass};
+use crate::coins::{self, Utxo, UtxoClass};
 use crate::gate::{self, Validator};
 use crate::keys::{self, YecDestination};
 use crate::net::{CompactClient, Validation};
@@ -121,7 +121,7 @@ pub fn build_pq_send(
     tip: u64,
     branch_id: u32,
 ) -> Result<PqSendPreview, WalletError> {
-    build(wallet, None, from, to, amount, tip, branch_id)
+    build(wallet, None, from, to, amount, tip, branch_id, false)
 }
 
 /// [`build_pq_send`] to a Sapling address `to` of this network (beta2 item 5): the plan's
@@ -136,7 +136,66 @@ pub fn build_pq_to_sapling(
     tip: u64,
     branch_id: u32,
 ) -> Result<PqSendPreview, WalletError> {
-    build(wallet, Some(side), from, to, amount, tip, branch_id)
+    build(wallet, Some(side), from, to, amount, tip, branch_id, false)
+}
+
+/// beta4, "move mining reward to Sapling": every mature mining reward (class
+/// [`UtxoClass::PqCoinbase`], at least [`coins::COINBASE_MATURE_DEPTH`] confirmations at `tip`;
+/// the largest [`plan::MAX_PQ_INPUTS_PER_TX`] when there are more) of the own post-quantum
+/// address `from`, into the wallet's own Sapling address `to` (the caller passes the account's
+/// default address), at the **exact** amount: the
+/// coins less the fee, no change, no transparent output (consensus spends a coinbase only so).
+/// The rest is [`build_pq_to_sapling`]'s: the hybrid builder, gate path
+/// [`gate::Path::PqToSapling`], the same preview and [`broadcast`]. Native only (the browser has
+/// no prover). Ordinary coins of the address are never selected here, and no ordinary send
+/// ever selects a mining reward (their classes differ).
+pub fn build_pq_reward_move(
+    wallet: &Wallet,
+    side: &SaplingSide,
+    from: &str,
+    to: &str,
+    tip: u64,
+    branch_id: u32,
+) -> Result<PqSendPreview, WalletError> {
+    if !crate::shielded_keys::is_sapling_address(wallet.network, to.trim()) {
+        return Err(other(
+            "a mining reward is moved only to a private (ys1…) address",
+        ));
+    }
+    build(wallet, Some(side), from, to, 0, tip, branch_id, true)
+}
+
+/// The exact amount of a reward move: the plan over `coins` (all coinbase) whose one Sapling
+/// recipient takes everything the selection holds less its fee. Starts from the coins less the
+/// base fee and corrects by what the planner says (the change it would refuse, or the shortfall).
+pub(crate) fn plan_reward_move(
+    coins: &[PqCoin<Utxo>],
+    source: &[u8],
+    rate: i64,
+    cap: i64,
+) -> Result<plan::PqSourcePlan<Utxo>, WalletError> {
+    let total: i64 = coins.iter().map(|c| c.value).sum();
+    let mut amount = total - plan::NODE_FEE_ZAT;
+    for _ in 0..16 {
+        if amount <= 0 {
+            break;
+        }
+        let r = [PlanRecipient {
+            script: None,
+            amount,
+        }];
+        match plan::plan_pq_source(coins, source, &r, None, APP_POLICY, rate, cap) {
+            Ok(p) if p.change == 0 && p.transparent_outputs.is_empty() => return Ok(p),
+            Ok(_) => break,
+            Err(plan::PlanError::CoinbaseChange { selected, fee, .. }) => amount = selected - fee,
+            Err(plan::PlanError::Insufficient { have, need }) => amount -= need - have,
+            Err(e) => return Err(other(e.to_string())),
+        }
+    }
+    Err(other(format!(
+        "The mining reward of {} YEC does not cover the fee of moving it to Sapling.",
+        plan::format_money(total)
+    )))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -144,6 +203,7 @@ fn refused(r: crate::refuse::Refused) -> WalletError {
     other(format!("{}: {}", r.0, r.1))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build(
     wallet: &Wallet,
     sapling: Option<&SaplingSide>,
@@ -152,8 +212,9 @@ fn build(
     amount: i64,
     tip: u64,
     branch_id: u32,
+    reward: bool,
 ) -> Result<PqSendPreview, WalletError> {
-    if amount <= 0 {
+    if amount <= 0 && !reward {
         return Err(other("amount must be positive"));
     }
     let from = from.trim();
@@ -218,24 +279,44 @@ fn build(
     // the candidates: this address's confirmed PQ_OWNED rows, unlocked (spendable_utxos leaves
     // out the inputs of the wallet's own unconfirmed transactions)
     let spendable = wallet.spendable_utxos()?;
-    let coins: Vec<PqCoin<Utxo>> = spendable
+    // beta4: an ordinary send takes the address's PQ_OWNED coins only; a reward move its mature
+    // PQ_COINBASE coins only (each `PqCoin.coinbase` true, so the planner makes no change)
+    let want_class = if reward {
+        UtxoClass::PqCoinbase
+    } else {
+        UtxoClass::PqOwned
+    };
+    let mut coins: Vec<PqCoin<Utxo>> = spendable
         .iter()
-        .filter(|u| u.class == UtxoClass::PqOwned && u.script == source && u.height > 0)
+        .filter(|u| u.class == want_class && u.script == source && u.height > 0)
+        .filter(|u| !reward || coins::coinbase_matures_in(u.height, tip) == 0)
         .map(|u| PqCoin {
             outpoint: u.outpoint,
             value: u.value,
             script: u.script.clone(),
             key: u.clone(),
-            coinbase: false,
+            coinbase: u.class.is_coinbase(),
         })
         .collect();
-    let recipients = [PlanRecipient {
-        script: dest_script,
-        amount,
-    }];
     let (rate, cap) = (terms.fee_rate_zat_per_kb, terms.max_fee_zat);
-    let mut p = plan::plan_pq_source(&coins, &source, &recipients, None, APP_POLICY, rate, cap)
-        .map_err(|e| other(e.to_string()))?;
+    let mut p = if reward {
+        if coins.is_empty() {
+            return Err(other(
+                "This address holds no mature mining reward (a mining reward can be moved after 101 confirmations).",
+            ));
+        }
+        coins.sort_by(|a, b| b.value.cmp(&a.value));
+        coins.truncate(plan::MAX_PQ_INPUTS_PER_TX);
+        plan_reward_move(&coins, &source, rate, cap)?
+    } else {
+        let recipients = [PlanRecipient {
+            script: dest_script,
+            amount,
+        }];
+        plan::plan_pq_source(&coins, &source, &recipients, None, APP_POLICY, rate, cap)
+            .map_err(|e| other(e.to_string()))?
+    };
+    let amount = if reward { p.send } else { amount };
     // never a change output of exactly TOKEN_VALUE: one zat more to the fee
     if p.change == TOKEN_VALUE {
         p.change -= 1;
@@ -606,10 +687,17 @@ pub async fn broadcast(
             yed_delta: 0,
             kind: String::new(),
             verdict: String::new(),
-            label: format!(
-                "sent {} from your post-quantum address",
-                crate::wallet::yec(p.amount)
-            ),
+            label: if p.inputs.iter().any(|u| u.class.is_coinbase()) {
+                format!(
+                    "moved a mining reward of {} to your private balance",
+                    crate::wallet::yec(p.amount)
+                )
+            } else {
+                format!(
+                    "sent {} from your post-quantum address",
+                    crate::wallet::yec(p.amount)
+                )
+            },
             labelled: false,
         })?;
         Ok(())
@@ -720,6 +808,100 @@ mod tests {
         } else {
             format!("{home}/.zcash-params").into()
         }
+    }
+
+    /// beta4: a post-quantum mining reward (PQ_COINBASE). An ordinary send never selects it
+    /// (only PQ_OWNED coins, and too little of them is refused, not topped up with the reward);
+    /// the reward move takes only the mature rewards (101 confirmations), pays exactly their
+    /// total less the fee into Sapling, makes no change and no transparent output, and passes the
+    /// gate's PqToSapling path; the same bytes with a transparent output added are refused.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn pq_reward_move_exact_amount_no_change() {
+        let (w, from, _) = wallet_with(&[
+            (1_250_000_000, UtxoClass::PqCoinbase),
+            (3_000_000, UtxoClass::PqOwned),
+            (625_000_000, UtxoClass::PqCoinbase),
+        ]);
+        let id = keys::parse_pq_yec_address(Network::Regtest, &from).unwrap();
+        // ordinary sends: PQ_OWNED only
+        let p = build_pq_send(&w, &from, &ecc_to(), 1_000_000, 200, VAULT_BRANCH_ID).unwrap();
+        assert!(
+            p.inputs.iter().all(|u| u.class == UtxoClass::PqOwned),
+            "{:?}",
+            p.inputs
+        );
+        let e = build_pq_send(&w, &from, &ecc_to(), 500_000_000, 200, VAULT_BRANCH_ID).unwrap_err();
+        assert!(e.to_string().contains("Insufficient"), "{e}");
+        let acct =
+            crate::shielded_keys::SaplingAccount::from_mnemonic(PHRASE, "", Network::Regtest)
+                .unwrap();
+        let (_, to) = acct.default_address();
+        let side = SaplingSide {
+            extsk: acct.extended_spending_key(),
+            params_dir: test_params_dir(),
+        };
+        // an ordinary send to Sapling does not take the reward either
+        let p =
+            build_pq_to_sapling(&w, &side, &from, &to, 1_000_000, 200, VAULT_BRANCH_ID).unwrap();
+        assert!(p.inputs.iter().all(|u| u.class == UtxoClass::PqOwned));
+        // mined at 10: 100 confirmations at tip 109, 101 at tip 110
+        let e = build_pq_reward_move(&w, &side, &from, &to, 109, VAULT_BRANCH_ID).unwrap_err();
+        assert!(e.to_string().contains("no mature mining reward"), "{e}");
+        assert!(build_pq_reward_move(&w, &side, &from, &ecc_to(), 110, VAULT_BRANCH_ID).is_err());
+        let p = build_pq_reward_move(&w, &side, &from, &to, 110, VAULT_BRANCH_ID).unwrap();
+        assert_eq!(p.path, gate::Path::PqToSapling(id));
+        assert_eq!(p.inputs.len(), 2);
+        assert!(p.inputs.iter().all(|u| u.class == UtxoClass::PqCoinbase));
+        assert_eq!(p.change, 0);
+        assert_eq!(
+            p.amount + p.fee,
+            1_875_000_000,
+            "exact amount: the rewards less the fee"
+        );
+        assert!(p.fee > 0);
+        let (tx, _) = Transaction::parse(&p.raw).unwrap();
+        assert!(tx.vout.is_empty(), "no transparent output");
+        assert_eq!(tx.shielded.value_balance, -p.amount);
+        assert_eq!(tx.shielded.spends, 0);
+        let class = |op: &crate::tx::OutPoint| w.store.utxo_class(op).ok().flatten();
+        let scripts = |op: &crate::tx::OutPoint| script_of(&w, op);
+        assert!(gate::check_with_scripts(p.path, &p.raw, class, scripts).is_ok());
+        assert!(gate::check(gate::Path::PqSpend, &p.raw, class).is_err());
+        // the same bytes with one transparent output spliced in (vout count 0 -> 1); the
+        // serializer writes no Sapling part, so this is done on the bytes
+        let compact = |b: &[u8], at: usize| -> (usize, usize) {
+            match b[at] {
+                0xfd => (u16::from_le_bytes([b[at + 1], b[at + 2]]) as usize, 3),
+                0xfe => (
+                    u32::from_le_bytes([b[at + 1], b[at + 2], b[at + 3], b[at + 4]]) as usize,
+                    5,
+                ),
+                n => (n as usize, 1),
+            }
+        };
+        let mut at = 8; // header, nVersionGroupId
+        let (n_in, w) = compact(&p.raw, at);
+        at += w;
+        for _ in 0..n_in {
+            at += 36;
+            let (len, w) = compact(&p.raw, at);
+            at += w + len + 4;
+        }
+        assert_eq!(p.raw[at], 0, "no transparent output");
+        let out_script = crate::pq::pqpkh_script(&id).unwrap();
+        let mut raw = p.raw[..at].to_vec();
+        raw.push(1);
+        raw.extend_from_slice(&1_000i64.to_le_bytes());
+        raw.push(out_script.len() as u8);
+        raw.extend_from_slice(&out_script);
+        raw.extend_from_slice(&p.raw[at + 1..]);
+        assert_eq!(Transaction::parse(&raw).unwrap().0.vout.len(), 1);
+        let e = gate::check_with_scripts(p.path, &raw, class, scripts).unwrap_err();
+        assert!(
+            matches!(e, gate::GateError::CoinbaseTransparentOutput(_)),
+            "{e}"
+        );
     }
 
     /// Beta2 item 5: PQ source -> Sapling recipient. Only PQ_OWNED coins of the address; the

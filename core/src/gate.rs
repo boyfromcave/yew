@@ -115,6 +115,11 @@ pub enum GateError {
     /// The Sapling -> post-quantum or post-quantum -> Sapling path's shape rule was broken.
     #[error("gate: a YEC send between Sapling and a post-quantum address {0}")]
     SaplingPqShape(&'static str),
+    /// A mining reward ([`UtxoClass::Coinbase`], [`UtxoClass::PqCoinbase`]) spent into a
+    /// transaction with a transparent output: consensus refuses it
+    /// (`bad-txns-coinbase-spend-has-transparent-outputs`), so the wallet never builds it.
+    #[error("gate: a mining reward (coinbase) can only be moved into Sapling, with no transparent output and no change (output {0})")]
+    CoinbaseTransparentOutput(usize),
     /// A carrier funded from another source than the wallet's ECC coins
     /// ([`Path::CarrierFromSapling`]) broke its shape rule.
     #[error("gate: a carrier funding from another source {0}")]
@@ -376,10 +381,13 @@ impl Path {
             Path::IntentRelease(_) => c.yec_spendable(),
             Path::PqSweep(_) => false,
             Path::Shielded => false,
-            Path::Shield => c == UtxoClass::Yec,
+            // beta4: a mining reward is moved only into Sapling, with no transparent output
+            // (checked below, after the inputs)
+            Path::Shield => matches!(c, UtxoClass::Yec | UtxoClass::Coinbase),
             Path::PqSpend => c == UtxoClass::PqOwned,
             Path::SaplingToPq(_) | Path::CarrierFromSapling(_) => false,
-            Path::PqToSapling(_) | Path::CarrierFromPq(..) => c == UtxoClass::PqOwned,
+            Path::PqToSapling(_) => matches!(c, UtxoClass::PqOwned | UtxoClass::PqCoinbase),
+            Path::CarrierFromPq(..) => c == UtxoClass::PqOwned,
         }
     }
 
@@ -477,6 +485,15 @@ pub fn check_with_scripts(
                 })
             }
         }
+    }
+    // beta4, the consensus rule on a coinbase spend: no transparent output at all (no change)
+    if tx
+        .vin
+        .iter()
+        .any(|i| class_of(&i.prevout).is_some_and(UtxoClass::is_coinbase))
+        && !tx.vout.is_empty()
+    {
+        return Err(GateError::CoinbaseTransparentOutput(0));
     }
     let no_payload = |tx: &Transaction| -> Result<(), GateError> {
         if let Some(i) = tx
@@ -1076,6 +1093,8 @@ pub fn spent_as_yec(
                         | UtxoClass::FeeReserve
                         | UtxoClass::PqOwned
                         | UtxoClass::Carrier
+                        | UtxoClass::Coinbase
+                        | UtxoClass::PqCoinbase
                 )
             ),
         })
@@ -1126,7 +1145,9 @@ mod tests {
     use crate::tx::{TxIn, TxOut};
     use std::collections::HashMap;
 
-    const ALL: [UtxoClass; 10] = [
+    const ALL: [UtxoClass; 12] = [
+        UtxoClass::Coinbase,
+        UtxoClass::PqCoinbase,
         UtxoClass::Yec,
         UtxoClass::FeeReserve,
         UtxoClass::Token,
@@ -1820,9 +1841,11 @@ mod tests {
             Err(GateError::ShieldedShape(_))
         ));
         assert!(!Path::Shield.needs_yellowback());
-        assert!(ALL
-            .iter()
-            .all(|c| Path::Shield.allows(*c) == (*c == UtxoClass::Yec)));
+        assert!(
+            ALL.iter()
+                .all(|c| Path::Shield.allows(*c)
+                    == matches!(*c, UtxoClass::Yec | UtxoClass::Coinbase))
+        );
     }
 
     /// beta2 D-8: the post-quantum send path. Every class but `PQ_OWNED` is refused as an input
@@ -2063,7 +2086,7 @@ mod tests {
             assert!(!Path::SaplingToPq(id).allows(c), "{c:?}");
             assert_eq!(
                 Path::PqToSapling(src).allows(c),
-                c == UtxoClass::PqOwned,
+                matches!(c, UtxoClass::PqOwned | UtxoClass::PqCoinbase),
                 "{c:?}"
             );
         }
@@ -2150,11 +2173,17 @@ mod tests {
             passed.0 += usize::from(want);
             // PqToSapling
             let inputs_ok = !inputs.is_empty()
-                && inputs
-                    .iter()
-                    .all(|op| class(op) == Some(UtxoClass::PqOwned))
+                && inputs.iter().all(|op| {
+                    matches!(class(op), Some(UtxoClass::PqOwned | UtxoClass::PqCoinbase))
+                })
                 && inputs.iter().all(|op| stored.get(op) == Some(&to_src));
+            // beta4: a mining reward among the inputs allows no transparent output at all
+            let coinbase_ok = outs.is_empty()
+                || !inputs
+                    .iter()
+                    .any(|op| class(op) == Some(UtxoClass::PqCoinbase));
             let want = inputs_ok
+                && coinbase_ok
                 && spends == 0
                 && sap_outs >= 1
                 && outs.len() <= 1
@@ -3452,6 +3481,8 @@ mod tests {
                                 | UtxoClass::FeeReserve
                                 | UtxoClass::PqOwned
                                 | UtxoClass::Carrier
+                                | UtxoClass::Coinbase
+                                | UtxoClass::PqCoinbase
                         )
                     );
                     let want = if k == 0 && skips_named {

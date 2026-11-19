@@ -45,6 +45,18 @@ of the YED it backs, others can claim it. The YEC/USD price comes from mining po
   For plain YEC, YEW receives at its own post-quantum addresses (`sqf…` for FN-DSA-512, `sqs…` for
   SLH-DSA on mainnet; `tqf…`/`tqs…` on testnet), sends to them and spends from them (the **From**
   chooser); Home shows the balance by type. Private (Sapling) YEC is not post-quantum.
+- **Mining rewards: do not use a YEW address as a mining payout.** Consensus spends a coinbase
+  output only after 100 blocks and only into a transaction with no transparent output, so a reward
+  must first be shielded into Sapling at the exact amount (the reward less the fee, no change). Pay
+  rewards, post-quantum ones above all, to a `ycashd` or `yewd` wallet address. A reward that
+  already reached a YEW address is shown apart from every balance as "Mining reward — shield first"
+  (immature ones with the blocks left until the 101st confirmation) and is in no ordinary send. The
+  app moves a mature one with **Move to Sapling** (proven on the device). The web wallet moves a
+  public (`s…`) address's reward the same way; a post-quantum address's it cannot move yet: restore
+  the recovery phrase in `yewd` and move it there ([yewd/README.md, "Recovering a mining reward paid
+  to a YEW address"](yewd/README.md#recovering-a-mining-reward-paid-to-a-yew-address)). The coinbase
+  flag comes from lightwalletd-dd (`GetAddressUtxosReply.coinbase`, beta4); against a server
+  without it the core reads the coin's transaction itself, once.
 - **Fees:** YEW computes every fee it signs. The protocol fee is in dollars of the debt, like tax
   brackets (1 % up to $1,000, 0.5 % up to $10,000, 0.1 % above, $1 minimum), charged at the mint
   and again at the redeem at the vault's mint price; redeeming before the end of the term adds 5 /
