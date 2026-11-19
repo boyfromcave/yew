@@ -278,6 +278,8 @@ class RecoverPQReward(BitcoinTestFramework):
         r = self.operation(opid)
         assert_equal((r['status'], r['error']['code']), ('failed', -6))
         assert 'coinbase' in r['error']['message'], r['error']['message']
+        if self.extension():        # beta4: the refusal names the exact amount (the C++ lines' text)
+            assert 'send exactly' in r['error']['message'], r['error']['message']
         assert_equal(self.nodes[0].getrawmempool(), before)
 
         # 4. z_sendmany, exact amount: one Falcon reward

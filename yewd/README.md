@@ -303,7 +303,13 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
   call is refused with the C++ lines' text, "Insufficient funds in ordinary transparent addresses;
   this wallet also holds <amount> YEC at post-quantum addresses: send from one with z_sendmany,
   which returns the change to it", and each call's code (`sendtoaddress` -4, `sendmany` -6,
-  `fundrawtransaction` -32603); otherwise the insufficient-funds errors are unchanged.
+  `fundrawtransaction` -32603); otherwise the insufficient-funds errors are unchanged. Beta4
+  (item 7, as the C++ lines): outside regtest, when the wallet holds mature coinbase at
+  post-quantum addresses, each of these refusals ends with "; this wallet also holds <v> YEC of
+  mining rewards (coinbase) at post-quantum addresses, which can only be sent to a shielded
+  (Sapling) address, with no change: send them with z_sendmany from the address that holds them,
+  which names the exact amount to send". yewd knows no `-regtestshieldcoinbase`, so on regtest it
+  never adds this sentence. ycashd started with that flag does add it.
   `z_shieldcoinbase` from an ECC address or `"*"` is not served; from a post-quantum address it is
   yewd's extension (below).
 - **A post-quantum coinbase is shielded with `z_sendmany` (beta3, as the C++ lines).** A pool can
@@ -316,11 +322,24 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
   pool). The wallet refuses the other shapes itself, on every network: change left over is
   "When shielding coinbase funds, the wallet does not allow any change. … To spend the selected
   coins, send exactly <amount> to shielded recipients (the <selected> selected less the fee
-  <fee>)." (`-4`), and an "Insufficient transparent funds…" refusal (`-6`) ends with what the
-  address holds in coinbase the send could not use: "The address holds <amount> of coinbase
-  funds, which can only be sent to shielded recipients, with no change." and "The address holds
-  <amount> of immature coinbase funds, which can be sent to shielded recipients only, with no change,
-  after 101 confirmations."
+  <fee>)." (`-4`). An "Insufficient transparent funds…" refusal (`-6`) names what the send could
+  not use, in the C++ lines' words (beta4 item 7). When the address had no ordinary coin to spend,
+  the lead becomes "Insufficient transparent funds: this address has no coins this send can
+  spend." Then come, each only when it applies:
+  - mature coinbase left out because a recipient is transparent: "The address holds <v> YEC of
+    mining rewards (coinbase), which can only be sent to a shielded (Sapling) address, with no
+    change: send exactly <a> to one Sapling address (the <v> of rewards less the fee <f>)."
+    Above 100 rewards the sentence reads "(the largest <n> of the <m> rewards, <s>, less the fee
+    <f>), then send again for the rest.";
+  - immature coinbase: "The address holds <v> YEC of mining rewards that are not spendable yet: a
+    reward needs 101 confirmations, and the next one needs <k> more; it can then only be sent to
+    a shielded (Sapling) address, with no change.";
+  - ordinary coins below `minconf`: "The address holds <v> YEC with fewer than the <n>
+    confirmations this send requires (minconf): wait for them, or pass a lower minconf."
+
+  The minconf sentence also ends an ECC or Sapling address's insufficient-funds refusal (not
+  `ANY_TADDR`'s), and the "coinbase outputs will not be selected" note no longer appears for a
+  Sapling source.
   `sendtoaddress`, `sendmany`, `fundrawtransaction` and `z_mergetoaddress` still leave a
   post-quantum coinbase out. `z_shieldcoinbase` from the address moves it in one call (beta4, a
   yewd extension: next item).
@@ -450,7 +469,8 @@ The funds are not lost, and the phrase keeps working in the app.
 
    **The exact-amount rule.** The amount sent is the rewards selected less the fee, to shielded
    addresses only. Anything else is refused by the wallet before it reaches the node. A send to an
-   ECC or post-quantum address answers `-6`, naming what the address holds in coinbase. A round
+   ECC or post-quantum address answers `-6`, naming the rewards the address holds and the exact
+   amount that moves them to Sapling. A round
    amount answers `-4`, naming the exact one. `z_sendmany` takes the largest rewards first and adds
    a reward only while the amount needs it. An amount below the largest reward therefore moves one
    reward per call. Name more than one reward to move several in one transaction.

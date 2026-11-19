@@ -96,36 +96,146 @@ pub use yew_core::build::any_to_any::{
     conventional_fee, conventional_fee_bytes, node_fee, MAX_PQ_INPUTS_PER_TX,
 };
 
-/// ycash6 `PQInsufficientFunds` (beta3): the "Insufficient transparent funds" message of
-/// `z_sendmany` from a post-quantum address, followed by what the address holds in coinbase that
-/// this send could not use: `coinbase_excluded`, mature coinbase left out because a recipient is
-/// not shielded, and `immature_coinbase`. Unchanged when both are zero.
+/// What a `z_sendmany` from a post-quantum address could not use, for its insufficient-funds
+/// refusal (ycash6 / ycash-dd `PQFundsLeftOut`, beta4 item 7).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PqFundsLeftOut {
+    /// Mature coinbase left out because a recipient is transparent.
+    pub coinbase: i64,
+    /// How many outputs that is.
+    pub coinbase_coins: usize,
+    /// The one amount that moves the largest of them to one Sapling address (0: none).
+    pub coinbase_send: i64,
+    /// The rewards that amount spends.
+    pub coinbase_selected: i64,
+    /// Its fee.
+    pub coinbase_fee: i64,
+    /// How many rewards that amount spends.
+    pub coinbase_selected_coins: usize,
+    /// Immature coinbase of the address.
+    pub immature: i64,
+    /// The confirmations the soonest of them still needs.
+    pub immature_blocks: i64,
+    /// Ordinary coins of the address that minconf left out.
+    pub below_minconf: i64,
+    /// The send's minconf.
+    pub min_depth: i64,
+}
+
+/// ycash6 / ycash-dd `MinconfNote` (beta4 item 7): the sentence an insufficient-funds refusal
+/// adds when minconf left `below` of the source's funds out; "" when nothing was left out.
+pub(crate) fn minconf_note(below: i64, min_depth: i64) -> String {
+    if below <= 0 || min_depth <= 0 {
+        return String::new();
+    }
+    format!(
+        " The address holds {} YEC with fewer than the {} confirmation{} this send requires (minconf): wait for them, or pass a lower minconf.",
+        money(below),
+        min_depth,
+        if min_depth == 1 { "" } else { "s" }
+    )
+}
+
+/// ycash6 / ycash-dd `PQInsufficientFunds` (beta3, reworded in beta4 item 7, character-identical
+/// with the C++ lines): the "Insufficient transparent funds" message of `z_sendmany` from a
+/// post-quantum address. `message` is returned unchanged when nothing was left out; otherwise,
+/// when `no_coins` (the address had no ordinary coin to spend) the lead becomes "Insufficient
+/// transparent funds: this address has no coins this send can spend.", and the message names the
+/// mining rewards (with the exact amount that sends them to Sapling), the immature rewards (with
+/// the confirmations still needed) and the coins minconf left out.
 pub(crate) fn pq_insufficient_funds(
     message: &str,
-    coinbase_excluded: i64,
-    immature_coinbase: i64,
+    no_coins: bool,
+    left: &PqFundsLeftOut,
 ) -> String {
-    let mut s = message.to_string();
-    if coinbase_excluded <= 0 && immature_coinbase <= 0 {
-        return s;
+    let minconf = minconf_note(left.below_minconf, left.min_depth);
+    if left.coinbase <= 0 && left.immature <= 0 && minconf.is_empty() {
+        return message.to_string();
     }
+    let mut s = if no_coins {
+        "Insufficient transparent funds: this address has no coins this send can spend.".to_string()
+    } else {
+        message.to_string()
+    };
     if !s.ends_with('.') {
         s.push('.');
     }
-    if coinbase_excluded > 0 {
+    if left.coinbase > 0 {
         s += &format!(
-            " The address holds {} of coinbase funds, which can only be sent to shielded recipients, with no change.",
-            money(coinbase_excluded)
+            " The address holds {} YEC of mining rewards (coinbase), which can only be sent to a shielded (Sapling) address, with no change",
+            money(left.coinbase)
+        );
+        if left.coinbase_send <= 0 {
+            s.push('.');
+        } else if left.coinbase_selected_coins >= left.coinbase_coins {
+            s += &format!(
+                ": send exactly {} to one Sapling address (the {} of rewards less the fee {}).",
+                money(left.coinbase_send),
+                money(left.coinbase_selected),
+                money(left.coinbase_fee)
+            );
+        } else {
+            s += &format!(
+                ": send exactly {} to one Sapling address (the largest {} of the {} rewards, {}, less the fee {}), then send again for the rest.",
+                money(left.coinbase_send),
+                left.coinbase_selected_coins,
+                left.coinbase_coins,
+                money(left.coinbase_selected),
+                money(left.coinbase_fee)
+            );
+        }
+    }
+    if left.immature > 0 {
+        s += &format!(
+            " The address holds {} YEC of mining rewards that are not spendable yet: a reward needs {} confirmations, and the next one needs {} more; it can then only be sent to a shielded (Sapling) address, with no change.",
+            money(left.immature),
+            crate::COINBASE_MATURITY + 1,
+            left.immature_blocks
         );
     }
-    if immature_coinbase > 0 {
-        s += &format!(
-            " The address holds {} of immature coinbase funds, which can be sent to shielded recipients only, with no change, after {} confirmations.",
-            money(immature_coinbase),
-            crate::COINBASE_MATURITY + 1
-        );
+    s + &minconf
+}
+
+/// The one amount that moves the largest of `coinbase` (as many as one transaction carries) to one
+/// Sapling address with no change, priced as that send is: no transparent output, one Sapling
+/// output padded to two, `PQBuilderFee` over the default or the explicit `fee` (an explicit fee if
+/// higher). ycash6 `PreparePQTransaction`'s `leftOut` (beta4 item 7).
+fn exact_coinbase_send(
+    left: &mut PqFundsLeftOut,
+    coinbase: &[plan::PqCoin<KeyRef>],
+    fee: Option<i64>,
+    rate: i64,
+    cap: i64,
+) {
+    let mut cb: Vec<&plan::PqCoin<KeyRef>> = coinbase.iter().collect();
+    cb.sort_by(|a, b| {
+        b.value
+            .cmp(&a.value)
+            .then((a.outpoint.txid, a.outpoint.n).cmp(&(b.outpoint.txid, b.outpoint.n)))
+    });
+    // EnsurePQShapeStandard: at most MAX_PQ_INPUTS_PER_TX inputs, within the sigop limit
+    let max = MAX_PQ_INPUTS_PER_TX.min(plan::MAX_STANDARD_TX_SIGOPS / plan::PQ_SIGOP_COST);
+    cb.truncate(max);
+    if cb.is_empty() {
+        return;
     }
-    s
+    let sum: i64 = cb.iter().map(|c| c.value).sum();
+    let z_outs = plan::padded(1);
+    let (bytes, conventional) = plan::shape_size(
+        cb.iter().map(|c| c.script.as_slice()),
+        &Vec::<(Vec<u8>, i64)>::new(),
+        0,
+        z_outs,
+    );
+    let base = fee.unwrap_or_else(|| node_fee(1));
+    let needed = plan::pq_builder_fee(base, bytes, conventional, rate, cap);
+    let cb_fee = fee.map_or(needed, |f| f.max(needed));
+    if sum > cb_fee {
+        left.coinbase_send = sum - cb_fee;
+        left.coinbase_selected = sum;
+        left.coinbase_fee = cb_fee;
+        left.coinbase_selected_coins = cb.len();
+    }
 }
 
 /// A planner refusal as the RPC error ycashd answers with (the node's code and text).
@@ -616,6 +726,40 @@ impl Wallet {
         }
         let available: i64 = t_coins.iter().map(|c| c.1).sum::<i64>()
             + z_notes.iter().map(|n| n.value as i64).sum::<i64>();
+        // beta4 item 7 (ycash6 `SelectorMinconfNote`): a one-address source names what minconf
+        // left out of its insufficient-funds refusal
+        let minconf_tail = match source {
+            Source::T(s) if min > 0 => {
+                let spent = self.mempool_spent();
+                let reserved = self.yed_reserved(node).await?;
+                let below: i64 = self
+                    .available_coins(None)
+                    .into_iter()
+                    .filter(|(c, d)| {
+                        let k = (c.txid.clone(), c.vout);
+                        &c.script == s
+                            && matches!(c.owner, Owner::T(..))
+                            && (!c.coinbase || coinbase_ok)
+                            && *d >= 0
+                            && *d < min
+                            && !spent.contains(&k)
+                            && !reserved.contains(&k)
+                    })
+                    .map(|(c, _)| c.value)
+                    .sum();
+                minconf_note(below, min)
+            }
+            Source::Z(addr) if min > 0 => {
+                let below: i64 = self
+                    .notes
+                    .iter()
+                    .filter(|n| !n.spent && &n.address == addr && self.depth(n.height) < min)
+                    .map(|n| n.value as i64)
+                    .sum();
+                minconf_note(below, min)
+            }
+            _ => String::new(),
+        };
         // selection at the conventional fee (or the given one), the change decided with it
         let z_source = matches!(source, Source::Z(_));
         // ycashd's suggestLinkingAddresses (asyncrpcoperation_common.cpp ThrowInputSelectionError):
@@ -665,6 +809,7 @@ impl Wallet {
                     msg.push_str("; note that coinbase outputs will not be selected if you specify ANY_TADDR, any transparent recipients are included, or if the `privacyPolicy` parameter is not set to `AllowRevealedSenders` or weaker");
                 }
                 msg.push_str(if suggest_linking { LINKING_HINT } else { "." });
+                msg.push_str(&minconf_tail);
                 return Err(op_error(code::INVALID_PARAMETER, msg));
             }
             if !enough(got) {
@@ -681,6 +826,7 @@ impl Wallet {
                     msg.push_str("; note that coinbase outputs will not be selected if you specify ANY_TADDR, any transparent recipients are included, or if the `privacyPolicy` parameter is not set to `AllowRevealedSenders` or weaker");
                 }
                 msg.push_str(if suggest_linking { LINKING_HINT } else { "." });
+                msg.push_str(&minconf_tail);
                 return Err(op_error(code::INVALID_PARAMETER, msg));
             }
             change = got - need;
@@ -1033,6 +1179,46 @@ impl Wallet {
             .sum()
     }
 
+    /// The confirmations the soonest of this wallet's immature coinbase outputs paying `script`
+    /// still needs (`GetBlocksToMaturity`; 0 when there is none): ycash6 `PQImmatureCoinbase`'s
+    /// `nextMaturesIn` (beta4 item 7).
+    pub(crate) fn pq_coinbase_blocks_to_go(&self, script: &[u8]) -> i64 {
+        self.coins
+            .iter()
+            .filter_map(|c| {
+                let d = self.depth_at(c.height, None);
+                (c.coinbase
+                    && c.script == script
+                    && d > 0
+                    && self.immature(true, d)
+                    && !self.spent_at(&c.txid, c.vout, None))
+                .then(|| (crate::COINBASE_MATURITY + 1) as i64 - d)
+            })
+            .min()
+            .unwrap_or(0)
+    }
+
+    /// ycash6 `PQBelowMinconf` (beta4 item 7): the value of this wallet's unspent non-coinbase
+    /// outputs paying `script` with fewer than `min_depth` confirmations (unconfirmed included,
+    /// conflicted not): what minconf left out of a send.
+    pub(crate) fn pq_below_minconf(&self, script: &[u8], min_depth: i64) -> i64 {
+        if min_depth <= 0 {
+            return 0;
+        }
+        self.coins
+            .iter()
+            .filter(|c| {
+                let d = self.depth_at(c.height, None);
+                !c.coinbase
+                    && c.script == script
+                    && d >= 0
+                    && d < min_depth
+                    && !self.spent_at(&c.txid, c.vout, None)
+            })
+            .map(|c| c.value)
+            .sum()
+    }
+
     /// ycash6 `WalletTxBuilder::PreparePQTransaction` (beta2 D-2, D-4, D-5): `z_sendmany` from a
     /// post-quantum address. Its own `TX_PQPKH` coins (never a YED output, never a locked coin),
     /// largest first; the fee priced on the transaction's size (`PQBuilderFee`) and settled with
@@ -1132,15 +1318,31 @@ impl Wallet {
             coinbase_excluded = 0;
             first = plan::plan_pq_source(&coins, source, &planned, fee, policy, rate, cap);
         }
-        let p = first.map_err(|e| {
-            let tail = short(&e);
-            let mut err = plan_err(e);
-            if tail {
-                err.message =
-                    pq_insufficient_funds(&err.message, coinbase_excluded, immature_coinbase);
+        let p = match first {
+            Ok(p) => p,
+            Err(e) => {
+                let no_coins = matches!(e, PlanError::NoCoins);
+                let tail = short(&e);
+                let mut err = plan_err(e);
+                if tail {
+                    // beta4 item 7: what the send could not use, as the C++ lines name it
+                    let mut left = PqFundsLeftOut {
+                        immature: immature_coinbase,
+                        immature_blocks: self.pq_coinbase_blocks_to_go(source),
+                        below_minconf: self.pq_below_minconf(source, min),
+                        min_depth: min,
+                        ..Default::default()
+                    };
+                    if coinbase_excluded > 0 {
+                        left.coinbase = coinbase_excluded;
+                        left.coinbase_coins = coinbase_coins.len();
+                        exact_coinbase_send(&mut left, &coinbase_coins, fee, rate, cap);
+                    }
+                    err.message = pq_insufficient_funds(&err.message, no_coins, &left);
+                }
+                return Err(err);
             }
-            err
-        })?;
+        };
         let send = p.send;
         let cur_fee = p.fee;
         let change = p.change;
@@ -1319,6 +1521,60 @@ pub(crate) fn money8(z: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pq_refusal_texts_are_the_cpp_lines() {
+        // beta4 item 7: character-identical with ycash-dd #208 / ycash6 #144
+        let none = PqFundsLeftOut::default();
+        let lead = "Insufficient transparent funds, no UTXOs found for taddr from address.";
+        assert_eq!(pq_insufficient_funds(lead, true, &none), lead);
+        assert_eq!(
+            pq_insufficient_funds(
+                "Insufficient transparent funds, have 5.00, need 7.0001",
+                false,
+                &none
+            ),
+            "Insufficient transparent funds, have 5.00, need 7.0001"
+        );
+        let left = PqFundsLeftOut {
+            coinbase: 1_875_000_000,
+            coinbase_coins: 3,
+            coinbase_send: 1_874_988_000,
+            coinbase_selected: 1_875_000_000,
+            coinbase_fee: 12_000,
+            coinbase_selected_coins: 3,
+            immature: 625_000_000,
+            immature_blocks: 95,
+            below_minconf: 100_000_000,
+            min_depth: 10,
+        };
+        assert_eq!(
+            pq_insufficient_funds(lead, true, &left),
+            "Insufficient transparent funds: this address has no coins this send can spend. The address holds 18.75 YEC of mining rewards (coinbase), which can only be sent to a shielded (Sapling) address, with no change: send exactly 18.74988 to one Sapling address (the 18.75 of rewards less the fee 0.00012). The address holds 6.25 YEC of mining rewards that are not spendable yet: a reward needs 101 confirmations, and the next one needs 95 more; it can then only be sent to a shielded (Sapling) address, with no change. The address holds 1.00 YEC with fewer than the 10 confirmations this send requires (minconf): wait for them, or pass a lower minconf."
+        );
+        let part = PqFundsLeftOut {
+            coinbase_selected_coins: 2,
+            immature: 0,
+            below_minconf: 0,
+            ..left.clone()
+        };
+        assert_eq!(
+            pq_insufficient_funds("Insufficient transparent funds, have 5.00, need 7.0001", false, &part),
+            "Insufficient transparent funds, have 5.00, need 7.0001. The address holds 18.75 YEC of mining rewards (coinbase), which can only be sent to a shielded (Sapling) address, with no change: send exactly 18.74988 to one Sapling address (the largest 2 of the 3 rewards, 18.75, less the fee 0.00012), then send again for the rest."
+        );
+        let dust = PqFundsLeftOut {
+            coinbase_send: 0,
+            ..part
+        };
+        assert!(pq_insufficient_funds(lead, true, &dust)
+            .ends_with("which can only be sent to a shielded (Sapling) address, with no change."));
+        assert_eq!(
+            minconf_note(100_000_000, 1),
+            " The address holds 1.00 YEC with fewer than the 1 confirmation this send requires (minconf): wait for them, or pass a lower minconf."
+        );
+        assert_eq!(minconf_note(0, 10), "");
+        assert_eq!(minconf_note(5, 0), "");
+    }
 
     #[test]
     fn fees_and_ids() {

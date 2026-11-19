@@ -89,8 +89,26 @@ pub(crate) fn coinbase_flags(
 
 /// The text of `CreateTransaction`'s refusal when `SelectCoins` fails (ycash6
 /// `src/wallet/wallet.cpp`): `pq` the post-quantum value left out, `yed_refusal` the YED refusal
-/// when that is 0, `(only, need)` the coinbase flags (`only` already requires shielding).
-pub(crate) fn select_fail_text(pq: i64, yed_refusal: &str, (only, need): (bool, bool)) -> String {
+/// when that is 0, `(only, need)` the coinbase flags (`only` already requires shielding), then
+/// (beta4 item 7) the sentence naming `pq_coinbase`, the mature coinbase at post-quantum addresses
+/// no transparent send can spend ([`Wallet::pq_coinbase_left_out`]).
+pub(crate) fn select_fail_text(
+    pq: i64,
+    yed_refusal: &str,
+    flags: (bool, bool),
+    pq_coinbase: i64,
+) -> String {
+    let mut s = select_fail_lead(pq, yed_refusal, flags);
+    if pq_coinbase > 0 {
+        s += &format!(
+            "; this wallet also holds {} YEC of mining rewards (coinbase) at post-quantum addresses, which can only be sent to a shielded (Sapling) address, with no change: send them with z_sendmany from the address that holds them, which names the exact amount to send",
+            crate::rpc::format_money(pq_coinbase)
+        );
+    }
+    s
+}
+
+fn select_fail_lead(pq: i64, yed_refusal: &str, (only, need): (bool, bool)) -> String {
     let coinbase = only || need;
     if pq > 0 {
         let mut s = pq_refusal(pq);
@@ -210,6 +228,25 @@ impl Wallet {
         self.network != yew_core::params::Network::Regtest
     }
 
+    /// ycash6 `CWallet::PQCoinbaseLeftOut` (beta4 item 7): where coinbase must be shielded, the
+    /// mature, unlocked, unspent coinbase this wallet holds at post-quantum addresses (mining rewards
+    /// paid by `getcoinbasetemplatefor`), which no transparent send can spend; 0 elsewhere.
+    pub(crate) fn pq_coinbase_left_out(&self) -> i64 {
+        if !self.shield_coinbase() {
+            return 0;
+        }
+        let spent = self.mempool_spent();
+        self.available_coins(None)
+            .into_iter()
+            .filter(|(c, _)| {
+                c.coinbase
+                    && matches!(c.owner, Owner::Pq(..))
+                    && !spent.contains(&(c.txid.clone(), c.vout))
+            })
+            .map(|(c, _)| c.value)
+            .sum()
+    }
+
     /// The coins of [`Wallet::spendable_yec`] with the coinbase ones, each with its coinbase flag
     /// (`AvailableCoins` with and without coinbase, for `SelectCoins`' coinbase flags).
     async fn ecc_candidates(
@@ -319,6 +356,7 @@ impl Wallet {
             pq,
             &yed_refusal,
             coinbase_flags(candidates, target, self.shield_coinbase()),
+            self.pq_coinbase_left_out(),
         ))
     }
 
@@ -384,6 +422,7 @@ impl Wallet {
                     pq,
                     &yed_refusal,
                     coinbase_flags(&candidates, need, self.shield_coinbase()),
+                    self.pq_coinbase_left_out(),
                 );
                 if pq > 0 {
                     // SendMoney's own check comes first: the payment is covered by the ECC
@@ -1436,13 +1475,13 @@ mod tests {
     fn select_fail_texts_are_the_cpp_lines() {
         let pq = "Insufficient funds in ordinary transparent addresses; this wallet also holds 5.00 YEC at post-quantum addresses: send from one with z_sendmany, which returns the change to it";
         let tail = "; its coinbase funds can only be spent after they have been sent to a zaddr";
-        assert_eq!(select_fail_text(5 * COIN, "", (false, false)), pq);
+        assert_eq!(select_fail_text(5 * COIN, "", (false, false), 0), pq);
         assert_eq!(
-            select_fail_text(5 * COIN, "", (true, false)),
+            select_fail_text(5 * COIN, "", (true, false), 0),
             format!("{pq}{tail}")
         );
         assert_eq!(
-            select_fail_text(5 * COIN, "", (false, true)),
+            select_fail_text(5 * COIN, "", (false, true), 0),
             format!("{pq}{tail}")
         );
         let live = yed_input_refusal(true, "aa:1, bb:0");
@@ -1451,19 +1490,24 @@ mod tests {
             yed_input_refusal(false, "aa:1"),
             "refusing to spend an output that carries YED as plain YEC while Yellowback is not live: aa:1 (its YED would burn; to destroy it deliberately, name the outpoint in a raw transaction)"
         );
-        assert_eq!(select_fail_text(0, &live, (false, false)), live);
+        assert_eq!(select_fail_text(0, &live, (false, false), 0), live);
         // the coinbase reasons win over the YED refusal
         assert_eq!(
-            select_fail_text(0, &live, (true, false)),
+            select_fail_text(0, &live, (true, false), 0),
             "Coinbase funds can only be sent to a zaddr"
         );
         assert_eq!(
-            select_fail_text(0, &live, (false, true)),
+            select_fail_text(0, &live, (false, true), 0),
             "Insufficient funds, coinbase funds can only be spent after they have been sent to a zaddr"
         );
         assert_eq!(
-            select_fail_text(0, "", (false, false)),
+            select_fail_text(0, "", (false, false), 0),
             "Insufficient funds"
+        );
+        // beta4 item 7: the post-quantum mining rewards no transparent send spends
+        assert_eq!(
+            select_fail_text(0, "", (false, false), 1_875_000_000),
+            "Insufficient funds; this wallet also holds 18.75 YEC of mining rewards (coinbase) at post-quantum addresses, which can only be sent to a shielded (Sapling) address, with no change: send them with z_sendmany from the address that holds them, which names the exact amount to send"
         );
         // DisplayMoney: the amount and the unit
         assert_eq!(display_money(COIN), "1.00 YEC");

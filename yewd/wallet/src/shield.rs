@@ -67,24 +67,6 @@ pub(crate) fn immature_tail(immature: i64, blocks_to_go: i64) -> String {
 }
 
 impl Wallet {
-    /// The smallest number of blocks one of this wallet's immature coinbase coins paying `script`
-    /// still needs before it can be spent (0 when there is none).
-    fn pq_coinbase_blocks_to_go(&self, script: &[u8]) -> i64 {
-        self.coins
-            .iter()
-            .filter_map(|c| {
-                let d = self.depth_at(c.height, None);
-                (c.coinbase
-                    && c.script == script
-                    && d > 0
-                    && self.immature(true, d)
-                    && !self.spent_at(&c.txid, c.vout, None))
-                .then(|| (crate::COINBASE_MATURITY + 1) as i64 - d)
-            })
-            .min()
-            .unwrap_or(0)
-    }
-
     /// `z_shieldcoinbase "fromaddress" "toaddress" ( fee ) ( limit ) ( memo ) ( privacyPolicy )`
     /// with a post-quantum `fromaddress` ([`serves_pq_source`]).
     pub(crate) async fn z_shieldcoinbase_pq(
