@@ -57,8 +57,13 @@ use crate::tx::{txid_from_hex, OutPoint};
 /// post-quantum spends, the `gettransaction` fee and the `-ydf` default. None of them changes a
 /// `YellowbackStreamer` answer this build reads, so the match is no longer exact: a node speaking
 /// [`MIN_RPCVERSION`] (a beta2 node) to [`KNOWN_RPCVERSION`] (beta3) is accepted
-/// ([`rpcversion_accepted`]); 8 and anything above 10 are refused.
-pub const KNOWN_RPCVERSION: i64 = 10;
+/// ([`rpcversion_accepted`]); 8 and anything above 10 were refused.
+/// `11` is beta4 (the workspace's `docs/plans/beta4/rpc-contract-delta.md` §4.14, decisions D-8,
+/// D-10): tag v2, a post-quantum payout key. `yed_gettag` / `yed_getprice.tag` gain
+/// `payoutScheme` and every payee may be a plain post-quantum address; the one thing this build
+/// does with a payee is pay it, and a post-quantum payee is paid to its TX_PQPKH script
+/// ([`crate::build::mint`]'s `payee_script_of_address`). Additive again: 9 to 11 are accepted.
+pub const KNOWN_RPCVERSION: i64 = 11;
 
 /// The oldest node `rpcversion` this build still accepts (9: an 8 node prints the pre-D-9
 /// post-quantum form this build refuses).
@@ -931,10 +936,10 @@ mod tests {
 
     #[test]
     fn rpcversion_window() {
-        // beta3 (R-1, B3-D5): a beta2 node (9) and a beta3 node (10) are accepted.
-        assert_eq!((MIN_RPCVERSION, KNOWN_RPCVERSION), (9, 10));
-        assert!(rpcversion_accepted(9) && rpcversion_accepted(10));
-        for v in [0, 5, 7, 8, 11, 12] {
+        // beta3 (R-1, B3-D5) and beta4 (tag v2): a beta2 (9), beta3 (10) and beta4 (11) node.
+        assert_eq!((MIN_RPCVERSION, KNOWN_RPCVERSION), (9, 11));
+        assert!(rpcversion_accepted(9) && rpcversion_accepted(10) && rpcversion_accepted(11));
+        for v in [0, 5, 7, 8, 12] {
             assert!(!rpcversion_accepted(v), "rpcversion {v} must be refused");
         }
     }

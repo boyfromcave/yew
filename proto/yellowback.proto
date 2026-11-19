@@ -3,10 +3,12 @@
 // file COPYING or https://www.opensource.org/licenses/mit-license.php .
 
 // Yellowback (YED) light-client service: a second, separate gRPC service beside
-// CompactTxStreamer (service.proto, which is not edited). Every method is a thin proxy of a
+// CompactTxStreamer (service.proto, which is not edited). Every method but one is a thin proxy of a
 // read-only yed_* RPC (or, since rpcversion 5, a read-only set_* / vault_* RPC of the vault
-// primitive YED runs on) on the node this server already talks to; the server adds no rule and
-// holds no Yellowback state. Field names are the JSON names of the node's RPC contract
+// primitive YED runs on, or a stock read RPC) on the node this server already talks to; the server
+// adds no rule and holds no Yellowback state. The one writing call is SubmitAttestation (beta4 item
+// 3d): it adds an attestation statement to the node's in-memory pool (yed_addattestation), never a
+// transaction or wallet act, behind the guards described at its message. Field names are the JSON names of the node's RPC contract
 // (ycash-dd/doc/yellowback-rpc-contract.json, rpcversion 8 on upgrade/quantum-vaults) so the contract's example values
 // are the test fixtures and the JSON result unmarshals straight into these messages; a message
 // may carry a subset of a result's fields (unknown JSON fields are ignored), never a renamed one.
@@ -117,6 +119,7 @@ message YedPriceTag {
   reserved 5; reserved "signal";                                      // rpcversion 5: no signalling
   bool found = 1; string kind = 2; string payoutAddress = 3; int64 priceMicroUsd = 4;
   int64 sourceMask = 6; int64 version = 7;
+  string payoutScheme = 8;                                            // rpcversion 11 (tag v2): p2pkh|fn-dsa-512|slh-dsa-sha2-128s
 }
 message YedPrice {
   bool armed = 1; string attestStatus = 2; YedPriceFills fill = 3; int64 height = 4; int64 pClaim = 5; int64 pFast = 6;
@@ -161,6 +164,13 @@ message YedPayload {
   int64 attestFeeVout = 1; int64 cents = 2; int64 feeVout = 3; int64 lockHeight = 4; string reason = 6;
   int64 refHeight = 7; string termClass = 8; string type = 9; bool valid = 10; int64 version = 11;   // version: 4 for a MINT, 3 otherwise
   int64 ownerScheme = 12; string ownerHash = 13;                      // rpcversion 7 (MINT): the owner's scheme and 32-byte key hash (hex)
+  // When the hex is a raw transaction (beta4 item 3d: the light seat's cancel watcher reads a claim's bundle):
+  // the payload output's index and the carrier input's bundle, decoded only, never verified.
+  int64 opReturnIndex = 14; YedPayloadBundle bundle = 15;
+}
+message YedBundleAttestation { int64 seq = 1; int64 priceMicroUsd = 2; int64 citedHeight = 3; string sig = 4; string hex = 5; }
+message YedPayloadBundle {
+  int64 vin = 1; string hash = 2; int64 version = 3; int64 count = 4; repeated YedBundleAttestation attestations = 5;
 }
 
 // ---- vaults --------------------------------------------------------------------------------
@@ -327,6 +337,31 @@ message VaultOutput {
   string owner = 23; int64 ownerscheme = 24;                         // rpcversion 7: the owner's pqkeyid (scheme || key hash) and scheme
 }
 
+// ---- the light attestor (beta4 item 3d, workspace docs/plans/beta4/price-feed.md section 2.2, B-T1) --------
+// SubmitAttestation: one 74-byte attestation statement (seq u16, price u32, citedHeight u32, sig 64;
+// ycash6 src/yellowback/attest.h) into the node's pool through yed_addattestation, the pool BuildBundle
+// reads. The only writing call of this service; guarded (exact size, a current member's seq, at most one
+// new frame per seq per window of blocks, the per-IP limit). The result is yed_addattestation's.
+message YedAttestationFrame { bytes frame = 1; }
+message YedAttestationAccepted {
+  bool accepted = 1; int64 citedHeight = 2; int64 poolSize = 3; int64 priceMicroUsd = 4; bool replaced = 5; int64 seq = 6;
+}
+// GetTag: yed_gettag <height> (0 = the tip). version / payoutScheme are rpcversion 11 (tag v2, beta4 item 3f);
+// a node before it leaves them empty.
+message YedTag {
+  bool found = 1; string kind = 2; string payoutAddress = 3; int64 priceMicroUsd = 4; int64 sourceMask = 5; int64 version = 6;
+  string payoutScheme = 7; int64 height = 8;                          // height: the block asked for (filled by the server)
+}
+// GetTxOut: gettxout <txid> <vout> <includeMempool>. A spent or unknown output is found = false (the RPC's null).
+message YedTxOutQuery { string txid = 1; uint32 vout = 2; bool includeMempool = 3; }
+message YedTxOut {
+  bool found = 1; string bestblock = 2; int64 confirmations = 3; int64 valueZat = 4; string scriptPubKeyHex = 5;
+  bool coinbase = 6;
+}
+// GetMempoolTxids: getrawmempool (txids in display order). GetMempoolTx (service.proto) streams compact
+// transactions, which carry no transparent inputs; the cancel watcher needs the ids to fetch full ones.
+message YedTxidList { repeated string txids = 1; }
+
 // ---- the service ---------------------------------------------------------------------------
 
 service YellowbackStreamer {
@@ -354,4 +389,9 @@ service YellowbackStreamer {
   rpc ListSets(Empty) returns (stream VaultSet) {}                       // set_list
   rpc GetSet(VaultSetQuery) returns (VaultSet) {}                        // set_getinfo
   rpc ListVaultOutputs(VaultOutputFilter) returns (stream VaultOutput) {} // vault_list (never "mine")
+  // the light attestor (beta4 item 3d, B-T1)
+  rpc SubmitAttestation(YedAttestationFrame) returns (YedAttestationAccepted) {}  // yed_addattestation (guarded)
+  rpc GetTag(HeightFilter) returns (YedTag) {}                                     // yed_gettag
+  rpc GetTxOut(YedTxOutQuery) returns (YedTxOut) {}                                // gettxout
+  rpc GetMempoolTxids(Empty) returns (YedTxidList) {}                              // getrawmempool
 }

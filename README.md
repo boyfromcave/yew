@@ -73,7 +73,7 @@ of the YED it backs, others can claim it. The YEC/USD price comes from mining po
   [ycash6](https://github.com/boyfromcave/ycash6), or the `upgrade/vault` branch of
   [ycash-dd](https://github.com/boyfromcave/ycash-dd)) started with `-insightexplorer`. For YED the
   server runs with `--yellowback` on a node where Yellowback is live; without that service YEW
-  shows and sends YEC only. The core accepts Yellowback `rpcversion` 9 (beta2) and 10 (beta3) and
+  shows and sends YEC only. The core accepts Yellowback `rpcversion` 9 (beta2), 10 (beta3) and 11 (beta4) and
   refuses a server at any other version.
 - **Try it:** [Quick start for developers](#quick-start-for-developers) below brings up the local
   test network and runs the app on it.
@@ -484,7 +484,7 @@ Everything below needs a device, an account, a public server or a decision:
    runs on the bridge's worker thread: the UI kept drawing through the SLH-DSA redeem preview.
 8. **Fee structure (since rpcversion 8; the workspace's
    `docs/plans/yellowback-quantum-fees-spec.md`, decisions D-Q-23..D-Q-26)**: the core
-   accepts `rpcversion` 9 and 10 and computes every fee it signs locally — the protocol fee in dollars
+   accepts `rpcversion` 9 to 11 and computes every fee it signs locally — the protocol fee in dollars
    of the debt in marginal bands (1 % to $1,000, 0.5 % to $10,000, 0.1 % above, $1 minimum) at
    the vault's stored `pMint` (`params::protocol_fee_zat`), the early-redeem fee of the debt,
    `maxMint` $100,000, and network fees at `params.fees.network`'s dollars-per-KB rates

@@ -863,7 +863,7 @@ pub async fn finish(
             payee_script: if m.payee.is_empty() {
                 None
             } else {
-                Some(mint::p2pkh_of_address(wallet, &m.payee)?)
+                Some(mint::payee_script_of_address(wallet, &m.payee)?)
             },
             fee_zat: m.fee_zat,
             attest_script: if m.attest_payee.is_empty() {

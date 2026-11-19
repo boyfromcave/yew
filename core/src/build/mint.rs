@@ -2246,7 +2246,7 @@ pub fn mint_outputs(
     if !m.payee.is_empty() {
         vout.push(TxOut {
             value: m.fee_zat,
-            script_pubkey: p2pkh_of_address(wallet, &m.payee)?,
+            script_pubkey: payee_script_of_address(wallet, &m.payee)?,
         });
     }
     if !m.attest_payee.is_empty() {
@@ -2256,6 +2256,27 @@ pub fn mint_outputs(
         });
     }
     Ok(vout)
+}
+
+/// The protocol fee payee's script (rpcversion 11, beta4 tag v2: the workspace's
+/// `docs/plans/beta4/rpc-contract-delta.md`): a P2PKH payee (`s…` / `yb…`) pays to its P2PKH
+/// script, a plain post-quantum payee (`sqf…`/`sqs…`, `tqf…`/`tqs…`, `rqf…`/`rqs…`; a miner
+/// whose tag carries a post-quantum payout key) to its TX_PQPKH script
+/// (`20 <hash> OP_1|OP_2 OP_CHECKPQSIG`), the script the node requires of the fee output of a
+/// MINT, a claim REDEEM and an owner REDEEM. The attestor fee (AFEE-1) stays P2PKH
+/// ([`p2pkh_of_address`]).
+pub(crate) fn payee_script_of_address(
+    wallet: &Wallet,
+    address: &str,
+) -> Result<Vec<u8>, WalletError> {
+    match keys::parse_address(wallet.network, address) {
+        Err(keys::KeyError::PqYecAddress(_)) => {
+            let id = keys::parse_pq_yec_address(wallet.network, address)?;
+            Ok(crate::pq::pqpkh_script(&id)
+                .ok_or_else(|| keys::KeyError::WrongNetwork(wallet.network, address.to_string()))?)
+        }
+        _ => p2pkh_of_address(wallet, address),
+    }
 }
 
 /// The P2PKH script of an `s…` / `yb…` address.
@@ -3319,6 +3340,33 @@ mod tests {
                 None,
             )
             .unwrap()
+        }
+
+        /// Beta4 tag v2 (rpcversion 11): a plain post-quantum payee is paid to its TX_PQPKH
+        /// script (35 bytes, `20 <hash> OP_1|OP_2 OP_CHECKPQSIG`), a P2PKH one to P2PKH; a
+        /// post-quantum Yellowback owner address is not a payee.
+        #[test]
+        fn payee_script_takes_a_post_quantum_payee() {
+            let w = wallet();
+            for scheme in [1u8, 2] {
+                let id = crate::pq::PqKeyId {
+                    scheme,
+                    hash: [0x5a; 32],
+                };
+                let addr = keys::encode_pq_yec(Network::Regtest, &id).unwrap();
+                let spk = payee_script_of_address(&w, &addr).unwrap();
+                assert_eq!(spk, crate::pq::pqpkh_script(&id).unwrap());
+                assert_eq!(crate::pq::pqpkh_of(&spk), Some(id));
+                assert!(p2pkh_of_address(&w, &addr).is_err());
+                let owner = keys::encode_pq_yellowback(Network::Regtest, &id).unwrap();
+                assert!(payee_script_of_address(&w, &owner).is_err());
+            }
+            let h = [0x33; 20];
+            let p2pkh = keys::encode_p2pkh(Network::Regtest, &h);
+            assert_eq!(
+                payee_script_of_address(&w, &p2pkh).unwrap(),
+                script::p2pkh_script(&h)
+            );
         }
 
         fn utxo(n: u32, class: UtxoClass) -> Utxo {
