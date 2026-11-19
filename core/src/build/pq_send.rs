@@ -96,10 +96,7 @@ pub struct SaplingSide {
 #[cfg(not(target_arch = "wasm32"))]
 impl SaplingSide {
     /// The wallet's Sapling account and the parameters under `params_dir`.
-    pub(crate) fn of(
-        wallet: &Wallet,
-        params_dir: &std::path::Path,
-    ) -> Result<SaplingSide, WalletError> {
+    pub fn of(wallet: &Wallet, params_dir: &std::path::Path) -> Result<SaplingSide, WalletError> {
         Ok(SaplingSide {
             extsk: wallet.shielded()?.extended_spending_key(),
             params_dir: params_dir.to_path_buf(),
