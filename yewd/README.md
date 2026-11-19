@@ -204,7 +204,7 @@ ycashd's wallet arguments (`-keypool`, `-exportdir`, …) and a ycashd-format `y
 | `-rpcallowip=<ip\|ip/n\|ip/mask>` | loopback only | allowed client subnets, repeatable; loopback is always allowed |
 | `-backendrpcconnect=<ip>` | `127.0.0.1` | the node's RPC address |
 | `-backendrpcport=<port>` | **required** | the node's RPC port |
-| `-backendrpccookiefile=<file>` | — | the node's `.cookie`; re-read after a 401, so a node restart is followed |
+| `-backendrpccookiefile=<file>` | — | the node's `.cookie`; re-read when the node refuses it, so a node restart is followed: after a 401 (ycashd), or after a connection the node closed unanswered while the file on disk changed (koganyd up to beta3 answers a stale cookie that way; yewd up to beta3 then failed every call with "connection closed before message completed" until it was restarted itself) |
 | `-backendrpcuser=<u>` `-backendrpcpassword=<p>` | — | instead of the cookie (one of the two is required) |
 | `-stopbackend` | off | `stop` also sends `stop` to the node (the harness bundle: the pair is one node, H6) |
 | `-signer=<socket>` | — | a signer someone else runs (`yewd-signer serve`): its Unix socket; without it yewd starts its own |

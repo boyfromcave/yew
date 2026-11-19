@@ -326,6 +326,48 @@ async fn backend_cookie_is_reread_after_a_restart() {
     assert_eq!(status, StatusCode::OK, "{v}");
 }
 
+/// beta4 item 1: koganyd writes a new cookie at every start and closes the connection on the old
+/// one instead of answering 401; yewd follows it all the same (the wallet's node calls take the
+/// same backend leg).
+#[tokio::test]
+async fn backend_cookie_is_reread_when_a_restarted_backend_closes_the_connection() {
+    let dir = scratch("rotate-close");
+    let node = fake_node_closing(&dir).await;
+    let f = facade(
+        &dir,
+        node.addr,
+        &node.cookie,
+        &["-rpcuser=u", "-rpcpassword=p"],
+    )
+    .await;
+    let c = client(&f, "u", "p");
+    assert_eq!(call(&c, "getblockcount", "[]").await.0, StatusCode::OK);
+    write_cookie(&node.cookie, "second"); // the backend restarted with a new cookie
+    let (status, v, _) = call(&c, "getblockcount", "[]").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["result"]["method"], "getblockcount", "{v}");
+    // and again at the next restart
+    write_cookie(&node.cookie, "third");
+    let (status, v, _) = call(&c, "getblockcount", "[]").await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+}
+
+/// A closed connection with an unchanged cookie is not a refusal: the call is not sent again (it
+/// may have reached the node) and the error is answered as before.
+#[tokio::test]
+async fn a_closed_connection_with_the_same_cookie_is_not_resent() {
+    let dir = scratch("close-same");
+    let node = fake_node_closing(&dir).await;
+    // yewd's cookie file is not the node's: every call is refused by a close, the cookie never moves
+    let stale = dir.join("stale.cookie");
+    write_cookie(&stale, "stale");
+    let f = facade(&dir, node.addr, &stale, &["-rpcuser=u", "-rpcpassword=p"]).await;
+    let c = client(&f, "u", "p");
+    let (_, v, _) = call(&c, "getblockcount", "[]").await;
+    assert_eq!(v["error"]["code"], -1, "{v}");
+    assert!(node.seen.lock().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn unreachable_backend_answers_warmup() {
     let dir = scratch("warmup");

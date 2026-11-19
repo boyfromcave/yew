@@ -141,6 +141,11 @@ clearer, and closes yewd's remaining gaps against ycashd's wallet (ycashd 6.22.0
 ## Known limitations
 
 - **yewd has no release binaries**; build it from source.
+- **yewd does not follow a koganyd restart.** koganyd writes a new RPC cookie at every start and
+  answers the old one by closing the connection instead of with a 401, and yewd re-reads the cookie
+  only after a 401: every call then fails with "connection closed before message completed" until
+  yewd is restarted too. Restart yewd after koganyd. Fixed after beta3 (yewd re-reads the cookie
+  after such a close as well).
 - **A yewd restore never completes on a chain that is not advancing.** After a restore from the
   recovery phrase against a paused chain (no miner), `getwalletinfo.restore_in_progress` stays true
   although the scan reached the tip: it waits for the node to call itself synced, which it never
