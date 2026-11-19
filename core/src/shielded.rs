@@ -569,8 +569,8 @@ fn percent_of(s: &WalletSummary<AccountUuid>) -> u8 {
 
 impl Shielded {
     /// The account's extended spending key, a transient copy (beta2 item 5: the output viewing
-    /// key of a post-quantum -> Sapling send's output, `build::pq_send`). Never stored.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// key of a post-quantum -> Sapling send's output, `build::pq_send`; in the browser too since
+    /// beta4, the mining reward move). Never stored.
     pub(crate) fn extended_spending_key(&self) -> sapling_crypto::zip32::ExtendedSpendingKey {
         self.account.extended_spending_key()
     }
@@ -1456,6 +1456,12 @@ impl Shielded {
     /// A prover is loaded (from a directory or from bytes).
     pub fn has_prover(&self) -> bool {
         self.prover.is_some()
+    }
+
+    /// The loaded prover, if any (beta4: the browser's, from [`Shielded::set_prover_bytes`], for
+    /// a post-quantum mining reward moved to Sapling, `build::pq_send`).
+    pub fn loaded_prover(&self) -> Option<&LocalTxProver> {
+        self.prover.as_ref().map(|(_, p)| p)
     }
 
     /// What `prover` records for the prover loaded for `params_dir`: the directory natively,

@@ -20,10 +20,10 @@ pub const NOTE_LOOKUP_NEEDED: &str = "note-lookup-needed: ";
 pub mod any_to_any;
 pub mod attestor;
 pub mod claim;
-// review YEW-PORT-5 R3: the hybrid builder (native only: the prover is not in the browser build).
-// Not an app API (review YEW-REVIEW-6 L3): `pub` for yewd-signer only; every caller passes the
-// result through `gate::check`; `crate::api` and `web/core-wasm` name nothing from it.
-#[cfg(not(target_arch = "wasm32"))]
+// review YEW-PORT-5 R3: the hybrid builder. Not an app API (review YEW-REVIEW-6 L3): `pub` for
+// yewd-signer only; every caller passes the result through `gate::check`; `crate::api` and
+// `web/core-wasm` name nothing from it. In the browser build too since beta4 (`pq_send`'s
+// reward move proves its one Sapling output with the browser's in-memory prover).
 pub mod hybrid;
 pub mod mint;
 // A mint funded from the private balance (beta2 D-3): the hybrid builder, so native only.

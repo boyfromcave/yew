@@ -1,6 +1,7 @@
 import { mount } from "../dom";
 import { clear, go, h } from "../dom";
 import { formatPriceLine, formatYec, formatYed } from "../format";
+import { rewardFeeZat } from "../core";
 import { HomeVm } from "../vm/home";
 import { errorCard, progressBar } from "../widgets";
 import { localize } from "../prefixes";
@@ -11,10 +12,12 @@ export function termsRefusedText(why: string): string {
 }
 
 /** beta4: the mining rewards, apart from every balance: immature ones with the blocks left; the mature ones of
- *  one address moved to Sapling at the exact amount (public addresses), or the recovery path (post-quantum). */
+ *  one address moved to Sapling at the exact amount, from a public or a post-quantum address (the latter proved
+ *  in this browser with the cached parameters, offered for download when missing). */
 function rewardsCard(vm: HomeVm): HTMLElement | null {
   const s = vm.state;
-  if (!s.rewards.length) return null;
+  // the card stays while a move is previewed or its result shown (the last reward's move empties the list)
+  if (!s.rewards.length && !s.rewardPreview && !s.rewardNote && !s.rewardParamsFor) return null;
   const by = new Map<string, { pq: boolean; mature: bigint; immature: { zat: string; n: number }[] }>();
   for (const r of s.rewards) {
     const g = by.get(r.address) ?? { pq: r.postQuantum, mature: 0n, immature: [] };
@@ -29,9 +32,12 @@ function rewardsCard(vm: HomeVm): HTMLElement | null {
       ...g.immature.map((i) => h("div", { class: "small pending", "data-reward": "immature" }, `${formatYec(i.zat)} YEC matures in ${i.n} block${i.n === 1 ? "" : "s"}`)),
       g.mature > 0n ? h("div", { class: "row" }, h("span", null, `${formatYec(g.mature.toString())} YEC ready to move`),
         h("button", { class: "secondary", "data-reward-move": addr, on: { click: () => vm.previewReward(addr) } }, "Move to Sapling")) : null)),
-    p ? h("div", { "data-reward": "preview" }, h("p", null, `Moves exactly ${formatYec(p.amountZat)} YEC into your private balance (the reward less the fee of ${formatYec(p.fee)} YEC), with no change.`),
+    p ? h("div", { "data-reward": "preview" }, h("p", null, `Moves exactly ${formatYec(p.amountZat)} YEC into your private balance (the reward less the fee of ${formatYec(rewardFeeZat(p))} YEC), with no change.`),
+      "feeNote" in p && p.feeNote ? h("p", { class: "small pending", "data-reward": "fee-note" }, p.feeNote) : null,
       h("div", { class: "actions" }, h("button", { "data-reward": "confirm", on: { click: () => vm.confirmReward() } }, "Move"), h("button", { class: "secondary", on: { click: () => vm.cancelReward() } }, "Cancel"))) : null,
-    s.rewardNote ? h("p", { class: "small", "data-reward": "note" }, s.rewardNote) : null);
+    s.rewardNote ? h("p", { class: "small", "data-reward": "note" }, s.rewardNote) : null,
+    s.rewardParamsFor && !s.rewardFetching ? h("div", { class: "actions" }, h("button", { class: "secondary", "data-reward": "fetch-params", on: { click: () => vm.fetchParamsForReward() } }, "Download the proving parameters (52 MB, once) and continue")) : null,
+    s.rewardFetching ? h("p", { class: "small", "data-reward": "fetching" }, `Downloading ${s.rewardFetching.name}: ${Math.floor((s.rewardFetching.bytesDone * 100) / Math.max(1, s.rewardFetching.bytesTotal))} %`) : null);
 }
 
 /** "Synced 14:05 · block 512,017": when the last sync completed and the tip it reached. */

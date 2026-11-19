@@ -85,21 +85,40 @@ pub struct PqSendPreview {
 }
 
 /// The Sapling side of a post-quantum -> Sapling send (beta2 item 5): the account's spending key
-/// (the output's viewing key) and the proving parameters' directory. The browser build has no
-/// prover and never reads it.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+/// (the output's viewing key) and where the proving parameters come from: a directory natively,
+/// or (beta4) the prover the wallet already holds, loaded from the parameter bytes the browser
+/// caches ([`SaplingSide::loaded`]).
 pub struct SaplingSide {
     pub(crate) extsk: sapling_crypto::zip32::ExtendedSpendingKey,
     pub(crate) params_dir: std::path::PathBuf,
+    /// Prove with the wallet's loaded prover (`Shielded::loaded_prover`), not `params_dir`.
+    pub(crate) loaded: bool,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl SaplingSide {
     /// The wallet's Sapling account and the parameters under `params_dir`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn of(wallet: &Wallet, params_dir: &std::path::Path) -> Result<SaplingSide, WalletError> {
         Ok(SaplingSide {
             extsk: wallet.shielded()?.extended_spending_key(),
             params_dir: params_dir.to_path_buf(),
+            loaded: false,
+        })
+    }
+
+    /// The wallet's Sapling account and the prover it has loaded (beta4: the browser's, from the
+    /// verified parameter bytes in its cache); refused when none is loaded.
+    pub fn loaded(wallet: &Wallet) -> Result<SaplingSide, WalletError> {
+        let sh = wallet.shielded()?;
+        if !sh.has_prover() {
+            return Err(other(
+                "params: the Sapling proving parameters are not loaded (fetch them first)",
+            ));
+        }
+        Ok(SaplingSide {
+            extsk: sh.extended_spending_key(),
+            params_dir: std::path::PathBuf::new(),
+            loaded: true,
         })
     }
 }
@@ -143,8 +162,8 @@ pub fn build_pq_to_sapling(
 /// default address), at the **exact** amount: the
 /// coins less the fee, no change, no transparent output (consensus spends a coinbase only so).
 /// The rest is [`build_pq_to_sapling`]'s: the hybrid builder, gate path
-/// [`gate::Path::PqToSapling`], the same preview and [`broadcast`]. Native only (the browser has
-/// no prover). Ordinary coins of the address are never selected here, and no ordinary send
+/// [`gate::Path::PqToSapling`], the same preview and [`broadcast`]. The browser passes
+/// [`SaplingSide::loaded`] (its in-memory prover; one output proof). Ordinary coins of the address are never selected here, and no ordinary send
 /// ever selects a mining reward (their classes differ).
 pub fn build_pq_reward_move(
     wallet: &Wallet,
@@ -195,7 +214,6 @@ pub(crate) fn plan_reward_move(
     )))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn refused(r: crate::refuse::Refused) -> WalletError {
     other(format!("{}: {}", r.0, r.1))
 }
@@ -243,7 +261,8 @@ fn build(
     })?;
     let to_sapling = crate::shielded_keys::is_sapling_address(wallet.network, to);
     let side = match (to_sapling, sapling) {
-        (true, Some(side)) if cfg!(not(target_arch = "wasm32")) => Some(side),
+        // the browser proves only with the prover it has loaded (beta4, the reward move)
+        (true, Some(side)) if side.loaded || cfg!(not(target_arch = "wasm32")) => Some(side),
         (true, _) => {
             return Err(other(
                 "Sending from a post-quantum address to a private (ys1…) address is not available in this app yet.",
@@ -425,7 +444,6 @@ fn build(
 /// the transparent send, the Sapling value checked against the parsed `valueBalance`, both gate
 /// layers' local rule on the final bytes.
 #[allow(clippy::too_many_arguments)]
-#[cfg(not(target_arch = "wasm32"))]
 fn finish_to_sapling(
     wallet: &Wallet,
     side: &SaplingSide,
@@ -436,7 +454,7 @@ fn finish_to_sapling(
     (from, to): (&str, &str),
     (amount, amount_bumped): (i64, bool),
     (tip, branch_id): (u64, u32),
-    started: std::time::Instant,
+    started: Started,
 ) -> Result<PqSendPreview, WalletError> {
     use crate::build::hybrid;
     use crate::sapling_part::{SaplingOut, SaplingPart};
@@ -455,14 +473,23 @@ fn finish_to_sapling(
         anchor: String::new(),
         params_dir: side.params_dir.display().to_string(),
     };
-    let h = hybrid::sapling_prepare(
-        side.extsk.clone(),
-        wallet.network,
-        &part,
-        &tx,
-        branch_id,
-        rand_core::OsRng,
-    )
+    let h = if side.loaded {
+        let sh = wallet.shielded()?;
+        let prover = sh.loaded_prover().ok_or_else(|| {
+            other("params: the Sapling proving parameters are not loaded (fetch them first)")
+        })?;
+        hybrid::sapling_prepare_with(
+            side.extsk.clone(),
+            wallet.network,
+            &part,
+            &tx,
+            branch_id,
+            prover,
+            rand_core::OsRng,
+        )
+    } else {
+        prepare_from_dir(side, wallet.network, &part, &tx, branch_id)
+    }
     .map_err(refused)?;
     let inputs: Vec<hybrid::HybridInput<'_>> = p
         .selected
@@ -475,7 +502,7 @@ fn finish_to_sapling(
         .collect();
     let (digests, raw) =
         hybrid::sign_hybrid(h, tx, &inputs, branch_id, rand_core::OsRng).map_err(refused)?;
-    let sign_millis = Some(started.elapsed().as_millis() as u64);
+    let sign_millis = millis_since(started);
     // the final bytes, parsed: every signature checked against the digest it signed (as the
     // transparent send and `release::pq_move`)
     let (signed, txid) = Transaction::parse(&raw)?;
@@ -537,24 +564,54 @@ fn finish_to_sapling(
     })
 }
 
-/// The browser has no prover: [`build`] refuses a Sapling recipient before this.
-#[allow(clippy::too_many_arguments)]
+/// The proving parameters from `side.params_dir` (native; the browser has no directory).
+#[cfg(not(target_arch = "wasm32"))]
+fn prepare_from_dir(
+    side: &SaplingSide,
+    network: crate::params::Network,
+    part: &crate::sapling_part::SaplingPart,
+    tx: &Transaction,
+    branch_id: u32,
+) -> Result<crate::build::hybrid::Hybrid, crate::refuse::Refused> {
+    crate::build::hybrid::sapling_prepare(
+        side.extsk.clone(),
+        network,
+        part,
+        tx,
+        branch_id,
+        rand_core::OsRng,
+    )
+}
+
 #[cfg(target_arch = "wasm32")]
-fn finish_to_sapling(
-    _: &Wallet,
+fn prepare_from_dir(
     _: &SaplingSide,
-    _: &crate::pq::PqKeyId,
-    _: &crate::pq::PqKey,
-    _: plan::PqSourcePlan<Utxo>,
-    _: Transaction,
-    _: (&str, &str),
-    _: (i64, bool),
-    _: (u64, u32),
-    _: (),
-) -> Result<PqSendPreview, WalletError> {
-    Err(other(
-        "Sending from a post-quantum address to a private (ys1…) address is not available in this app yet.",
+    _: crate::params::Network,
+    _: &crate::sapling_part::SaplingPart,
+    _: &Transaction,
+    _: u32,
+) -> Result<crate::build::hybrid::Hybrid, crate::refuse::Refused> {
+    Err((
+        crate::refuse::FAILED,
+        "the browser proves only with its loaded prover".to_string(),
     ))
+}
+
+// no monotonic clock on wasm32-unknown-unknown (`Instant::now` panics there): not measured in
+// the browser
+#[cfg(not(target_arch = "wasm32"))]
+type Started = std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+type Started = ();
+
+#[cfg(not(target_arch = "wasm32"))]
+fn millis_since(started: Started) -> Option<u64> {
+    Some(started.elapsed().as_millis() as u64)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn millis_since(_: Started) -> Option<u64> {
+    None
 }
 
 /// A coin's stored scriptPubKey (the gate's source rule, [`gate::check_with_scripts`]).
@@ -837,6 +894,7 @@ mod tests {
         let side = SaplingSide {
             extsk: acct.extended_spending_key(),
             params_dir: test_params_dir(),
+            loaded: false,
         };
         // an ordinary send to Sapling does not take the reward either
         let p =
@@ -901,6 +959,140 @@ mod tests {
         );
     }
 
+    /// beta4, the browser's reward move: [`SaplingSide::loaded`] is refused until the wallet holds
+    /// a prover, then (the prover built from the parameter bytes, as the browser builds it from its
+    /// cache: `Shielded::set_prover_bytes`) the move of an FN-DSA-512 reward and of an SLH-DSA one
+    /// proves with it: the exact amount into the wallet's own Sapling address, no change, no
+    /// transparent output, one Sapling output decrypts to that address and amount, the gate's
+    /// PqToSapling path passes. The same move from the parameters' directory pays the same amount.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn pq_reward_move_with_the_loaded_prover() {
+        use sapling_crypto::note_encryption::{
+            try_sapling_note_decryption, PreparedIncomingViewingKey,
+        };
+        let dir = std::env::temp_dir().join(format!("yew-pqreward-loaded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.sqlite");
+        let mut w = Wallet::open(
+            path.to_str().unwrap(),
+            Network::Regtest,
+            PHRASE,
+            "",
+            Some(1),
+        )
+        .unwrap();
+        let mut t = w.pq_terms();
+        t.falcon_active = true;
+        w.set_pq_terms_for_test(t);
+        let falcon = *w
+            .own_falcon_holders()
+            .unwrap()
+            .keys()
+            .next()
+            .expect("a Falcon holder");
+        let slh = *w
+            .own_pq_owners()
+            .unwrap()
+            .keys()
+            .next()
+            .expect("an SLH-DSA owner");
+        let mut utxos = Vec::new();
+        for (i, (id, v)) in [
+            (falcon, 625_000_000i64),
+            (slh, 625_000_000),
+            (slh, 1_250_000_000),
+        ]
+        .iter()
+        .enumerate()
+        {
+            utxos.push(Utxo {
+                outpoint: OutPoint {
+                    txid: [i as u8 + 1; 32],
+                    n: 0,
+                },
+                address: keys::encode_pq_yec(Network::Regtest, id).unwrap(),
+                script: crate::pq::pqpkh_script(id).unwrap(),
+                value: *v,
+                height: 10,
+                class: UtxoClass::PqCoinbase,
+                cents: 0,
+            });
+        }
+        w.store.replace_utxos(&utxos).unwrap();
+        let to = w.shielded().unwrap().default_address().1;
+        let e = SaplingSide::loaded(&w).err().expect("no prover loaded yet");
+        assert!(e.to_string().contains("params"), "{e}");
+        let pd = test_params_dir();
+        let spend = std::fs::read(pd.join(crate::sapling_params::SPEND.name)).unwrap();
+        let output = std::fs::read(pd.join(crate::sapling_params::OUTPUT.name)).unwrap();
+        w.shielded_mut()
+            .unwrap()
+            .set_prover_bytes(&spend, &output)
+            .unwrap();
+        let side = SaplingSide::loaded(&w).unwrap();
+        let ivk = PreparedIncomingViewingKey::new(
+            &crate::shielded_keys::SaplingAccount::from_mnemonic(PHRASE, "", Network::Regtest)
+                .unwrap()
+                .extended_spending_key()
+                .to_diversifiable_full_viewing_key()
+                .fvk()
+                .vk
+                .ivk(),
+        );
+        for (id, total, n) in [(falcon, 625_000_000i64, 1usize), (slh, 1_875_000_000, 2)] {
+            let from = keys::encode_pq_yec(Network::Regtest, &id).unwrap();
+            let p = build_pq_reward_move(&w, &side, &from, &to, 110, VAULT_BRANCH_ID).unwrap();
+            assert_eq!(p.path, gate::Path::PqToSapling(id));
+            assert_eq!((p.inputs.len(), p.change), (n, 0));
+            assert_eq!(
+                p.amount + p.fee,
+                total,
+                "exact amount: the rewards less the fee"
+            );
+            let (tx, _) = Transaction::parse(&p.raw).unwrap();
+            assert!(tx.vout.is_empty(), "no transparent output");
+            assert_eq!(tx.shielded.value_balance, -p.amount);
+            // the one Sapling output decrypts to the wallet's own address and the amount
+            let branch = zcash_protocol::consensus::BranchId::try_from(VAULT_BRANCH_ID).unwrap();
+            let parsed =
+                zcash_primitives::transaction::Transaction::read(&p.raw[..], branch).unwrap();
+            let bundle = parsed.sapling_bundle().expect("a Sapling part");
+            // the builder pads to two outputs (a dummy); exactly one decrypts to the wallet
+            let mine: Vec<_> = bundle
+                .shielded_outputs()
+                .iter()
+                .filter_map(|o| {
+                    try_sapling_note_decryption(
+                        &ivk,
+                        o,
+                        sapling_crypto::note_encryption::Zip212Enforcement::On,
+                    )
+                })
+                .collect();
+            assert_eq!(mine.len(), 1);
+            let (note, addr, _) = &mine[0];
+            assert_eq!(note.value().inner() as i64, p.amount);
+            assert_eq!(
+                zcash_keys::encoding::encode_payment_address(
+                    Network::Regtest.sapling_address_hrp(),
+                    addr
+                ),
+                to
+            );
+            let class = |op: &crate::tx::OutPoint| w.store.utxo_class(op).ok().flatten();
+            let scripts = |op: &crate::tx::OutPoint| script_of(&w, op);
+            assert!(gate::check_with_scripts(p.path, &p.raw, class, scripts).is_ok());
+            // the native path (the directory) plans the same move
+            let native = SaplingSide::of(&w, &pd).unwrap();
+            let q = build_pq_reward_move(&w, &native, &from, &to, 110, VAULT_BRANCH_ID).unwrap();
+            assert_eq!((q.amount, q.fee, q.change), (p.amount, p.fee, 0));
+        }
+        drop(w);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Beta2 item 5: PQ source -> Sapling recipient. Only PQ_OWNED coins of the address; the
     /// recipient in the Sapling part (decrypts to the recipient's address and amount with its
     /// incoming viewing key), no Sapling spend, `valueBalance` = -amount; the change back to the
@@ -931,6 +1123,7 @@ mod tests {
         let side = SaplingSide {
             extsk: acct.extended_spending_key(),
             params_dir: test_params_dir(),
+            loaded: false,
         };
         let p =
             build_pq_to_sapling(&w, &side, &from, &to, 1_000_000, 100, VAULT_BRANCH_ID).unwrap();

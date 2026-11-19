@@ -65,8 +65,9 @@ async function main() {
   let method = await keystore.unlockMethod();
   let open = false;
 
-  const home = new HomeVm(core), receive = new ReceiveVm(core), send = new SendVm(core), move = new SendVm(core, "yec");
   const history = new HistoryVm(core), settings = new SettingsVm(core, keystore, paramsSource, network, !!fixedServer), yb = new YellowbackVm(core);
+  // the reward card's parameter download takes the source Settings has (the page's own by default)
+  const home = new HomeVm(core, () => settings.paramsSources()), receive = new ReceiveVm(core), send = new SendVm(core), move = new SendVm(core, "yec");
   let unsub: (() => void) | undefined;
 
   const shell = (name: string, body: HTMLElement) => {
