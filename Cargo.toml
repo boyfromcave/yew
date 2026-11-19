@@ -1,8 +1,9 @@
-# YEW workspace: the Rust core (`yew-core`) and the devnet/developer CLI (`yew-cli`).
+# YEW workspace: the Rust core (`yew-core`), the devnet/developer CLI (`yew-cli`) and the light
+# attestor's CLI (`yew-attestor`).
 # Dependency policy: docs/plans/yellowback-wallet-plan.md §3.3; enforced by scripts/check-deps.sh.
 [workspace]
 resolver = "2"
-members = ["core", "core/cli"]
+members = ["core", "core/cli", "attestor"]
 
 [workspace.package]
 version = "0.1.0"

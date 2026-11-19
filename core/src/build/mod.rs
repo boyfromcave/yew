@@ -18,6 +18,7 @@
 pub const NOTE_LOOKUP_NEEDED: &str = "note-lookup-needed: ";
 
 pub mod any_to_any;
+pub mod attestor;
 pub mod claim;
 // review YEW-PORT-5 R3: the hybrid builder (native only: the prover is not in the browser build).
 // Not an app API (review YEW-REVIEW-6 L3): `pub` for yewd-signer only; every caller passes the
