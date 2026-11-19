@@ -264,7 +264,11 @@ fn print_pq_preview(p: &yew_core::build::pq_send::PqSendPreview) {
     println!(
         "pq preview: from {} to {} amount {} fee {} change {} inputs {} ({}) transparent outputs {} txid {}",
         p.from,
-        p.to,
+        if matches!(p.path, yew_core::gate::Path::PqToSapling(_)) {
+            "a Sapling address"
+        } else {
+            "a transparent address"
+        },
         p.amount,
         p.fee,
         p.change,
@@ -628,7 +632,7 @@ async fn main() {
                 ));
                 if let Funding::Shield(p) = &plan.funding {
                     println!(
-                        "reward shield: amount {} fee {} change {} inputs {} ({}) to {}",
+                        "reward shield: amount {} fee {} change {} inputs {} ({}) to the own Sapling address",
                         p.amount,
                         p.fee,
                         p.change,
@@ -638,8 +642,7 @@ async fn main() {
                             .map(|u| u.class.as_str())
                             .collect::<Vec<_>>()
                             .join(","),
-                        p.to
-                    );
+                                            );
                 }
                 let sent = fail(
                     yec_private::confirm_yec_send(&mut w, &mut c, &mut v, &plan, &params_dir(&o))
