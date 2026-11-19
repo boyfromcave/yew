@@ -23,10 +23,16 @@
 #                already built; every suite (W1, W2, W4, q_falcon_*, q_pqaddr_*), no time budget.
 #                It has no schedule, so nothing queues against the runner when it is offline.
 #
-# Non-gating by construction: schedule and manual dispatch only, never pull_request (a
-# self-hosted runner must not run workflow code from a fork or an unmerged branch). A failure of
-# the scheduled run (or a dispatch on upgrade/vault) opens (or comments on) one issue labelled
-# `devnet-nightly`.
+#   pull_request (beta4: the suites ran only nightly, so a change to core/ could break them
+#                unseen until release qualification) the hosted job, on a pull request that
+#                touches core/, proto/, the devnet scripts or this file: the node vectors, W4 and
+#                the Falcon holders (q_falcon_*), the suites a core change most often breaks; the
+#                nightly runs all of them. GitHub-hosted only: the self-hosted job never runs on a
+#                pull request (a self-hosted runner must not run workflow code from a fork or an
+#                unmerged branch), and nothing here uses a secret.
+#
+# A failure of the scheduled run (or a dispatch on upgrade/vault) opens (or comments on) one issue
+# labelled `devnet-nightly`; a pull request's run only fails its check.
 #
 # Self-hosted runner prerequisites (owner, once): the runner's environment sets YB_WORKSPACE to the
 # workspace checkout (with .venv, ycash-dd built: ycashd, the attest agent; lightwalletd-dd built),
@@ -38,6 +44,16 @@ name: devnet-nightly
 on:
   schedule:
     - cron: '17 3 * * *'
+  pull_request:
+    branches: [upgrade/vault]
+    paths:
+      - 'core/**'
+      - 'proto/**'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'scripts/devnet-*.sh'
+      - 'scripts/check-node-vectors.sh'
+      - '.github/workflows/devnet-nightly.yml'
   workflow_dispatch:
     inputs:
       runner:
@@ -54,7 +70,8 @@ permissions: {}
 
 concurrency:
   group: devnet-nightly-${{ github.ref }}
-  cancel-in-progress: false
+  # a pull request's newer push replaces its older run; the nightly and dispatches run to the end
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -62,7 +79,7 @@ env:
 
 jobs:
   hosted:
-    if: github.event_name == 'schedule' || inputs.runner == 'hosted'
+    if: github.event_name == 'schedule' || github.event_name == 'pull_request' || inputs.runner == 'hosted'
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     permissions:
@@ -75,7 +92,7 @@ jobs:
       NODE_ARTIFACT: node-bin
       NODE_RUN_ID: ${{ inputs.node_run_id }}
       LWD_REPO: https://github.com/boyfromcave/lightwalletd.git
-      GO_VERSION: '1.24.7'
+      GO_VERSION: '1.26.11'  # lightwalletd-dd's go.mod toolchain at proto/PIN
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -223,13 +240,13 @@ jobs:
         run: scripts/check-node-vectors.sh
       # Each suite: the script's own `up` (and `down` on exit), then the suite's tests only.
       - name: W1 (YEC round trip and restore)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
         working-directory: ws/yew
         run: |
           trap 'scripts/devnet-w1.sh down || true' EXIT
           scripts/devnet-w1.sh up && scripts/devnet-w1.sh test
       - name: W2 (YED transfer, the gate, the key round trip)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
         working-directory: ws/yew
         run: |
           trap 'scripts/devnet-w2.sh down || true' EXIT
@@ -247,7 +264,7 @@ jobs:
           trap 'scripts/devnet-falcon.sh down || true' EXIT
           scripts/devnet-falcon.sh up && scripts/devnet-falcon.sh test
       - name: post-quantum addresses (q_pqaddr_*)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
         working-directory: ws/yew
         run: |
           trap 'scripts/devnet-pqaddr.sh down || true' EXIT
