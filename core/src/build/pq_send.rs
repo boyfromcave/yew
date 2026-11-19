@@ -959,6 +959,140 @@ mod tests {
         );
     }
 
+    /// beta4, the browser's reward move: [`SaplingSide::loaded`] is refused until the wallet holds
+    /// a prover, then (the prover built from the parameter bytes, as the browser builds it from its
+    /// cache: `Shielded::set_prover_bytes`) the move of an FN-DSA-512 reward and of an SLH-DSA one
+    /// proves with it: the exact amount into the wallet's own Sapling address, no change, no
+    /// transparent output, one Sapling output decrypts to that address and amount, the gate's
+    /// PqToSapling path passes. The same move from the parameters' directory pays the same amount.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn pq_reward_move_with_the_loaded_prover() {
+        use sapling_crypto::note_encryption::{
+            try_sapling_note_decryption, PreparedIncomingViewingKey,
+        };
+        let dir = std::env::temp_dir().join(format!("yew-pqreward-loaded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.sqlite");
+        let mut w = Wallet::open(
+            path.to_str().unwrap(),
+            Network::Regtest,
+            PHRASE,
+            "",
+            Some(1),
+        )
+        .unwrap();
+        let mut t = w.pq_terms();
+        t.falcon_active = true;
+        w.set_pq_terms_for_test(t);
+        let falcon = *w
+            .own_falcon_holders()
+            .unwrap()
+            .keys()
+            .next()
+            .expect("a Falcon holder");
+        let slh = *w
+            .own_pq_owners()
+            .unwrap()
+            .keys()
+            .next()
+            .expect("an SLH-DSA owner");
+        let mut utxos = Vec::new();
+        for (i, (id, v)) in [
+            (falcon, 625_000_000i64),
+            (slh, 625_000_000),
+            (slh, 1_250_000_000),
+        ]
+        .iter()
+        .enumerate()
+        {
+            utxos.push(Utxo {
+                outpoint: OutPoint {
+                    txid: [i as u8 + 1; 32],
+                    n: 0,
+                },
+                address: keys::encode_pq_yec(Network::Regtest, id).unwrap(),
+                script: crate::pq::pqpkh_script(id).unwrap(),
+                value: *v,
+                height: 10,
+                class: UtxoClass::PqCoinbase,
+                cents: 0,
+            });
+        }
+        w.store.replace_utxos(&utxos).unwrap();
+        let to = w.shielded().unwrap().default_address().1;
+        let e = SaplingSide::loaded(&w).err().expect("no prover loaded yet");
+        assert!(e.to_string().contains("params"), "{e}");
+        let pd = test_params_dir();
+        let spend = std::fs::read(pd.join(crate::sapling_params::SPEND.name)).unwrap();
+        let output = std::fs::read(pd.join(crate::sapling_params::OUTPUT.name)).unwrap();
+        w.shielded_mut()
+            .unwrap()
+            .set_prover_bytes(&spend, &output)
+            .unwrap();
+        let side = SaplingSide::loaded(&w).unwrap();
+        let ivk = PreparedIncomingViewingKey::new(
+            &crate::shielded_keys::SaplingAccount::from_mnemonic(PHRASE, "", Network::Regtest)
+                .unwrap()
+                .extended_spending_key()
+                .to_diversifiable_full_viewing_key()
+                .fvk()
+                .vk
+                .ivk(),
+        );
+        for (id, total, n) in [(falcon, 625_000_000i64, 1usize), (slh, 1_875_000_000, 2)] {
+            let from = keys::encode_pq_yec(Network::Regtest, &id).unwrap();
+            let p = build_pq_reward_move(&w, &side, &from, &to, 110, VAULT_BRANCH_ID).unwrap();
+            assert_eq!(p.path, gate::Path::PqToSapling(id));
+            assert_eq!((p.inputs.len(), p.change), (n, 0));
+            assert_eq!(
+                p.amount + p.fee,
+                total,
+                "exact amount: the rewards less the fee"
+            );
+            let (tx, _) = Transaction::parse(&p.raw).unwrap();
+            assert!(tx.vout.is_empty(), "no transparent output");
+            assert_eq!(tx.shielded.value_balance, -p.amount);
+            // the one Sapling output decrypts to the wallet's own address and the amount
+            let branch = zcash_protocol::consensus::BranchId::try_from(VAULT_BRANCH_ID).unwrap();
+            let parsed =
+                zcash_primitives::transaction::Transaction::read(&p.raw[..], branch).unwrap();
+            let bundle = parsed.sapling_bundle().expect("a Sapling part");
+            // the builder pads to two outputs (a dummy); exactly one decrypts to the wallet
+            let mine: Vec<_> = bundle
+                .shielded_outputs()
+                .iter()
+                .filter_map(|o| {
+                    try_sapling_note_decryption(
+                        &ivk,
+                        o,
+                        sapling_crypto::note_encryption::Zip212Enforcement::On,
+                    )
+                })
+                .collect();
+            assert_eq!(mine.len(), 1);
+            let (note, addr, _) = &mine[0];
+            assert_eq!(note.value().inner() as i64, p.amount);
+            assert_eq!(
+                zcash_keys::encoding::encode_payment_address(
+                    Network::Regtest.sapling_address_hrp(),
+                    addr
+                ),
+                to
+            );
+            let class = |op: &crate::tx::OutPoint| w.store.utxo_class(op).ok().flatten();
+            let scripts = |op: &crate::tx::OutPoint| script_of(&w, op);
+            assert!(gate::check_with_scripts(p.path, &p.raw, class, scripts).is_ok());
+            // the native path (the directory) plans the same move
+            let native = SaplingSide::of(&w, &pd).unwrap();
+            let q = build_pq_reward_move(&w, &native, &from, &to, 110, VAULT_BRANCH_ID).unwrap();
+            assert_eq!((q.amount, q.fee, q.change), (p.amount, p.fee, 0));
+        }
+        drop(w);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Beta2 item 5: PQ source -> Sapling recipient. Only PQ_OWNED coins of the address; the
     /// recipient in the Sapling part (decrypts to the recipient's address and amount with its
     /// incoming viewing key), no Sapling spend, `valueBalance` = -amount; the change back to the
