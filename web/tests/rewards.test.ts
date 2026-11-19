@@ -57,9 +57,11 @@ describe("mining rewards", () => {
     expect(BigInt(p.amountZat) + BigInt(rewardFeeZat(p))).toBe(1250000000n);
     expect(root.querySelector('[data-reward="fetch-params"]')).toBeNull();
     expect(core.broadcasts).toHaveLength(0);
+    core.rewardRows = []; // the move spent the last reward: the card stays for its result
     await vm.confirmReward();
     expect(core.broadcasts).toHaveLength(1);
     expect(vm.state.rewardNote).toContain("Moved to your private balance");
+    expect(root.querySelector('[data-reward="note"]')?.textContent).toContain("Moved to your private balance");
   });
   it("an SLH-DSA reward moves too, and a flagged fee is shown and accepted by Move", async () => {
     const core = await openWallet();

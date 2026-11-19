@@ -16,7 +16,8 @@ export function termsRefusedText(why: string): string {
  *  in this browser with the cached parameters, offered for download when missing). */
 function rewardsCard(vm: HomeVm): HTMLElement | null {
   const s = vm.state;
-  if (!s.rewards.length) return null;
+  // the card stays while a move is previewed or its result shown (the last reward's move empties the list)
+  if (!s.rewards.length && !s.rewardPreview && !s.rewardNote && !s.rewardParamsFor) return null;
   const by = new Map<string, { pq: boolean; mature: bigint; immature: { zat: string; n: number }[] }>();
   for (const r of s.rewards) {
     const g = by.get(r.address) ?? { pq: r.postQuantum, mature: 0n, immature: [] };
