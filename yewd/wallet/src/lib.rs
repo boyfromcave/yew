@@ -39,6 +39,7 @@ pub mod raw;
 pub mod rpc;
 pub mod sapling;
 pub mod send;
+pub mod shield;
 pub mod state;
 pub mod vaultrpc;
 pub mod watch;

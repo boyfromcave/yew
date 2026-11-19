@@ -142,6 +142,8 @@ fn checked_total(amounts: impl Iterator<Item = i64>) -> Result<i64, RpcError> {
 #[derive(Clone, Debug)]
 pub struct Op {
     pub id: String,
+    /// The RPC that started it (`z_getoperationstatus`'s `method`).
+    pub method: &'static str,
     pub status: &'static str,
     pub creation_time: i64,
     pub error: Option<(i64, String)>,
@@ -172,7 +174,7 @@ impl Op {
             o.push("result", J::obj().with("txid", t.clone()));
             o.push("execution_secs", J::Raw(format!("{:.6}", self.secs)));
         }
-        o.push("method", J::Str("z_sendmany".into()));
+        o.push("method", J::Str(self.method.into()));
         o.push("params", J::Raw(self.params.to_string()));
         o
     }
@@ -488,6 +490,7 @@ impl Wallet {
         };
         self.ops.ops.push(Op {
             id: id.clone(),
+            method: "z_sendmany",
             status,
             creation_time: created,
             error,

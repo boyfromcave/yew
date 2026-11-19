@@ -472,6 +472,8 @@ impl Wallet {
             m if crate::admin::SERVED.contains(&m) => self.admin_call(node, m, p).await,
             m if crate::zsend::SERVED.contains(&m) => self.zsend_call(node, m, p).await,
             m if crate::merge::SERVED.contains(&m) => self.merge_call(node, m, p).await,
+            // yewd's extension (beta4 item 7): the façade routes only a post-quantum source here
+            "z_shieldcoinbase" => self.z_shieldcoinbase_pq(node, p).await,
             m if crate::legacy::SERVED.contains(&m) => self.legacy_call(node, m, p).await,
             m if crate::bytype::SERVED.contains(&m) => self.bytype_call(node, m, p).await,
             m if crate::watch::SERVED.contains(&m) => self.watch_call(node, m, p).await,
