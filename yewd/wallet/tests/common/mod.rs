@@ -110,8 +110,11 @@ pub struct Chain {
     /// fails once (the node unreachable: a scan stopped part-way).
     pub fail_read_at: Option<usize>,
     /// The node is in its initial block download (`getblockchaininfo`
-    /// `initial_block_download_complete: false`).
+    /// `initial_block_download_complete: false`, `headers` ahead of `blocks`).
     pub syncing: bool,
+    /// The node has every block it knows of, but its tip is old (a chain no miner extends):
+    /// `initial_block_download_complete: false` with `headers == blocks`.
+    pub old_tip: bool,
     /// When set, right after the `n`-th raw block read the chain becomes `.1` (its blocks,
     /// Sapling output counts and transactions): a reorg while the wallet reads.
     pub reorg_after_read: Option<(usize, Box<Chain>)>,
@@ -287,7 +290,8 @@ impl Node for MockNode {
                             json!({"blocks": tip, "upgrades": {}, "consensus": {"nextblock": "76b809bb"}})
                         }
                     };
-                    v["initial_block_download_complete"] = json!(!c.syncing);
+                    v["initial_block_download_complete"] = json!(!c.syncing && !c.old_tip);
+                    v["headers"] = json!(tip as u64 + if c.syncing { 100 } else { 0 });
                     v
                 }
                 "sendrawtransaction" => {

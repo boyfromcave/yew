@@ -235,8 +235,45 @@ pub struct ChainFacts {
     pub upgrades: Option<String>,
     pub falcon_active: Option<bool>,
     /// The node has the chain (out of its initial download): [`node_synced`] of its
-    /// `getblockchaininfo`. A restore stays in progress until it is.
+    /// `getblockchaininfo`. A restore stays in progress until it is, or until the node has
+    /// stayed at its header tip (`at_header_tip_since`).
     pub synced: bool,
+    /// Since when the node, not calling itself synced, has been at the tip of the headers it
+    /// knows ([`node_at_header_tip`]) with peers (on regtest, without): a chain that is not
+    /// advancing (no miner), whose tip is too old for the node's own synced test. `None` while
+    /// it downloads, or while the node is synced.
+    pub at_header_tip_since: Option<std::time::Instant>,
+}
+
+/// How long a node outside regtest that does not call itself synced must stay at its header
+/// tip, with peers, before a restore's scan to that tip completes the restore: long enough for
+/// a node that has just started to hear its peers' headers (it is at its own header tip before
+/// it has).
+pub const RESTORE_SETTLE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether the node is at the tip of the headers it knows (`getblockchaininfo` `blocks >=
+/// headers`, both reported): it is not downloading. Unlike [`node_synced`], true on a chain no
+/// block has extended for a long time (ycashd reports `initial_block_download_complete` false
+/// when its tip is older than `-maxtipage`, koganyd stays behind its clock estimate).
+pub fn node_at_header_tip(info: &serde_json::Value) -> bool {
+    match (info["blocks"].as_u64(), info["headers"].as_u64()) {
+        (Some(blocks), Some(headers)) => blocks >= headers,
+        _ => false,
+    }
+}
+
+/// Whether a restore whose scan has reached the node's tip, every re-pass done, completes: the
+/// node is synced, or it has been at its header tip for [`RESTORE_SETTLE`] (at once on regtest).
+pub fn restore_may_close(network: Network, chain: &ChainFacts, now: std::time::Instant) -> bool {
+    let settle = if network == Network::Regtest {
+        std::time::Duration::ZERO
+    } else {
+        RESTORE_SETTLE
+    };
+    chain.synced
+        || chain
+            .at_header_tip_since
+            .is_some_and(|t| now.saturating_duration_since(t) >= settle)
 }
 
 /// The backend is on the wallet's network (`getblockchaininfo`): on testnet, the testnet-yb-fast
@@ -294,6 +331,16 @@ pub fn node_synced(info: &serde_json::Value) -> bool {
             .as_u64()
             .is_some_and(|e| blocks >= e);
     headers_ok && estimate_ok
+}
+
+/// The node's peer count (`getnetworkinfo.connections`, which ycashd and koganyd report); 0 when
+/// it cannot be read.
+async fn node_peers(node: &dyn Node) -> u64 {
+    node::call(node, "getnetworkinfo", serde_json::json!([]))
+        .await
+        .ok()
+        .and_then(|v| v["connections"].as_u64())
+        .unwrap_or(0)
 }
 
 /// The node's upgrade heights before the vault upgrade (`getblockchaininfo.upgrades`, keyed by
@@ -1101,6 +1148,21 @@ impl Wallet {
             .map(|h| h as u32);
         self.chain.upgrades = Some(upgrades_spec(&info["upgrades"]));
         self.chain.synced = node_synced(&info);
+        // a restore against a node that does not call itself synced: is it at its header tip
+        // (with peers, outside regtest)?
+        let at_tip = self.st.restore_pending
+            && !self.chain.synced
+            && node_at_header_tip(&info)
+            && (self.network == Network::Regtest || node_peers(node).await > 0);
+        self.chain.at_header_tip_since = if at_tip {
+            Some(
+                self.chain
+                    .at_header_tip_since
+                    .unwrap_or_else(std::time::Instant::now),
+            )
+        } else {
+            None
+        };
         Ok(())
     }
 
@@ -1131,12 +1193,25 @@ impl Wallet {
     }
 
     /// A wallet restored from its recovery phrase has scanned the chain to the node's tip with
-    /// no re-pass owed, and the node has the chain (ycash6 clears its `restorescan` marker only
-    /// out of the initial download): `getwalletinfo.restore_in_progress` clears.
+    /// no re-pass owed, and the node has the chain: it is synced, or it is not downloading (at
+    /// its header tip, [`restore_may_close`]) although its tip is old, as on a chain no miner
+    /// extends (beta4 list item 2): `getwalletinfo.restore_in_progress` clears. While the node
+    /// downloads (headers ahead of blocks) the restore stays open, as ycash6 keeps its
+    /// `restorescan` marker through the initial download.
     fn restore_done(&mut self) -> bool {
-        if self.st.restore_pending && self.st.scan.is_none() && self.chain.synced {
+        if self.st.restore_pending
+            && self.st.scan.is_none()
+            && restore_may_close(self.network, &self.chain, std::time::Instant::now())
+        {
             self.st.restore_pending = false;
-            eprintln!("yewd: the restore's scan is complete");
+            self.chain.at_header_tip_since = None;
+            if self.chain.synced {
+                eprintln!("yewd: the restore's scan is complete");
+            } else {
+                eprintln!(
+                    "yewd: the restore's scan is complete (the node is at its header tip, which no new block has extended)"
+                );
+            }
             return true;
         }
         false
@@ -1691,6 +1766,55 @@ mod node_synced_tests {
         assert!(!node_synced(&k(200, 200, 0.99, 202))); // behind the clock's estimate
         assert!(!node_synced(&json!({"blocks": 10})));
         assert!(!node_synced(&json!({})));
+    }
+}
+
+#[cfg(test)]
+mod restore_close_tests {
+    use super::{node_at_header_tip, restore_may_close, ChainFacts, Network, RESTORE_SETTLE};
+    use serde_json::json;
+    use std::time::{Duration, Instant};
+
+    /// At the header tip: `blocks >= headers`, both reported; headers ahead or missing is not.
+    #[test]
+    fn header_tip_reads_blocks_and_headers() {
+        assert!(node_at_header_tip(
+            &json!({"blocks": 512017, "headers": 512017})
+        ));
+        assert!(!node_at_header_tip(&json!({"blocks": 100, "headers": 200})));
+        assert!(!node_at_header_tip(&json!({"blocks": 100})));
+        assert!(!node_at_header_tip(&json!({})));
+    }
+
+    /// beta4 list item 2: synced closes at once; a node at its header tip closes at once on
+    /// regtest and after RESTORE_SETTLE elsewhere; a downloading node never.
+    #[test]
+    fn a_restore_closes_on_a_synced_or_settled_node() {
+        let now = Instant::now();
+        let synced = ChainFacts {
+            synced: true,
+            ..ChainFacts::default()
+        };
+        assert!(restore_may_close(Network::Testnet, &synced, now));
+        let downloading = ChainFacts::default();
+        assert!(!restore_may_close(Network::Regtest, &downloading, now));
+        assert!(!restore_may_close(Network::Mainnet, &downloading, now));
+        let just = ChainFacts {
+            at_header_tip_since: Some(now),
+            ..ChainFacts::default()
+        };
+        assert!(restore_may_close(Network::Regtest, &just, now));
+        assert!(!restore_may_close(Network::Testnet, &just, now));
+        assert!(!restore_may_close(
+            Network::Mainnet,
+            &just,
+            now + RESTORE_SETTLE - Duration::from_secs(1)
+        ));
+        assert!(restore_may_close(
+            Network::Testnet,
+            &just,
+            now + RESTORE_SETTLE
+        ));
     }
 }
 
