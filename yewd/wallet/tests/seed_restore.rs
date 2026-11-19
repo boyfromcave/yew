@@ -329,6 +329,41 @@ async fn a_restore_against_a_syncing_node_finds_keys_paid_in_earlier_syncs() {
     assert_eq!(info["restore_in_progress"], json!(false));
 }
 
+/// beta4 list item 2: a restore against a node whose chain is not advancing (no miner, the tip
+/// older than the node's synced test: ycashd's `initial_block_download_complete` stays false,
+/// koganyd stays behind its clock estimate) completes once the wallet has scanned to the tip with
+/// every re-pass done and the node is at its header tip, with no new block. While the node's
+/// headers are ahead of its blocks the restore stays open.
+#[tokio::test]
+async fn a_restore_against_a_parked_chain_completes_at_its_tip() {
+    let node = MockNode::default();
+    genesis(&node);
+    let p150 = payment(foreign(0), ext(150), 15_000);
+    let p60 = payment(foreign(1), ext(60), 6_000);
+    mine(&node, vec![coinbase(1, vec![0x51], 1), p150.clone()]);
+    mine(&node, vec![coinbase(2, vec![0x51], 1), p60.clone()]);
+    // first downloading (headers ahead), then parked: every block in, the tip old
+    node.0.lock().unwrap().syncing = true;
+    let d = dir("restore-parked");
+    let mut w = Wallet::open(&d, Network::Regtest, signer(), 0).unwrap();
+    w.restore_first_sapling().unwrap();
+    w.sync(&node).await.unwrap();
+    assert!(w.st.restore_pending, "headers ahead: still downloading");
+    {
+        let mut c = node.0.lock().unwrap();
+        c.syncing = false;
+        c.old_tip = true;
+    }
+    // no new block: the next sync finds the node at its header tip, and the restore completes
+    w.sync(&node).await.unwrap();
+    assert!(!w.st.restore_pending);
+    let info = call_json(&mut w, &node, "getwalletinfo", &[]).await;
+    assert_eq!(info["restore_in_progress"], json!(false));
+    let mut want = vec![(txid_of(&p150), 0, 15_000), (txid_of(&p60), 0, 6_000)];
+    want.sort();
+    assert_eq!(unspent(&w), want);
+}
+
 /// Review YEW-41 finding 2: a reorg while a re-pass reads (blocks 5 and 6 of another chain replace
 /// block 5 in the middle of pass 2). The pass sees the tip it recorded is gone, the main pass
 /// follows the reorg, and the pass is read again from its start: the same coins, on the new chain.

@@ -80,8 +80,9 @@ node and one wallet.
    The wallet is created at the first start in `~/.yewd/testnet-yb-fast/` (`~/.yewd/` on mainnet);
    `-datadir` moves it. To restore instead, start a new data directory once with
    `-mnemonicfile=<file>` (a yewd or YEW phrase; see "Restore from the recovery phrase"): the
-   restore stays open, and balances are incomplete, until koganyd has synced and the scan has
-   reached its tip (`getwalletinfo.restore_in_progress`).
+   restore stays open, and balances are incomplete, until koganyd has synced (or, on a chain no
+   block extends, is at its header tip) and the scan has reached its tip
+   (`getwalletinfo.restore_in_progress`).
 5. **Back up** with `backupwallet` (or `z_exportwallet`, with `-exportdir`), and keep the recovery
    phrase (`z_exportwallet` writes it). Watched scripts are not derived from the phrase: after a
    restore from it, import them again.
@@ -259,10 +260,16 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
   scan's progress (`scan` in `wallet.json`: the first block, the pass, the next block of a re-pass)
   is written every 2,000 blocks or 30 s and when the backend is lost, so a restore stopped part-way
   resumes there. `getwalletinfo.restore_in_progress` is true until the restore's scan reached the
-  node's tip with no re-pass owed **and** the node reports it has the chain (ycashd's
+  node's tip with no re-pass owed **and** the node has the chain: it reports it is synced (ycashd's
   `initial_block_download_complete`; on koganyd, its tip at its header chain's and at its estimated
-  height); until then every re-pass starts at the birthday, so a restore against a node still
-  syncing finds keys whose payments an earlier sync read. Wallet calls wait for the scan (the
+  height), or it is at its header tip (`blocks` = `headers`) with peers for 60 s (at once on
+  regtest). The second test closes a restore on a chain no block extends (a paused testnet, a
+  regtest chain with an old tip), which a node never calls synced: ycashd stays in initial block
+  download while its tip is older than `-maxtipage`, and koganyd stays behind its clock estimate
+  (beta4 list item 2; ycashd's own wallet keeps its restore marker there until a later start).
+  While the node's headers are ahead of its blocks the restore stays open, and every re-pass starts
+  at the birthday, so a restore against a node still syncing finds keys whose payments an earlier
+  sync read. Wallet calls wait for the scan (the
   barrier); progress is logged every 60 s. A reorg during a re-pass makes it read again. `lookahead_incomplete` is always false: the transparent window is derived from the
   account's public key, so even an encrypted, locked wallet holds it. Past the gap: issue addresses
   with `getnewaddress` (`getnewaddress pq` / `pqslh` for post-quantum keys) beyond it, then restart
