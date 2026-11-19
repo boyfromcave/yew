@@ -141,6 +141,11 @@ clearer, and closes yewd's remaining gaps against ycashd's wallet (ycashd 6.22.0
 ## Known limitations
 
 - **yewd has no release binaries**; build it from source.
+- **yewd does not follow a koganyd restart.** koganyd writes a new RPC cookie at every start and
+  answers the old one by closing the connection instead of with a 401, and yewd re-reads the cookie
+  only after a 401: every call then fails with "connection closed before message completed" until
+  yewd is restarted too. Restart yewd after koganyd. Fixed after beta3 (yewd re-reads the cookie
+  after such a close as well).
 - **The YEW app and the web wallet cannot spend a post-quantum block reward.** They cannot tell that
   a coin is a coinbase (the light-client coin listing, lightwalletd's `GetAddressUtxos`, carries no
   such flag), so they show a reward paid to one of their post-quantum addresses as spendable, and

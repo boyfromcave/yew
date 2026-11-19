@@ -5,7 +5,6 @@
 //! A fake backend node and a client, for the façade's tests.
 #![allow(dead_code)]
 
-use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -23,7 +22,9 @@ use yewd_facade::{Args, Config, Running};
 
 /// A node stand-in: answers every method with `{"method": <m>, "amount": 1.00000000}` (the
 /// amount's text must reach the client unchanged), `-32601` for `nosuchmethod`, and records
-/// every method it saw. Authenticates against `cookie` (re-read per request, so a test can rotate it).
+/// every method it saw. Authenticates against `cookie` (re-read per request, so a test can rotate it);
+/// a wrong credential gets a 401 (ycashd), or with [`fake_node_closing`] a connection closed
+/// without an answer (koganyd up to beta3: its RPC middleware fails the request).
 pub struct FakeNode {
     pub addr: SocketAddr,
     pub cookie: PathBuf,
@@ -42,6 +43,15 @@ pub fn write_cookie(path: &Path, secret: &str) {
 }
 
 pub async fn fake_node(dir: &Path) -> FakeNode {
+    fake_node_with(dir, false).await
+}
+
+/// A [`fake_node`] that refuses a wrong credential as koganyd does: by closing the connection.
+pub async fn fake_node_closing(dir: &Path) -> FakeNode {
+    fake_node_with(dir, true).await
+}
+
+async fn fake_node_with(dir: &Path, close_on_refusal: bool) -> FakeNode {
     let cookie = dir.join("backend.cookie");
     write_cookie(&cookie, "first");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -62,10 +72,13 @@ pub async fn fake_node(dir: &Path) -> FakeNode {
                             .get("authorization")
                             .map(|v| v.as_bytes() == want.as_bytes())
                             .unwrap_or(false);
+                        if !ok && close_on_refusal {
+                            return Err(std::io::Error::other("unauthenticated method"));
+                        }
                         if !ok {
                             let mut r = Response::new(Full::new(Bytes::new()));
                             *r.status_mut() = StatusCode::UNAUTHORIZED;
-                            return Ok::<_, Infallible>(r);
+                            return Ok::<_, std::io::Error>(r);
                         }
                         let body = req.into_body().collect().await.unwrap().to_bytes();
                         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
