@@ -45,7 +45,10 @@ export class HomeVm extends Vm<HomeState> {
   async previewReward(address: string) {
     this.set({ rewardPreview: null, rewardNote: "", rewardParamsFor: "" });
     try { this.set({ rewardPreview: await this.core.reward_move_preview(address) }); }
-    catch (e) { this.set({ rewardNote: messageOf(e), rewardParamsFor: kindOf(e) === "params" ? address : "" }); }
+    catch (e) {
+      if (kindOf(e) === "params") this.set({ rewardNote: "Moving a post-quantum reward is proved in this browser: it needs the Sapling proving parameters (52 MB, downloaded once).", rewardParamsFor: address });
+      else this.set({ rewardNote: messageOf(e), rewardParamsFor: "" });
+    }
   }
   /** Download the proving parameters (52 MB, once; verified against their pins) and preview the move again. */
   async fetchParamsForReward() {
