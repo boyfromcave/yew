@@ -16,6 +16,7 @@
 //!           | mint-status [<id>] | mint-finish <id> | mint-sweep <id>
 //!           | vaults | redeem <vaultTxid> | claimable | claim <vaultTxid>
 //!           | intents | release <txid:n>
+//!           | pq-address [--slh] | pq-send <from> <to> <zat> | rewards | reward-move <from>
 //! ```
 //!
 //! W4: `mint-start` funds the carrier and prints the mint id; after one block, `sync` (or any
@@ -72,6 +73,7 @@ fn usage() -> ! {
          \x20         | mint-status [<id>] | mint-finish <id> | mint-sweep <id>\n\
          \x20         | vaults | redeem <vaultTxid> | claimable | claim <vaultTxid>\n\
          \x20         | intents | release <txid:n>\n\
+         \x20         | pq-address [--slh] | pq-send <from> <to> <zat> | rewards | reward-move <from>\n\
          seed: --seed-file or the YEW_SEED environment variable (a BIP39 mnemonic);\n\
          passphrase: --passphrase or YEW_PASSPHRASE (default empty)."
     );
@@ -255,6 +257,26 @@ async fn synced_both(o: &Opts) -> (Wallet, CompactClient, Validator, sync::SyncR
         Err(e) => println!("private: not synced: {e}"),
     }
     (w, c, v, r)
+}
+
+fn print_pq_preview(p: &yew_core::build::pq_send::PqSendPreview) {
+    let tx = yew_core::tx::Transaction::parse(&p.raw).map(|(t, _)| t);
+    println!(
+        "pq preview: from {} to {} amount {} fee {} change {} inputs {} ({}) transparent outputs {} txid {}",
+        p.from,
+        if matches!(p.path, yew_core::gate::Path::PqToSapling(_)) {
+            "a Sapling address"
+        } else {
+            "a transparent address"
+        },
+        p.amount,
+        p.fee,
+        p.change,
+        p.inputs.len(),
+        p.inputs.iter().map(|u| u.class.as_str()).collect::<Vec<_>>().join(","),
+        tx.as_ref().map(|t| t.vout.len()).unwrap_or(usize::MAX),
+        txid_hex(&p.txid)
+    );
 }
 
 fn mint_line(m: &MintRow) -> String {
@@ -484,6 +506,150 @@ async fn main() {
                 dir.display(),
                 st.missing_bytes
             );
+        }
+        // beta4: the receive key's post-quantum plain-YEC address (FN-DSA-512, or SLH-DSA with --slh)
+        "pq-address" => {
+            let w = open_wallet(&o);
+            let row = fail(w.receive_address(false));
+            let id = if o.rest.iter().any(|a| a == "--slh") {
+                w.pq_owner_id(row.index)
+            } else {
+                w.falcon_holder_id(&row).unwrap_or_else(|| {
+                    eprintln!("this key has no Falcon pair");
+                    exit(1)
+                })
+            };
+            println!(
+                "{}",
+                yew_core::keys::encode_pq_yec(w.network, &id).unwrap_or_default()
+            );
+        }
+        // beta4: the mining rewards (coinbase outputs) and the blocks until each can be moved
+        "rewards" => {
+            let w = open_wallet(&o);
+            let tip = fail(w.store.meta_u64("last_synced_height"));
+            for u in fail(w.spendable_utxos()) {
+                if u.class.is_coinbase() {
+                    let n = yew_core::coins::coinbase_matures_in(u.height, tip);
+                    println!(
+                        "{:<12} {:>12} zat height {:>6} {} {} {}",
+                        u.class.as_str(),
+                        u.value,
+                        u.height,
+                        if n == 0 {
+                            "mature".to_string()
+                        } else {
+                            format!("matures in {n} blocks")
+                        },
+                        u.outpoint.display(),
+                        u.address
+                    );
+                }
+            }
+        }
+        // a plain YEC send from an own post-quantum address (to s…, a post-quantum or a ys1… address)
+        "pq-send" => {
+            let (from, to, zat) = match (o.rest.get(1), o.rest.get(2), o.rest.get(3)) {
+                (Some(f), Some(t), Some(z)) => (
+                    f.clone(),
+                    t.clone(),
+                    z.parse::<i64>().unwrap_or_else(|_| usage()),
+                ),
+                _ => usage(),
+            };
+            let (w, mut c, mut v, r) = synced_both(&o).await;
+            let p = if yew_core::shielded_keys::is_sapling_address(w.network, &to) {
+                let side = fail(yew_core::build::pq_send::SaplingSide::of(
+                    &w,
+                    &params_dir(&o),
+                ));
+                fail(yew_core::build::pq_send::build_pq_to_sapling(
+                    &w,
+                    &side,
+                    &from,
+                    &to,
+                    zat,
+                    r.tip,
+                    r.branch_id,
+                ))
+            } else {
+                fail(yew_core::build::pq_send::build_pq_send(
+                    &w,
+                    &from,
+                    &to,
+                    zat,
+                    r.tip,
+                    r.branch_id,
+                ))
+            };
+            print_pq_preview(&p);
+            let (txid, _) = fail(
+                yew_core::build::pq_send::broadcast(
+                    &w,
+                    &mut c,
+                    &mut v,
+                    &p,
+                    p.fee_guard.ack.as_deref(),
+                )
+                .await,
+            );
+            println!("sent {txid}");
+        }
+        // beta4: move the mature mining rewards of an own address to the own Sapling address at
+        // the exact amount (a post-quantum address: build_pq_reward_move; s…: plan_reward_shield)
+        "reward-move" => {
+            let from = o.rest.get(1).cloned().unwrap_or_else(|| usage());
+            let (mut w, mut c, mut v, r) = synced_both(&o).await;
+            if yew_core::keys::parse_pq_yec_address(w.network, &from).is_ok() {
+                let side = fail(yew_core::build::pq_send::SaplingSide::of(
+                    &w,
+                    &params_dir(&o),
+                ));
+                let to = fail(w.shielded()).default_address().1;
+                let p = fail(yew_core::build::pq_send::build_pq_reward_move(
+                    &w,
+                    &side,
+                    &from,
+                    &to,
+                    r.tip,
+                    r.branch_id,
+                ));
+                print_pq_preview(&p);
+                let (txid, _) = fail(
+                    yew_core::build::pq_send::broadcast(
+                        &w,
+                        &mut c,
+                        &mut v,
+                        &p,
+                        p.fee_guard.ack.as_deref(),
+                    )
+                    .await,
+                );
+                println!("sent {txid}");
+            } else {
+                let plan = fail(yew_core::build::yec_move::plan_reward_shield(
+                    &w, &from, r.tip,
+                ));
+                if let Funding::Shield(p) = &plan.funding {
+                    println!(
+                        "reward shield: amount {} fee {} change {} inputs {} ({}) to the own Sapling address",
+                        p.amount,
+                        p.fee,
+                        p.change,
+                        p.inputs.len(),
+                        p.inputs
+                            .iter()
+                            .map(|u| u.class.as_str())
+                            .collect::<Vec<_>>()
+                            .join(","),
+                                            );
+                }
+                let sent = fail(
+                    yec_private::confirm_yec_send(&mut w, &mut c, &mut v, &plan, &params_dir(&o))
+                        .await,
+                );
+                println!("sent {}", sent.txid);
+            }
         }
         "address" => {
             let w = open_wallet(&o);

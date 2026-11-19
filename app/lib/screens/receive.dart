@@ -98,6 +98,15 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                           'Send YEC here: your post-quantum SLH-DSA address. YEC only, public on the chain. Spending from it signs with a ~7.9 KB signature, so its fees are the largest and signing is slower.',
                       },
                     ),
+                  if (pq) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      'Not for mining payouts: a mining reward paid here can only be moved by shielding it at the exact amount after 101 confirmations. Pay mining rewards to a ycashd or yewd wallet address instead.',
+                      key: const Key('pq-mining-warning'),
+                      textAlign: TextAlign.center,
+                      style: t.bodySmall?.copyWith(color: c.danger),
+                    ),
+                  ],
                   const SizedBox(height: 16),
                   if (!private) Text(pq ? ((kind == ReceiveKind.pqFalcon ? pqF : pqS)?.path ?? '') : a.path, textAlign: TextAlign.center, style: t.bodySmall?.copyWith(color: c.pending)),
                   const SizedBox(height: 16),

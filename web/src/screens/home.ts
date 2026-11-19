@@ -10,6 +10,30 @@ export function termsRefusedText(why: string): string {
   return `The FN-DSA-512 and YED balances cannot be computed: this server's fee terms were refused (${why}). Use another server.`;
 }
 
+/** beta4: the mining rewards, apart from every balance: immature ones with the blocks left; the mature ones of
+ *  one address moved to Sapling at the exact amount (public addresses), or the recovery path (post-quantum). */
+function rewardsCard(vm: HomeVm): HTMLElement | null {
+  const s = vm.state;
+  if (!s.rewards.length) return null;
+  const by = new Map<string, { pq: boolean; mature: bigint; immature: { zat: string; n: number }[] }>();
+  for (const r of s.rewards) {
+    const g = by.get(r.address) ?? { pq: r.postQuantum, mature: 0n, immature: [] };
+    if (r.maturesIn === 0) g.mature += BigInt(r.valueZat); else g.immature.push({ zat: r.valueZat, n: r.maturesIn });
+    by.set(r.address, g);
+  }
+  const p = s.rewardPreview;
+  return h("div", { class: "card", "data-card": "mining-rewards" }, h("h3", null, "Mining reward — shield first"),
+    h("p", { class: "small" }, "A mining reward is in no balance: it can only be moved into your private balance, at the exact amount, after 101 confirmations."),
+    ...[...by.entries()].map(([addr, g]) => h("div", null,
+      h("div", { class: "small" }, `${g.pq ? "Post-quantum" : "Public"} · ${addr}`),
+      ...g.immature.map((i) => h("div", { class: "small pending", "data-reward": "immature" }, `${formatYec(i.zat)} YEC matures in ${i.n} block${i.n === 1 ? "" : "s"}`)),
+      g.mature > 0n ? h("div", { class: "row" }, h("span", null, `${formatYec(g.mature.toString())} YEC ready to move`),
+        h("button", { class: "secondary", "data-reward-move": addr, on: { click: () => vm.previewReward(addr) } }, "Move to Sapling")) : null)),
+    p ? h("div", { "data-reward": "preview" }, h("p", null, `Moves exactly ${formatYec(p.amountZat)} YEC into your private balance (the reward less the fee of ${formatYec(p.fee)} YEC), with no change.`),
+      h("div", { class: "actions" }, h("button", { "data-reward": "confirm", on: { click: () => vm.confirmReward() } }, "Move"), h("button", { class: "secondary", on: { click: () => vm.cancelReward() } }, "Cancel"))) : null,
+    s.rewardNote ? h("p", { class: "small", "data-reward": "note" }, s.rewardNote) : null);
+}
+
 /** "Synced 14:05 · block 512,017": when the last sync completed and the tip it reached. */
 export function syncedLine(at: number, tip: number | null): string {
   const time = new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -38,6 +62,7 @@ export function renderHome(root: HTMLElement, vm: HomeVm) {
         b && BigInt(b.stagedForMintZat) !== 0n ? h("div", { class: "small pending", "data-balance": "staged" }, `${formatYec(b.stagedForMintZat)} YEC staged for a mint in progress (not spendable until the mint finishes or lapses)`) : null,
         b && b.heldCount > 0 ? h("div", { class: "small pending", "data-balance": "held" }, `${b.heldCount} output${b.heldCount === 1 ? "" : "s"} held: in no balance and never spent as plain YEC (${b.heldCount === 1 ? "it may carry" : "they may carry"} YED, or the origin could not be verified)`) : null,
         h("div", { class: "actions" }, h("button", { class: "secondary", on: { click: () => go("move") } }, "Move…"))),
+      rewardsCard(vm),
       h("p", { class: "small" }, b ? formatPriceLine(b.priceCents ?? "0") : "", s.network ? ` · ${s.network}` : ""),
       // beta4 list item 6: a quiet line, not a flashing state; progress only for a sync the user sees
       s.lastSyncAt !== null ? h("p", { class: "small", "data-sync": "last" }, syncedLine(s.lastSyncAt, s.tip)) : null,

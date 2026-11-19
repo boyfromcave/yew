@@ -615,6 +615,42 @@ class FakeWalletApi implements WalletApi {
     );
   }
 
+  List<MiningReward> miningRewardsAnswer = const [];
+
+  @override
+  Future<List<MiningReward>> miningRewards() async => miningRewardsAnswer;
+
+  @override
+  Future<PqSendPreviewInfo> rewardMovePreview({required String from}) async {
+    calls.add('rewardMovePreview $from');
+    final total = miningRewardsAnswer.where((r) => r.address == from && r.maturesIn == 0).fold<int>(0, (a, r) => a + r.valueZat);
+    return PqSendPreviewInfo(
+      previewId: 'r1',
+      from: from,
+      schemeName: 'FN-DSA-512',
+      to: fakeZ,
+      amountZat: total - 65000,
+      amountBumped: false,
+      feeZat: 65000,
+      changeZat: 0,
+      inputs: 1,
+      sizeBytes: 2600,
+      signMillis: BigInt.from(12),
+      feeNote: null,
+      unusualFeeAck: null,
+      expiryHeight: 524,
+      txid: 'rr' * 32,
+      fromPrivate: false,
+    );
+  }
+
+  @override
+  Future<YecPreview> rewardShieldPreview({required String from}) async {
+    calls.add('rewardShieldPreview $from');
+    final total = miningRewardsAnswer.where((r) => r.address == from && r.maturesIn == 0).fold<int>(0, (a, r) => a + r.valueZat);
+    return YecPreview(previewId: 'rs1', to: fakeZ, amountZat: total - 1000, amountBumped: false, feeZat: 1000, changeZat: 0, inputs: 1, usesReserve: false, keepsReservedZat: 0, expiryHeight: 525, txid: '', funding: YecFunding.transparent, revealsShielded: false, memo: null, paramsNeeded: false);
+  }
+
   @override
   Future<PqSendPreviewInfo> privatePqSendPreview({required String to, required int zat, bool allowNoteLookup = false}) async {
     calls.add(allowNoteLookup ? 'privatePqPreview $to $zat lookup' : 'privatePqPreview $to $zat');

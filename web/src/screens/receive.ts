@@ -24,6 +24,8 @@ export function renderReceive(root: HTMLElement, vm: ReceiveVm) {
     };
     mount(root, h("h2", null, "Receive"), h("div", { class: "seg" }, seg("shielded", "Private"), seg("transparent", "Public (ECC)"), seg("pq_falcon", "PQ · FN-DSA-512"), seg("pq_slh", "PQ · SLH-DSA"), seg("yed", "YED")),
       h("p", { class: "small" }, localize(about[s.kind])),
+      // beta4: a mining reward paid to a post-quantum address can only be shielded, at the exact amount
+      s.kind === "pq_falcon" || s.kind === "pq_slh" ? h("p", { class: "small error", "data-receive": "pq-mining-warning" }, "Not for mining payouts: a mining reward paid here can only be moved by shielding it at the exact amount after 101 confirmations, which this web wallet cannot do yet. Pay mining rewards to a ycashd or yewd wallet address instead.") : null,
       addr ? qr(addr) : null, addr ? h("code", { class: "addr" }, addr) : null,
       s.loading ? h("p", { class: "small pending", "data-receive": "loading" }, "Getting this address…") : null, errorCard(s.error),
       h("div", { class: "actions" }, cp, s.kind === "shielded" ? h("button", { class: "secondary", on: { click: () => vm.fresh() } }, "New private address") : null));

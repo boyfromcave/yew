@@ -95,6 +95,9 @@ class AppState extends ChangeNotifier {
 
   /// The post-quantum addresses holding spendable YEC (the Send screen's sources).
   List<PqSource> pqSources = const [];
+
+  /// The mining rewards (coinbase outputs; beta4), shown apart from every balance.
+  List<MiningReward> miningRewards = const [];
   StreamSubscription<SyncEvent>? _sync;
 
   /// Read settings and whether a seed exists (first frame).
@@ -227,6 +230,11 @@ class AppState extends ChangeNotifier {
             null; // the private side is unavailable; public receive still works
       }
       await _refreshPq();
+      try {
+        miningRewards = await api.miningRewards();
+      } catch (_) {
+        miningRewards = const [];
+      }
       history = (await api.history(page: 0, pageSize: 200)).rows;
       mints = await api.mints();
       vaults = await api.vaults();

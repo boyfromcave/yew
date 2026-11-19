@@ -130,6 +130,11 @@ message GetAddressUtxosReply {
     bytes script = 3;
     int64 valueZat = 4;
     uint64 height = 5;
+    // Ycash (beta4): true when the output belongs to a coinbase transaction. Consensus lets a
+    // coinbase output be spent only after 100 confirmations and only into a transaction with no
+    // transparent outputs (no change), so a wallet must shield it at the exact amount. A server
+    // without this field always sends false.
+    bool coinbase = 7;
 }
 message GetAddressUtxosReplyList {
     repeated GetAddressUtxosReply addressUtxos = 1;

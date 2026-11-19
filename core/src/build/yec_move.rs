@@ -151,6 +151,63 @@ pub fn plan_move(
     }
 }
 
+/// beta4, "move mining reward to Sapling" for an own public (P2PKH) address `from`: every
+/// mature mining reward of it (class [`coins::UtxoClass::Coinbase`], at least
+/// [`coins::COINBASE_MATURE_DEPTH`] confirmations at `tip`; the largest [`MAX_INPUTS`]) into the
+/// wallet's own default Sapling address at the **exact** amount, the coins less the node's fee:
+/// no change, no transparent output (consensus spends a coinbase only so). Confirm is
+/// [`confirm_shield`] (gate path [`GatePath::Shield`], which takes a `COINBASE` input only into
+/// a transaction with no transparent output). No ordinary send selects a mining reward.
+pub fn plan_reward_shield(
+    wallet: &Wallet,
+    from: &str,
+    tip: u64,
+) -> Result<YecSendPlan, WalletError> {
+    let sh = wallet.shielded()?;
+    let to = sh.default_address().1;
+    let target = (tip as u32).saturating_add(1);
+    let from = from.trim();
+    let mut all: Vec<Utxo> = wallet
+        .spendable_utxos()?
+        .into_iter()
+        .filter(|u| u.class == coins::UtxoClass::Coinbase && u.address == from && u.height > 0)
+        .filter(|u| coins::coinbase_matures_in(u.height, tip) == 0)
+        .collect();
+    if all.is_empty() {
+        return Err(WalletError::Other(
+            "This address holds no mature mining reward (a mining reward can be moved after 101 confirmations).".into(),
+        ));
+    }
+    all.sort_by_key(|u| std::cmp::Reverse(u.value));
+    all.truncate(MAX_INPUTS);
+    let si = shield_inputs(wallet, &all)?;
+    let total: i64 = all.iter().map(|u| u.value).sum();
+    let fee = sh.shield_fee(target, &si, &ShieldTo::Own, total as u64, None)? as i64;
+    if total <= fee {
+        return Err(WalletError::Other(format!(
+            "The mining reward of {} does not cover the fee of moving it to Sapling.",
+            crate::wallet::yec(total)
+        )));
+    }
+    Ok(YecSendPlan {
+        funding: Funding::Shield(Box::new(ShieldPlan {
+            to,
+            dest: ShieldTo::Own,
+            memo: None,
+            amount: total - fee,
+            amount_bumped: false,
+            fee,
+            change: 0,
+            change_address: None,
+            inputs: all,
+            shield_inputs: si,
+            target,
+            expiry_height: target.saturating_add(TX_EXPIRY_DELTA),
+        })),
+        reveals_shielded: false,
+    })
+}
+
 fn plan_shield(
     wallet: &Wallet,
     amount: Option<i64>,
@@ -604,6 +661,47 @@ mod tests {
         let e = plan_move(&mut w, Direction::ToPrivate, Some(150_000_000), false, 100).unwrap_err();
         assert!(matches!(e, WalletError::Coins(_)), "{e}");
         assert!(plan_move(&mut w, Direction::ToPrivate, Some(0), false, 100).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// beta4: a public-address mining reward (COINBASE) is in no ordinary move; the reward
+    /// shield takes the mature rewards of the one address only, at the exact amount (the coins
+    /// less the node's fee), with no change and no change address.
+    #[test]
+    fn reward_shield_exact_amount_no_change() {
+        let (mut w, dir) = wallet_with(
+            "reward",
+            &[
+                (1_250_000_000, UtxoClass::Coinbase),
+                (2_000_000, UtxoClass::Yec),
+                (625_000_000, UtxoClass::Coinbase),
+            ],
+        );
+        let from = w.addresses().unwrap()[0].address_s.clone();
+        // "All" to private: the plain coin only
+        let p = plan_move(&mut w, Direction::ToPrivate, None, true, 200).unwrap();
+        assert!(shield(&p).inputs.iter().all(|u| u.class == UtxoClass::Yec));
+        // a round amount above the plain YEC: refused, the reward is not topped in
+        assert!(plan_move(&mut w, Direction::ToPrivate, Some(10_000_000), true, 200).is_err());
+        // mined at 10: immature at tip 109, mature at 110
+        let e = plan_reward_shield(&w, &from, 109).unwrap_err();
+        assert!(e.to_string().contains("no mature mining reward"), "{e}");
+        let p = plan_reward_shield(&w, &from, 110).unwrap();
+        let s = shield(&p);
+        assert!(s.inputs.iter().all(|u| u.class == UtxoClass::Coinbase));
+        let total: i64 = s.inputs.iter().map(|u| u.value).sum();
+        let want: i64 = w
+            .store
+            .utxos()
+            .unwrap()
+            .iter()
+            .filter(|u| u.class == UtxoClass::Coinbase && u.address == from)
+            .map(|u| u.value)
+            .sum();
+        assert!(s.inputs.iter().all(|u| u.address == from));
+        assert_eq!(total, want);
+        assert_eq!((s.amount + s.fee, s.change), (total, 0));
+        assert!(s.change_address.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

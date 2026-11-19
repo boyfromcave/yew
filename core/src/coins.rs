@@ -59,8 +59,47 @@ pub enum UtxoClass {
     /// alone can move it; no P2PKH path selects it, and no gate path spends it yet (YEW-b adds
     /// the residual release).
     PqOwned,
+    /// A coinbase output (a mining reward) to an own P2PKH key (beta4). Consensus spends it only
+    /// after [`COINBASE_MATURITY`] blocks and only into a transaction with no transparent output,
+    /// so it must be shielded at the exact amount ([`Path::Shield`](crate::gate::Path::Shield),
+    /// no change); no ordinary path selects it.
+    Coinbase,
+    /// A coinbase output to one of the wallet's own post-quantum keys (beta4): the
+    /// [`UtxoClass::Coinbase`] rule for a `TX_PQPKH` reward, moved only by
+    /// [`Path::PqToSapling`](crate::gate::Path::PqToSapling) at the exact amount.
+    PqCoinbase,
     /// Not to an own key.
     Foreign,
+}
+
+/// `COINBASE_MATURITY` (ycash-dd / ycash6 `src/consensus/consensus.h`): blocks before a coinbase
+/// output may be spent.
+pub const COINBASE_MATURITY: u64 = 100;
+
+/// The confirmations a coinbase output needs before the wallet offers it: the C++ wallet's
+/// `CWalletTx::GetBlocksToMaturity` is `(COINBASE_MATURITY + 1) - depth`, so 101 (the node
+/// would accept it into the mempool one block earlier; the wallets wait for 101, as yewd).
+pub const COINBASE_MATURE_DEPTH: u64 = COINBASE_MATURITY + 1;
+
+/// The blocks until a coinbase output mined at `height` is spendable by the wallet at chain tip
+/// `tip` (0: mature; an unconfirmed `height` 0 is never mature).
+pub fn coinbase_matures_in(height: u64, tip: u64) -> u64 {
+    if height == 0 || tip < height {
+        return COINBASE_MATURE_DEPTH;
+    }
+    let depth = tip - height + 1;
+    COINBASE_MATURE_DEPTH.saturating_sub(depth)
+}
+
+/// The class of an own coin once it is known to be a coinbase output: `Yec` becomes
+/// [`UtxoClass::Coinbase`], `PqOwned` [`UtxoClass::PqCoinbase`]; every other class is unchanged
+/// (a held or foreign output stays what it was).
+pub fn coinbase_class(class: UtxoClass) -> UtxoClass {
+    match class {
+        UtxoClass::Yec => UtxoClass::Coinbase,
+        UtxoClass::PqOwned => UtxoClass::PqCoinbase,
+        c => c,
+    }
 }
 
 impl UtxoClass {
@@ -76,6 +115,8 @@ impl UtxoClass {
             UtxoClass::UnknownP2sh => "UNKNOWN_P2SH",
             UtxoClass::Held => "HELD",
             UtxoClass::PqOwned => "PQ_OWNED",
+            UtxoClass::Coinbase => "COINBASE",
+            UtxoClass::PqCoinbase => "PQ_COINBASE",
             UtxoClass::Foreign => "FOREIGN",
         }
     }
@@ -92,9 +133,16 @@ impl UtxoClass {
             "UNKNOWN_P2SH" => UtxoClass::UnknownP2sh,
             "HELD" => UtxoClass::Held,
             "PQ_OWNED" => UtxoClass::PqOwned,
+            "COINBASE" => UtxoClass::Coinbase,
+            "PQ_COINBASE" => UtxoClass::PqCoinbase,
             "FOREIGN" => UtxoClass::Foreign,
             _ => return None,
         })
+    }
+
+    /// True for a mining reward ([`UtxoClass::Coinbase`], [`UtxoClass::PqCoinbase`]).
+    pub fn is_coinbase(self) -> bool {
+        matches!(self, UtxoClass::Coinbase | UtxoClass::PqCoinbase)
     }
 
     /// True for the classes a **YEC-path** transaction may ever spend.
@@ -658,6 +706,21 @@ mod tests {
         assert_eq!(classify_pqpkh(&p2pkh, |_| true), None);
         assert_eq!(UtxoClass::parse("PQ_OWNED"), Some(UtxoClass::PqOwned));
         assert!(!UtxoClass::PqOwned.yec_spendable());
+        // beta4: a mining reward is its own class, spendable by no ordinary path
+        for (c, name) in [
+            (UtxoClass::Coinbase, "COINBASE"),
+            (UtxoClass::PqCoinbase, "PQ_COINBASE"),
+        ] {
+            assert_eq!(UtxoClass::parse(name), Some(c));
+            assert_eq!(c.as_str(), name);
+            assert!(c.is_coinbase());
+            assert!(!c.yec_spendable() && !c.transfer_spendable() && !c.mint_spendable());
+            assert!(!c.redeem_spendable() && !c.claim_spendable() && !c.counts_as_yec());
+        }
+        assert_eq!(coinbase_class(UtxoClass::Yec), UtxoClass::Coinbase);
+        assert_eq!(coinbase_class(UtxoClass::PqOwned), UtxoClass::PqCoinbase);
+        assert_eq!(coinbase_class(UtxoClass::Held), UtxoClass::Held);
+        assert_eq!(coinbase_class(UtxoClass::Foreign), UtxoClass::Foreign);
         for c in [
             UtxoClass::Yec,
             UtxoClass::Held,
@@ -899,5 +962,18 @@ mod tests {
         let r = ranked_tokens(&v);
         assert_eq!(r, vec![c, b, a]);
         assert_eq!(yed_balances(&v), (1_100, 700));
+    }
+
+    /// beta4: a coinbase mined at `h` is offered at depth 101 (tip h + 100), as the C++ wallet's
+    /// `GetBlocksToMaturity`; unconfirmed or above the tip it is never mature.
+    #[test]
+    fn coinbase_maturity_is_101_confirmations() {
+        assert_eq!(COINBASE_MATURE_DEPTH, 101);
+        assert_eq!(coinbase_matures_in(500, 500), 100); // 1 confirmation
+        assert_eq!(coinbase_matures_in(500, 599), 1); // 100 confirmations
+        assert_eq!(coinbase_matures_in(500, 600), 0); // 101 confirmations
+        assert_eq!(coinbase_matures_in(500, 10_000), 0);
+        assert_eq!(coinbase_matures_in(0, 600), 101);
+        assert_eq!(coinbase_matures_in(700, 600), 101);
     }
 }

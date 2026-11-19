@@ -1214,6 +1214,62 @@ pub fn pq_sources() -> Result<JsValue, JsValue> {
     })
 }
 
+/// The wallet's mining rewards (coinbase outputs; `api::mining_rewards`, beta4), oldest first,
+/// as of the last sync: in no balance and no ordinary send.
+#[wasm_bindgen]
+pub fn mining_rewards() -> Result<JsValue, JsValue> {
+    with_session_sync(|s| {
+        let tip = s
+            .wallet
+            .store
+            .meta_u64("last_synced_height")
+            .map_err(|e| err("store", e))?;
+        let out: Vec<dto::MiningReward> = s
+            .wallet
+            .spendable_utxos()
+            .map_err(wallet_err)?
+            .into_iter()
+            .filter(|u| u.class.is_coinbase())
+            .map(|u| dto::MiningReward {
+                address: u.address.clone(),
+                post_quantum: u.class == UtxoClass::PqCoinbase,
+                outpoint: format!("{}:{}", txid_hex(&u.outpoint.txid), u.outpoint.n),
+                value_zat: dto::amt(u.value),
+                height: u.height,
+                matures_in: yew_core::coins::coinbase_matures_in(u.height, tip),
+            })
+            .collect();
+        to_js(&out)
+    })
+}
+
+/// The browser's answer for a post-quantum mining reward: it can only be moved by shielding,
+/// and the browser build has no post-quantum-to-Sapling builder.
+pub const PQ_REWARD_WEB: &str = "This mining reward can only be moved by shielding it into Sapling, and the web wallet cannot shield from a post-quantum address yet. Restore your recovery phrase in yewd and move it there: https://github.com/boyfromcave/yew/blob/upgrade/vault/yewd/README.md#recovering-a-mining-reward-paid-to-a-yew-address (the YEW app can move it too).";
+
+/// "Move to Sapling" for the mature mining rewards of the own address `from` (beta4): a public
+/// (`s…`) address's are shielded at the exact amount, no change
+/// (`api::reward_shield_preview`); confirm with [`confirm`]. A post-quantum address's are
+/// refused with [`PQ_REWARD_WEB`].
+#[wasm_bindgen]
+pub async fn reward_move_preview(from: String) -> Result<JsValue, JsValue> {
+    with_session(|s| {
+        Box::pin(async move {
+            if keys::parse_pq_yec_address(s.network, from.trim()).is_ok() {
+                return Err(err("unavailable", PQ_REWARD_WEB));
+            }
+            let r = s.sync().await?;
+            s.sync_shielded(yec_private::no_progress()).await?;
+            let plan = yec_move::plan_reward_shield(&s.wallet, &from, r.tip).map_err(wallet_err)?;
+            let id = s.next_preview_id();
+            let out = dto::yec_preview(id.clone(), &plan, r.yec.1, s.has_prover());
+            s.previews.insert(id, Preview::Yec(Box::new(plan)));
+            to_js(&out)
+        })
+    })
+    .await
+}
+
 /// The shapes the app supports that the browser build cannot run, each with a one-line reason
 /// (beta2 D-8). The screens hide them; the core refuses them anyway.
 #[wasm_bindgen]

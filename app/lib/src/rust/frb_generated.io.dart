@@ -111,6 +111,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<HistoryItem> dco_decode_list_history_item(dynamic raw);
 
   @protected
+  List<MiningReward> dco_decode_list_mining_reward(dynamic raw);
+
+  @protected
   List<MintStatus> dco_decode_list_mint_status(dynamic raw);
 
   @protected
@@ -127,6 +130,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<VaultSummary> dco_decode_list_vault_summary(dynamic raw);
+
+  @protected
+  MiningReward dco_decode_mining_reward(dynamic raw);
 
   @protected
   MintAvailability dco_decode_mint_availability(dynamic raw);
@@ -329,6 +335,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<HistoryItem> sse_decode_list_history_item(SseDeserializer deserializer);
 
   @protected
+  List<MiningReward> sse_decode_list_mining_reward(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<MintStatus> sse_decode_list_mint_status(SseDeserializer deserializer);
 
   @protected
@@ -347,6 +358,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<VaultSummary> sse_decode_list_vault_summary(
     SseDeserializer deserializer,
   );
+
+  @protected
+  MiningReward sse_decode_mining_reward(SseDeserializer deserializer);
 
   @protected
   MintAvailability sse_decode_mint_availability(SseDeserializer deserializer);
@@ -579,6 +593,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_mining_reward(
+    List<MiningReward> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_mint_status(
     List<MintStatus> self,
     SseSerializer serializer,
@@ -610,6 +630,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     List<VaultSummary> self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_mining_reward(MiningReward self, SseSerializer serializer);
 
   @protected
   void sse_encode_mint_availability(

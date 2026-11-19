@@ -14,6 +14,7 @@ import '../state/app_state.dart';
 import '../theme.dart';
 import '../widgets/balance_card.dart';
 import '../widgets/claim_warning.dart';
+import '../widgets/mining_rewards.dart';
 import '../widgets/move_sheet.dart';
 import 'receive.dart';
 import 'release.dart';
@@ -116,6 +117,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
             ),
+            if (app.miningRewards.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              MiningRewardsCard(rewards: app.miningRewards),
+            ],
             const SizedBox(height: 12),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4),
