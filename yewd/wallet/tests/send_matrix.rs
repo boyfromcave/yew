@@ -1777,6 +1777,29 @@ fn zat_of(text: &str) -> i64 {
     whole.parse::<i64>().unwrap() * COIN + frac.parse::<i64>().unwrap()
 }
 
+/// Beta4 item 7: the mining-rewards sentence of an insufficient-funds refusal (the C++ lines'
+/// text), for `rewards` of rewards: the exact amount it names is the rewards less its fee, and the
+/// fee is a post-quantum spend's (at least the 1,000 zat default). Returns the fee.
+fn coinbase_left_out_fee(message: &str, rewards: i64) -> i64 {
+    let m = yew_core::build::any_to_any::format_money;
+    let head = format!(
+        " The address holds {} YEC of mining rewards (coinbase), which can only be sent to a shielded (Sapling) address, with no change: send exactly ",
+        m(rewards)
+    );
+    let (_, rest) = message
+        .split_once(&head)
+        .unwrap_or_else(|| panic!("{message}"));
+    let (exact, rest) = rest.split_once(" to one Sapling address (the ").unwrap();
+    let fee = zat_of(
+        rest.strip_prefix(&format!("{} of rewards less the fee ", m(rewards)))
+            .and_then(|t| t.strip_suffix(")."))
+            .unwrap_or_else(|| panic!("{message}")),
+    );
+    assert_eq!(zat_of(exact), rewards - fee, "{message}");
+    assert!(fee >= 1000, "{message}");
+    fee
+}
+
 /// The fee a "When shielding coinbase funds" refusal names, and the whole message expected for
 /// `change` left of `selected`.
 fn coinbase_change_fee(message: &str, selected: i64, send: i64) -> i64 {
@@ -1837,9 +1860,11 @@ async fn a_post_quantum_coinbase_is_shielded_once_mature() {
             .all(|r| r["generated"] == false),
         "an immature coinbase is not listed"
     );
-    let immature_tail =
-        " The address holds 10.00 of immature coinbase funds, which can be sent to shielded recipients only, with no change, after 101 confirmations.";
-    for from in [&slh, &fn_] {
+    // beta4 item 7: the C++ lines' text, with the confirmations the soonest reward still needs
+    let immature_tail = |k: i64| {
+        format!(" The address holds 10.00 YEC of mining rewards that are not spendable yet: a reward needs 101 confirmations, and the next one needs {k} more; it can then only be sent to a shielded (Sapling) address, with no change.")
+    };
+    for (from, k) in [(&slh, 1), (&fn_, 2)] {
         // more than the ordinary coin: refused, the immature coinbase named
         let e = f
             .send(
@@ -1853,7 +1878,7 @@ async fn a_post_quantum_coinbase_is_shielded_once_mature() {
         assert_eq!(e.0, -6, "{e:?}");
         assert!(
             e.1.starts_with("Insufficient transparent funds, have 5.00, need 7.0")
-                && e.1.ends_with(&format!(".{immature_tail}")),
+                && e.1.ends_with(&format!(".{}", immature_tail(k))),
             "{e:?}"
         );
     }
@@ -1883,7 +1908,7 @@ async fn a_post_quantum_coinbase_is_shielded_once_mature() {
         )
         .await
         .unwrap_err();
-    assert!(e.0 == -6 && e.1.ends_with(immature_tail), "{e:?}");
+    assert!(e.0 == -6 && e.1.ends_with(&immature_tail(1)), "{e:?}");
     // tip 103: both mature
     f.mine_sync().await;
     let info = call_json(&mut f.w, &f.node, "getwalletinfo", &[]).await;
@@ -1910,10 +1935,10 @@ async fn a_post_quantum_coinbase_is_shielded_once_mature() {
             .unwrap_err();
         assert_eq!(e.0, -6, "{e:?}");
         assert!(
-            e.1.starts_with("Insufficient transparent funds, have 5.00, need 7.0")
-                && e.1.ends_with(". The address holds 10.00 of coinbase funds, which can only be sent to shielded recipients, with no change."),
+            e.1.starts_with("Insufficient transparent funds, have 5.00, need 7.0"),
             "{e:?}"
         );
+        coinbase_left_out_fee(&e.1, reward);
         // a shielded and a transparent recipient together: the same
         let e = f
             .send(
@@ -1927,7 +1952,7 @@ async fn a_post_quantum_coinbase_is_shielded_once_mature() {
         assert!(
             e.0 == -6
                 && e.1
-                    .contains("which can only be sent to shielded recipients"),
+                    .contains("which can only be sent to a shielded (Sapling) address"),
             "{e:?}"
         );
         // shielded, but change would be left: refused with the amount that works
@@ -2051,13 +2076,12 @@ async fn a_post_quantum_miner_shields_a_lone_coinbase() {
             .send(from, &[(&ecc, COIN)], None, Some("AllowFullyTransparent"))
             .await
             .unwrap_err();
-        assert_eq!(
-            e,
-            (
-                -6,
-                "Insufficient transparent funds, no UTXOs found for taddr from address. The address holds 12.50 of coinbase funds, which can only be sent to shielded recipients, with no change.".into()
-            )
+        assert_eq!(e.0, -6, "{e:?}");
+        assert!(
+            e.1.starts_with("Insufficient transparent funds: this address has no coins this send can spend. The address holds 12.50 YEC of mining rewards (coinbase)"),
+            "{e:?}"
         );
+        coinbase_left_out_fee(&e.1, reward);
         let e = f
             .send(
                 from,

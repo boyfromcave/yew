@@ -58,6 +58,8 @@ async function main() {
   if (note) document.body.prepend(h("div", { class: "netbanner", role: "note" }, note));
   app.textContent = "YEW — loading…";
   const core = serialized(await makeCore());
+  /** The server's tip, one `GetLatestBlock`: the background sync runs only when it moved (beta4 item 6). */
+  const tipProbe = (serverUrl: string, net: string) => () => core.latest_height(serverUrl, net);
   const version = (await core.status()).version;
   let meta = await keystore.walletMeta();
   let method = await keystore.unlockMethod();
@@ -76,7 +78,7 @@ async function main() {
 
   // Receive's addresses are asked for here, before the first sync takes the core: the core answers one
   // call at a time, and behind a sync an address took up to 15 s (beta3, the hosted acceptance run)
-  const opened = async () => { open = true; meta = await keystore.walletMeta(); setNetwork(meta?.network || network); receive.clear(); void receive.prime(); method = await keystore.unlockMethod(); await home.attach(); await home.load(); home.sync(); home.autoSync(); go("home"); route(); };
+  const opened = async () => { open = true; meta = await keystore.walletMeta(); setNetwork(meta?.network || network); receive.clear(); void receive.prime(); method = await keystore.unlockMethod(); await home.attach(); await home.load(); home.sync(); home.autoSync(meta ? tipProbe(meta.serverUrl, meta.network || network) : undefined); go("home"); route(); };
   // a sync can use up the shown public / post-quantum / YED address (the core moves to the next unused one)
   home.onSynced(() => { yb.onSynced(); void receive.refreshRotating(); });
   const unlockScreen = async (method: "prf" | "passphrase") => {

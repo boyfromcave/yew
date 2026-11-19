@@ -684,6 +684,22 @@ impl YellowbackClient {
         collect(&mut stream, "attestations", limits::MAX_ATTESTATIONS).await
     }
 
+    /// `GetSet` (`set_getinfo <setid> [height]`; 0 = the next block): the set and its members
+    /// (the light attestor reads its own member record, `lastact`, `unlockheight`).
+    pub async fn get_set(&mut self, set_id: &str, height: u32) -> Result<rpc::VaultSet, NetError> {
+        Ok(paced(|| {
+            let mut c = self.inner.clone();
+            let req = rpc::VaultSetQuery {
+                setid: set_id.to_string(),
+                height,
+            };
+            async move { c.get_set(req).await }
+        })
+        .await
+        .map_err(map_status)?
+        .into_inner())
+    }
+
     /// `ListAttestors` (`yed_listattestors [height]`; 0 = the tip), collected.
     pub async fn list_attestors(&mut self, height: u32) -> Result<Vec<rpc::YedAttestor>, NetError> {
         let mut stream = paced(|| {

@@ -146,6 +146,10 @@ clearer, and closes yewd's remaining gaps against ycashd's wallet (ycashd 6.22.0
   only after a 401: every call then fails with "connection closed before message completed" until
   yewd is restarted too. Restart yewd after koganyd. Fixed after beta3 (yewd re-reads the cookie
   after such a close as well).
+- **A yewd restore never completes on a chain that is not advancing.** After a restore from the
+  recovery phrase against a paused chain (no miner), `getwalletinfo.restore_in_progress` stays true
+  although the scan reached the tip: it waits for the node to call itself synced, which it never
+  does with an old tip. The balances are complete once the scan is at the tip. Fixed after beta3.
 - **The YEW app and the web wallet cannot spend a post-quantum block reward.** They cannot tell that
   a coin is a coinbase (the light-client coin listing, lightwalletd's `GetAddressUtxos`, carries no
   such flag), so they show a reward paid to one of their post-quantum addresses as spendable, and
