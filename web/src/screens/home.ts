@@ -10,6 +10,12 @@ export function termsRefusedText(why: string): string {
   return `The FN-DSA-512 and YED balances cannot be computed: this server's fee terms were refused (${why}). Use another server.`;
 }
 
+/** "Synced 14:05 · block 512,017": when the last sync completed and the tip it reached. */
+export function syncedLine(at: number, tip: number | null): string {
+  const time = new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return tip === null ? `Synced ${time}` : `Synced ${time} · block ${tip.toLocaleString("en-US")}`;
+}
+
 export function renderHome(root: HTMLElement, vm: HomeVm) {
   const draw = () => {
     clear(root);
@@ -33,7 +39,9 @@ export function renderHome(root: HTMLElement, vm: HomeVm) {
         b && b.heldCount > 0 ? h("div", { class: "small pending", "data-balance": "held" }, `${b.heldCount} output${b.heldCount === 1 ? "" : "s"} held: in no balance and never spent as plain YEC (${b.heldCount === 1 ? "it may carry" : "they may carry"} YED, or the origin could not be verified)`) : null,
         h("div", { class: "actions" }, h("button", { class: "secondary", on: { click: () => go("move") } }, "Move…"))),
       h("p", { class: "small" }, b ? formatPriceLine(b.priceCents ?? "0") : "", s.network ? ` · ${s.network}` : ""),
-      p && (s.syncing || p.pct < 100) ? progressBar(p.pct, `${p.phase} · ${p.height} / ${p.tip}`) : null,
+      // beta4 list item 6: a quiet line, not a flashing state; progress only for a sync the user sees
+      s.lastSyncAt !== null ? h("p", { class: "small", "data-sync": "last" }, syncedLine(s.lastSyncAt, s.tip)) : null,
+      p && s.syncing ? progressBar(p.pct, `${p.phase} · ${p.height} / ${p.tip}`) : null,
       errorCard(s.error),
       b?.termsRefused ? errorCard(termsRefusedText(b.termsRefused)) : null,
       h("div", { class: "actions" },
