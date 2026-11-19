@@ -80,8 +80,9 @@ node and one wallet.
    The wallet is created at the first start in `~/.yewd/testnet-yb-fast/` (`~/.yewd/` on mainnet);
    `-datadir` moves it. To restore instead, start a new data directory once with
    `-mnemonicfile=<file>` (a yewd or YEW phrase; see "Restore from the recovery phrase"): the
-   restore stays open, and balances are incomplete, until koganyd has synced and the scan has
-   reached its tip (`getwalletinfo.restore_in_progress`).
+   restore stays open, and balances are incomplete, until koganyd has synced (or, on a chain no
+   block extends, is at its header tip) and the scan has reached its tip
+   (`getwalletinfo.restore_in_progress`).
 5. **Back up** with `backupwallet` (or `z_exportwallet`, with `-exportdir`), and keep the recovery
    phrase (`z_exportwallet` writes it). Watched scripts are not derived from the phrase: after a
    restore from it, import them again.
@@ -163,7 +164,7 @@ the node's decimal text).
 | Wallet, `z_mergetoaddress` (beta3 item 14) | merges ECC, post-quantum (its own coins, beta2 D-6) and Sapling sources into one ECC, post-quantum or Sapling output, by ycashd's limits, fee rule and errors; P2SH coins are not merged (the signer has no multisig path): a named P2SH source is refused (`-8`, saying so) and `ANY_TADDR` leaves P2SH coins out, where ycashd merges both | served (`wallet/src/merge.rs`) |
 | Wallet, K-25 amended for beta3 (item 14) | `getunconfirmedbalance` (`getwalletinfo`'s `unconfirmed_balance`); `z_getnewaccount`, `z_getaddressforaccount`, `z_listaccounts`, `z_getbalanceforaccount`, refused `-8` as ycashd refuses them while NU5 is not active (it has no activation height on Ycash). yewd refuses them unconditionally: ycashd would serve them once NU5 were active, which Ycash never schedules; a Ycash release that did would need these served | served (`wallet/src/bytype.rs`) |
 | Wallet, watch-only (beta3 item 14) | `importaddress` (an ECC P2PKH or P2SH address, a post-quantum address, or a script in hex; with `p2sh`, a redeem script and its P2SH) and `importpubkey`, by ycashd's arguments and refusals. A watched script's coins are followed but never spent, never change and never a vault or YED coin of the wallet; they count in `getbalance`, `z_gettotalbalance`, `listtransactions`, `gettransaction` and `listreceivedbyaddress` only with `includeWatchonly` (rows marked `involvesWatchonly`), and `listunspent` lists them `spendable: false`; `validateaddress` says `iswatchonly`, `listaddresses` lists them under `imported_watchonly`. A rescan (the default) reads the whole chain from genesis over RPC, as ycashd rescans from genesis: on mainnet that is hours, so give `rescan=false` to every import but the last, as ycashd users do. Its side effects: the wallet's birthday becomes 0 for good (a later `-rescan`, or a reorganisation deeper than the kept window, also reads from genesis); every wallet transaction goes back to the mempool view until the scan reaches its block again, so while it runs, or after it is cut off, confirmed balances read low; every wallet RPC (and `getinfo`'s wallet fields) waits on the wallet for the whole call, as ycashd's wallet lock makes its wallet RPCs wait, while the node RPCs the façade forwards still answer. The import writes the pending rescan before the scan starts, and the scan writes its progress every 2,000 blocks or 30 seconds: after a restart, or a call cut off, the next sync (the background one, or the next wallet call) resumes there and the balances are right again once it reaches the tip. A held key wins over a watch (ycashd's `IsMineInner`): when the wallet derives or imports the key of a watched address, that address's coins become the wallet's own. Watched scripts are kept in `wallet.json` (a restart and `backupwallet` keep them); like ycashd's, they are not in a `z_exportwallet` file and not derivable from the recovery phrase, so a restore from either needs them imported again. Not served: `z_importviewingkey` / `z_exportviewingkey` (watch-only Sapling), `listsinceblock` | served (`wallet/src/watch.rs`) |
-| Out of scope | the rest of ycashd's wallet table (26: `z_shieldcoinbase`, …) | `-32601` "yewd: not served" |
+| Out of scope | the rest of ycashd's wallet table (26: `z_shieldcoinbase`, …) | `-32601` "yewd: not served"; except `z_shieldcoinbase` from a post-quantum address, served since beta4 as a yewd extension (`wallet/src/shield.rs`, "Recovering a mining reward paid to a YEW address") |
 | Local | `createrawtransaction`, `decoderawtransaction`, `decodescript` | answered by the façade (`wallet/src/raw.rs`: ycashd's `TxToJSON`, `ScriptToAsmStr`, `Solver`); a refusal takes the backend's words when it has the helper (the C++ deserializer's texts), ours when it lacks it (kogany) |
 | Augmented | `getinfo`, `validateaddress`, `z_validateaddress`, `set_getinfo`, `vault_list`, `yed_gettxinfo`, `yed_getinfo` | forwarded, then the wallet adds its fields (`balance`, `paytxfee`, `unlocked_until`…, `ismine`…, a known redeem script's `script`/`hex`/`addresses`/`sigsrequired`, `memberlist[].wallet`, the `wallet` column and the `mine` filter of `vault_list`, `yed_getinfo`'s `lockedOutputs`/`protectedByIndex`). `z_validateaddress` is answered by yewd itself: a ycash6 `-disablewallet` backend before `eac62c942` stops on it; a post-quantum address (`sqf…`/`sqs…`, `tqf…`/`tqs…`, `rqf…`/`rqs…`) answers `address_type` "pq", `ismine`, `pqscheme`, `pqschemename`, `pqkeyhash`, as ycashd since beta2 audit L-4 (ycash6 6f770db7f, ycash-dd 7d6451251) |
 | Own | `help` (the backend's listing with ycashd's lines for the façade's methods merged in), `stop`, and yewd's own `clearunknownsubmission "txid"` (not a ycashd method; see "A submission's answer lost") | served |
@@ -259,10 +260,16 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
   scan's progress (`scan` in `wallet.json`: the first block, the pass, the next block of a re-pass)
   is written every 2,000 blocks or 30 s and when the backend is lost, so a restore stopped part-way
   resumes there. `getwalletinfo.restore_in_progress` is true until the restore's scan reached the
-  node's tip with no re-pass owed **and** the node reports it has the chain (ycashd's
+  node's tip with no re-pass owed **and** the node has the chain: it reports it is synced (ycashd's
   `initial_block_download_complete`; on koganyd, its tip at its header chain's and at its estimated
-  height); until then every re-pass starts at the birthday, so a restore against a node still
-  syncing finds keys whose payments an earlier sync read. Wallet calls wait for the scan (the
+  height), or it is at its header tip (`blocks` = `headers`) with peers for 60 s (at once on
+  regtest). The second test closes a restore on a chain no block extends (a paused testnet, a
+  regtest chain with an old tip), which a node never calls synced: ycashd stays in initial block
+  download while its tip is older than `-maxtipage`, and koganyd stays behind its clock estimate
+  (beta4 list item 2; ycashd's own wallet keeps its restore marker there until a later start).
+  While the node's headers are ahead of its blocks the restore stays open, and every re-pass starts
+  at the birthday, so a restore against a node still syncing finds keys whose payments an earlier
+  sync read. Wallet calls wait for the scan (the
   barrier); progress is logged every 60 s. A reorg during a re-pass makes it read again. `lookahead_incomplete` is always false: the transparent window is derived from the
   account's public key, so even an encrypted, locked wallet holds it. Past the gap: issue addresses
   with `getnewaddress` (`getnewaddress pq` / `pqslh` for post-quantum keys) beyond it, then restart
@@ -303,8 +310,15 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
   call is refused with the C++ lines' text, "Insufficient funds in ordinary transparent addresses;
   this wallet also holds <amount> YEC at post-quantum addresses: send from one with z_sendmany,
   which returns the change to it", and each call's code (`sendtoaddress` -4, `sendmany` -6,
-  `fundrawtransaction` -32603); otherwise the insufficient-funds errors are unchanged.
-  `z_shieldcoinbase` from a post-quantum address points to `z_sendmany`.
+  `fundrawtransaction` -32603); otherwise the insufficient-funds errors are unchanged. Beta4
+  (item 7, as the C++ lines): outside regtest, when the wallet holds mature coinbase at
+  post-quantum addresses, each of these refusals ends with "; this wallet also holds <v> YEC of
+  mining rewards (coinbase) at post-quantum addresses, which can only be sent to a shielded
+  (Sapling) address, with no change: send them with z_sendmany from the address that holds them,
+  which names the exact amount to send". yewd knows no `-regtestshieldcoinbase`, so on regtest it
+  never adds this sentence. ycashd started with that flag does add it.
+  `z_shieldcoinbase` from an ECC address or `"*"` is not served; from a post-quantum address it is
+  yewd's extension (below).
 - **A post-quantum coinbase is shielded with `z_sendmany` (beta3, as the C++ lines).** A pool can
   pay a block reward straight to a post-quantum address (the node's `getcoinbasetemplatefor`).
   Such a coin is immature for 100 confirmations: it is in `getwalletinfo`'s `immature_balance`,
@@ -315,13 +329,27 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
   pool). The wallet refuses the other shapes itself, on every network: change left over is
   "When shielding coinbase funds, the wallet does not allow any change. … To spend the selected
   coins, send exactly <amount> to shielded recipients (the <selected> selected less the fee
-  <fee>)." (`-4`), and an "Insufficient transparent funds…" refusal (`-6`) ends with what the
-  address holds in coinbase the send could not use: "The address holds <amount> of coinbase
-  funds, which can only be sent to shielded recipients, with no change." and "The address holds
-  <amount> of immature coinbase funds, which can be sent to shielded recipients only, with no change,
-  after 101 confirmations."
+  <fee>)." (`-4`). An "Insufficient transparent funds…" refusal (`-6`) names what the send could
+  not use, in the C++ lines' words (beta4 item 7). When the address had no ordinary coin to spend,
+  the lead becomes "Insufficient transparent funds: this address has no coins this send can
+  spend." Then come, each only when it applies:
+  - mature coinbase left out because a recipient is transparent: "The address holds <v> YEC of
+    mining rewards (coinbase), which can only be sent to a shielded (Sapling) address, with no
+    change: send exactly <a> to one Sapling address (the <v> of rewards less the fee <f>)."
+    Above 100 rewards the sentence reads "(the largest <n> of the <m> rewards, <s>, less the fee
+    <f>), then send again for the rest.";
+  - immature coinbase: "The address holds <v> YEC of mining rewards that are not spendable yet: a
+    reward needs 101 confirmations, and the next one needs <k> more; it can then only be sent to
+    a shielded (Sapling) address, with no change.";
+  - ordinary coins below `minconf`: "The address holds <v> YEC with fewer than the <n>
+    confirmations this send requires (minconf): wait for them, or pass a lower minconf."
+
+  The minconf sentence also ends an ECC or Sapling address's insufficient-funds refusal (not
+  `ANY_TADDR`'s), and the "coinbase outputs will not be selected" note no longer appears for a
+  Sapling source.
   `sendtoaddress`, `sendmany`, `fundrawtransaction` and `z_mergetoaddress` still leave a
-  post-quantum coinbase out, and `z_shieldcoinbase` is not served.
+  post-quantum coinbase out. `z_shieldcoinbase` from the address moves it in one call (beta4, a
+  yewd extension: next item).
 - **Paying a miner at a post-quantum address: what a miner or pool operator must know.**
   - Pay a post-quantum block reward to an address held in a yewd or ycashd wallet. The YEW app and
     the web wallet cannot tell that a coin is a coinbase (lightwalletd's `GetAddressUtxos`, the
@@ -351,9 +379,30 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
       -> both rewards in one transaction: no transparent output, Sapling outputs only
     ```
 
-  - `z_shieldcoinbase` (not served by yewd) and `z_mergetoaddress` do not move it; there is no
-    one-call sweep.
+  - Or, in yewd since beta4, `z_shieldcoinbase` from the address (next item): the wallet computes
+    the exact amount itself. ycashd refuses a post-quantum source in `z_shieldcoinbase`, and
+    `z_mergetoaddress` leaves coinbase out on both.
   - A transparent (ECC) reward and a Sapling reward are unchanged.
+- **`z_shieldcoinbase` from a post-quantum address (beta4, a yewd extension: ycashd does not
+  have it).** `z_shieldcoinbase "<pq address>" "<Sapling address>" ( fee ) ( limit ) ( memo )
+  ( privacyPolicy )` shields the address's **mature coinbase only** (its ordinary coins stay where
+  they are) to one Sapling address, at the exact amount: the coins less the fee, so there is no
+  change. It builds the same transaction as an exact-amount `z_sendmany` that selects the same coins
+  (post-quantum inputs, no transparent output, one Sapling output padded to two) and charges the same
+  fee: a post-quantum spend's fee on its real size (`PQBuilderFee`, the default raised to it; an
+  explicit `fee` below it is refused `-4`, above the post-quantum cap refused). The arguments, the
+  defaults (`limit` 50, 0 meaning as many as one transaction carries; policy `AllowRevealedSenders`)
+  and the result (`remainingUTXOs`, `remainingValue`, `shieldingUTXOs`, `shieldingValue`, `opid`) are
+  ycashd's. Coins are taken largest first, at most `MAX_PQ_INPUTS_PER_TX` (100) per call, and the
+  ones past the limit are reported as remaining for the next call. The operation is listed under
+  method `z_shieldcoinbase` (`z_getoperationstatus`). Refusals: no mature coinbase, `-6` "Could not
+  find any coinbase funds to shield.", followed when the address holds immature rewards by "The
+  address holds <N> YEC of immature mining rewards (coinbase); a mining reward can be shielded after
+  101 confirmations, the first of these in <k> more blocks."; a transparent destination, `-25`
+  "Cannot shield coinbase output to a p2pkh address." (`p2sh`, `post-quantum` likewise); an address
+  the wallet does not hold, the `-5` of `z_sendmany`. `z_shieldcoinbase` from any other source (an
+  ECC address, `"*"`) stays outside the façade's scope (`-32601`), so yewd answers it as before.
+  The façade checks its arity as ycashd does (2 to 6 arguments).
 - **A submission's answer lost (review M1).** A transaction the node accepted always returns its
   txid (a failing sync after it is a warning). When `sendrawtransaction`'s answer is lost, the
   wallet asks the node for the txid of the bytes; not found, the call answers "…status unknown,
@@ -373,6 +422,98 @@ by itself (an `AbortNode`, a `stop` sent to the node) and has not come back with
 - **Coinbase (H8).** A new wallet's first external address is its coinbase address. ycash6
   `-disablewallet` mines only with `-mineraddress=<it> -minetolocalwallet=0`; kogany takes it as its
   `miner_address`.
+
+## Recovering a mining reward paid to a YEW address
+
+A pool can pay a block reward to the post-quantum address the YEW app or the web wallet shows
+(`sqf…` FN-DSA-512, `sqs…` SLH-DSA; `tqf…`/`tqs…` on the testnets). The network spends a coinbase
+only after 100 blocks, and only in a transaction with no transparent output: no ECC recipient, no
+post-quantum recipient and no change. The reward has to go to a Sapling address first, at the
+exact amount. The YEW app and the web wallet cannot build that transaction (they cannot tell a
+coinbase from an ordinary coin), so restore the recovery phrase in yewd and move the reward there.
+The funds are not lost, and the phrase keeps working in the app.
+
+1. **Wait for maturity.** A reward can be moved once it has 101 confirmations. Before that yewd
+   counts it in `getwalletinfo`'s `immature_balance` only.
+2. **Restore the phrase in a new yewd wallet** beside a synced koganyd (or a ycash6
+   `-disablewallet`), as in "Running yewd beside koganyd": write the YEW phrase on one line of a
+   file readable only by you, then start yewd once with `-mnemonicfile=<file>` and a `-datadir`
+   that holds no wallet yet. The restore scans from genesis and wallet calls wait for it.
+   `getwalletinfo.restore_in_progress` turns false when the scan is done. Delete the file after
+   the start. The app's first post-quantum receive address of each scheme is the restored wallet's
+   key 0 of that scheme (`signer/tests/yew_phrase_address.rs` checks this through the app's own
+   `receive_address`). Then:
+
+   ```sh
+   ycash-cli validateaddress <sqf… address>            # "ismine": true
+   ycash-cli listunspent 101 9999999 '["<sqf… address>"]'   # the rewards, "generated": true
+   ycash-cli z_getnewaddress sapling                    # -> <ys1… address>, the wallet's own
+   ```
+
+3. **Move the rewards to Sapling, at the exact amount.** Use either call:
+
+   - `z_shieldcoinbase` (yewd since beta4; ycashd refuses a post-quantum source). The wallet
+     works out the amount: all mature rewards at the address (at most `limit`, default 50; at most
+     100 per transaction) less the fee, with no change. Call it again while `remainingUTXOs` is
+     not 0.
+
+     ```sh
+     ycash-cli z_shieldcoinbase <sqf… address> <ys1… address>
+       -> {"remainingUTXOs": 0, "remainingValue": 0.00000000, "shieldingUTXOs": 3, "shieldingValue": 18.75000000, "opid": "opid-…"}
+     ycash-cli z_getoperationresult '["opid-…"]'      # "status": "success", "result": {"txid": …}
+     ```
+
+   - `z_sendmany` (yewd and ycashd, beta3 on). Name a round amount, then send exactly the amount
+     the refusal names. A selection that holds a reward allows no change:
+
+     ```sh
+     ycash-cli z_sendmany <sqf… address> '[{"address":"<ys1… address>","amount":1}]'
+       -> operation failed, -4: When shielding coinbase funds, the wallet does not allow any change.
+          The proposed transaction would result in 5.249935 in change. To spend the selected coins,
+          send exactly 6.249935 to shielded recipients (the 6.25 selected less the fee 0.000065).
+     ycash-cli z_sendmany <sqf… address> '[{"address":"<ys1… address>","amount":6.249935}]'
+     ```
+
+   **The exact-amount rule.** The amount sent is the rewards selected less the fee, to shielded
+   addresses only. Anything else is refused by the wallet before it reaches the node. A send to an
+   ECC or post-quantum address answers `-6`, naming the rewards the address holds and the exact
+   amount that moves them to Sapling. A round
+   amount answers `-4`, naming the exact one. `z_sendmany` takes the largest rewards first and adds
+   a reward only while the amount needs it. An amount below the largest reward therefore moves one
+   reward per call. Name more than one reward to move several in one transaction.
+
+   **Fees seen** (regtest, beta3 ycashd and yewd, and this branch's yewd, in front of ycashd and of
+   koganyd; the same as on the fast testnet, report of 2026-11-18): **0.000065 YEC for one FN-DSA-512
+   (Falcon) reward** and **0.00028 YEC for one SLH-DSA reward**. Each further input adds its own
+   size. The refusal and the `z_shieldcoinbase` result always give the figure.
+4. **Send on.** The Sapling note can be spent once it has the confirmations the call asks for
+   (`z_sendmany`'s `minconf`, 1 by default in yewd; ycashd's default is 10). Send to any address,
+   for example an ECC address or a post-quantum one:
+
+   ```sh
+   ycash-cli z_sendmany <ys1… address> '[{"address":"<s1… address>","amount":5}]'
+   ycash-cli z_sendmany <ys1… address> '[{"address":"<sqf… address>","amount":5}]'
+   ```
+
+   Coins received this way are ordinary coins, not rewards: no coinbase rule applies to them.
+
+Tested end to end on regtest (`qa/recover_pq_reward.py`): a pool pays four Falcon rewards and one
+SLH-DSA reward to the app's addresses of a phrase through `getcoinbasetemplatefor`, the phrase is
+restored with `-mnemonicfile`, and the rewards are moved and sent on as above. Every node runs
+`-regtestshieldcoinbase`. In the koganyd column a ycash6 peer with the flag must accept every
+transaction and block, because koganyd's regtest does not enforce the rule. Run from a ycash6
+checkout's `qa/rpc-tests`:
+
+```sh
+ZCASHD=<ycashd> YEWD_BIN=<yewd> [YEWD_KOGANY=<koganyd> YEWD_YCASH6_PEER=1] \
+  <workspace>/.venv/bin/python <yew>/yewd/qa/recover_pq_reward.py --srcdir=<dir of ycashd> --tmpdir=<dir> --portseed=<n>
+```
+
+A yewd without the extension (beta3) answers `z_shieldcoinbase` with ycashd's refusal. The script
+records that refusal and moves the rewards with `z_sendmany` instead.
+
+**Do not use a YEW address as a mining payout.** Pay post-quantum rewards to an address held in a
+yewd or ycashd wallet, which knows coinbase and shields it.
 
 ## The signer (S2)
 

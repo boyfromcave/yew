@@ -212,9 +212,10 @@ The reasoning behind each rule, with the evidence from the devnet, is in
 ## Repository layout
 
 ```
-Cargo.toml              Rust workspace: core (yew-core) and core/cli (yew-cli)
+Cargo.toml              Rust workspace: core (yew-core), core/cli (yew-cli), attestor (yew-attestor)
 core/src/               the core; api.rs is the bridge surface, frb_generated.rs is generated
 core/cli/               yew-cli: the developer's driver and what the devnet tests use
+attestor/               yew-attestor: the light attestor seat's transactions (join, heartbeat, leave, bond withdraw, cancel, op-return)
 core/tests/             vectors.rs (node vectors), devnet.rs (acceptance incl. s2_ shielded and s4_ moves on both node lines; YEW_DEVNET=1, ignored otherwise)
 core/tests/vectors/     node-generated vectors (ywallet.json is pending a capture from a Ywallet build; sapling_keys_ycash.json is node-confirmed)
 app/                    Flutter project yew_app (org cash.ycash.yew)
@@ -392,6 +393,28 @@ certificate as the only trust anchor), `yew-wallet.sqlite`, regtest. `coins` lis
 with its class; `--all` lets a YEC send spend the fee reserve; `export-wif` is byte-identical to
 `ycashd`'s `dumpprivkey`, so a YEW transparent key imports into YecWallet. It covers ordinary
 (secp256k1) keys only: post-quantum vault owner and Falcon keys are not exported this way.
+
+## `yew-attestor`
+
+The light attestor seat (no node, no wallet; workspace `docs/plans/beta4/price-feed.md` §2.2-§2.3)
+builds and signs its transactions in the core (`core/src/build/attestor.rs`) from one seat key
+and sends them through one or more lightwalletd-dd endpoints:
+
+```
+yew-attestor --network regtest|testnet|mainnet --key-file PATH --lightwalletd URL [--lightwalletd URL2 ...]
+             [--insecure] <command> [--dry-run]
+             address | join --set SETID --bond ZAT --locktime H | heartbeat --set SETID | leave --set SETID
+             | withdraw --set SETID [--to TADDR] | cancel --intent TXID:N --cosigs FILE|-
+             | op-return --data HEX --fee-zat N
+```
+
+The key file holds the seat's compressed WIF (what `ycash-cli dumpprivkey` prints) on its first
+non-empty, non-`#` line and must be mode `0600`. Each command prints one JSON object (exit 1 with
+`{"error", "code"}` on failure). Funding comes from the seat's own confirmed P2PKH coins, never a
+YED token, a bond or a carrier; every transaction is checked with `ValidateRawTransaction` on the
+first endpoint and sent to all of them; `--dry-run` sends nothing. `--insecure` (plaintext) is
+accepted for loopback hosts only. `op-return --data` is the pushed data (at most 80 bytes), the
+output is `OP_RETURN <push>`.
 
 ## Security
 

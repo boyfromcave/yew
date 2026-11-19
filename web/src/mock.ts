@@ -76,6 +76,12 @@ export class MockCore implements Core {
     }
   }
 
+  /** The chain grows by `n` blocks (the auto-sync tests; `latest_height` and `sync` see it). */
+  mine(n = 1) { this.tip += n; }
+  /** Sets the public balance's pending amount (a transaction of the wallet's waiting for a block). */
+  setPendingZat(zat: string) { this.bal.yecPendingZat = zat; }
+  /** The network fails (or works again) from now on. */
+  setFailNetwork(fail: boolean) { this.failNetwork = fail; }
   constructor(o: MockOptions = {}) { this.tip = o.tip ?? 1200; this.delayMs = o.delayMs ?? 0; this.failNetwork = !!o.failNetwork; this.pqUnindexed = !!o.pqUnindexed; }
 
   private async step<T>(f: () => T): Promise<T> {

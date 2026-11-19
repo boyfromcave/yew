@@ -309,10 +309,31 @@ impl Facade {
                 &methods::not_implemented_message(&method, stage),
                 id,
             ),
-            // F-S5-10: the post-quantum refusal of a method outside K-25, as ycashd answers it
+            // F-S5-10: the post-quantum refusal of a method outside K-25, as ycashd answers it;
+            // beta4 item 7: yewd's extension serves a post-quantum source (its mature coinbase
+            // shielded at the exact amount, `yewd_wallet::shield`), every other source stays
+            // outside the scope
             Some(Class::OutOfScope) if method == "z_shieldcoinbase" => {
                 let params = params_of(env.params).unwrap_or_default();
                 let net = crate::wallet::core_network(self.wallet.network);
+                if yewd_wallet::shield::serves_pq_source(net, &params) {
+                    let (lo, hi) = yewd_wallet::shield::ARITY;
+                    if params.len() > hi {
+                        return error_reply(
+                            code::INVALID_PARAMS,
+                            &format!("Too many parameters for method `z_shieldcoinbase`. Needed at least {lo} and at most {hi}, but received {}", params.len()),
+                            id,
+                        );
+                    }
+                    if params.len() < lo {
+                        return error_reply(
+                            code::INVALID_PARAMS,
+                            &format!("Not enough parameters for method `z_shieldcoinbase`. Needed at least {lo} and at most {hi}, but received {}", params.len()),
+                            id,
+                        );
+                    }
+                    return self.wallet_call(&method, env.params, id).await;
+                }
                 match yewd_wallet::zsend::pq_refusal_only(net, &method, &params) {
                     Ok(j) => raw_result_reply(&j.text(), id),
                     Err(e) => error_reply(e.code, &e.message, id),

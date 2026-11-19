@@ -40,6 +40,12 @@ function rewardsCard(vm: HomeVm): HTMLElement | null {
     s.rewardFetching ? h("p", { class: "small", "data-reward": "fetching" }, `Downloading ${s.rewardFetching.name}: ${Math.floor((s.rewardFetching.bytesDone * 100) / Math.max(1, s.rewardFetching.bytesTotal))} %`) : null);
 }
 
+/** "Synced 14:05 · block 512,017": when the last sync completed and the tip it reached. */
+export function syncedLine(at: number, tip: number | null): string {
+  const time = new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return tip === null ? `Synced ${time}` : `Synced ${time} · block ${tip.toLocaleString("en-US")}`;
+}
+
 export function renderHome(root: HTMLElement, vm: HomeVm) {
   const draw = () => {
     clear(root);
@@ -64,7 +70,9 @@ export function renderHome(root: HTMLElement, vm: HomeVm) {
         h("div", { class: "actions" }, h("button", { class: "secondary", on: { click: () => go("move") } }, "Move…"))),
       rewardsCard(vm),
       h("p", { class: "small" }, b ? formatPriceLine(b.priceCents ?? "0") : "", s.network ? ` · ${s.network}` : ""),
-      p && (s.syncing || p.pct < 100) ? progressBar(p.pct, `${p.phase} · ${p.height} / ${p.tip}`) : null,
+      // beta4 list item 6: a quiet line, not a flashing state; progress only for a sync the user sees
+      s.lastSyncAt !== null ? h("p", { class: "small", "data-sync": "last" }, syncedLine(s.lastSyncAt, s.tip)) : null,
+      p && s.syncing ? progressBar(p.pct, `${p.phase} · ${p.height} / ${p.tip}`) : null,
       errorCard(s.error),
       b?.termsRefused ? errorCard(termsRefusedText(b.termsRefused)) : null,
       h("div", { class: "actions" },

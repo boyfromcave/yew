@@ -1,0 +1,17 @@
+[package]
+name = "yew-attestor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The light attestor's one-offs over yew-core and lightwalletd-dd: join, heartbeat, leave, withdraw, cancel, op-return (beta4 item 3d)"
+
+[[bin]]
+name = "yew-attestor"
+path = "src/main.rs"
+
+# yew-core and the two crates the core already locks; no argument-parsing crate (yew-cli's rule).
+[dependencies]
+yew-core = { path = "../core" }
+tokio = { version = "=1.53.3", features = ["rt-multi-thread", "macros"] }
+serde_json = "=1.0.151"

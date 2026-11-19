@@ -56,12 +56,12 @@ const MARGINAL_FEE: i64 = 5_000 / 10;
 const P2PKH_STANDARD_INPUT_SIZE: usize = 150;
 
 /// A coin a merge may take.
-struct Cand {
-    op: yew_core::tx::OutPoint,
-    value: i64,
-    script: Vec<u8>,
-    key: KeyRef,
-    pq: Option<u8>,
+pub(crate) struct Cand {
+    pub(crate) op: yew_core::tx::OutPoint,
+    pub(crate) value: i64,
+    pub(crate) script: Vec<u8>,
+    pub(crate) key: KeyRef,
+    pub(crate) pq: Option<u8>,
 }
 
 /// ycash6 `PQInputMarginalFee` (asyncrpcoperation_common.cpp): the fee one post-quantum input adds,
@@ -72,7 +72,7 @@ fn pq_input_marginal_fee(scheme: u8, rate: i64) -> i64 {
     (rate * n as i64 / 1000).max(MARGINAL_FEE * n.div_ceil(P2PKH_STANDARD_INPUT_SIZE) as i64)
 }
 
-fn int_param(p: &[Value], i: usize) -> Result<Option<i64>, RpcError> {
+pub(crate) fn int_param(p: &[Value], i: usize) -> Result<Option<i64>, RpcError> {
     match p.get(i) {
         None | Some(Value::Null) => Ok(None),
         Some(v) => v.as_i64().map(Some).ok_or_else(|| {
@@ -499,6 +499,7 @@ impl Wallet {
         };
         self.ops.ops.push(Op {
             id: id.clone(),
+            method: "z_mergetoaddress",
             status,
             creation_time: created,
             error,
@@ -522,7 +523,7 @@ impl Wallet {
     /// part with the Sapling part beside it), a post-quantum one re-priced on its signed size,
     /// then committed.
     #[allow(clippy::too_many_arguments)]
-    async fn run_merge(
+    pub(crate) async fn run_merge(
         &mut self,
         node: &dyn Node,
         next: &crate::build::Next,
@@ -582,6 +583,6 @@ impl Wallet {
     }
 }
 
-fn plan_error(e: PlanError) -> RpcError {
+pub(crate) fn plan_error(e: PlanError) -> RpcError {
     RpcError::new(e.rpc_code(), e.to_string())
 }
