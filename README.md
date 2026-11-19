@@ -51,10 +51,12 @@ of the YED it backs, others can claim it. The YEC/USD price comes from mining po
   rewards, post-quantum ones above all, to a `ycashd` or `yewd` wallet address. A reward that
   already reached a YEW address is shown apart from every balance as "Mining reward — shield first"
   (immature ones with the blocks left until the 101st confirmation) and is in no ordinary send. The
-  app moves a mature one with **Move to Sapling** (proven on the device). The web wallet moves a
-  public (`s…`) address's reward the same way; a post-quantum address's it cannot move yet: restore
-  the recovery phrase in `yewd` and move it there ([yewd/README.md, "Recovering a mining reward paid
-  to a YEW address"](yewd/README.md#recovering-a-mining-reward-paid-to-a-yew-address)). The coinbase
+  app moves a mature one with **Move to Sapling** (proven on the device). The web wallet does the
+  same for a public (`s…`) address's reward and, since beta4, for a post-quantum (FN-DSA-512 or
+  SLH-DSA) address's: one Sapling output proof, made in the browser with the proving parameters it
+  caches (it offers the one-time 52 MB download first when they are not there yet). `yewd` can move
+  one too ([yewd/README.md, "Recovering a mining reward paid to a YEW
+  address"](yewd/README.md#recovering-a-mining-reward-paid-to-a-yew-address)). The coinbase
   flag comes from lightwalletd-dd (`GetAddressUtxosReply.coinbase`, beta4); against a server
   without it the core reads the coin's transaction itself, once.
 - **Fees:** YEW computes every fee it signs. The protocol fee is in dollars of the debt, like tax

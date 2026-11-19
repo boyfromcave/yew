@@ -7,7 +7,6 @@ import type {
   MiningReward, MintAvailability, MintEstimate, MintStart, MintStatus, MintStep, MintStartAcks, MoveDirection, MovePreview, ParamsProgress, ParamsStatus,
   PqSendPreview, PqSource, Progress, ProgressEvent, RedeemPreview, ShieldedBalance, Status, SyncResult, Unavailable, Vault, YecPreview, YedPreview,
 } from "./core";
-import { PQ_REWARD_WEB } from "./core";
 
 export const MOCK_SEED = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 // The wallet's own addresses carry regtest prefixes (the mock's network; src/prefixes.ts): Receive
@@ -157,9 +156,17 @@ export class MockCore implements Core {
     return this.step(() => {
       this.need();
       const rows = this.rewardRows.filter((r) => r.address === from && r.maturesIn === 0);
-      if (rows.some((r) => r.postQuantum)) throw new Error(`unavailable: ${PQ_REWARD_WEB}`);
       if (!rows.length) throw new Error("build: This address holds no mature mining reward (a mining reward can be moved after 101 confirmations).");
       const total = rows.reduce((a, r) => a + BigInt(r.valueZat), 0n);
+      if (rows[0].postQuantum) {
+        // signed and proved at preview with the cached parameters (one Sapling output proof)
+        if (!this.params.present) throw new Error("params: Private sending needs a one-time download of 52 MB (the Sapling proving parameters): call fetch_params first.");
+        const slh = from.startsWith("rqs"); const fee = slh ? 84000n : 20000n;
+        const ack = this.unusualPqFee ? `accept-unusual-fee:${fee}:mock` : null;
+        return { previewId: this.preview("pq", { ack }), from, schemeName: slh ? "SLH-DSA-SHA2-128s" : "FN-DSA-512", to: SHIELDED, amountZat: (total - fee).toString(),
+          amountBumped: false, feeZat: fee.toString(), changeZat: "0", inputs: rows.length, sizeBytes: slh ? 8300 : 1900, signMillis: null,
+          feeNote: this.unusualPqFee, unusualFeeAck: ack, feePriceMicroUsd: null, expiryHeight: this.tip + 40, txid: "", fromPrivate: false } as PqSendPreview;
+      }
       return yec(this.preview("reward"), SHIELDED, (total - BigInt(FEE)).toString(), "0", "transparent", false, null, this.tip) as MovePreview;
     });
   }

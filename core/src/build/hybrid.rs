@@ -5,8 +5,10 @@
 //! The hybrid builder: a transparent transaction with a Sapling part, its Sapling bundle built and
 //! proven, the ZIP-243 digests its transparent inputs sign over it, and the finished transaction
 //! (moved from `yewd/signer/src/sapling.rs`, review YEW-PORT-5 R3, a pure move: the bodies are
-//! byte-identical; the lines that are not are listed in that commit). Native only: the prover
-//! (`zcash_proofs`) is not part of the browser build.
+//! byte-identical; the lines that are not are listed in that commit). The parameters are read
+//! from a directory natively ([`sapling_prepare`]); the browser passes the prover it loaded from
+//! the bytes in its cache ([`sapling_prepare_with`], beta4: a post-quantum mining reward moved to
+//! Sapling needs one output proof).
 //!
 //! **Not an app API** (review YEW-REVIEW-6 L3). These are signing and proving primitives: they
 //! build and sign whatever they are given. They are `pub` only because yewd-signer, another
@@ -208,12 +210,35 @@ impl Hybrid {
 /// the randomness of the bundle (its order, its dummies, the note commitments' trapdoors) and of
 /// the proofs (review YEW-REVIEW-6: injectable for the vector test; every production caller
 /// passes `OsRng`).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn sapling_prepare(
     extsk: ExtendedSpendingKey,
     network: Network,
     part: &crate::sapling_part::SaplingPart,
     tx: &yew_core::tx::Transaction,
     branch_id: u32,
+    rng: impl RngCore + CryptoRng,
+) -> Result<Hybrid, Refused> {
+    let dir = std::path::Path::new(&part.params_dir);
+    yew_core::sapling_params::ensure_verified(dir)
+        .map_err(|e| (refuse::FAILED, format!("the Sapling parameters: {e}")))?;
+    let prover = zcash_proofs::prover::LocalTxProver::new(
+        &dir.join(yew_core::sapling_params::SPEND.name),
+        &dir.join(yew_core::sapling_params::OUTPUT.name),
+    );
+    sapling_prepare_with(extsk, network, part, tx, branch_id, &prover, rng)
+}
+
+/// [`sapling_prepare`] with a prover already loaded (`part.params_dir` is not read): the
+/// browser's, built from the verified parameter bytes in its cache
+/// (`Shielded::set_prover_bytes`), beta4.
+pub fn sapling_prepare_with(
+    extsk: ExtendedSpendingKey,
+    network: Network,
+    part: &crate::sapling_part::SaplingPart,
+    tx: &yew_core::tx::Transaction,
+    branch_id: u32,
+    prover: &zcash_proofs::prover::LocalTxProver,
     mut rng: impl RngCore + CryptoRng,
 ) -> Result<Hybrid, Refused> {
     let dfvk = extsk.to_diversifiable_full_viewing_key();
@@ -281,13 +306,6 @@ pub fn sapling_prepare(
         b.add_output(Some(ovk), to, NoteValue::from_raw(v), memo)
             .map_err(|e| (refuse::FAILED, format!("sapling output: {e:?}")))?;
     }
-    let dir = std::path::Path::new(&part.params_dir);
-    yew_core::sapling_params::ensure_verified(dir)
-        .map_err(|e| (refuse::FAILED, format!("the Sapling parameters: {e}")))?;
-    let prover = zcash_proofs::prover::LocalTxProver::new(
-        &dir.join(yew_core::sapling_params::SPEND.name),
-        &dir.join(yew_core::sapling_params::OUTPUT.name),
-    );
     let (unproven, _) = b
             .build::<zcash_proofs::prover::LocalTxProver, zcash_proofs::prover::LocalTxProver, _, zcash_protocol::value::ZatBalance>(
                 &[extsk.clone(), internal.clone()],
@@ -295,7 +313,7 @@ pub fn sapling_prepare(
             )
             .map_err(|e| (refuse::FAILED, format!("the Sapling bundle: {e:?}")))?
             .ok_or_else(|| (refuse::MALFORMED, "an empty Sapling part".to_string()))?;
-    let proven: ProvenBundle = unproven.create_proofs(&prover, &prover, &mut rng, ());
+    let proven: ProvenBundle = unproven.create_proofs(prover, prover, &mut rng, ());
     let raw = tx
         .serialize()
         .map_err(|e| (refuse::FAILED, e.to_string()))?;

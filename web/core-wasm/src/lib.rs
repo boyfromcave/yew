@@ -1243,20 +1243,37 @@ pub fn mining_rewards() -> Result<JsValue, JsValue> {
     })
 }
 
-/// The browser's answer for a post-quantum mining reward: it can only be moved by shielding,
-/// and the browser build has no post-quantum-to-Sapling builder.
-pub const PQ_REWARD_WEB: &str = "This mining reward can only be moved by shielding it into Sapling, and the web wallet cannot shield from a post-quantum address yet. Restore your recovery phrase in yewd and move it there: https://github.com/boyfromcave/yew/blob/upgrade/vault/yewd/README.md#recovering-a-mining-reward-paid-to-a-yew-address (the YEW app can move it too).";
-
-/// "Move to Sapling" for the mature mining rewards of the own address `from` (beta4): a public
-/// (`s…`) address's are shielded at the exact amount, no change
-/// (`api::reward_shield_preview`); confirm with [`confirm`]. A post-quantum address's are
-/// refused with [`PQ_REWARD_WEB`].
+/// "Move to Sapling" for the mature mining rewards of the own address `from` (beta4), at the
+/// exact amount, no change; confirm with [`confirm`]. A public (`s…`) address's are shielded
+/// (`api::reward_shield_preview`, proved at confirm). A post-quantum address's (FN-DSA-512 or
+/// SLH-DSA) are planned, signed and proved here with the prover loaded from the cached
+/// parameters (one Sapling output proof; `params: …` when the cache is empty: [`fetch_params`]
+/// first), the same transaction the app builds (`api::pq_reward_move_preview`), returned as a
+/// post-quantum send preview.
 #[wasm_bindgen]
 pub async fn reward_move_preview(from: String) -> Result<JsValue, JsValue> {
     with_session(|s| {
         Box::pin(async move {
             if keys::parse_pq_yec_address(s.network, from.trim()).is_ok() {
-                return Err(err("unavailable", PQ_REWARD_WEB));
+                s.ensure_prover().await?;
+                let r = s.sync().await?;
+                s.sync_shielded(yec_private::no_progress()).await?;
+                let to = s.wallet.shielded().map_err(wallet_err)?.default_address().1;
+                let side =
+                    yew_core::build::pq_send::SaplingSide::loaded(&s.wallet).map_err(wallet_err)?;
+                let p = yew_core::build::pq_send::build_pq_reward_move(
+                    &s.wallet,
+                    &side,
+                    &from,
+                    &to,
+                    r.tip,
+                    r.branch_id,
+                )
+                .map_err(wallet_err)?;
+                let id = format!("q{}", txid_hex(&p.txid));
+                let out = dto::pq_send_preview(id.clone(), &p);
+                s.previews.insert(id, Preview::Pq(Box::new(p)));
+                return to_js(&out);
             }
             let r = s.sync().await?;
             s.sync_shielded(yec_private::no_progress()).await?;

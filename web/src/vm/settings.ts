@@ -26,10 +26,11 @@ export class SettingsVm extends Vm<SettingsState> {
     try { await f(); } catch (e) { if (fresh()) this.set({ error: this.hosted ? hostedParamsText(messageOf(e)) : messageOf(e) }); }
   }
   loadParams() { return this.run(async () => this.set({ params: await this.core.params_status() })); }
+  /** The sources the proving files are fetched from: the Source field's, or none (the core's defaults). */
+  paramsSources(): string[] { const src = this.state.paramsSource.trim(); return src ? [src.endsWith("/") ? src : `${src}/`] : []; }
   fetchParams() {
     return this.run(async () => {
-      const src = this.state.paramsSource.trim();
-      try { await this.core.fetch_params((p) => this.set({ fetching: p }), src ? [src.endsWith("/") ? src : `${src}/`] : []); } finally { this.set({ fetching: null }); }
+      try { await this.core.fetch_params((p) => this.set({ fetching: p }), this.paramsSources()); } finally { this.set({ fetching: null }); }
       this.set({ params: await this.core.params_status(), status: "Private sending files ready." });
     });
   }
