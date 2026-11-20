@@ -39,15 +39,13 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # kogany upgrade/vault at its newest koganyd-bin (beta3: f2387999d, rpcversion 10 and the beta3
-  # parity scripts, #42; getcoinbasetemplatefor since #39)
-  KOGANY_REF: f2387999dfc76f193234bdc7d17fe7079fc86938
+  # kogany upgrade/vault at the beta4 P1 merge (09a4c1408, #49: tag v2, rpcversion 11)
+  KOGANY_REF: 09a4c14084411c92af275994fc3b2e61d0f57118
   YCASH6_REPO: boyfromcave/ycash6
-  # ycash6 upgrade/vault at its newest node-bin (a successful push run of yellowback-tests.yml:
-  # 883a7fdc2, #133, z_sendmany spends a post-quantum address's mature coinbase, with
-  # getcoinbasetemplatefor and rpcversion 10); moves with KOGANY_REF (the one ycash6 pin here:
-  # node-bin, qa/ and zcutil all come from this commit)
-  YCASH6_REF: 883a7fdc2ecdc819c4f263ee4faf049aeacf86d5
+  # ycash6 upgrade/vault at the beta4 P1 merge (d50e3b843, #145; its node-bin needs a successful push run of
+  # yellowback-tests.yml there); moves with KOGANY_REF (the one ycash6 pin here: node-bin, qa/ and zcutil all
+  # come from this commit)
+  YCASH6_REF: d50e3b843122b46010326a4ea0bbf8cb5bd14ab1
 
 jobs:
   parity:
