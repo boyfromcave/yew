@@ -1,7 +1,7 @@
 {
  "source": {
   "repo": "boyfromcave/ycash6",
-  "commit": "d35c48658fdd54983364d4b375272fe0e65c8c25",
+  "commit": "01ec39628ee24a58c68aa4bd0c7a2c28dd096d25",
   "files": [
    "src/chainparams.cpp",
    "src/consensus/upgrades.cpp",

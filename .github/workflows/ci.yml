@@ -583,14 +583,13 @@ jobs:
       contents: read
       actions: read  # gh run list/download on kogany's and ycash6's runs
     env:
-      # kogany upgrade/vault at its newest koganyd-bin (beta2: 2f247bd32, "Ycash's block time bounds",
-      # #27; the head after it, 2f8cb8740, changes only release notes and packaging)
-      KOGANY_REF: 2f247bd32a6eda5cad242813614a1e2b786c5618
+      # kogany upgrade/vault at the beta4 P1 merge (09a4c1408, #49: tag v2, rpcversion 11)
+      KOGANY_REF: 09a4c14084411c92af275994fc3b2e61d0f57118
       YCASH6_REPO: boyfromcave/ycash6
-      # ycash6 upgrade/vault at its newest node-bin (a successful push run of yellowback-tests.yml:
-      # c8f25b0ba, #109; the head after it, fbc9f625c, changes only qa/ rc-qualify scripts); moves
-      # with KOGANY_REF (the one ycash6 pin here: node-bin, qa/ and zcutil all come from this commit)
-      YCASH6_REF: c8f25b0ba067ed9eb5f8907220028471d9a4106d
+      # ycash6 upgrade/vault at 01ec39628 (#151, after the beta4 P1 merge d50e3b843, #145: tag v2, rpcversion 11; its node-bin
+      # needs a successful push run of yellowback-tests.yml there); moves with KOGANY_REF (the one
+      # ycash6 pin here: node-bin, qa/ and zcutil all come from this commit)
+      YCASH6_REF: 01ec39628ee24a58c68aa4bd0c7a2c28dd096d25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

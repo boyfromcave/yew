@@ -657,7 +657,7 @@ pub async fn build_redeem(
         payee_script: if payee.is_empty() {
             None
         } else {
-            Some(mint::p2pkh_of_address(wallet, &payee)?)
+            Some(mint::payee_script_of_address(wallet, &payee)?)
         },
         fee_zat: if payee.is_empty() {
             0
