@@ -586,10 +586,10 @@ jobs:
       # kogany upgrade/vault at the beta4 P1 merge (09a4c1408, #49: tag v2, rpcversion 11)
       KOGANY_REF: 09a4c14084411c92af275994fc3b2e61d0f57118
       YCASH6_REPO: boyfromcave/ycash6
-      # ycash6 upgrade/vault at the beta4 P1 merge (d50e3b843, #145: tag v2, rpcversion 11; its node-bin
+      # ycash6 upgrade/vault at 01ec39628 (#151, after the beta4 P1 merge d50e3b843, #145: tag v2, rpcversion 11; its node-bin
       # needs a successful push run of yellowback-tests.yml there); moves with KOGANY_REF (the one
       # ycash6 pin here: node-bin, qa/ and zcutil all come from this commit)
-      YCASH6_REF: d50e3b843122b46010326a4ea0bbf8cb5bd14ab1
+      YCASH6_REF: 01ec39628ee24a58c68aa4bd0c7a2c28dd096d25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

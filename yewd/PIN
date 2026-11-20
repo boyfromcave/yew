@@ -1,6 +1,6 @@
 # The node revisions yewd's CI legs pull (the pattern of core/tests/vectors/PIN): <repo> <commit> <branch> <date>.
 # The `yewd` job builds against these, never against a branch tip (plan §5).
-ycash6 d50e3b843122b46010326a4ea0bbf8cb5bd14ab1 upgrade/vault 2026-11-19
+ycash6 01ec39628ee24a58c68aa4bd0c7a2c28dd096d25 upgrade/vault 2026-11-19
 kogany 09a4c14084411c92af275994fc3b2e61d0f57118 upgrade/vault 2026-11-19
 # The pinned vector files yewd replays (kogany testdata/yellowback/PIN, byte copies of ycash6 src/test/data):
 # vector <file> <sha256>. Read by path from a kogany upgrade/vault checkout beside yew (or yew's own
