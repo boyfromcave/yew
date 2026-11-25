@@ -1,7 +1,7 @@
 {
  "network": "regtest",
  "generated": {
-  "command": "vectors --out /Users/boy/projects/yellowback-workspace/wt/scratch/q-yewb/vec --seed 1",
+  "command": "vectors --out vec --seed 1",
   "seed": 1,
   "height": 248,
   "forkCommit": "aa0fd3812"

@@ -145,3 +145,5 @@ by local git rev (`file://`) or by path. Chosen: path, so the yew root manifest 
 upstream git pins and only yewd (the Yugen-carrying shell) changes. Test: `yewd/qa/yugen_branch_sends.py`
 (ECC, Sapling, SLH-DSA and FN-DSA sends from yewd under Vault and again under Yugen from the activation
 block on): passed 12/12. Reverses: librustzcash6 merging Yugen on its own line, then a plain rev pin.
+Reversed for publication: the path patches are dropped; every manifest pins librustzcash6 `c7f0a0a0`
+(upgrade/yugen) and x402-ycash-light `192d96e` (upgrade/yugen) by git rev.
