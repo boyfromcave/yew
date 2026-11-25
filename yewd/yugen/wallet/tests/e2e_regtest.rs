@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! M1 end to end on a running regtest devnet (`yugen-devnet up`): yewd 0 shields,
 //! sends a leaf transfer to yewd 1's request, the node mines it, yewd 1 credits the applied note.
 //! Needs YUGEN_E2E_NODE, YUGEN_E2E_YEWD0, YUGEN_E2E_YEWD1 (host:port), YUGEN_E2E_USER,

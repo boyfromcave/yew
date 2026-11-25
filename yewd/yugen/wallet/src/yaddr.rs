@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The Yugen address (proposal UX-1, yugen-spec branch `ux-address` 104cc0b,
 //! `spec/decision-yugen-address.md`): one Bech32m string carrying the static address (full §12.1
 //! or short §12.2) and an optional payment request (§9.1). Rules P-1 (encoding), P-2 (refusals),

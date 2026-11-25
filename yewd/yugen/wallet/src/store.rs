@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The wallet file: `<datadir>/wallet.json`. It never holds the seed (decision record
 //! `docs/yugen-seed-at-rest.md`): the seed reaches the engine per call on an inherited file
 //! descriptor (`-seedfd=N`), and the file keeps only a fingerprint of it. A file written before

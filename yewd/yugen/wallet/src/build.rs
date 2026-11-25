@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The transfer builder. Adapts `yugen-ref` `wallet.rs` `Wallet::build` (spec 0.5.1, d25a89c),
 //! changed in one place: the caller sets the auxiliary flags, so that a leaf-route transfer
 //! carries `FLAG_LEAFFEE` (spec §7.1, §7.9, SPEC-81), which the reference builder leaves clear.

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! Finding incoming notes in node data (M1: direct scan of `yugen_getblockdata`, the stand-in
 //! for the mailbox, addendum W-5). For each applied transfer, in block order: own nullifiers are
 //! marked spent; `cm_1`, `cm_2` are appended to the note tree (spec §8); each output is tried as
@@ -26,7 +30,7 @@ pub struct BlockData {
 }
 
 impl BlockData {
-    /// Parses the W-RPC-2 shape (clones/INTERFACES.md).
+    /// Parses the W-RPC-2 shape (yewd/yugen/docs/node-interface.md).
     pub fn from_json(v: &Value) -> Result<Self, String> {
         let height = v["height"].as_u64().ok_or("height")? as u32;
         let mut transfers = Vec::new();

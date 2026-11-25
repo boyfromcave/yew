@@ -11,7 +11,7 @@
 #   run.sh down    stop everything this script started (by name / pid file)
 #
 # Environment (defaults in brackets):
-#   W   the workspace                         [/Users/boy/projects/yellowback-workspace]
+#   W   the workspace                         [required: no default]
 #   S   scratch/output directory              [$W/wt/scratch/web-real]
 #   Y6  a built ycash6 tree                    [$W/wt/up6-b2-prefix]
 #   LWD a lightwalletd-dd binary               [$S/bin/lightwalletd]
@@ -22,7 +22,7 @@
 #                 Sapling proving files at /sapling-params/) instead of `vite preview`
 #   NAME          the container name prefix [web-real]
 set -euo pipefail
-W=${W:-/Users/boy/projects/yellowback-workspace}
+W=${W:?set W to the workspace directory (it holds wt/ and the built trees)}
 S=${S:-$W/wt/scratch/web-real}
 Y6=${Y6:-$W/wt/up6-b2-prefix}
 LWD=${LWD:-$S/bin/lightwalletd}

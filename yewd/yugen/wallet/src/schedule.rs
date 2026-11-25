@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The fixed sync schedule of spec 0.5.2 §17.8 item 1 (addendum ruling 16): a wallet syncs with
 //! its hosts once per `SYNC_PERIOD_BLOCKS` (16) blocks, at heights `h ≡ 0 (mod 16)` (one phase for
 //! every wallet), after a delay drawn afresh from 0 to 60 seconds; opening the app or asking for a

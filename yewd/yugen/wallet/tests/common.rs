@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! A leaf transfer from a payer note to a payee request, built as the wallet builds it.
 #![allow(dead_code)]
 use yewd_yugen::account::Account;

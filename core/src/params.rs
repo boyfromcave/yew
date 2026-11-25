@@ -1225,7 +1225,7 @@ pub const TX_HEADER_V4: u32 = 0x8000_0004;
 /// (`ycash-dd/src/primitives/transaction.h:39` `SAPLING_VERSION_GROUP_ID = 0x892F2085`).
 pub const SAPLING_VERSION_GROUP_ID: u32 = 0x892F_2085;
 
-/// `nVersionGroupId` of a Yugen v4 transaction (clones/INTERFACES.md W-TX, node N-ACT
+/// `nVersionGroupId` of a Yugen v4 transaction (yewd/yugen/docs/node-interface.md W-TX, node N-ACT
 /// `0x59474e47`), accepted by the parser only: the transparent part is read, the Yugen field
 /// (transfer, proof A, proof B) is skipped.
 pub const YUGEN_VERSION_GROUP_ID: u32 = 0x5947_4E47;

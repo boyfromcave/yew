@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The seed never reaches the wallet state on disk (decision record docs/yugen-seed-at-rest.md),
 //! the dummy rule survives a restore (spec §5.6), and the N-A2 seed rule matches ycashd.
 

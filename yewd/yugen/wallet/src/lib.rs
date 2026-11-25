@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! yewd's Yugen wallet (beta4 Yugen addendum §3.2, M1). Keys, addresses, notes and the transfer
 //! come from the specification's reference implementation (`yugen-spec/yugen-ref`, spec 0.5.1,
 //! `d25a89c`); the two mode-0 wallet provers from `yugen-proof-a` (`f79c8b5`) and

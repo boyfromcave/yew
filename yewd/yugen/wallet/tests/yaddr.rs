@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! UX-1 the Yugen address: vectors from yugen-spec branch `ux-address` 104cc0b
 //! (`vectors/yugen_address.json`, copied to tests/data), round trips, refusals, the choice rule.
 

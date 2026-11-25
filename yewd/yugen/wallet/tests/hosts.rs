@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The host-pair client pieces that need no running host: the DPF copy, the pair rule, the
 //! deletion token, the short address of a hosted static address.
 

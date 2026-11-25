@@ -1,4 +1,8 @@
-//! The wallet operations behind the `yugen_*` RPCs (clones/INTERFACES.md, section W final).
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
+//! The wallet operations behind the `yugen_*` RPCs (yewd/yugen/docs/node-interface.md, W-FINAL).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

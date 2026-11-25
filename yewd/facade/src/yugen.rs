@@ -1,4 +1,8 @@
-//! The `yugen_*` RPCs (beta4 Yugen addendum §3.2; names: clones/INTERFACES.md, section W final):
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
+//! The `yugen_*` RPCs (beta4 Yugen addendum §3.2; names: yewd/yugen/docs/node-interface.md, W-FINAL):
 //! answered by the Yugen wallet engine `yewd-yugen` (yew/yewd/yugen), run once per call as a
 //! child process against the same backend, with its data in `<netdir>/yugen/`.
 

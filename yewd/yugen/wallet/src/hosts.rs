@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The wallet side of the two-host mailbox / retrieval pair (spec 0.5.2 §17; addendum W-7, L-4).
 //! Every answer is checked against the per-sync roots both hosts publish (§17.5, §17.8 item 3):
 //! the address root `aroot_h` (with the counts and the locator chain, S-7) and the note-tree root

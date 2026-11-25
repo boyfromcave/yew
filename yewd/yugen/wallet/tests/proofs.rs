@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! W-3: both mode-0 wallet proofs of a built leaf transfer, verified by each proof system's own
 //! verifier; a flipped byte and another public input are refused.
 mod common;

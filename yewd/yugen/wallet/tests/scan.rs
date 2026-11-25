@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! W-5 (fixture): scanning a block that holds a leaf transfer credits the payee's note, with a
 //! membership path to the root after the block, and the payer's change.
 mod common;

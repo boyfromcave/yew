@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! Static address, note package and memo (spec 0.5.2 §10, §12.1), the memo refusal for a payment
 //! request (§9.2) and the withdrawal shape (§7.1, §7.9 rule 4), against yugen-spec vectors where
 //! they exist (`vectors/package.json`, `vectors/address.json`).

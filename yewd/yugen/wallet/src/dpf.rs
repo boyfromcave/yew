@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! Copied from lightwalletd-dd yugen/hostd/src/dpf.rs (yugen/mailbox 2a67449); keep the two identical.
 //! Two-server point function over a domain of `2^depth` indices (spec §17.6).
 //!

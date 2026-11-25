@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! Seed to Yugen account (spec §4, §5.1, §9): the reference's derivations, unchanged.
 
 use yugen_ref::address::FullAddress;

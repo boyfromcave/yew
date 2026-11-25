@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! W-1, W-2: keys, addresses and transfers against yugen-spec 0.5.1 (d25a89c) `vectors/`.
 
 use serde_json::Value;

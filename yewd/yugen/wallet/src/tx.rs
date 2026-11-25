@@ -1,4 +1,8 @@
-//! The Yugen transaction as proposed in clones/INTERFACES.md W-TX (the node defines the final
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
+//! The Yugen transaction as proposed in yewd/yugen/docs/node-interface.md W-TX (the node defines the final
 //! bytes): a v4 overwintered transaction, version group `0x59474e47`, no Sapling or Sprout
 //! parts, followed by the Yugen field (transfer, proof A, proof B). Transparent inputs are
 //! signed by ZIP-243 (Published: ZIP-243, Zcash) extended with `hashYugen` after `valueBalance`

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! The two mode-0 wallet provers and their verifiers (decision Y-W2, docs/decisions.md).
 //! Input to both: the statement in the specification's vector format (spec §14,
 //! `yugen-ref` `vectors::public_json` / `witness_json`); each system decodes it as its own

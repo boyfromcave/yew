@@ -4,7 +4,7 @@ Provenance: keys, addresses, requests, notes, transfer, tree and statement are *
 (yugen-spec 0.5.1, d25a89c, `yugen-ref`, the Ycash developers' specification). The builder is
 **Adapted** (`yugen-ref` `Wallet::build`, change: caller-set auxiliary flags, for `FLAG_LEAFFEE`).
 The transaction envelope and `hashYugen` are **Original (the Ycash developers, 2026)**, a
-proposal (clones/INTERFACES.md W-TX) built on ZIP-243 (**Published**, Zcash).
+proposal (yewd/yugen/docs/node-interface.md W-TX) built on ZIP-243 (**Published**, Zcash).
 
 | Id | Decision | Options considered | Reason | Reverses if |
 |---|---|---|---|---|
@@ -34,7 +34,7 @@ the hiding consensus row.
 695 MiB under Pin96), proof 760,624 B (hex output 1.52 MB). Proof A 649,508 B (unchanged).
 
 ## Open / next
-- Node side: the RPCs and W-TX of clones/INTERFACES.md; `tests/e2e_regtest.rs` skips until set.
+- Node side: the RPCs and W-TX of node-interface.md; `tests/e2e_regtest.rs` skips until set.
 - Reorgs (scan assumes no rewind), static-address receive beyond address 0, bundle route, mailbox.
 
 **Lead rulings (2026-11-24):** Y-W3 accepted for M1 on regtest/devnet only: the node's verifier must use exactly this proof setup. Before any public network, System B moves to the specification's consensus row (category 1 build) and System A keeps the masked row; that is a gate for publication, recorded in the beta4 addendum. Y-W4 accepted for M1 (deposit key funded from the transparent wallet; the node must accept the chained unconfirmed spend); the signer-sighash route is the later design. Y-W5 stands: regtest/devnet only.
@@ -136,10 +136,10 @@ wallet send (transparent, PQ, Sapling) fails once Yugen is active; the hop coins
 signing branch from `getblockchaininfo.consensus.nextblock`; what failed was the pin: librustzcash6
 `a4935c51` has no `BranchId::Yugen`, so the Sapling builder (signer, `hybrid::sapling_prepare`) could not
 parse or sign under 0x59474e30, and its regtest parameters knew no Yugen height. Done: a local branch
-`yugen/wallet` of librustzcash6 (`clones/librustzcash6-wallet`, worktree of clones/librustzcash6) =
+`yugen/wallet` of librustzcash6 (a local worktree) =
 `a4935c51` + the two Yugen commits of `yugen/node` (cd7190fd, 068f0592; `yugen/node` itself lacks
 a4935c51's rusqlite/fee/testnet commits, so it cannot be pinned as is); a local branch `yugen/wallet` of
-x402-ycash (`clones/x402-ycash`, b91140e + `LocalNetwork.yugen`); yewd/Cargo.toml `[patch]`es both git
+x402-ycash (b91140e + `LocalNetwork.yugen`); yewd/Cargo.toml `[patch]`es both git
 sources to those paths; `upgrades_spec` passes `yugen=<h>` from `upgrades["59474e30"]`. Options: re-pin
 by local git rev (`file://`) or by path. Chosen: path, so the yew root manifest and core keep their
 upstream git pins and only yewd (the Yugen-carrying shell) changes. Test: `yewd/qa/yugen_branch_sends.py`

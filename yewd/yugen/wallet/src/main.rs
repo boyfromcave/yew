@@ -1,3 +1,7 @@
+// Copyright (c) 2026 The Ycash developers
+// Distributed under the MIT software license, see the accompanying
+// file LICENSE or https://www.opensource.org/licenses/mit-license.php .
+
 //! `yewd-yugen`: the Yugen wallet engine yewd runs for its `yugen_*` RPCs.
 //!
 //!   yewd-yugen [-datadir=D] [-node=host:port] [-rpcuser=U -rpcpassword=P | -rpccookiefile=F]
