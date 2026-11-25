@@ -93,17 +93,13 @@ impl SignerCore {
     pub fn pq_imported_public(&self) -> Vec<PqPublic> {
         let store = self.pq_imported.lock().unwrap_or_else(|e| e.into_inner());
         store
-            .keys
+            .pubs
             .iter()
             .enumerate()
-            .filter_map(|(i, e)| {
-                let seed = hex::decode(&e.seed).ok()?;
-                let k = PqKey::from_seed(e.scheme, &seed).ok()?;
-                Some(PqPublic {
-                    scheme: e.scheme,
-                    index: IMPORTED_PQ_BASE + i as u32,
-                    pk: hex::encode(k.public_key()),
-                })
+            .map(|(i, e)| PqPublic {
+                scheme: e.scheme,
+                index: IMPORTED_PQ_BASE + i as u32,
+                pk: e.pk.clone(),
             })
             .collect()
     }

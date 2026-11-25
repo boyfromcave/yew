@@ -85,6 +85,9 @@ pub const KNOWN: &[&str] = &[
     "stopbackend",
     "signer",
     "signerbin",
+    "yugenbin",
+    "yugenhosts",
+    "yugensyncdelay",
     "walletpoll",
     "initwallet",
     "exportdir",
@@ -135,6 +138,13 @@ pub struct Config {
     pub signer: Option<PathBuf>,
     /// The `yewd-signer` binary (S1 runs it as a child process); default beside `yewd`.
     pub signer_bin: Option<PathBuf>,
+    /// The Yugen wallet engine `yewd-yugen` (`-yugenbin`; default: beside `yewd`, then `yewd/yugen/target`).
+    pub yugen_bin: Option<PathBuf>,
+    /// The Yugen mailbox host pair (`-yugenhosts=h1:port,h2:port`, spec §17; M3): the short address.
+    pub yugen_hosts: Option<String>,
+    /// The upper bound of the scheduled Yugen sync's delay after a 16-block boundary, seconds
+    /// (`-yugensyncdelay`; spec §17.8 item 1: 60).
+    pub yugen_sync_delay: u64,
     /// The wallet's poll interval in milliseconds (the fallback wake-up; 0 = barrier only).
     pub wallet_poll_ms: u64,
     pub debug: bool,
@@ -429,6 +439,9 @@ impl Config {
             stop_backend: a.flag("stopbackend"),
             signer: a.get("signer").map(PathBuf::from),
             signer_bin: a.get("signerbin").map(PathBuf::from),
+            yugen_bin: a.get("yugenbin").map(PathBuf::from),
+            yugen_hosts: a.get("yugenhosts").map(String::from),
+            yugen_sync_delay: a.get("yugensyncdelay").and_then(|v| v.parse().ok()).unwrap_or(60).min(60),
             wallet_poll_ms: match a.get("walletpoll") {
                 Some(v) => v.parse().map_err(|_| {
                     ConfigError(format!(

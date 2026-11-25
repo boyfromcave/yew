@@ -348,14 +348,17 @@ async fn node_peers(node: &dyn Node) -> u64 {
 /// branch id) as the light library's regtest spec (`YcashNetwork::with_upgrades`): every upgrade
 /// through Canopy, its height, or `none` when the node does not list it (on regtest an upgrade
 /// without `-nuparams` is not active). The vault upgrade travels separately (`vault_height`).
+/// Yugen (`59474e30`, after Vault) is listed too, so a Sapling build for a block at or past its
+/// height signs under the Yugen branch the node expects (decisions Y-W11).
 pub fn upgrades_spec(upgrades: &serde_json::Value) -> String {
-    const BRANCHES: [(&str, &str); 6] = [
+    const BRANCHES: [(&str, &str); 7] = [
         ("overwinter", "5ba81b19"),
         ("sapling", "76b809bb"),
         ("ycash", "374d694f"),
         ("blossom", "8e471bd6"),
         ("heartwood", "66314da3"),
         ("canopy", "19bd2d2f"),
+        ("yugen", "59474e30"),
     ];
     BRANCHES
         .iter()
@@ -445,6 +448,20 @@ pub(crate) fn split_block(raw: &[u8]) -> Result<(BlockHead, Vec<BlockTx>), Strin
     let mut txs = Vec::with_capacity(n.min(10_000) as usize);
     for _ in 0..n {
         let start = c.position() as usize;
+        // A Yugen transaction (group 0x59474e47) is read by the YEW core parser, which skips its
+        // Yugen field; zcash_primitives gets its transparent twin (`yugen_as_sapling`).
+        if raw.len() >= start + 8
+            && u32::from_le_bytes(raw[start + 4..start + 8].try_into().expect("4 bytes"))
+                == yew_core::params::YUGEN_VERSION_GROUP_ID
+        {
+            let (_, _, used) = YTx::parse_prefix(&raw[start..])
+                .map_err(|e| format!("Yugen transaction at byte {start}: {e}"))?;
+            let bytes = raw[start..start + used].to_vec();
+            let tx = read_ztx(&bytes).map_err(|e| format!("Yugen transaction at byte {start}: {e}"))?;
+            c.set_position((start + used) as u64);
+            txs.push((bytes, tx));
+            continue;
+        }
         let tx = zcash_primitives::transaction::Transaction::read(
             &mut c,
             zcash_protocol::consensus::BranchId::Sapling,
@@ -463,6 +480,26 @@ pub(crate) fn split_block(raw: &[u8]) -> Result<(BlockHead, Vec<BlockTx>), Strin
         },
         txs,
     ))
+}
+
+/// zcash_primitives' form of a transaction's bytes; a Yugen transaction as its transparent
+/// twin (zcash_primitives knows no Yugen group). Its `txid()` is then not the Yugen txid: use
+/// [`tx_id`].
+pub(crate) fn read_ztx(bytes: &[u8]) -> Result<zcash_primitives::transaction::Transaction, String> {
+    let twin = YTx::yugen_as_sapling(bytes);
+    zcash_primitives::transaction::Transaction::read(
+        twin.as_deref().unwrap_or(bytes),
+        zcash_protocol::consensus::BranchId::Sapling,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// The txid of a transaction's bytes (a Yugen transaction's by its own rule, N-D7).
+pub(crate) fn tx_id(bytes: &[u8], ztx: &zcash_primitives::transaction::Transaction) -> String {
+    match YTx::yugen_as_sapling(bytes).and_then(|_| YTx::parse(bytes).ok()) {
+        Some((_, id)) => txid_hex(&id),
+        None => ztx.txid().to_string(),
+    }
 }
 
 struct BlockHead {
@@ -532,11 +569,7 @@ fn parse_tx_with(
     let ztx = match zcash {
         Some(z) => z,
         None => {
-            owned = zcash_primitives::transaction::Transaction::read(
-                bytes,
-                zcash_protocol::consensus::BranchId::Sapling,
-            )
-            .map_err(|e| e.to_string())?;
+            owned = read_ztx(bytes)?;
             &owned
         }
     };
@@ -1409,7 +1442,7 @@ impl Wallet {
         let mut outputs_before = 0u64;
         let (mut outs, mut nfs) = self.own_sets();
         for (index, (bytes, ztx)) in txs.into_iter().enumerate() {
-            let txid = ztx.txid().to_string();
+            let txid = tx_id(&bytes, &ztx);
             let n_out = ztx
                 .sapling_bundle()
                 .map(|b| b.shielded_outputs().len() as u64)
@@ -1497,7 +1530,7 @@ impl Wallet {
         let mut moved = false;
         let mut joined: Vec<String> = Vec::new(); // imported member keys whose SET_JOIN connected
         for (index, (bytes, ztx)) in txs.into_iter().enumerate() {
-            let txid = ztx.txid().to_string();
+            let txid = tx_id(&bytes, &ztx);
             joined.extend(self.imported_joins(&ztx));
             let p = parse_tx(&self.view, &self.book, &bytes, Some(&ztx)).map_err(|e| {
                 ScanError::Rpc(RpcError::new(
@@ -1703,6 +1736,34 @@ impl From<RpcError> for ScanError {
 
 #[cfg(test)]
 mod tests {
+    /// A block holding a Yugen transaction (group 0x59474e47) splits: the Yugen transaction is
+    /// read past its Yugen field, zcash_primitives gets its transparent twin, and its txid is the
+    /// Yugen one (N-D7), so a withdrawal's transparent output is the wallet's coin.
+    #[test]
+    fn block_with_a_yugen_transaction_splits() {
+        use yew_core::tx::{OutPoint, TxIn, TxOut};
+        let mut t = super::YTx::new_v4();
+        t.vin.push(TxIn { prevout: OutPoint { txid: [3; 32], n: 0 }, script_sig: vec![], sequence: 0xffff_ffff });
+        t.vout.push(TxOut { value: 1234, script_pubkey: vec![0x51] });
+        let plain = t.serialize().unwrap();
+        let mut y = plain.clone();
+        y[4..8].copy_from_slice(&yew_core::params::YUGEN_VERSION_GROUP_ID.to_le_bytes());
+        y.extend([2, 0xaa, 0xbb, 3, 1, 2, 3, 1, 9]);
+        let mut raw = vec![0u8; 140];
+        raw.push(0); // empty solution
+        raw.push(2);
+        raw.extend(&y);
+        raw.extend(&plain);
+        let (_, txs) = super::split_block(&raw).unwrap();
+        assert_eq!(txs.len(), 2);
+        assert_eq!(txs[0].0, y);
+        assert_eq!(txs[1].0, plain);
+        let (_, yid) = super::YTx::parse(&y).unwrap();
+        assert_eq!(super::tx_id(&txs[0].0, &txs[0].1), super::txid_hex(&yid));
+        assert_ne!(super::tx_id(&txs[0].0, &txs[0].1), txs[0].1.txid().to_string());
+        assert_eq!(super::tx_id(&txs[1].0, &txs[1].1), txs[1].1.txid().to_string());
+    }
+
     #[test]
     fn links_the_core() {
         assert_eq!(super::VAULT_BRANCH_ID, 0x6d5b_7a31);
@@ -1836,11 +1897,25 @@ mod upgrades_spec_tests {
         });
         assert_eq!(
             super::upgrades_spec(&u),
-            "overwinter=1,sapling=1,ycash=1,blossom=1,heartwood=1,canopy=150"
+            "overwinter=1,sapling=1,ycash=1,blossom=1,heartwood=1,canopy=150,yugen=none"
         );
+        // Yugen at 240: a Sapling build for block 240 signs under 0x59474e30, 239 under Vault
+        let mut y = u.clone();
+        y["59474e30"] = serde_json::json!({"name": "Yugen", "activationheight": 240});
+        let net = yew_core::shielded::ycash_network_with_vault(
+            yew_core::params::Network::Regtest,
+            Some(210),
+        )
+        .with_upgrades(&super::upgrades_spec(&y))
+        .unwrap();
+        let at = |h: u32| {
+            u32::from(net.branch_id_at(zcash_protocol::consensus::BlockHeight::from_u32(h)))
+        };
+        assert_eq!(at(239), 0x6d5b_7a31);
+        assert_eq!(at(240), 0x5947_4e30);
         let mut no_canopy = u.clone();
         no_canopy.as_object_mut().unwrap().remove("19bd2d2f");
-        assert!(super::upgrades_spec(&no_canopy).ends_with(",canopy=none"));
+        assert!(super::upgrades_spec(&no_canopy).contains(",canopy=none,"));
         let spec = super::upgrades_spec(&u);
         assert!(
             yew_core::shielded::ycash_network(yew_core::params::Network::Regtest)

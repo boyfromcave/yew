@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 yewd-proto = { path = "../proto" }
 yew-core.workspace = true
+zeroize = "1"
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
@@ -26,6 +27,9 @@ secp256k1 = { workspace = true, features = ["recovery"] }
 # the encrypted store (S4): ChaCha20-Poly1305 and PBKDF2-HMAC-SHA256, at the versions the lock holds
 chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] }
 hmac.workspace = true
+# the passphrase KDF of new seals (round-2 review): Argon2id, RustCrypto
+argon2 = { version = "=0.5.3", default-features = false, features = ["alloc"] }
+blake2b_simd = "=1.0.5"
 sha2.workspace = true
 getrandom.workspace = true
 # the Sapling build (S4, F-S2-8): librustzcash6's builder and prover at the revisions yew-core locks

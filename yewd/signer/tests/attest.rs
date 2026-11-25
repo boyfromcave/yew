@@ -337,7 +337,7 @@ fn imported_key_pending_until_join() {
     let Response::ImportedKey(ik) = ask(
         &c2,
         Request::ImportKey(ImportKeyRequest {
-            wif: wif.clone(),
+            wif: wif.to_string(),
             members: Some(vec!["00".repeat(20)]),
         }),
     ) else {
@@ -379,7 +379,7 @@ fn imported_key_pending_until_join() {
     ask(
         &c3,
         Request::ImportKey(ImportKeyRequest {
-            wif: wif2,
+            wif: wif2.to_string(),
             members: Some(vec![h2]),
         }),
     );
@@ -426,7 +426,7 @@ fn signmessage_dumpprivkey_and_import() {
     let Response::ImportedKey(ik) = ask(
         &c2,
         Request::ImportKey(ImportKeyRequest {
-            wif: wif.clone(),
+            wif: wif.to_string(),
             members: None,
         }),
     ) else {
@@ -439,7 +439,7 @@ fn signmessage_dumpprivkey_and_import() {
     assert!(c2.once.lock().unwrap().restored);
     let Response::ImportedKey(ik) = ask(
         &c2,
-        Request::ImportKey(ImportKeyRequest { wif, members: None }),
+        Request::ImportKey(ImportKeyRequest { wif: wif.to_string(), members: None }),
     ) else {
         panic!()
     };

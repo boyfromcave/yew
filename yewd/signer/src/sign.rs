@@ -183,6 +183,7 @@ impl SignerCore {
         *self.keys.write().unwrap_or_else(|e| e.into_inner()) = None;
         self.keystore().lock();
         self.imports().lock();
+        self.pq_imports().lock();
         *self
             .unlocked_until
             .lock()
@@ -226,6 +227,12 @@ impl SignerCore {
                 format!("Error: Failed to encrypt the wallet. {e}"),
             )
         })?;
+        self.pq_imports().encrypt(&r.passphrase).map_err(|e| {
+            (
+                refuse::FAILED,
+                format!("Error: Failed to encrypt the wallet. {e}"),
+            )
+        })?;
         self.keystore()
             .encrypt(&r.passphrase, &cache)
             .map_err(|e| {
@@ -260,6 +267,17 @@ impl SignerCore {
             ks.phrase().unwrap_or_default().to_string()
         };
         match self.imports().unlock(&r.passphrase) {
+            Ok(true) => {}
+            Ok(false) => {
+                self.do_lock();
+                return no(
+                    refuse::BAD_PASSPHRASE,
+                    "Error: The wallet passphrase entered was incorrect.",
+                );
+            }
+            Err(e) => return no(refuse::FAILED, e),
+        }
+        match self.pq_imports().unlock(&r.passphrase, true) {
             Ok(true) => {}
             Ok(false) => {
                 self.do_lock();
@@ -379,13 +397,18 @@ impl SignerCore {
                     .map(|_| Response::Acknowledged(o.list()))
                     .map_err(|e| (refuse::FAILED, e))
             }
-            Request::DumpKey(k) => self.dump_key(k).map(Response::Dumped),
+            Request::DumpKey(k) => self.dump_key(k).map(|w| Response::Dumped(w.into())),
+            Request::YugenSeed => self.yugen_seed().map(|h| Response::Dumped(yewd_proto::Secret::new(h.to_string()))),
         };
         r.unwrap_or_else(|(c, m)| Response::refused(c, m))
     }
 
     pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, SignOnce> {
         self.once.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn pq_imports(&self) -> std::sync::MutexGuard<'_, crate::pqimported::PqImported> {
+        self.pq_imported.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub(crate) fn imports(&self) -> std::sync::MutexGuard<'_, Imported> {
@@ -1171,6 +1194,14 @@ impl SignerCore {
     }
 
     /// `dumpprivkey`: the WIF of a transparent key.
+    /// The Yugen account seed, hex (decision N-A2); refused while locked.
+    pub fn yugen_seed(&self) -> Result<yew_core::keys::SecretString, Refused> {
+        drop(self.keys()?);
+        self.keystore()
+            .yugen_seed_hex()
+            .ok_or_else(|| (refuse::FAILED, "the wallet has no mnemonic seed".to_string()))
+    }
+
     pub fn dump_key(&self, k: &KeyRef) -> Result<String, Refused> {
         match *k {
             KeyRef::Bip32 { chain, index } => {

@@ -19,7 +19,7 @@ use thiserror::Error;
 use crate::keys::sha256d;
 use crate::params::{
     OVERWINTER_VERSION_GROUP_ID, SAPLING_VERSION_GROUP_ID, SEQUENCE_FINAL, SIGHASH_ALL,
-    TX_HEADER_V4,
+    TX_HEADER_V4, YUGEN_VERSION_GROUP_ID,
 };
 use crate::script;
 
@@ -146,12 +146,14 @@ pub struct ShieldedSummary {
     pub joinsplits: usize,
     /// `valueBalance` as parsed.
     pub value_balance: i64,
+    /// A Yugen v4 transaction (group `YUGEN_VERSION_GROUP_ID`): its Yugen field was skipped.
+    pub yugen: bool,
 }
 
 impl ShieldedSummary {
     /// True when any shielded component is present.
     pub fn any(&self) -> bool {
-        self.spends > 0 || self.outputs > 0 || self.joinsplits > 0
+        self.spends > 0 || self.outputs > 0 || self.joinsplits > 0 || self.yugen
     }
 }
 
@@ -269,6 +271,38 @@ impl Transaction {
     /// the shielded ones by their fixed sizes. Returns the transaction and its txid (computed
     /// over the bytes consumed, so it is right for shielded transactions too).
     pub fn parse(bytes: &[u8]) -> Result<(Transaction, [u8; 32]), TxError> {
+        let (tx, txid, used, _) = Self::parse_inner(bytes)?;
+        if used != bytes.len() {
+            return Err(TxError::Trailing(bytes.len() - used));
+        }
+        Ok((tx, txid))
+    }
+
+    /// [`Transaction::parse`] of the transaction at the start of `bytes` (a block's
+    /// transaction list): also returns the number of bytes it takes.
+    pub fn parse_prefix(bytes: &[u8]) -> Result<(Transaction, [u8; 32], usize), TxError> {
+        let (tx, txid, used, _) = Self::parse_inner(bytes)?;
+        Ok((tx, txid, used))
+    }
+
+    /// For a Yugen transaction, the same transaction as a transparent-only Sapling v4 one
+    /// (Sapling group id, the Yugen field dropped), for parsers that know only Sapling; `None`
+    /// for any other transaction. Its txid is not the Yugen transaction's: take that from
+    /// [`Transaction::parse`].
+    pub fn yugen_as_sapling(bytes: &[u8]) -> Option<Vec<u8>> {
+        let (tx, _, _, body_end) = Self::parse_inner(bytes).ok()?;
+        if !tx.shielded.yugen {
+            return None;
+        }
+        let mut v = bytes[..body_end].to_vec();
+        v[4..8].copy_from_slice(&SAPLING_VERSION_GROUP_ID.to_le_bytes());
+        Some(v)
+    }
+
+    /// Returns (transaction, txid, bytes used, end of the v4 body before any Yugen field).
+    /// A Yugen transaction's txid is `SHA256d` of its serialization with both proof fields
+    /// empty (ycash6 `yugen/node` decision N-D7: the txid does not cover the leaf proofs).
+    fn parse_inner(bytes: &[u8]) -> Result<(Transaction, [u8; 32], usize, usize), TxError> {
         let mut r = Reader { b: bytes, pos: 0 };
         let header = r.u32()?;
         let overwintered = header & 0x8000_0000 != 0;
@@ -276,8 +310,10 @@ impl Transaction {
         let version_group_id = if overwintered { r.u32()? } else { 0 };
         let is_overwinter_v3 =
             overwintered && version_group_id == OVERWINTER_VERSION_GROUP_ID && version == 3;
-        let is_sapling_v4 =
-            overwintered && version_group_id == SAPLING_VERSION_GROUP_ID && version == 4;
+        let is_yugen = overwintered && version_group_id == YUGEN_VERSION_GROUP_ID && version == 4;
+        // a Yugen transaction has the Sapling v4 body (with no Sapling parts), then its field
+        let is_sapling_v4 = is_yugen
+            || (overwintered && version_group_id == SAPLING_VERSION_GROUP_ID && version == 4);
         if overwintered && !(is_overwinter_v3 || is_sapling_v4) {
             return Err(TxError::Version(header, version_group_id));
         }
@@ -347,10 +383,23 @@ impl Transaction {
         if is_sapling_v4 && (shielded.spends > 0 || shielded.outputs > 0) {
             r.take(BINDING_SIG_SIZE)?;
         }
-        if r.pos != bytes.len() {
-            return Err(TxError::Trailing(bytes.len() - r.pos));
-        }
-        let txid = sha256d(bytes);
+        let body_end = r.pos;
+        let txid = if is_yugen {
+            if shielded.any() {
+                return Err(TxError::Version(header, version_group_id)); // W-TX: no Sapling parts
+            }
+            shielded.yugen = true;
+            r.var_bytes()?; // transfer
+            let transfer_end = r.pos;
+            r.var_bytes()?; // proof A
+            r.var_bytes()?; // proof B
+            let mut t = bytes[..transfer_end].to_vec();
+            t.extend_from_slice(&[0, 0]);
+            sha256d(&t)
+        } else {
+            sha256d(&bytes[..r.pos])
+        };
+        let used = r.pos;
         Ok((
             Transaction {
                 header,
@@ -362,6 +411,8 @@ impl Transaction {
                 shielded,
             },
             txid,
+            used,
+            body_end,
         ))
     }
 
@@ -669,6 +720,35 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
 
+    /// A Yugen v4 transaction (W-TX): transparent part read, Yugen field skipped, txid without
+    /// the proofs (N-D7), and its Sapling-form twin for Sapling-only parsers.
+    #[test]
+    fn yugen_transaction_parses() {
+        let mut t = Transaction::new_v4();
+        t.vin.push(TxIn { prevout: OutPoint { txid: [7; 32], n: 1 }, script_sig: vec![1, 2], sequence: SEQUENCE_FINAL });
+        t.vout.push(TxOut { value: 5000, script_pubkey: vec![0x76, 0xa9] });
+        let sap = t.serialize().unwrap();
+        let mut y = sap.clone();
+        y[4..8].copy_from_slice(&YUGEN_VERSION_GROUP_ID.to_le_bytes());
+        let mut no_proofs = y.clone();
+        for (field, len) in [(9u8, 3usize), (1, 4), (2, 5)] {
+            y.push(len as u8);
+            y.extend(std::iter::repeat(field).take(len));
+        }
+        no_proofs.extend([3, 9, 9, 9, 0, 0]);
+        let (p, txid) = Transaction::parse(&y).unwrap();
+        assert!(p.shielded.yugen && p.shielded.any());
+        assert_eq!(p.vin, t.vin);
+        assert_eq!(p.vout, t.vout);
+        assert_eq!(txid, sha256d(&no_proofs));
+        assert_eq!(Transaction::yugen_as_sapling(&y).unwrap(), sap);
+        assert_eq!(Transaction::yugen_as_sapling(&sap), None);
+        let mut two = y.clone();
+        two.extend(&sap);
+        assert_eq!(Transaction::parse_prefix(&two).unwrap().2, y.len());
+        assert!(matches!(Transaction::parse(&two), Err(TxError::Trailing(_))));
+    }
+
     /// A hostile server streams a "transaction" whose shielded counts overflow `usize` when
     /// multiplied by the description size (audit G-6): a parse error, no panic, no wrap.
     #[test]
@@ -762,7 +842,8 @@ mod tests {
                 spends: 0,
                 outputs: 1,
                 joinsplits: 0,
-                value_balance: -7
+                value_balance: -7,
+                yugen: false
             }
         );
         assert_eq!(t.serialize(), Err(TxError::Shielded));

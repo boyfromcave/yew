@@ -1,0 +1,17 @@
+# The Yugen wallet of yewd (beta4 Yugen addendum §3.2, milestone M1). Its own Cargo workspace:
+# the two proof systems' vendored crates (leanVM, Binius64) and their toolchain never enter
+# yewd's lock. The proof and specification repositories come by path from deps/, checked out
+# at the commits in PINS by scripts/deps.sh (decision Y-W1, docs/decisions.md).
+[workspace]
+resolver = "2"
+members = ["wallet"]
+exclude = ["deps"]
+
+[profile.release]
+lto = "thin"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.test]
+opt-level = 3

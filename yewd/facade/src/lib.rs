@@ -15,6 +15,7 @@ pub mod methods;
 pub mod server;
 pub mod wallet;
 pub mod ycashd;
+pub mod yugen;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -44,6 +45,7 @@ pub async fn start(cfg: &Config) -> std::io::Result<Running> {
 
 /// [`start`] with the wallet's signer given (the façade's tests pass an in-process one).
 pub async fn start_with(cfg: &Config, signer: wallet::SignerSource) -> std::io::Result<Running> {
+    yugen::init(cfg);
     let (cookie, creds) = match &cfg.user_pass {
         Some((u, p)) => (None, auth::Credentials::user_pass(u, p)),
         None => {
@@ -64,9 +66,23 @@ pub async fn start_with(cfg: &Config, signer: wallet::SignerSource) -> std::io::
     yewd_wallet::set_pq_fee_rate(cfg.pq_fee_rate);
     yewd_wallet::set_falcon_height(cfg.falcon_height);
     let wallet = Arc::new(service);
+    yugen::set_wallet(wallet.clone());
     *wallet.opts.lock().unwrap_or_else(|e| e.into_inner()) = cfg.wallet_args.clone();
     if !cfg.disable_wallet && (cfg.wallet_poll_ms > 0 || cfg.backend_indexer.is_some()) {
         wallet.spawn_poll(std::time::Duration::from_millis(cfg.wallet_poll_ms));
+    }
+    if !cfg.disable_wallet {
+        // the fixed Yugen sync schedule (spec §17.8, ruling 16)
+        let b = backend.clone();
+        yugen::spawn_scheduler(cfg.yugen_sync_delay, move || {
+            let b = b.clone();
+            async move {
+                let body = bytes::Bytes::from_static(br#"{"jsonrpc":"1.0","id":"yugen-sched","method":"getblockcount","params":[]}"#);
+                let (_, out) = b.call("/", body).await.ok()?;
+                let v: serde_json::Value = serde_json::from_slice(&out).ok()?;
+                v["result"].as_u64().map(|h| h as u32)
+            }
+        });
     }
     if let Some(addr) = cfg.backend_indexer.filter(|_| !cfg.disable_wallet) {
         indexer::spawn(addr, wallet.wake.clone(), cfg.debug);

@@ -1550,7 +1550,7 @@ impl Wallet {
                 )
             })?;
         match self.signer.request(Request::DumpKey(key)) {
-            Ok(Response::Dumped(w)) => Ok(J::Str(w)),
+            Ok(Response::Dumped(w)) => Ok(J::Str(w.to_string())),
             other => Err(signer_error(other)),
         }
     }

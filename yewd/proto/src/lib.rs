@@ -589,6 +589,10 @@ pub enum Request {
     /// a pending imported key among them sets the restore marker (ycashd's `VaultCheckJoins`).
     /// Answered with [`Response::Acknowledged`].
     JoinsSeen(Vec<String>),
+    /// The Yugen account seed (decision N-A2: `BLAKE2b-256("Ycash_YugenSeed_", BIP 39 seed)`),
+    /// hex, answered with [`Response::Dumped`]; refused while an encrypted wallet is locked. The
+    /// façade hands it to the Yugen engine per call on a pipe and never stores it.
+    YugenSeed,
 }
 
 /// A request with its protocol version.
@@ -634,7 +638,7 @@ pub enum Response {
     MessageSig(String),
     ImportedKey(ImportedKey),
     /// A WIF.
-    Dumped(String),
+    Dumped(Secret),
     /// After `encrypt`, `unlock`, `lock` (S4).
     WalletState(WalletState),
     /// The file written (`dump`, `backup`).
@@ -767,5 +771,41 @@ mod tests {
         let s = serde_json::to_string(&r).unwrap();
         assert_eq!(s, r#"{"pq":[[1,0,20],[2,5,1]]}"#);
         assert_eq!(serde_json::from_str::<PublicRequest>(&s).unwrap(), r);
+    }
+}
+
+/// A secret string in a response (a WIF, a seed in hex): zeroed when dropped, never printed.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(s: String) -> Secret {
+        Secret(s)
+    }
+}
+
+impl From<String> for Secret {
+    fn from(s: String) -> Secret {
+        Secret(s)
+    }
+}
+
+impl std::ops::Deref for Secret {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(<redacted>)")
     }
 }

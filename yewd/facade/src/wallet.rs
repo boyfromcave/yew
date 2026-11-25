@@ -59,8 +59,11 @@ impl ProcessSigner {
             cmd.arg(f);
         }
         cmd.args(args);
-        let out = cmd
-            .output()
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let out = crate::yugen::spawn_guarded(&mut cmd)
+            .and_then(|c| c.wait_with_output())
             .map_err(|e| format!("cannot run the signer {}: {e}", self.bin.display()))?;
         if !out.status.success() {
             return Err(format!(
@@ -127,8 +130,7 @@ impl SocketSigner {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
-        let mut child = cmd
-            .spawn()
+        let mut child = crate::yugen::spawn_guarded(&mut cmd)
             .map_err(|e| format!("cannot run the signer {}: {e}", bin.display()))?;
         let out = child.stdout.take().ok_or("the signer has no stdout")?;
         let mut line = String::new();
@@ -376,8 +378,11 @@ impl WalletService {
         if salvage {
             cmd.arg("-salvage");
         }
-        let out = cmd
-            .output()
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let out = crate::yugen::spawn_guarded(&mut cmd)
+            .and_then(|c| c.wait_with_output())
             .map_err(|e| format!("cannot run the signer {}: {e}", bin.display()))?;
         if !out.status.success() {
             return Err(format!(
@@ -401,6 +406,14 @@ impl WalletService {
     pub async fn encrypted(&self) -> bool {
         let slot = self.wallet.lock().await;
         slot.as_ref().map(|w| w.signer_state().0).unwrap_or(false)
+    }
+
+    /// The Yugen account seed (hex, N-A2) from the signer, for one engine call; the -13 error
+    /// ("Please enter the wallet passphrase …") while an encrypted wallet is locked.
+    pub async fn yugen_seed(&self) -> Result<yew_core::keys::SecretString, RpcError> {
+        let mut slot = self.wallet.lock().await;
+        self.ensure_open(&mut slot).await?;
+        slot.as_ref().expect("opened").yugen_seed()
     }
 
     /// The raw-transaction helpers, served here (K-25): no wallet, the node's next height only.

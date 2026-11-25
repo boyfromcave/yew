@@ -249,6 +249,20 @@ impl std::fmt::Debug for Keystore {
 }
 
 impl Keystore {
+    /// Decision N-A2: the Yugen account seed, `BLAKE2b-256(personal "Ycash_YugenSeed_", the
+    /// 64-byte BIP 39 seed)` with the empty BIP 39 passphrase, as ycashd derives it; hex. `None`
+    /// while the phrase is sealed (locked) or the phrase is refused.
+    pub fn yugen_seed_hex(&self) -> Option<SecretString> {
+        let m = self.mnemonic.as_ref()?;
+        let mut bip39 = keys::seed_from_mnemonic(m, "").ok()?;
+        let h = blake2b_simd::Params::new()
+            .hash_length(32)
+            .personal(b"Ycash_YugenSeed_")
+            .hash(&bip39);
+        keys::wipe(&mut bip39);
+        Some(SecretString::new(hex::encode(h.as_bytes())))
+    }
+
     /// Load the seed of `dir` for `network`.
     pub fn load(dir: &Path, network: Network) -> Result<Keystore, SignerError> {
         let path = seed_path(dir);
@@ -540,6 +554,22 @@ mod tests {
     use super::*;
 
     const PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
+
+    #[test]
+    fn yugen_seed_n_a2_vector() {
+        // shared with ycashd (qa/rpc-tests/yugen_wallet_encrypted.py) and yewd-yugen
+        // (yugen/wallet/tests/seed_at_rest.rs): the BIP 39 phrase "abandon x11 about"
+        let dir = std::env::temp_dir().join(format!("yewd-signer-yseed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        assert!(init(&dir, Network::Regtest, Some(phrase), 0).unwrap());
+        let ks = Keystore::load(&dir, Network::Regtest).unwrap();
+        assert_eq!(
+            &*ks.yugen_seed_hex().unwrap(),
+            "3a3287aac7b77e6a5e1a1fd4931a267e6ee3f1b874f60513a5ba4fe0eafd538c"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn init_creates_once_and_refuses_another_seed() {

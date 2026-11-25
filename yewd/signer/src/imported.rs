@@ -67,10 +67,11 @@ impl Imported {
         let path = dir.join(FILE);
         let (keys, pubs, sealed) = match std::fs::read_to_string(&path) {
             Ok(t) => {
-                let d: OnDisk =
-                    serde_json::from_str(&t).map_err(|e| format!("{}: {e}", path.display()))?;
+                // fixed messages: a parse error would quote the file, which may hold a key
+                let d: OnDisk = serde_json::from_str(&t)
+                    .map_err(|_| format!("{}: damaged (not the expected JSON)", path.display()))?;
                 if d.format != FORMAT {
-                    return Err(format!("{}: unknown format {}", path.display(), d.format));
+                    return Err(format!("{}: unknown format", path.display()));
                 }
                 let keys = Self::parse_keys(&path, &d.keys)?;
                 let pubs = if d.sealed.is_some() {
@@ -112,7 +113,26 @@ impl Imported {
     }
 
     /// Seal the store under `pass` (`encryptwallet`); the keys stay loaded until [`Self::lock`].
+    /// A store already sealed (a retried `encryptwallet`) is not sealed again: `pass` must open
+    /// it and its keys are loaded; another passphrase is an error (never an empty list sealed
+    /// over the keys of a locked store).
     pub fn encrypt(&mut self, pass: &str) -> Result<(), String> {
+        if let Some(s) = &self.sealed {
+            if self.pass.is_some() {
+                // unlocked: the keys in memory are current; only the passphrase is checked
+                return match crate::seal::open(pass, s) {
+                    Some(mut p) => {
+                        zeroize::Zeroize::zeroize(&mut p);
+                        Ok(())
+                    }
+                    None => Err("the imported keys are already sealed under another passphrase".into()),
+                };
+            }
+            if !self.unlock(pass)? {
+                return Err("the imported keys are already sealed under another passphrase".into());
+            }
+            return Ok(());
+        }
         self.pass = Some(yew_core::keys::SecretString::new(pass.to_string()));
         self.sealed = Some(crate::seal::seal(pass, b"[]")?);
         self.save()
@@ -126,8 +146,9 @@ impl Imported {
         let Some(plain) = crate::seal::open(pass, s) else {
             return Ok(false);
         };
-        let hexes: Vec<String> =
-            serde_json::from_slice(&plain).map_err(|e| format!("{}: {e}", self.path.display()))?;
+        let plain = zeroize::Zeroizing::new(plain);
+        let hexes: Vec<String> = serde_json::from_slice(&plain)
+            .map_err(|_| format!("{}: the sealed content is damaged", self.path.display()))?;
         self.keys = Self::parse_keys(&self.path, &hexes)?;
         self.pass = Some(yew_core::keys::SecretString::new(pass.to_string()));
         Ok(true)

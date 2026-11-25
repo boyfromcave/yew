@@ -148,6 +148,17 @@ fn sanitize(s: &str) -> String {
 }
 
 /// `EncodeDumpTime`: `%Y-%m-%dT%H:%M:%SZ`.
+/// The Yugen account seed of an earlier yewd (its own random seed, not the phrase's), sealed under
+/// the phrase's derived seed: the façade's `yugen` module answers these, so a dump carries it as a
+/// `yugensealed=<hex>` line and an import restores it (decision record Y-W12).
+pub struct YugenSealed {
+    /// `derived seed hex` -> the sealed blob (hex), if this wallet has one.
+    pub export: fn(&str) -> Result<Option<String>, String>,
+    /// `(derived seed hex, sealed blob hex)`: restore it.
+    pub import: fn(&str, &str) -> Result<(), String>,
+}
+pub static YUGEN_SEALED: std::sync::OnceLock<YugenSealed> = std::sync::OnceLock::new();
+
 pub fn dump_time(t: i64) -> String {
     let days = t.div_euclid(86_400);
     let secs = t.rem_euclid(86_400);
@@ -217,6 +228,15 @@ impl Wallet {
         match self.signer.request(Request::Hello) {
             Ok(Response::Hello(h)) => (h.encrypted, h.unlocked_until),
             _ => (false, 0),
+        }
+    }
+
+    /// The Yugen account seed (hex, decision N-A2) from the signer; `-13` while locked.
+    pub fn yugen_seed(&self) -> Result<yew_core::keys::SecretString, RpcError> {
+        self.ensure_unlocked()?;
+        match self.signer.request(Request::YugenSeed) {
+            Ok(Response::Dumped(h)) => Ok(yew_core::keys::SecretString::new(h.to_string())),
+            other => Err(signer_error(other)),
         }
     }
 
@@ -415,6 +435,14 @@ impl Wallet {
             text("# - language=English".into()),
             text(format!("# - fingerprint={}", self.st.public.seed_fp)),
         ];
+        if let Some(h) = YUGEN_SEALED.get() {
+            let derived = self.yugen_seed()?;
+            let sealed = (h.export)(&derived).map_err(|e| RpcError::new(code::WALLET_ERROR, format!("Yugen account: {e}")))?;
+            if let Some(x) = sealed {
+                lines.push(text("# - Yugen account of an earlier yewd: its seed is NOT derived from the phrase; sealed under it:".into()));
+                lines.push(text(format!("yugensealed={x}")));
+            }
+        }
         if !self.st.public.imported.is_empty() {
             for t in [
                 "#",
@@ -569,6 +597,14 @@ impl Wallet {
     ) -> Result<J, RpcError> {
         self.ensure_unlocked()?;
         let path = str_arg(p, 0)?;
+        // a Yugen account of an earlier yewd (yugensealed=): restored before the signer's import
+        if let Ok(t) = std::fs::read_to_string(path) {
+            if let Some(x) = t.lines().find_map(|l| l.trim_end_matches('\r').strip_prefix("yugensealed=")) {
+                let h = YUGEN_SEALED.get().ok_or_else(|| RpcError::new(code::WALLET_ERROR, "Yugen account: this yewd has no Yugen engine; the dump's yugensealed line cannot be restored"))?;
+                let derived = self.yugen_seed()?;
+                (h.import)(&derived, x.trim()).map_err(|e| RpcError::new(code::WALLET_ERROR, format!("Yugen account: {e}")))?;
+            }
+        }
         let members = crate::vaultrpc::set_member_hashes(node).await;
         let r = match self.signer.request(Request::ImportDump(ImportDumpRequest {
             path: path.to_string(),

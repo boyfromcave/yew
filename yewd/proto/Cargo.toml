@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+zeroize = "1"
 yew-core.workspace = true
 hex.workspace = true
 secp256k1 = { workspace = true, features = ["recovery"] }

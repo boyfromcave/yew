@@ -59,5 +59,26 @@ overflow-checks = false
 
 # As in the root Cargo.toml (patches do not propagate through dependencies); keep the two in step.
 [patch.crates-io]
-schemerz-rusqlite = { git = "https://github.com/boyfromcave/librustzcash6.git", rev = "a4935c512d01fb81969445e934b6fc00a615d733" }
+schemerz-rusqlite = { path = "../../librustzcash6-wallet/components/schemerz-rusqlite" }
 tonic-web-wasm-client = { git = "https://github.com/QuantumExplorer/tonic-web-wasm-client.git", rev = "cf9abc3952405cd61d7deacf906ff9e1dd8515ea" }
+
+# Yugen (local only, decisions Y-W11): librustzcash6 a4935c51 + BranchId::Yugen (local clone
+# ../../librustzcash6-wallet, branch yugen/wallet) and x402-ycash-light b91140e + LocalNetwork.yugen
+# (local clone ../../x402-ycash, branch yugen/wallet), so every build can sign under 0x59474e30.
+[patch."https://github.com/boyfromcave/librustzcash6.git"]
+equihash = { path = "../../librustzcash6-wallet/components/equihash" }
+f4jumble = { path = "../../librustzcash6-wallet/components/f4jumble" }
+zcash_address = { path = "../../librustzcash6-wallet/components/zcash_address" }
+zcash_client_backend = { path = "../../librustzcash6-wallet/zcash_client_backend" }
+zcash_client_sqlite = { path = "../../librustzcash6-wallet/zcash_client_sqlite" }
+zcash_encoding = { path = "../../librustzcash6-wallet/components/zcash_encoding" }
+zcash_keys = { path = "../../librustzcash6-wallet/zcash_keys" }
+zcash_primitives = { path = "../../librustzcash6-wallet/zcash_primitives" }
+zcash_proofs = { path = "../../librustzcash6-wallet/zcash_proofs" }
+zcash_protocol = { path = "../../librustzcash6-wallet/components/zcash_protocol" }
+zcash_transparent = { path = "../../librustzcash6-wallet/zcash_transparent" }
+zip321 = { path = "../../librustzcash6-wallet/components/zip321" }
+schemerz-rusqlite = { path = "../../librustzcash6-wallet/components/schemerz-rusqlite" }
+
+[patch."https://github.com/boyfromcave/x402-ycash.git"]
+x402-ycash-light = { path = "../../x402-ycash/light" }
