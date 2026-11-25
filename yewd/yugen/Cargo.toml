@@ -15,3 +15,9 @@ opt-level = 3
 
 [profile.test]
 opt-level = 3
+
+# yugen-ref takes yugen-falcon by git rev; proof-a takes it by path. One copy: the pinned checkout.
+[patch."https://github.com/boyfromcave/yugen-falcon.git"]
+yugen-falcon = { path = "deps/yugen-falcon" }
+yugen-fn-dsa-kgen = { path = "deps/yugen-falcon/vendor/yugen-fn-dsa-kgen" }
+yugen-fn-dsa-sign = { path = "deps/yugen-falcon/vendor/yugen-fn-dsa-sign" }
