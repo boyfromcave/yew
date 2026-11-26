@@ -1,5 +1,5 @@
 # <repository name> <git URL> <commit>. yugen-ref takes yugen-falcon by git rev (patched to deps/ in Cargo.toml).
-yugen-spec https://github.com/boyfromcave/yugen-spec.git 4adaaba9bac43798c97a36420a39a0de83609f1b
+yugen-spec https://github.com/boyfromcave/yugen-spec.git 77af00586e6645c16f1db468c6b75f4e1059cb36
 yugen-falcon https://github.com/boyfromcave/yugen-falcon.git 874438b9f6c119ae917b1121fe32da45e09b99a4
-yugen-proof-a https://github.com/boyfromcave/yugen-proof-a.git 712367cfb1ca0e084f4e3469f0f81d3897c5b118
-yugen-proof-b2 https://github.com/boyfromcave/yugen-proof-b2.git 3969bf778d1c1ca4ae51b6a5c3ecd33326c07cb0
+yugen-proof-a https://github.com/boyfromcave/yugen-proof-a.git bbe5c5f6441a8f4eb757d27a47ad0483ee8b388a
+yugen-proof-b2 https://github.com/boyfromcave/yugen-proof-b2.git 3e7a5d061285f56ad5941264741248c4bd7f5325

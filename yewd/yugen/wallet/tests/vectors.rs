@@ -159,3 +159,33 @@ fn builder_equals_reference() {
     assert_eq!(l.transfer.fee(), leaf_fee);
     yugen_ref::statement::check_statement(&l.public, &l.witness).unwrap();
 }
+
+/// Spec 0.5.4 `bundle.json` kind `envelope` (§7.9 rule 1a for a leaf): the transaction the wallet
+/// serialises for a leaf without a transparent input, lock time 0 and expiry `h_a + ANCHOR_WINDOW`
+/// (`engine::make`), is the envelope the vectors accept, and its fields sit where the node reads them.
+#[test]
+fn leaf_envelope_against_the_spec() {
+    use yewd_yugen::tx::{TxOut, YugenTx};
+    let mut n = 0;
+    for v in load("bundle").iter().filter(|v| v["kind"] == "envelope" && v["tx"] == "leaf") {
+        let enc = hx(&v["encoding"]);
+        let t = yugen_ref::transfer::Transfer::decode(&enc).unwrap();
+        let h = v["height"].as_u64().unwrap() as u32;
+        let f = &v["fields"];
+        let ha = yugen_ref::transfer::resolve_anchor(t.anchor_slot, h).unwrap();
+        let ours = f["vin"] == 0 && f["shielded"] == false && f["lock_time"] == 0 && f["expiry_height"] == yugen_ref::transfer::expiry_height(ha)
+            && f["vout"].as_u64().unwrap() == u64::from(t.value_balance > 0);
+        if ours {
+            assert_eq!(v["result"], "ok", "{}", v["name"]);
+            let vout = if t.value_balance > 0 { vec![TxOut { value: t.value_balance as u64, script: vec![0x51] }] } else { vec![] };
+            let raw = YugenTx { vin: vec![], vout, expiry: yugen_ref::transfer::expiry_height(ha), transfer: enc.clone(), proof_a: vec![], proof_b: vec![] }.serialize();
+            let at = 9 + if t.value_balance > 0 { 1 + 8 + 1 + 1 } else { 1 };
+            assert_eq!(&raw[at..at + 4], &[0; 4], "lock time of {}", v["name"]);
+            assert_eq!(u32::from_le_bytes(raw[at + 4..at + 8].try_into().unwrap()), yugen_ref::transfer::expiry_height(ha), "expiry of {}", v["name"]);
+            n += 1;
+        } else if f["vin"] == 0 {
+            assert_ne!(v["result"], "ok", "{}", v["name"]);
+        }
+    }
+    assert_eq!(n, 2, "the plain and the withdrawal leaf");
+}
