@@ -437,7 +437,8 @@ impl Wallet {
         ];
         if let Some(h) = YUGEN_SEALED.get() {
             let derived = self.yugen_seed()?;
-            let sealed = (h.export)(&derived).map_err(|e| RpcError::new(code::WALLET_ERROR, format!("Yugen account: {e}")))?;
+            let sealed = (h.export)(&derived)
+                .map_err(|e| RpcError::new(code::WALLET_ERROR, format!("Yugen account: {e}")))?;
             if let Some(x) = sealed {
                 lines.push(text("# - Yugen account of an earlier yewd: its seed is NOT derived from the phrase; sealed under it:".into()));
                 lines.push(text(format!("yugensealed={x}")));
@@ -599,10 +600,15 @@ impl Wallet {
         let path = str_arg(p, 0)?;
         // a Yugen account of an earlier yewd (yugensealed=): restored before the signer's import
         if let Ok(t) = std::fs::read_to_string(path) {
-            if let Some(x) = t.lines().find_map(|l| l.trim_end_matches('\r').strip_prefix("yugensealed=")) {
+            if let Some(x) = t
+                .lines()
+                .find_map(|l| l.trim_end_matches('\r').strip_prefix("yugensealed="))
+            {
                 let h = YUGEN_SEALED.get().ok_or_else(|| RpcError::new(code::WALLET_ERROR, "Yugen account: this yewd has no Yugen engine; the dump's yugensealed line cannot be restored"))?;
                 let derived = self.yugen_seed()?;
-                (h.import)(&derived, x.trim()).map_err(|e| RpcError::new(code::WALLET_ERROR, format!("Yugen account: {e}")))?;
+                (h.import)(&derived, x.trim()).map_err(|e| {
+                    RpcError::new(code::WALLET_ERROR, format!("Yugen account: {e}"))
+                })?;
             }
         }
         let members = crate::vaultrpc::set_member_hashes(node).await;

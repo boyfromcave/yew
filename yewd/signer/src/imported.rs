@@ -125,7 +125,9 @@ impl Imported {
                         zeroize::Zeroize::zeroize(&mut p);
                         Ok(())
                     }
-                    None => Err("the imported keys are already sealed under another passphrase".into()),
+                    None => {
+                        Err("the imported keys are already sealed under another passphrase".into())
+                    }
                 };
             }
             if !self.unlock(pass)? {

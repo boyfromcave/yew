@@ -19,8 +19,14 @@ fn tmp(tag: &str) -> std::path::PathBuf {
 fn no_plain(dir: &std::path::Path) {
     let b = std::fs::read(dir.join("pqimported.json")).unwrap();
     let t = String::from_utf8_lossy(&b).to_lowercase();
-    assert!(!t.contains(&hex::encode(SEED)), "pqimported.json holds the seed in hex");
-    assert!(!b.windows(48).any(|w| w == SEED), "pqimported.json holds the seed bytes");
+    assert!(
+        !t.contains(&hex::encode(SEED)),
+        "pqimported.json holds the seed in hex"
+    );
+    assert!(
+        !b.windows(48).any(|w| w == SEED),
+        "pqimported.json holds the seed bytes"
+    );
 }
 
 #[test]
@@ -32,11 +38,15 @@ fn encrypted_wallet_keeps_no_plain_pq_seed() {
     s.encrypt("pw").unwrap();
     no_plain(&dir);
     // an import while unlocked stays sealed
-    s.add(yew_core::pq::SCHEME_SLH_DSA_SHA2_128S, &SEED).unwrap();
+    s.add(yew_core::pq::SCHEME_SLH_DSA_SHA2_128S, &SEED)
+        .unwrap();
     no_plain(&dir);
     s.lock();
     assert!(s.keys.is_empty());
-    assert!(s.add(yew_core::pq::SCHEME_FN_DSA_512, &[0x11; 48]).is_err(), "locked: no import");
+    assert!(
+        s.add(yew_core::pq::SCHEME_FN_DSA_512, &[0x11; 48]).is_err(),
+        "locked: no import"
+    );
     // a restart: public keys known while locked, seeds after the unlock
     let mut s = PqImported::load(&dir).unwrap();
     assert_eq!(s.pubs.len(), 2);
@@ -78,7 +88,10 @@ fn encrypt_over_a_sealed_locked_store_keeps_the_keys() {
     drop(s);
     let mut s = PqImported::load(&dir).unwrap();
     assert!(s.locked());
-    assert!(s.encrypt("other").is_err(), "a sealed store under another passphrase is refused");
+    assert!(
+        s.encrypt("other").is_err(),
+        "a sealed store under another passphrase is refused"
+    );
     s.encrypt("pw").unwrap(); // the retry with the same passphrase
     drop(s);
     let mut s = PqImported::load(&dir).unwrap();
@@ -98,7 +111,9 @@ fn load_errors_quote_no_input() {
         format!("{{\"format\":\"yewd-signer-pqimported-1\",\"keys\":[{{\"scheme\":\"{secret}\",\"seed\":5}}]}}"),
     )
     .unwrap();
-    let e = PqImported::load(&dir).err().expect("a damaged file is refused");
+    let e = PqImported::load(&dir)
+        .err()
+        .expect("a damaged file is refused");
     assert!(!e.contains(&secret[..16]), "the error quotes the file: {e}");
     let _ = std::fs::remove_dir_all(&dir);
 }

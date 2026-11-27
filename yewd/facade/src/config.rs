@@ -441,7 +441,11 @@ impl Config {
             signer_bin: a.get("signerbin").map(PathBuf::from),
             yugen_bin: a.get("yugenbin").map(PathBuf::from),
             yugen_hosts: a.get("yugenhosts").map(String::from),
-            yugen_sync_delay: a.get("yugensyncdelay").and_then(|v| v.parse().ok()).unwrap_or(60).min(60),
+            yugen_sync_delay: a
+                .get("yugensyncdelay")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(60)
+                .min(60),
             wallet_poll_ms: match a.get("walletpoll") {
                 Some(v) => v.parse().map_err(|_| {
                     ConfigError(format!(

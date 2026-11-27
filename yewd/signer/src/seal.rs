@@ -89,7 +89,8 @@ fn random<const N: usize>() -> Result<[u8; N], String> {
 pub fn seal(pass: &str, plain: &[u8]) -> Result<Sealed, String> {
     let salt: [u8; 16] = random()?;
     let nonce: [u8; 12] = random()?;
-    let mut k = argon2id(pass.as_bytes(), &salt, ARGON2_M_KIB, ARGON2_T, ARGON2_P).ok_or("cannot derive the key")?;
+    let mut k = argon2id(pass.as_bytes(), &salt, ARGON2_M_KIB, ARGON2_T, ARGON2_P)
+        .ok_or("cannot derive the key")?;
     let cipher = ChaCha20Poly1305::new(Key::from_slice(&k));
     k.fill(0);
     let ct = cipher
@@ -153,7 +154,9 @@ mod tests {
         let salt: [u8; 16] = random().unwrap();
         let nonce: [u8; 12] = random().unwrap();
         let k = pbkdf2_sha256(b"old-pass", &salt, ITERATIONS);
-        let ct = ChaCha20Poly1305::new(Key::from_slice(&k)).encrypt(Nonce::from_slice(&nonce), &b"old secret"[..]).unwrap();
+        let ct = ChaCha20Poly1305::new(Key::from_slice(&k))
+            .encrypt(Nonce::from_slice(&nonce), &b"old secret"[..])
+            .unwrap();
         let json = format!(
             r#"{{"kdf":"pbkdf2-hmac-sha256","iterations":100000,"salt":"{}","cipher":"chacha20poly1305","nonce":"{}","ct":"{}"}}"#,
             hex::encode(salt),
@@ -169,7 +172,10 @@ mod tests {
     #[test]
     fn new_seal_is_argon2id() {
         let s = seal("p", b"x").unwrap();
-        assert_eq!((s.kdf.as_str(), s.iterations, s.m_kib, s.lanes), (KDF, ARGON2_T, Some(ARGON2_M_KIB), Some(ARGON2_P)));
+        assert_eq!(
+            (s.kdf.as_str(), s.iterations, s.m_kib, s.lanes),
+            (KDF, ARGON2_T, Some(ARGON2_M_KIB), Some(ARGON2_P))
+        );
         let mut big = s.clone();
         big.m_kib = Some(4 << 20);
         assert_eq!(open("p", &big), None);
@@ -190,10 +196,20 @@ mod tests {
             .output_len(32)
             .build()
             .unwrap();
-        let a = argon2::Argon2::new_with_secret(&[3u8; 8], argon2::Algorithm::Argon2id, argon2::Version::V0x13, params).unwrap();
+        let a = argon2::Argon2::new_with_secret(
+            &[3u8; 8],
+            argon2::Algorithm::Argon2id,
+            argon2::Version::V0x13,
+            params,
+        )
+        .unwrap();
         let mut out = [0u8; 32];
-        a.hash_password_into(&[1u8; 32], &[2u8; 16], &mut out).unwrap();
-        assert_eq!(hex::encode(out), "0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659");
+        a.hash_password_into(&[1u8; 32], &[2u8; 16], &mut out)
+            .unwrap();
+        assert_eq!(
+            hex::encode(out),
+            "0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659"
+        );
     }
 
     #[test]

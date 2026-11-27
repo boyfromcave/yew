@@ -35,22 +35,40 @@ pub fn set_wallet(w: std::sync::Arc<crate::wallet::WalletService>) {
 
 /// Records how to run the engine (called once at start).
 pub fn init(cfg: &Config) {
-    let _ = yewd_wallet::admin::YUGEN_SEALED.set(yewd_wallet::admin::YugenSealed { export: export_sealed, import: import_sealed });
+    let _ = yewd_wallet::admin::YUGEN_SEALED.set(yewd_wallet::admin::YugenSealed {
+        export: export_sealed,
+        import: import_sealed,
+    });
     let exe = std::env::current_exe().unwrap_or_default();
     let dir = exe.parent().map(PathBuf::from).unwrap_or_default();
     let candidates = [
         cfg.yugen_bin.clone(),
         Some(dir.join("yewd-yugen")),
         // yewd/target/<profile>/yewd -> yewd/yugen/target/{release,debug}/yewd-yugen
-        dir.parent().and_then(|t| t.parent()).map(|y| y.join("yugen/target/release/yewd-yugen")),
-        dir.parent().and_then(|t| t.parent()).map(|y| y.join("yugen/target/debug/yewd-yugen")),
+        dir.parent()
+            .and_then(|t| t.parent())
+            .map(|y| y.join("yugen/target/release/yewd-yugen")),
+        dir.parent()
+            .and_then(|t| t.parent())
+            .map(|y| y.join("yugen/target/debug/yewd-yugen")),
     ];
-    let bin = candidates.into_iter().flatten().find(|p| p.is_file()).unwrap_or_else(|| PathBuf::from("yewd-yugen"));
+    let bin = candidates
+        .into_iter()
+        .flatten()
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from("yewd-yugen"));
     let ydir = cfg.datadir.join(cfg.network.subdir()).join("yugen");
     let mut args = vec![
         format!("-datadir={}", ydir.display()),
         format!("-node={}", cfg.backend),
-        format!("-network={}", match cfg.network { Network::Main => "main", Network::Test => "testnet", Network::Regtest => "regtest" }),
+        format!(
+            "-network={}",
+            match cfg.network {
+                Network::Main => "main",
+                Network::Test => "testnet",
+                Network::Regtest => "regtest",
+            }
+        ),
     ];
     let userpass = match &cfg.backend_auth {
         BackendAuth::Cookie(p) => {
@@ -62,7 +80,12 @@ pub fn init(cfg: &Config) {
     if let Some(h) = &cfg.yugen_hosts {
         args.push(format!("-yugenhosts={h}"));
     }
-    let _ = CFG.set(YugenCfg { bin, args, userpass, dir: ydir });
+    let _ = CFG.set(YugenCfg {
+        bin,
+        args,
+        userpass,
+        dir: ydir,
+    });
 }
 
 pub fn is_yugen(method: &str) -> bool {
@@ -90,8 +113,12 @@ pub fn spawn_guarded(cmd: &mut std::process::Command) -> std::io::Result<std::pr
 /// comes from the signer for this call only (refused with -13 while the wallet is locked) and
 /// reaches the engine on an inherited pipe as fd 3 (`-seedfd=3`): never argv, env or a file.
 pub async fn engine(method: &str, params: Value) -> Result<Value, (i64, String)> {
-    let c = CFG.get().ok_or((-1, "yugen engine not configured".to_string()))?;
-    let w = WALLET.get().ok_or((-1, "yugen engine: no wallet".to_string()))?;
+    let c = CFG
+        .get()
+        .ok_or((-1, "yugen engine not configured".to_string()))?;
+    let w = WALLET
+        .get()
+        .ok_or((-1, "yugen engine: no wallet".to_string()))?;
     let derived = match w.yugen_seed().await {
         Ok(d) => d,
         Err(e) => {
@@ -109,21 +136,29 @@ pub async fn engine(method: &str, params: Value) -> Result<Value, (i64, String)>
     args.push("-seedfd=3".into());
     args.push(method.to_string());
     args.push(params.to_string());
-    let out = tokio::task::spawn_blocking(move || -> Result<std::process::Output, (i64, String)> {
-        let _g = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let seed = account_seed(&dir, &derived).map_err(|e| (-4, e))?;
-        let cred = match CFG.get().and_then(|c| c.userpass.as_ref()) {
-            Some(up) => Some(CredFile::new(&dir, up).map_err(|e| (-1, format!("cannot write the engine's credential file: {e}")))?),
-            None => None,
-        };
-        if let Some(f) = &cred {
-            args.insert(0, format!("-rpccookiefile={}", f.0.display()));
-        }
-        run_with_seed(&bin, &args, &seed).map_err(|e| (-1, format!("cannot run the Yugen engine: {e}")))
-    })
-    .await
-    .map_err(|e| (-1, e.to_string()))??;
-    let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| (-1, String::from_utf8_lossy(&out.stderr).into_owned()))?;
+    let out =
+        tokio::task::spawn_blocking(move || -> Result<std::process::Output, (i64, String)> {
+            let _g = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let seed = account_seed(&dir, &derived).map_err(|e| (-4, e))?;
+            let cred = match CFG.get().and_then(|c| c.userpass.as_ref()) {
+                Some(up) => Some(CredFile::new(&dir, up).map_err(|e| {
+                    (
+                        -1,
+                        format!("cannot write the engine's credential file: {e}"),
+                    )
+                })?),
+                None => None,
+            };
+            if let Some(f) = &cred {
+                args.insert(0, format!("-rpccookiefile={}", f.0.display()));
+            }
+            run_with_seed(&bin, &args, &seed)
+                .map_err(|e| (-1, format!("cannot run the Yugen engine: {e}")))
+        })
+        .await
+        .map_err(|e| (-1, e.to_string()))??;
+    let v: Value = serde_json::from_slice(&out.stdout)
+        .map_err(|_| (-1, String::from_utf8_lossy(&out.stderr).into_owned()))?;
     match v.get("error") {
         Some(Value::String(e)) if !out.status.success() => Err((-4, e.clone())),
         _ => Ok(v),
@@ -160,11 +195,19 @@ impl CredFile {
     fn new(dir: &std::path::Path, up: &str) -> std::io::Result<Self> {
         use std::io::Write;
         use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
         let mut r = [0u8; 8];
         getrandom::getrandom(&mut r).map_err(|e| std::io::Error::other(e.to_string()))?;
         let p = dir.join(format!(".rpccred-{}", hex::encode(r)));
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&p)?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&p)?;
         let c = CredFile(p);
         f.write_all(up.as_bytes())?;
         Ok(c)
@@ -181,7 +224,11 @@ impl Drop for CredFile {
 /// `SPAWN_LOCK` is held for writing (no other spawn of this process can fork in between); the
 /// child's `dup2` onto 3 clears the flag on its copy only, and the child closes every descriptor
 /// from 4 up that is not close-on-exec before exec.
-fn run_with_seed(bin: &std::path::Path, args: &[String], seed: &str) -> std::io::Result<std::process::Output> {
+fn run_with_seed(
+    bin: &std::path::Path,
+    args: &[String],
+    seed: &str,
+) -> std::io::Result<std::process::Output> {
     use std::io::Write;
     use std::os::fd::{FromRawFd, OwnedFd};
     use std::os::unix::process::CommandExt;
@@ -216,12 +263,20 @@ fn run_with_seed(bin: &std::path::Path, args: &[String], seed: &str) -> std::io:
     // fork and exec.
     unsafe {
         cmd.pre_exec(move || {
-            let ok = if rfd == 3 { libc::fcntl(3, libc::F_SETFD, 0) >= 0 } else { libc::dup2(rfd, 3) >= 0 };
+            let ok = if rfd == 3 {
+                libc::fcntl(3, libc::F_SETFD, 0) >= 0
+            } else {
+                libc::dup2(rfd, 3) >= 0
+            };
             if !ok {
                 return Err(std::io::Error::last_os_error());
             }
             let max = libc::sysconf(libc::_SC_OPEN_MAX);
-            let max = if max > 0 { max.min(1 << 16) as i32 } else { 1024 };
+            let max = if max > 0 {
+                max.min(1 << 16) as i32
+            } else {
+                1024
+            };
             for fd in 4..max {
                 let fl = libc::fcntl(fd, libc::F_GETFD);
                 // close-on-exec descriptors (std's own exec-error pipe among them) close at exec
@@ -257,7 +312,10 @@ fn read_or_absent(p: &std::path::Path) -> Result<Option<zeroize::Zeroizing<Vec<u
 /// engine on the call that follows. Any read error other than "not found" is an error (never a
 /// silent fall-back to the derived seed). The sealed seed is also in the wallet's backup
 /// (`legacy_seed_hex`, the signer's dump; decision record Y-W12).
-fn account_seed(dir: &std::path::Path, derived: &str) -> Result<yew_core::keys::SecretString, String> {
+fn account_seed(
+    dir: &std::path::Path,
+    derived: &str,
+) -> Result<yew_core::keys::SecretString, String> {
     use chacha20poly1305::aead::Aead;
     use chacha20poly1305::Nonce;
     let aead = wrap_aead(derived)?;
@@ -266,9 +324,12 @@ fn account_seed(dir: &std::path::Path, derived: &str) -> Result<yew_core::keys::
     }
     let legacy = match read_or_absent(&dir.join("wallet.json"))? {
         Some(b) => {
-            let mut v = serde_json::from_slice::<Value>(&b).map_err(|_| "wallet.json: damaged (not JSON)".to_string())?;
+            let mut v = serde_json::from_slice::<Value>(&b)
+                .map_err(|_| "wallet.json: damaged (not JSON)".to_string())?;
             match v.get_mut("seed") {
-                Some(Value::String(s)) => Some(yew_core::keys::SecretString::new(std::mem::take(s))),
+                Some(Value::String(s)) => {
+                    Some(yew_core::keys::SecretString::new(std::mem::take(s)))
+                }
                 _ => None,
             }
         }
@@ -276,10 +337,14 @@ fn account_seed(dir: &std::path::Path, derived: &str) -> Result<yew_core::keys::
     };
     match legacy {
         Some(l) if !ct_eq_str(&l, derived) => {
-            let mut lb = zeroize::Zeroizing::new(hex::decode(&*l).map_err(|_| "wallet.json: the old seed is not hex")?);
+            let mut lb = zeroize::Zeroizing::new(
+                hex::decode(&*l).map_err(|_| "wallet.json: the old seed is not hex")?,
+            );
             let mut nonce = [0u8; 12];
             getrandom::getrandom(&mut nonce).map_err(|e| e.to_string())?;
-            let ct = aead.encrypt(Nonce::from_slice(&nonce), lb.as_slice()).map_err(|_| "seal failed")?;
+            let ct = aead
+                .encrypt(Nonce::from_slice(&nonce), lb.as_slice())
+                .map_err(|_| "seal failed")?;
             yew_core::keys::wipe(&mut lb);
             let mut out = nonce.to_vec();
             out.extend_from_slice(&ct);
@@ -295,8 +360,13 @@ fn account_seed(dir: &std::path::Path, derived: &str) -> Result<yew_core::keys::
 fn wrap_aead(derived: &str) -> Result<chacha20poly1305::ChaCha20Poly1305, String> {
     use chacha20poly1305::aead::KeyInit;
     use chacha20poly1305::{ChaCha20Poly1305, Key};
-    let mut dbytes = zeroize::Zeroizing::new(hex::decode(derived).map_err(|_| "the signer's Yugen seed is not hex")?);
-    let mut k = blake2b_simd::Params::new().hash_length(32).personal(b"Ycash_YugenWrap_").hash(&dbytes);
+    let mut dbytes = zeroize::Zeroizing::new(
+        hex::decode(derived).map_err(|_| "the signer's Yugen seed is not hex")?,
+    );
+    let mut k = blake2b_simd::Params::new()
+        .hash_length(32)
+        .personal(b"Ycash_YugenWrap_")
+        .hash(&dbytes);
     yew_core::keys::wipe(&mut dbytes);
     let mut kb = zeroize::Zeroizing::new([0u8; 32]);
     kb.copy_from_slice(k.as_bytes());
@@ -307,19 +377,31 @@ fn wrap_aead(derived: &str) -> Result<chacha20poly1305::ChaCha20Poly1305, String
 }
 
 /// The seed sealed in `legacy-seed.sealed`, if the file exists.
-fn unseal(dir: &std::path::Path, aead: &chacha20poly1305::ChaCha20Poly1305) -> Result<Option<yew_core::keys::SecretString>, String> {
+fn unseal(
+    dir: &std::path::Path,
+    aead: &chacha20poly1305::ChaCha20Poly1305,
+) -> Result<Option<yew_core::keys::SecretString>, String> {
     use chacha20poly1305::aead::Aead;
     use chacha20poly1305::Nonce;
     let sealed_path = dir.join("legacy-seed.sealed");
-    let Some(b) = read_or_absent(&sealed_path)? else { return Ok(None) };
+    let Some(b) = read_or_absent(&sealed_path)? else {
+        return Ok(None);
+    };
     if b.len() < 12 {
         return Err(format!("{}: truncated", sealed_path.display()));
     }
     let plain = zeroize::Zeroizing::new(
         aead.decrypt(Nonce::from_slice(&b[..12]), &b[12..])
-            .map_err(|_| format!("{}: not sealed under this wallet's seed", sealed_path.display()))?,
+            .map_err(|_| {
+                format!(
+                    "{}: not sealed under this wallet's seed",
+                    sealed_path.display()
+                )
+            })?,
     );
-    Ok(Some(yew_core::keys::SecretString::new(hex::encode(&plain[..]))))
+    Ok(Some(yew_core::keys::SecretString::new(hex::encode(
+        &plain[..],
+    ))))
 }
 
 /// `z_exportwallet`: `legacy-seed.sealed` (hex) when this wallet's Yugen account was made by an
@@ -341,7 +423,9 @@ fn export_sealed_in(dir: &std::path::Path, derived: &str) -> Result<Option<Strin
 /// engine call opens that account. The blob must open under this wallet's derived seed; a wallet
 /// that has another one sealed already refuses it.
 pub fn import_sealed(derived: &str, sealed_hex: &str) -> Result<(), String> {
-    let c = CFG.get().ok_or("the Yugen engine is not configured: the dump's yugensealed line cannot be restored")?;
+    let c = CFG.get().ok_or(
+        "the Yugen engine is not configured: the dump's yugensealed line cannot be restored",
+    )?;
     import_sealed_in(&c.dir, derived, sealed_hex)
 }
 
@@ -355,10 +439,15 @@ fn import_sealed_in(dir: &std::path::Path, derived: &str, sealed_hex: &str) -> R
         return Err("yugensealed: truncated".into());
     }
     let given = zeroize::Zeroizing::new(
-        aead.decrypt(Nonce::from_slice(&b[..12]), &b[12..]).map_err(|_| "yugensealed: not sealed under this wallet's phrase")?,
+        aead.decrypt(Nonce::from_slice(&b[..12]), &b[12..])
+            .map_err(|_| "yugensealed: not sealed under this wallet's phrase")?,
     );
     if let Some(have) = unseal(dir, &aead)? {
-        return if ct_eq_str(&have, &hex::encode(&given[..])) { Ok(()) } else { Err("another earlier Yugen seed is sealed in this wallet".into()) };
+        return if ct_eq_str(&have, &hex::encode(&given[..])) {
+            Ok(())
+        } else {
+            Err("another earlier Yugen seed is sealed in this wallet".into())
+        };
     }
     write_private(dir, "legacy-seed.sealed", &b).map_err(|e| e.to_string())
 }
@@ -367,10 +456,18 @@ fn import_sealed_in(dir: &std::path::Path, derived: &str, sealed_hex: &str) -> R
 fn write_private(dir: &std::path::Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
     let tmp = dir.join(format!("{name}.tmp"));
     let _ = std::fs::remove_file(&tmp);
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&tmp)?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&tmp)?;
     f.write_all(bytes)?;
     f.sync_all()?;
     drop(f);
@@ -425,7 +522,11 @@ where
 /// Maps the RPC names to engine methods. `wallet(method, params)` calls this yewd's own
 /// (transparent and Sapling) wallet: `yugen_shield` funds the deposit address with
 /// `sendtoaddress`; `yugen_send` to a Sapling address forwards with `z_sendmany`.
-pub async fn call<W, Fut>(method: &str, params: Vec<Value>, wallet: W) -> Result<Value, (i64, String)>
+pub async fn call<W, Fut>(
+    method: &str,
+    params: Vec<Value>,
+    wallet: W,
+) -> Result<Value, (i64, String)>
 where
     W: Fn(String, Vec<Value>) -> Fut,
     Fut: std::future::Future<Output = Result<Value, (i64, String)>>,
@@ -473,21 +574,33 @@ where
                 a.push(memo);
             }
             // a txid, or for a short address not resolved yet the queued payment (ruling 16)
-            engine("send", Value::Array(a)).await.map(|r| match r["txid"].as_str() {
-                Some(t) => Value::String(t.to_string()),
-                None => r,
-            })
+            engine("send", Value::Array(a))
+                .await
+                .map(|r| match r["txid"].as_str() {
+                    Some(t) => Value::String(t.to_string()),
+                    None => r,
+                })
         }
         "yugen_withdraw" => {
             // [taddr (P2PKH or post-quantum sqs/sqf), amount]; a Sapling address is refused by the engine
-            let a = json!([params.first().cloned().unwrap_or(Value::Null), params.get(1).cloned().unwrap_or(Value::Null), params.get(2).cloned().unwrap_or(Value::Null)]);
+            let a = json!([
+                params.first().cloned().unwrap_or(Value::Null),
+                params.get(1).cloned().unwrap_or(Value::Null),
+                params.get(2).cloned().unwrap_or(Value::Null)
+            ]);
             engine("withdraw", a).await.map(|r| r["txid"].clone())
         }
         "yugen_shield" => {
-            let amount = params.get(1).cloned().ok_or((-8, "yugen_shield [addr, amount]".to_string()))?;
+            let amount = params
+                .get(1)
+                .cloned()
+                .ok_or((-8, "yugen_shield [addr, amount]".to_string()))?;
             let dep = engine("depositaddress", json!([])).await?;
             let txid = wallet("sendtoaddress".into(), vec![dep, amount]).await?;
-            let txid = txid.as_str().map(String::from).ok_or((-1, format!("sendtoaddress: {txid}")))?;
+            let txid = txid
+                .as_str()
+                .map(String::from)
+                .ok_or((-1, format!("sendtoaddress: {txid}")))?;
             // a static full address (hex, §12.1) receives the deposit note directly, with an optional memo
             // the engine sends to the address given (a Yugen address or a static full address hex),
             // or to its own change when the address is this wallet's own
@@ -507,13 +620,18 @@ where
     Fut: std::future::Future<Output = Result<Value, (i64, String)>>,
 {
     match wallet("z_validateaddress".into(), vec![json!(to)]).await {
-        Ok(v) => v["isvalid"] == json!(true) && v["address_type"].as_str().or(v["type"].as_str()) == Some("sapling"),
+        Ok(v) => {
+            v["isvalid"] == json!(true)
+                && v["address_type"].as_str().or(v["type"].as_str()) == Some("sapling")
+        }
         Err(_) => false,
     }
 }
 
 fn zats_of(v: &Value) -> Option<u64> {
-    let c = v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))?;
+    let c = v
+        .as_f64()
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))?;
     (c > 0.0).then(|| (c * 1e8).round() as u64)
 }
 
@@ -526,7 +644,12 @@ fn coins_str(z: u64) -> String {
 /// a fresh transparent address of its own (never shown), then sends `amount` from exactly that
 /// address to the Sapling address with the memo (z_sendmany, minconf 0, the hop spent whole, no
 /// change). Reported as one operation with both txids.
-async fn to_sapling<W, Fut>(wallet: &W, to: &str, amount: &Value, memo: &Value) -> Result<Value, (i64, String)>
+async fn to_sapling<W, Fut>(
+    wallet: &W,
+    to: &str,
+    amount: &Value,
+    memo: &Value,
+) -> Result<Value, (i64, String)>
 where
     W: Fn(String, Vec<Value>) -> Fut,
     Fut: std::future::Future<Output = Result<Value, (i64, String)>>,
@@ -538,14 +661,26 @@ where
         None => None,
     };
     let hop = wallet("getnewaddress".into(), vec![]).await?;
-    let hop = hop.as_str().ok_or((-1, "getnewaddress".to_string()))?.to_string();
+    let hop = hop
+        .as_str()
+        .ok_or((-1, "getnewaddress".to_string()))?
+        .to_string();
     let w = engine("withdraw", json!([hop, coins_str(z + SAPLING_HOP_FEE)])).await?;
     let wtxid = w["txid"].as_str().unwrap_or("").to_string();
     // the wallet sees the withdrawal in the mempool (every wallet call reconciles first)
     let mut seen = false;
     for _ in 0..60 {
-        if let Ok(b) = wallet("z_getbalance".into(), vec![json!(hop), json!(0), json!(true)]).await {
-            if b.as_u64().or_else(|| b.as_f64().map(|f| f as u64)).unwrap_or(0) >= z + SAPLING_HOP_FEE {
+        if let Ok(b) = wallet(
+            "z_getbalance".into(),
+            vec![json!(hop), json!(0), json!(true)],
+        )
+        .await
+        {
+            if b.as_u64()
+                .or_else(|| b.as_f64().map(|f| f as u64))
+                .unwrap_or(0)
+                >= z + SAPLING_HOP_FEE
+            {
                 seen = true;
                 break;
             }
@@ -561,7 +696,13 @@ where
     }
     let opid = wallet(
         "z_sendmany".into(),
-        vec![json!(hop), json!([out]), json!(0), json!(coins_str(SAPLING_HOP_FEE)), json!("AllowRevealedSenders")],
+        vec![
+            json!(hop),
+            json!([out]),
+            json!(0),
+            json!(coins_str(SAPLING_HOP_FEE)),
+            json!("AllowRevealedSenders"),
+        ],
     )
     .await?;
     let opid = opid.as_str().unwrap_or("").to_string();
@@ -573,9 +714,11 @@ where
             Some("success") => {
                 let _ = wallet("z_getoperationresult".into(), vec![json!([opid])]).await;
                 let ftxid = s0["result"]["txid"].as_str().unwrap_or("").to_string();
-                return Ok(json!({"operation": "yugen-to-sapling", "txid": ftxid, "withdraw_txid": wtxid,
+                return Ok(
+                    json!({"operation": "yugen-to-sapling", "txid": ftxid, "withdraw_txid": wtxid,
                                  "sapling_txid": ftxid, "amount": coins_str(z),
-                                 "fee": coins_str(w["fee"].as_f64().map(|f| (f * 1e8).round() as u64).unwrap_or(0) + SAPLING_HOP_FEE)}));
+                                 "fee": coins_str(w["fee"].as_f64().map(|f| (f * 1e8).round() as u64).unwrap_or(0) + SAPLING_HOP_FEE)}),
+                );
             }
             Some("failed") | Some("cancelled") => {
                 return Err((-4, format!("Yugen -> Sapling: the withdrawal {wtxid} is done; the Sapling send failed ({}): the coins are at the wallet's own transparent address", s0["error"]["message"].as_str().unwrap_or("?"))));
@@ -583,7 +726,10 @@ where
             _ => {}
         }
     }
-    Err((-4, format!("Yugen -> Sapling: operation {opid} still running")))
+    Err((
+        -4,
+        format!("Yugen -> Sapling: operation {opid} still running"),
+    ))
 }
 
 #[cfg(test)]
@@ -593,23 +739,45 @@ mod seed_tests {
     #[test]
     fn seed_reaches_the_child_on_fd3_only() {
         // the seed line ends with a newline; the child's read stops there
-        let out = run_with_seed(std::path::Path::new("/bin/sh"), &["-c".into(), "read s <&3; echo \"$s\"; echo \"$*\"".into()], "c0ffee").unwrap();
+        let out = run_with_seed(
+            std::path::Path::new("/bin/sh"),
+            &["-c".into(), "read s <&3; echo \"$s\"; echo \"$*\"".into()],
+            "c0ffee",
+        )
+        .unwrap();
         let s = String::from_utf8(out.stdout).unwrap();
         assert_eq!(s.lines().next(), Some("c0ffee"));
-        assert!(!s.lines().nth(1).unwrap_or("").contains("c0ffee"), "not in argv");
+        assert!(
+            !s.lines().nth(1).unwrap_or("").contains("c0ffee"),
+            "not in argv"
+        );
     }
 
     #[test]
     fn legacy_plain_seed_is_warned_about() {
-        let dir = std::env::temp_dir().join(format!("yewd-yugen-legacywarn-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("yewd-yugen-legacywarn-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(legacy_plain_warning(&dir).is_none(), "no state file: no warning");
+        assert!(
+            legacy_plain_warning(&dir).is_none(),
+            "no state file: no warning"
+        );
         std::fs::write(dir.join("wallet.json"), br#"{"seed_fp":"00"}"#).unwrap();
-        assert!(legacy_plain_warning(&dir).is_none(), "no plain seed: no warning");
-        std::fs::write(dir.join("wallet.json"), format!(r#"{{"seed":"{}"}}"#, "7e".repeat(32))).unwrap();
+        assert!(
+            legacy_plain_warning(&dir).is_none(),
+            "no plain seed: no warning"
+        );
+        std::fs::write(
+            dir.join("wallet.json"),
+            format!(r#"{{"seed":"{}"}}"#, "7e".repeat(32)),
+        )
+        .unwrap();
         let m = legacy_plain_warning(&dir).expect("a plain seed is warned about");
-        assert!(m.contains("walletpassphrase") && !m.contains(&"7e".repeat(32)), "{m}");
+        assert!(
+            m.contains("walletpassphrase") && !m.contains(&"7e".repeat(32)),
+            "{m}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -622,7 +790,11 @@ mod seed_tests {
         // no state: the derived seed
         assert_eq!(&*account_seed(&dir, &derived).unwrap(), derived.as_str());
         // a state with the derived seed: the derived seed, nothing sealed
-        std::fs::write(dir.join("wallet.json"), format!("{{\"seed\":\"{derived}\"}}")).unwrap();
+        std::fs::write(
+            dir.join("wallet.json"),
+            format!("{{\"seed\":\"{derived}\"}}"),
+        )
+        .unwrap();
         assert_eq!(&*account_seed(&dir, &derived).unwrap(), derived.as_str());
         assert!(!dir.join("legacy-seed.sealed").exists());
         // an earlier yewd's own seed: kept, sealed (0600), no hex of it in the sealed file
@@ -632,7 +804,14 @@ mod seed_tests {
         let sealed = std::fs::read(dir.join("legacy-seed.sealed")).unwrap();
         assert!(!sealed.windows(32).any(|w| w == [0x7e; 32]));
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(dir.join("legacy-seed.sealed")).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(dir.join("legacy-seed.sealed"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
         // once the engine has dropped the field, the sealed file still gives it, and only to this wallet
         std::fs::write(dir.join("wallet.json"), "{}").unwrap();
         assert_eq!(&*account_seed(&dir, &derived).unwrap(), old.as_str());
@@ -648,16 +827,28 @@ mod seed_tests {
         let fd = unsafe { libc::fcntl(fd0, libc::F_DUPFD, 40) }; // F_DUPFD: the copy is not close-on-exec
         unsafe { libc::close(fd0) };
         assert!(fd >= 40);
-        let script = format!("read s <&3; echo \"$s\"; if [ -e /dev/fd/{fd} ]; then echo LEAK; else echo CLOSED; fi");
-        let out = run_with_seed(std::path::Path::new("/bin/sh"), &["-c".into(), script], "c0ffee").unwrap();
+        let script = format!(
+            "read s <&3; echo \"$s\"; if [ -e /dev/fd/{fd} ]; then echo LEAK; else echo CLOSED; fi"
+        );
+        let out = run_with_seed(
+            std::path::Path::new("/bin/sh"),
+            &["-c".into(), script],
+            "c0ffee",
+        )
+        .unwrap();
         unsafe { libc::close(fd) };
         let s = String::from_utf8(out.stdout).unwrap();
-        assert_eq!(s.lines().collect::<Vec<_>>(), vec!["c0ffee", "CLOSED"], "{s}");
+        assert_eq!(
+            s.lines().collect::<Vec<_>>(),
+            vec!["c0ffee", "CLOSED"],
+            "{s}"
+        );
     }
 
     #[test]
     fn an_unreadable_sealed_file_is_an_error_not_the_derived_seed() {
-        let dir = std::env::temp_dir().join(format!("yewd-yugen-unreadable-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("yewd-yugen-unreadable-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("legacy-seed.sealed")).unwrap(); // read fails (a directory), not NotFound
         assert!(account_seed(&dir, &"11".repeat(32)).is_err());
@@ -676,7 +867,9 @@ mod seed_tests {
         let old = "7e".repeat(32);
         // a wallet whose Yugen account was made by an earlier yewd's own seed
         std::fs::write(a.join("wallet.json"), format!("{{\"seed\":\"{old}\"}}")).unwrap();
-        let line = export_sealed_in(&a, &derived).unwrap().expect("the dump carries the sealed seed");
+        let line = export_sealed_in(&a, &derived)
+            .unwrap()
+            .expect("the dump carries the sealed seed");
         assert!(!line.contains(&old), "the dump line holds no plain seed");
         // a fresh install restored from the phrase and the dump: the engine gets the earlier seed,
         // which opens the account that holds the funds
@@ -705,7 +898,10 @@ mod seed_tests {
         let f = CredFile::new(&dir, "u:p").unwrap();
         let p = f.0.clone();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "u:p");
-        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         drop(f);
         assert!(!p.exists());
         let _ = std::fs::remove_dir_all(&dir);

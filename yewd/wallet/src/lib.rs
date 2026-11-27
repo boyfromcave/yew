@@ -457,7 +457,8 @@ pub(crate) fn split_block(raw: &[u8]) -> Result<(BlockHead, Vec<BlockTx>), Strin
             let (_, _, used) = YTx::parse_prefix(&raw[start..])
                 .map_err(|e| format!("Yugen transaction at byte {start}: {e}"))?;
             let bytes = raw[start..start + used].to_vec();
-            let tx = read_ztx(&bytes).map_err(|e| format!("Yugen transaction at byte {start}: {e}"))?;
+            let tx =
+                read_ztx(&bytes).map_err(|e| format!("Yugen transaction at byte {start}: {e}"))?;
             c.set_position((start + used) as u64);
             txs.push((bytes, tx));
             continue;
@@ -1743,8 +1744,18 @@ mod tests {
     fn block_with_a_yugen_transaction_splits() {
         use yew_core::tx::{OutPoint, TxIn, TxOut};
         let mut t = super::YTx::new_v4();
-        t.vin.push(TxIn { prevout: OutPoint { txid: [3; 32], n: 0 }, script_sig: vec![], sequence: 0xffff_ffff });
-        t.vout.push(TxOut { value: 1234, script_pubkey: vec![0x51] });
+        t.vin.push(TxIn {
+            prevout: OutPoint {
+                txid: [3; 32],
+                n: 0,
+            },
+            script_sig: vec![],
+            sequence: 0xffff_ffff,
+        });
+        t.vout.push(TxOut {
+            value: 1234,
+            script_pubkey: vec![0x51],
+        });
         let plain = t.serialize().unwrap();
         let mut y = plain.clone();
         y[4..8].copy_from_slice(&yew_core::params::YUGEN_VERSION_GROUP_ID.to_le_bytes());
@@ -1760,8 +1771,14 @@ mod tests {
         assert_eq!(txs[1].0, plain);
         let (_, yid) = super::YTx::parse(&y).unwrap();
         assert_eq!(super::tx_id(&txs[0].0, &txs[0].1), super::txid_hex(&yid));
-        assert_ne!(super::tx_id(&txs[0].0, &txs[0].1), txs[0].1.txid().to_string());
-        assert_eq!(super::tx_id(&txs[1].0, &txs[1].1), txs[1].1.txid().to_string());
+        assert_ne!(
+            super::tx_id(&txs[0].0, &txs[0].1),
+            txs[0].1.txid().to_string()
+        );
+        assert_eq!(
+            super::tx_id(&txs[1].0, &txs[1].1),
+            txs[1].1.txid().to_string()
+        );
     }
 
     #[test]

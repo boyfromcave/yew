@@ -398,7 +398,9 @@ impl SignerCore {
                     .map_err(|e| (refuse::FAILED, e))
             }
             Request::DumpKey(k) => self.dump_key(k).map(|w| Response::Dumped(w.into())),
-            Request::YugenSeed => self.yugen_seed().map(|h| Response::Dumped(yewd_proto::Secret::new(h.to_string()))),
+            Request::YugenSeed => self
+                .yugen_seed()
+                .map(|h| Response::Dumped(yewd_proto::Secret::new(h.to_string()))),
         };
         r.unwrap_or_else(|(c, m)| Response::refused(c, m))
     }
@@ -1197,9 +1199,12 @@ impl SignerCore {
     /// The Yugen account seed, hex (decision N-A2); refused while locked.
     pub fn yugen_seed(&self) -> Result<yew_core::keys::SecretString, Refused> {
         drop(self.keys()?);
-        self.keystore()
-            .yugen_seed_hex()
-            .ok_or_else(|| (refuse::FAILED, "the wallet has no mnemonic seed".to_string()))
+        self.keystore().yugen_seed_hex().ok_or_else(|| {
+            (
+                refuse::FAILED,
+                "the wallet has no mnemonic seed".to_string(),
+            )
+        })
     }
 
     pub fn dump_key(&self, k: &KeyRef) -> Result<String, Refused> {

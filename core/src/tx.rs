@@ -725,15 +725,25 @@ mod tests {
     #[test]
     fn yugen_transaction_parses() {
         let mut t = Transaction::new_v4();
-        t.vin.push(TxIn { prevout: OutPoint { txid: [7; 32], n: 1 }, script_sig: vec![1, 2], sequence: SEQUENCE_FINAL });
-        t.vout.push(TxOut { value: 5000, script_pubkey: vec![0x76, 0xa9] });
+        t.vin.push(TxIn {
+            prevout: OutPoint {
+                txid: [7; 32],
+                n: 1,
+            },
+            script_sig: vec![1, 2],
+            sequence: SEQUENCE_FINAL,
+        });
+        t.vout.push(TxOut {
+            value: 5000,
+            script_pubkey: vec![0x76, 0xa9],
+        });
         let sap = t.serialize().unwrap();
         let mut y = sap.clone();
         y[4..8].copy_from_slice(&YUGEN_VERSION_GROUP_ID.to_le_bytes());
         let mut no_proofs = y.clone();
         for (field, len) in [(9u8, 3usize), (1, 4), (2, 5)] {
             y.push(len as u8);
-            y.extend(std::iter::repeat(field).take(len));
+            y.extend(std::iter::repeat_n(field, len));
         }
         no_proofs.extend([3, 9, 9, 9, 0, 0]);
         let (p, txid) = Transaction::parse(&y).unwrap();
@@ -746,7 +756,10 @@ mod tests {
         let mut two = y.clone();
         two.extend(&sap);
         assert_eq!(Transaction::parse_prefix(&two).unwrap().2, y.len());
-        assert!(matches!(Transaction::parse(&two), Err(TxError::Trailing(_))));
+        assert!(matches!(
+            Transaction::parse(&two),
+            Err(TxError::Trailing(_))
+        ));
     }
 
     /// A hostile server streams a "transaction" whose shielded counts overflow `usize` when

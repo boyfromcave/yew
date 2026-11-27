@@ -24,7 +24,10 @@ fn encrypt_over_a_sealed_locked_store_keeps_the_keys() {
     drop(s);
     let mut s = Imported::load(&dir).unwrap();
     assert!(s.get(0).is_none(), "locked after a restart");
-    assert!(s.encrypt("other").is_err(), "a sealed store under another passphrase is refused");
+    assert!(
+        s.encrypt("other").is_err(),
+        "a sealed store under another passphrase is refused"
+    );
     s.encrypt("pw").unwrap();
     drop(s);
     let mut s = Imported::load(&dir).unwrap();

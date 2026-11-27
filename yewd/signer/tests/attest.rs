@@ -439,7 +439,10 @@ fn signmessage_dumpprivkey_and_import() {
     assert!(c2.once.lock().unwrap().restored);
     let Response::ImportedKey(ik) = ask(
         &c2,
-        Request::ImportKey(ImportKeyRequest { wif: wif.to_string(), members: None }),
+        Request::ImportKey(ImportKeyRequest {
+            wif: wif.to_string(),
+            members: None,
+        }),
     ) else {
         panic!()
     };

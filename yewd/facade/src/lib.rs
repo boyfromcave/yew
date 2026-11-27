@@ -77,7 +77,9 @@ pub async fn start_with(cfg: &Config, signer: wallet::SignerSource) -> std::io::
         yugen::spawn_scheduler(cfg.yugen_sync_delay, move || {
             let b = b.clone();
             async move {
-                let body = bytes::Bytes::from_static(br#"{"jsonrpc":"1.0","id":"yugen-sched","method":"getblockcount","params":[]}"#);
+                let body = bytes::Bytes::from_static(
+                    br#"{"jsonrpc":"1.0","id":"yugen-sched","method":"getblockcount","params":[]}"#,
+                );
                 let (_, out) = b.call("/", body).await.ok()?;
                 let v: serde_json::Value = serde_json::from_slice(&out).ok()?;
                 v["result"].as_u64().map(|h| h as u32)

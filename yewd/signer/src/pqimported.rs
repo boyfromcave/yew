@@ -65,10 +65,16 @@ pub struct PqImported {
 }
 
 fn pub_of(e: &Entry) -> Result<PubEntry, String> {
-    let mut seed = zeroize::Zeroizing::new(hex::decode(&e.seed).map_err(|_| "an imported post-quantum seed is not hex")?);
-    let k = yew_core::pq::PqKey::from_seed(e.scheme, &seed).map_err(|_| "an imported post-quantum seed")?;
+    let mut seed = zeroize::Zeroizing::new(
+        hex::decode(&e.seed).map_err(|_| "an imported post-quantum seed is not hex")?,
+    );
+    let k = yew_core::pq::PqKey::from_seed(e.scheme, &seed)
+        .map_err(|_| "an imported post-quantum seed")?;
     seed.zeroize();
-    Ok(PubEntry { scheme: e.scheme, pk: hex::encode(k.public_key()) })
+    Ok(PubEntry {
+        scheme: e.scheme,
+        pk: hex::encode(k.public_key()),
+    })
 }
 
 fn open_old(path: &Path) -> Option<std::fs::File> {
@@ -103,7 +109,9 @@ impl PqImported {
                 if d.format != FORMAT {
                     return Err(format!("{}: unknown format", path.display()));
                 }
-                let OnDisk { keys, pubs, sealed, .. } = d;
+                let OnDisk {
+                    keys, pubs, sealed, ..
+                } = d;
                 let pubs = if pubs.len() == keys.len() || sealed.is_some() {
                     pubs
                 } else {
@@ -114,7 +122,13 @@ impl PqImported {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Vec::new(), Vec::new(), None),
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
-        Ok(PqImported { path, keys, pubs, sealed, pass: None })
+        Ok(PqImported {
+            path,
+            keys,
+            pubs,
+            sealed,
+            pass: None,
+        })
     }
 
     /// Seal the store under `pass` (`encryptwallet`, and the migration of a plain file found in
@@ -127,12 +141,16 @@ impl PqImported {
     pub fn encrypt(&mut self, pass: &str) -> Result<(), String> {
         if let Some(s) = &self.sealed {
             let Some(plain) = crate::seal::open(pass, s) else {
-                return Err("the imported post-quantum keys are already sealed under another passphrase".into());
+                return Err(
+                    "the imported post-quantum keys are already sealed under another passphrase"
+                        .into(),
+                );
             };
             if self.pass.is_none() {
                 let plain = zeroize::Zeroizing::new(plain);
-                self.keys = serde_json::from_slice(&plain)
-                    .map_err(|_| format!("{}: the sealed content is damaged", self.path.display()))?;
+                self.keys = serde_json::from_slice(&plain).map_err(|_| {
+                    format!("{}: the sealed content is damaged", self.path.display())
+                })?;
                 self.pass = Some(yew_core::keys::SecretString::new(pass.to_string()));
             }
             return Ok(());
@@ -187,7 +205,10 @@ impl PqImported {
         {
             return Ok((i as u32, false));
         }
-        let e = Entry { scheme, seed: h.to_string() };
+        let e = Entry {
+            scheme,
+            seed: h.to_string(),
+        };
         let p = pub_of(&e)?;
         self.keys.push(e);
         self.pubs.push(p);
@@ -203,7 +224,9 @@ impl PqImported {
         use std::io::Write;
         let d = match &self.pass {
             Some(pass) if self.sealed.is_some() => {
-                let plain = zeroize::Zeroizing::new(serde_json::to_vec(&self.keys).map_err(|e| e.to_string())?);
+                let plain = zeroize::Zeroizing::new(
+                    serde_json::to_vec(&self.keys).map_err(|e| e.to_string())?,
+                );
                 OnDisk {
                     format: FORMAT.into(),
                     keys: Vec::new(),
@@ -236,7 +259,11 @@ impl PqImported {
             .map_err(|e| format!("{}: {e}", tmp.display()))?;
         // the plain file being replaced (a migration) is overwritten once the sealed one is in place
         // (O_NOFOLLOW, a regular file with a single link only: zeroing another link's content is not ours to do)
-        let old = if self.sealed.is_some() { open_old(&self.path) } else { None };
+        let old = if self.sealed.is_some() {
+            open_old(&self.path)
+        } else {
+            None
+        };
         std::fs::rename(&tmp, &self.path).map_err(|e| format!("{}: {e}", self.path.display()))?;
         if let Some(dir) = self.path.parent() {
             let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
@@ -244,7 +271,10 @@ impl PqImported {
         if let Some(mut f) = old {
             use std::io::{Seek, SeekFrom};
             let n = f.metadata().map(|m| m.len()).unwrap_or(0) as usize;
-            let _ = f.seek(SeekFrom::Start(0)).and_then(|_| f.write_all(&vec![0u8; n])).and_then(|_| f.sync_all());
+            let _ = f
+                .seek(SeekFrom::Start(0))
+                .and_then(|_| f.write_all(&vec![0u8; n]))
+                .and_then(|_| f.sync_all());
         }
         Ok(())
     }

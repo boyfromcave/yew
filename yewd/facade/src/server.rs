@@ -242,9 +242,14 @@ impl Facade {
                 Err(m) => return error_reply(code::INVALID_REQUEST, m, id),
             };
             let wallet = |m: String, p: Vec<serde_json::Value>| async move {
-                let r = if m == "z_validateaddress" { self.wallet.local(&m, &p).await } else { self.wallet.call(&m, &p).await };
+                let r = if m == "z_validateaddress" {
+                    self.wallet.local(&m, &p).await
+                } else {
+                    self.wallet.call(&m, &p).await
+                };
                 let text = r.map_err(|e| (e.code, e.message))?;
-                serde_json::from_str::<serde_json::Value>(&text).map_err(|_| (-1, format!("{m}: {text}")))
+                serde_json::from_str::<serde_json::Value>(&text)
+                    .map_err(|_| (-1, format!("{m}: {text}")))
             };
             return match crate::yugen::call(&method, params, wallet).await {
                 Ok(v) => raw_result_reply(&v.to_string(), id),
